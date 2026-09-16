@@ -463,7 +463,7 @@ The palette module is a port of the validated lab code (v2 with every fix enable
 
 ### 11.3 Budgets and switches
 
-- `BudgetStore.take(key, limit, ttlSeconds)` implementations, selected at runtime: Upstash Redis when `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` exist, Vercel Runtime Cache when available on the plan, otherwise in-memory per instance. If the store errors, fall back to the in-memory counter.
+- `BudgetStore.incr(key, by, ttlSeconds)` implementations (atomic increment that returns the new total; `takeScanBudget` and `takeProxyBytes` compare it with the limit), selected at runtime: Upstash Redis when `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` exist, Vercel Runtime Cache when available on the plan, otherwise in-memory per instance. If the store errors, fall back to the in-memory counter.
 - Defaults: 80 scans per day, 800 per month, 300 MB proxied per day. All env-overridable.
 - Kill switch `SCAN_DISABLED=1`. Optional `ACCESS_CODE`.
 - BotID (basic) protects `POST /api/scan`, initialized in `instrumentation-client.ts`.
