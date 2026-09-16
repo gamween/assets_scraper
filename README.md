@@ -4,7 +4,7 @@ Paste a URL, get every SVG, image and font on the page, plus the brand color pal
 
 ## Development
 
-Requirements: Node 22+, pnpm 10.33, Google Chrome.
+Requirements: Node 22+ (production and CI run Node 24), pnpm 10.33, Google Chrome.
 
 ```bash
 pnpm install
