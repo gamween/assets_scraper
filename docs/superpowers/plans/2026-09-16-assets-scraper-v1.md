@@ -184,7 +184,7 @@ Inside `@theme inline`, replace the self-referencing font lines with:
 --font-heading: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
 ```
 
-Remove every `.dark` block and the `@custom-variant dark` line (light theme only).
+Remove every `.dark` block (light theme only). Keep `@custom-variant dark (&:is(.dark *));` after the imports: without it Tailwind v4 applies `dark:` utilities under `prefers-color-scheme: dark`, and no `.dark` class is ever set, so the line keeps them inert.
 
 - [ ] **Step 8: Verify and commit**
 
@@ -2175,7 +2175,7 @@ Build against the contract with mocked NDJSON. Create realistic fixtures from la
 
 **Files:** `src/app/globals.css`, `src/app/layout.tsx`, `src/app/robots.ts`, `src/components/app-shell/top-bar.tsx`
 
-- [ ] **Step 1:** Put the token block from spec 12.6 in `:root`, map them in `@theme inline` (colors, radii, fonts), add `.bg-grid` checkerboard, tabular numbers utility, reduced-motion rules. `layout.tsx`: Geist Sans and Mono through `geist/font`, `metadata` with `title: "Assets Scraper"`, `robots: { index: false, follow: false }`. `robots.ts`: disallow `/`.
+- [ ] **Step 1:** Put the token block from spec 12.6 in `:root`, map them in `@theme inline` (colors, radii, fonts), add `.bg-grid` checkerboard, tabular numbers utility, reduced-motion rules. Keep the `@custom-variant dark` line (Task 0.1 step 7) so `dark:` utilities stay inert. `layout.tsx`: Geist Sans and Mono through `geist/font`, `metadata` with `title: "Assets Scraper"`, `robots: { index: false, follow: false }`. `robots.ts`: disallow `/`.
 - [ ] **Step 2:** Render check: `pnpm dev`, open `http://localhost:3000` at 1470x956 with the browser tools, confirm Geist renders (computed font family starts with Geist) and there are no console CSP errors.
 - [ ] **Step 3: Commit** `feat(ui): add light design tokens and app shell`
 
