@@ -1560,7 +1560,7 @@ describe("own hosts and test allowlist", () => {
   });
 
   it("ignores a trailing root dot on either side", () => {
-    // normalizeInputUrl keeps the root dot: "https://assets-scraper.vercel.app./" has host "assets-scraper.vercel.app."
+    // normalizeInputUrl drops the root dot, but env values and redirect targets can still end with one
     vi.stubEnv("VERCEL_PROJECT_PRODUCTION_URL", "assets-scraper.vercel.app");
     vi.stubEnv("APP_HOSTS", "other.example.");
     expect(isOwnHost("assets-scraper.vercel.app.")).toBe(true);
