@@ -1,8 +1,12 @@
-import type { FontBinaryMeta, FontsOutput, PostInput, SafeFetch } from "../types";
-import { NotImplementedError } from "@/server/errors";
+import type { FontFaceInfo, FontFamily, FontFile, FontFormat } from "@/lib/contract";
+import { SignLimitError } from "@/server/security/sign";
+import type { CapturedFont, FontBinaryMeta, FontsOutput, PostInput, RawFontFaceRule, RawFontUsage, SafeFetch, Signer } from "../types";
+import { normalizeStretch, normalizeStyle, normalizeWeight, parseFontFaceCss } from "./css";
+import { createFileLookup, isDataUri, remoteUrl, type FileRecord, type FontSource } from "./files";
 import { matchGoogleFamilies } from "./google";
 import { classifyLicense } from "./license";
-import { resolveFamilyName } from "./names";
+import { cleanCssFamily, resolveFamilyName, splitFamilies } from "./names";
+import { coversBasicLatin } from "./unicode";
 
 export { parseFontBinary } from "./binary";
 export { parseFontFaceCss } from "./css";
@@ -21,7 +25,314 @@ export async function isConvertibleFont(meta: FontBinaryMeta | null, options: { 
   return matches.has(name);
 }
 
-export function buildFontFamilies(input: PostInput): Promise<FontsOutput>;
-export async function buildFontFamilies(): Promise<FontsOutput> {
-  throw new NotImplementedError("D: buildFontFamilies");
+/** A file of a face, with what its rule says about it. */
+interface FaceFile {
+  file: FileRecord;
+  cssFamily?: string;
+  unicodeRange?: string;
+  coversLatin: boolean;
+  loaded: boolean;
+}
+
+interface FaceRecord {
+  weight: string;
+  style: string;
+  stretch?: string;
+  loaded: boolean;
+  files: FaceFile[];
+}
+
+/** Stage 1: the rules of one cleaned CSS family, or captured files without a rule that share a binary name. */
+interface Group {
+  cssFamilies: string[];
+  faces: Map<string, FaceRecord>;
+}
+
+interface FamilyRecord {
+  name: string;
+  cssFamilies: string[];
+  embeddedNames: string[];
+  faces: Map<string, FaceRecord>;
+  chars: number;
+}
+
+const FORMAT_RANK: Record<FontFormat, number> = { woff2: 0, woff: 1, ttf: 2, otf: 2, other: 3, eot: 4 };
+
+const unquote = (family: string) => family.trim().replace(/^(["'])(.*)\1$/, "$2");
+const isOk = (status: number) => status >= 200 && status < 300;
+const faceKey = (cssFamily: string, face: { weight: string; style: string; stretch?: string }) =>
+  JSON.stringify([cssFamily, face.weight, face.style, face.stretch ?? ""]);
+
+function pageHostOf(page: PostInput["page"]): string {
+  for (const url of [page.finalUrl, page.requestedUrl]) {
+    try {
+      return new URL(url).hostname;
+    } catch {
+      // try the next one
+    }
+  }
+  return page.host.replace(/:\d+$/, "");
+}
+
+/**
+ * Rules from the CSSOM and from captured stylesheets (cross-origin sheets the CSSOM cannot read), normalized. A rule
+ * found in both adds the same file to the same face twice, which `addToGroup` ignores.
+ */
+function collectRules(input: PostInput): RawFontFaceRule[] {
+  const sheetRules = input.network.sheets.filter((sheet) => isOk(sheet.status)).flatMap((sheet) => parseFontFaceCss(sheet.cssText, sheet.url));
+  const rules: RawFontFaceRule[] = [];
+  for (const raw of [...input.collector.fontFaces, ...sheetRules]) {
+    const family = unquote(raw.family);
+    const src = raw.src.flatMap((entry) => {
+      const url = !entry.url ? null : isDataUri(entry.url) ? entry.url : remoteUrl(entry.url, raw.baseUrl);
+      return url ? [{ url, format: entry.format }] : [];
+    });
+    if (!family || !src.length) continue;
+    const rule: RawFontFaceRule = {
+      ...raw,
+      family,
+      src,
+      weight: normalizeWeight(raw.weight),
+      style: normalizeStyle(raw.style),
+      stretch: normalizeStretch(raw.stretch),
+      unicodeRange: raw.unicodeRange?.trim() || undefined,
+    };
+    rules.push(rule);
+  }
+  return rules;
+}
+
+function addToGroup(groups: Map<string, Group>, key: string, cssFamily: string | undefined, face: Omit<FaceRecord, "files">, entry: FaceFile) {
+  const group: Group = groups.get(key) ?? { cssFamilies: [], faces: new Map() };
+  groups.set(key, group);
+  if (cssFamily && !group.cssFamilies.includes(cssFamily)) group.cssFamilies.push(cssFamily);
+  const id = faceKey(cssFamily ?? "", face);
+  const record: FaceRecord = group.faces.get(id) ?? { ...face, loaded: false, files: [] };
+  group.faces.set(id, record);
+  record.loaded ||= face.loaded;
+  if (!record.files.some((existing) => existing.file === entry.file)) record.files.push(entry);
+}
+
+/**
+ * Stage 1. Each rule gives one file: the source that loaded, else the best declared format, which is listed but not
+ * downloaded. A face is loaded when a file of it was captured or `document.fonts` says so. Captured files that no rule
+ * declares (fonts added with the `FontFace` API) are grouped by binary name. Also returns the lowercase family names
+ * that have a loaded face, for usage.
+ */
+function groupFiles(input: PostInput, rules: RawFontFaceRule[], captured: Map<string, CapturedFont>) {
+  const fileFor = createFileLookup(captured, pageHostOf(input.page));
+  const statuses = input.collector.fontStatuses.map((status) => ({
+    family: unquote(status.family).toLowerCase(),
+    weight: normalizeWeight(status.weight),
+    style: normalizeStyle(status.style),
+    stretch: normalizeStretch(status.stretch),
+    loaded: status.status === "loaded",
+  }));
+  const loadedFamilies = new Set(statuses.filter((status) => status.loaded).map((status) => status.family));
+  const groups = new Map<string, Group>();
+  const declared = new Set<string>();
+
+  for (const rule of rules) {
+    const files = rule.src.flatMap((entry) => {
+      declared.add(entry.url!);
+      const file = fileFor(entry.url!, entry.format);
+      return file ? [file] : [];
+    });
+    const file = files.find((candidate) => candidate.captured) ?? [...files].sort((a, b) => FORMAT_RANK[a.format] - FORMAT_RANK[b.format])[0];
+    if (!file) continue;
+    const family = rule.family.toLowerCase();
+    const statusLoaded = statuses.some(
+      (status) => status.loaded && status.family === family && status.weight === rule.weight && status.style === rule.style && status.stretch === rule.stretch,
+    );
+    if (file.captured) loadedFamilies.add(family);
+    addToGroup(
+      groups,
+      `css:${cleanCssFamily(rule.family).toLowerCase()}`,
+      rule.family,
+      { weight: rule.weight, style: rule.style, stretch: rule.stretch, loaded: file.captured || statusLoaded },
+      {
+        file,
+        cssFamily: rule.family,
+        unicodeRange: rule.unicodeRange,
+        coversLatin: coversBasicLatin(rule.unicodeRange) && file.meta?.coversLatin !== false,
+        loaded: file.captured || (statusLoaded && !file.url),
+      },
+    );
+  }
+
+  for (const [url, font] of captured) {
+    if (declared.has(url) || !font.meta) continue;
+    const name = resolveFamilyName(font.meta, null).name;
+    loadedFamilies.add(name.toLowerCase());
+    const wght = font.meta.axes?.find((axis) => axis.tag === "wght");
+    const weight = wght ? `${wght.min} ${wght.max}` : String(font.meta.weightClass ?? 400);
+    const style = /italic|oblique/i.test(font.meta.subfamilyName ?? "") ? "italic" : "normal";
+    const entry = { file: fileFor(url)!, coversLatin: font.meta.coversLatin !== false, loaded: true };
+    addToGroup(groups, `bin:${name.toLowerCase()}`, undefined, { weight, style, loaded: true }, entry);
+  }
+  return { groups, loadedFamilies };
+}
+
+/** Stage 2 representative: loaded and Latin, else parsed and Latin, else parsed, else the first file. */
+function representative(files: FaceFile[]): FaceFile {
+  return (
+    files.find((entry) => entry.loaded && entry.file.meta && entry.coversLatin) ??
+    files.find((entry) => entry.file.meta && entry.coversLatin) ??
+    files.find((entry) => entry.file.meta) ??
+    files[0]
+  );
+}
+
+/** Stages 2 and 3: name each group from its representative file, merge groups that share a display name. */
+function nameFamilies(groups: Map<string, Group>) {
+  const families = new Map<string, FamilyRecord>();
+  const byCssFamily = new Map<string, FamilyRecord>();
+  for (const group of groups.values()) {
+    const rep = representative([...group.faces.values()].flatMap((face) => face.files));
+    const resolved = resolveFamilyName(rep.file.meta, rep.cssFamily);
+    const key = resolved.name.toLowerCase();
+    const family: FamilyRecord = families.get(key) ?? { name: resolved.name, cssFamilies: [], embeddedNames: [], faces: new Map(), chars: 0 };
+    families.set(key, family);
+    for (const cssFamily of group.cssFamilies) {
+      if (!family.cssFamilies.includes(cssFamily)) family.cssFamilies.push(cssFamily);
+      byCssFamily.set(cssFamily.toLowerCase(), family);
+    }
+    // A family without a rule is referenced in stacks by the name it was registered with.
+    if (!group.cssFamilies.length && !byCssFamily.has(key)) byCssFamily.set(key, family);
+    if (resolved.embeddedName && !family.embeddedNames.includes(resolved.embeddedName)) family.embeddedNames.push(resolved.embeddedName);
+    for (const [id, face] of group.faces) family.faces.set(id, face);
+  }
+  return { families: [...families.values()], byCssFamily };
+}
+
+/** Adds characters to the first family of each stack that has a loaded face, and returns all counted characters. */
+function countUsage(usage: RawFontUsage[], loadedFamilies: Set<string>, byCssFamily: Map<string, FamilyRecord>): number {
+  let total = 0;
+  for (const entry of usage) {
+    if (!(entry.chars > 0)) continue;
+    total += entry.chars;
+    const used = splitFamilies(entry.stack).find((name) => loadedFamilies.has(name.toLowerCase()));
+    const family = used ? byCssFamily.get(used.toLowerCase()) : undefined;
+    if (family) family.chars += entry.chars;
+  }
+  return total;
+}
+
+/** Signs each remote URL once. Past the per-scan signing cap, files keep their URL with an empty `proxy`. */
+function createProxySigner(signer: Signer) {
+  const proxies = new Map<string, string>();
+  let capped = false;
+  return (url: string): string => {
+    if (!url) return "";
+    let proxy = proxies.get(url);
+    if (proxy !== undefined) return proxy;
+    proxy = "";
+    if (!capped) {
+      try {
+        proxy = signer.sign(url);
+      } catch (error) {
+        if (!(error instanceof SignLimitError)) throw error;
+        capped = true;
+      }
+    }
+    proxies.set(url, proxy);
+    return proxy;
+  };
+}
+
+const slug = (name: string) =>
+  name
+    .normalize("NFD")
+    .replace(/\p{M}/gu, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+
+function toFaceInfo(face: FaceRecord, proxyFor: (url: string) => string): FontFaceInfo {
+  const info: FontFaceInfo = { weight: face.weight, style: face.style, loaded: face.loaded, files: [] };
+  if (face.stretch) info.stretch = face.stretch;
+  const subfamily = face.files.find((entry) => entry.file.meta?.subfamilyName)?.file.meta?.subfamilyName;
+  if (subfamily) info.subfamily = subfamily;
+  info.files = face.files.map(({ file, unicodeRange, coversLatin }) => {
+    const out: FontFile = { url: file.url, proxy: proxyFor(file.url), format: file.format, coversLatin };
+    if (file.bytes !== undefined) out.bytes = file.bytes;
+    if (unicodeRange) out.unicodeRange = unicodeRange;
+    if (file.inline) out.inline = file.inline;
+    return out;
+  });
+  return info;
+}
+
+/**
+ * Builds the font families of a scan (spec section 9) from the collector's `@font-face` rules, `document.fonts`
+ * statuses and text usage, plus the captured font files and stylesheets. Families are grouped and named in three
+ * stages, carry their source, licence, usage share and Google Fonts match (checked for used families only), and are
+ * sorted by usage, then used before unused. Remote files get a signed proxy URL. `data:` URI files carry their bytes
+ * in `inline`, with empty `url` and `proxy`, and are not signed.
+ */
+export async function buildFontFamilies(input: PostInput): Promise<FontsOutput> {
+  const captured = new Map<string, CapturedFont>();
+  for (const font of input.network.fonts) {
+    const url = remoteUrl(font.url);
+    if (url && isOk(font.status) && !captured.has(url)) captured.set(url, font);
+  }
+  const { groups, loadedFamilies } = groupFiles(input, collectRules(input), captured);
+  const { families, byCssFamily } = nameFamilies(groups);
+  const totalChars = countUsage(input.collector.fontUsage, loadedFamilies, byCssFamily);
+
+  const summaries = families.map((family) => {
+    const faces = [...family.faces.values()];
+    const entries = faces.flatMap((face) => face.files);
+    const rep = representative(entries);
+    const source: FontSource = rep.file.source;
+    const metas = [rep, ...entries].flatMap((entry) => (entry.file.meta ? [entry.file.meta] : []));
+    const licenseMeta = metas.find((meta) => classifyLicense(meta).kind !== "unknown") ?? metas[0];
+    return {
+      family,
+      faces,
+      source,
+      host: rep.file.host,
+      license: classifyLicense(licenseMeta, source),
+      axes: metas.find((meta) => meta.axes?.length)?.axes,
+      usage: totalChars ? Math.round((family.chars / totalChars) * 10_000) / 10_000 : 0,
+      usedOnPage: family.chars > 0 || faces.some((face) => face.loaded),
+    };
+  });
+  summaries.sort((a, b) => b.usage - a.usage || Number(b.usedOnPage) - Number(a.usedOnPage));
+
+  const candidates = (summary: (typeof summaries)[number]) => [summary.family.name, ...summary.family.embeddedNames];
+  const remainingMs = input.deadline - Date.now();
+  const names = summaries.filter((summary) => summary.usedOnPage).flatMap(candidates);
+  const google =
+    names.length && remainingMs > 0 && !input.signal.aborted
+      ? await matchGoogleFamilies(names, { fetch: input.fetch, signal: input.signal, timeoutMs: remainingMs })
+      : new Map<string, string>();
+
+  const proxyFor = createProxySigner(input.signer);
+  const ids = new Set<string>();
+  const output = summaries.map((summary): FontFamily => {
+    const base = `font-${slug(summary.family.name) || "family"}`;
+    let id = base;
+    for (let n = 2; ids.has(id); n += 1) id = `${base}-${n}`;
+    ids.add(id);
+    const googleFamily = summary.usedOnPage ? candidates(summary).find((name) => google.has(name)) : undefined;
+    const result: FontFamily = {
+      id,
+      name: summary.family.name,
+      cssFamilies: summary.family.cssFamilies,
+      source: summary.source,
+      license: summary.license,
+      convertible: summary.license.kind === "open" || (summary.license.kind === "unknown" && !!googleFamily),
+      downloadable: summary.source !== "adobe-fonts",
+      usedOnPage: summary.usedOnPage,
+      usage: summary.usage,
+      faces: summary.faces.map((face) => toFaceInfo(face, proxyFor)),
+    };
+    if (summary.host) result.sourceHost = summary.host;
+    if (googleFamily) result.googleFamily = googleFamily;
+    if (summary.axes) result.axes = summary.axes;
+    return result;
+  });
+
+  return { families: output, hidden: {} };
 }
