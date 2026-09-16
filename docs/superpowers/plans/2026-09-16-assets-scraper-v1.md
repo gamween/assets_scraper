@@ -1992,7 +1992,7 @@ it("builds the same variant key for size variants", () => {
   - `roles.test.ts`: header SVG in a home link with a logo word scores 8 and becomes `site-logo`; `og:image` becomes `social`; a 24x24 rendered SVG becomes `icon`; a favicon is never `icon`; `relevanceScore` orders site-logo above a large visible image above a hidden icon.
   - `naming.test.ts`: display name priority (`aria-label` over `<title>` over `alt` over file basename); hashed basenames (`logo.a1b2c3d4.svg`, `hero-3f9ab1c2e4.png`) are cleaned; filenames are prefixed with the site slug once (`linear-logo.svg`, not `linear-linear-logo.svg`), capped at 80 characters, clash to `-2`, and `../evil/<name>` becomes safe.
   - `tone.test.ts`: generate PNGs with sharp in the test (white shape on transparent gives `light`, black shape on transparent gives `dark`, opaque red gives `opaque`, half gray gives `mixed`); a JPEG buffer gives `opaque` without decoding; `toneFromSvg('<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" fill="#fff"/></svg>')` gives `opaque`, a white circle on transparent gives `light`; invalid bytes give `unknown`.
-- [ ] **Step 2: Run, see failures** **Step 3: Implement** (spec 8.2, 8.3, 8.5, 8.7, 8.8; port `noise.mjs` host lists). **Step 4: Run** (PASS) **Step 5: Commit** `feat(assets): add noise filter, variant grouping, roles, naming and tone`
+- [ ] **Step 2: Run, see failures** **Step 3: Implement** (spec 8.2, 8.3, 8.5, 8.7, 8.8; port `noise.mjs` host lists; noise reasons are the `HiddenReason` names from the contract, not the lab strings). **Step 4: Run** (PASS) **Step 5: Commit** `feat(assets): add noise filter, variant grouping, roles, naming and tone`
 
 ### Task C4: Verification
 
@@ -2032,7 +2032,7 @@ it("builds the same variant key for size variants", () => {
   - `hero.jpg` is a separate asset; `pixel.gif` is absent and `hidden.spacer` or `hidden.pixel` is at least 1; the lazy GIF placeholder is absent;
   - `hover.png` has `declaredOnly: true`; `mask.svg` is `kind: "svg"`;
   - `og.png` has role `social` and `foundIn` containing `og-image`;
-  - the JSON-LD logo at `example.invalid` is absent (failed probe) and counted in `hidden`;
+  - the JSON-LD logo at `example.invalid` is absent (failed probe) and counted in `hidden["probe-failed"]`;
   - the blob image has `inline.base64` and `display: null`;
   - filenames are unique; every non-inline asset has `proxy` from the signer; every asset has a `tone`;
   - assets are sorted by `score` descending, `site-logo` first.
@@ -2201,7 +2201,7 @@ Build against the contract with mocked NDJSON. Create realistic fixtures from la
 **Files:** `src/components/results/*`, `e2e/results.spec.ts`
 
 - [ ] **Step 1: Failing E2E tests** on the linear fixture: header meta, `Copy link`, `Rescan`, `Download all`; palette strip with swatches, clicking one copies its hex (clipboard permission granted) and shows the toast `Copied #5e6ad2`; brand link chips come from the last `page` event (the fixture sends an early `page` with empty `brandLinks`, then the final one; the client replaces, never merges) and a chip starts a scan of that URL; tabs with counts and keys `1` to `4`; `Logos` section first in `All` and absent in `SVG`; `Small icons` collapsed with `Show`; search with `/` filters and shows `Nothing matches "zzz"` with `Clear search`; sort changes order; background control changes tile backgrounds; tiles show filename and mono meta; a remote image that 404s falls back to the proxy URL (assert the `src` changes); no scraped SVG markup is present in the DOM (`page.locator("main svg[data-scraped]")` count 0 and no element contains the fixture's unique path data); `9 hidden: tracking pixels and spacer images` footer; partial banner for a `done partial` fixture.
-- [ ] **Step 2: Run, see failures** **Step 3: Implement** spec 12.2 results and 12.3 cards, grid breakpoints, `content-visibility`, lazy previews, tone mapping. **Step 4: Run** (PASS) **Step 5: Commit** `feat(ui): add results grid, sections, cards, palette strip and brand links`
+- [ ] **Step 2: Run, see failures** **Step 3: Implement** spec 12.2 results and 12.3 cards, grid breakpoints, `content-visibility`, lazy previews, tone mapping, footer text built from the `HiddenReason` keys of `stats.hidden` (unknown keys count toward the total). **Step 4: Run** (PASS) **Step 5: Commit** `feat(ui): add results grid, sections, cards, palette strip and brand links`
 
 ### Task F5: Fonts rows
 
