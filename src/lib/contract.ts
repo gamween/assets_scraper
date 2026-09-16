@@ -81,6 +81,15 @@ export type Asset = z.infer<typeof Asset>;
 export const FontFormat = z.enum(["woff2", "woff", "ttf", "otf", "eot", "other"]);
 export type FontFormat = z.infer<typeof FontFormat>;
 
+/**
+ * A remote font file has its absolute http(s) `url`, a signed `proxy` and no `inline`.
+ * A file declared as a `data:` URI (family `source: "data-uri"`) has no network path: the asset proxy only fetches
+ * http(s), and the app CSP (`connect-src 'self' https:`) blocks `fetch("data:...")`. Its bytes travel in `inline` as
+ * base64, whatever the encoding of the URI was, and `url` and `proxy` are both "". Clients read `inline` first, as for
+ * assets, and do not key or name files by `url`.
+ * The `fonts` event is one line, not batched like `assets`, so inline files can take it past the `ndjsonLineBytes`
+ * target (256 KB). That target is not a hard cap: clients read lines of any length.
+ */
 export const FontFile = z.object({
   url: z.string(),
   proxy: z.string(),
@@ -88,6 +97,7 @@ export const FontFile = z.object({
   bytes: z.number().optional(),
   unicodeRange: z.string().optional(),
   coversLatin: z.boolean(),
+  inline: InlineBytes.optional(),
 });
 export type FontFile = z.infer<typeof FontFile>;
 

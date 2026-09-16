@@ -65,6 +65,17 @@ describe("contract", () => {
     expect(() => FontFamily.parse({ ...family, faces: [{ ...face, files: [{ ...face.files[0], format: "svg" }] }] })).toThrow();
   });
 
+  it("carries data URI font bytes inline, with no url or proxy", () => {
+    const inlineFile = { url: "", proxy: "", format: "woff2", bytes: 6, coversLatin: true, inline: { mime: "font/woff2", base64: "d09GMgAB" } };
+    const dataUriFamily = { ...family, source: "data-uri", faces: [{ ...family.faces[0], files: [inlineFile] }] };
+    const file = FontFamily.parse(dataUriFamily).faces[0].files[0];
+    expect(file.inline?.base64).toBe("d09GMgAB");
+    expect([file.url, file.proxy]).toEqual(["", ""]);
+    expect(FontFamily.parse(family).faces[0].files[0].inline).toBeUndefined();
+    const withoutBytes = { ...inlineFile, inline: { mime: "font/woff2" } };
+    expect(() => FontFamily.parse({ ...dataUriFamily, faces: [{ ...family.faces[0], files: [withoutBytes] }] })).toThrow();
+  });
+
   it("names the noise reasons and keeps the hidden counts open", () => {
     // The reasons Track C tests for (plan C3) must all exist, so producers and the UI share one list.
     for (const reason of ["tracker", "spacer", "pixel", "tiny-data-uri", "placeholder", "not-image", "consent", "widget"]) {
