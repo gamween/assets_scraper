@@ -1,5 +1,5 @@
+import { handleAssetRequest } from "@/server/security/asset-proxy";
+
 export const runtime = "nodejs";
 
-export async function GET(): Promise<Response> {
-  return new Response("Not implemented", { status: 501 });
-}
+export const GET = (request: Request) => handleAssetRequest(request);
