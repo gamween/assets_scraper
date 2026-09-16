@@ -5,7 +5,8 @@ const MB = 1024 * 1024;
  *
  * Each value can be overridden with an environment variable named after its key in SCREAMING_SNAKE_CASE
  * (`queueWaitMs` reads `QUEUE_WAIT_MS`, `scansPerDay` reads `SCANS_PER_DAY`). Overrides are read on every access,
- * so tests can set them at runtime. Values that are not finite numbers above 0 are ignored.
+ * so tests can set them at runtime. Every limit is a whole number (ms, bytes or a count), so values that are not
+ * whole numbers above 0 (`1.5`, `0`, `soon`) are ignored.
  */
 const defaults = {
   // Scan pipeline (spec 7.2, 7.3)
@@ -92,7 +93,7 @@ export const limitEnvName = (name: LimitName): string => name.replace(/[A-Z]/g, 
 
 const envNumber = (name: string, fallback: number): number => {
   const value = Number(process.env[name]);
-  return Number.isFinite(value) && value > 0 ? value : fallback;
+  return Number.isSafeInteger(value) && value > 0 ? value : fallback;
 };
 
 export const limits: Limits = Object.freeze(
