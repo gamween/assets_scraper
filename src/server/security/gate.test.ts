@@ -30,7 +30,7 @@ async function expectFailure(result: GateResult, status: number, code: string) {
   expect(result.response.headers.get("content-type")).toMatch(/^application\/json/);
   const body = ApiError.parse(await result.response.json());
   expect(body.error.code).toBe(code);
-  expect(body.error.message).not.toMatch(/[–—]/);
+  expect(body.error.message).not.toMatch(/[\u2013\u2014]/);
 }
 
 describe("gateScanRequest", () => {
