@@ -29,16 +29,22 @@ export function chunkByBytes<T>(items: T[], maxBytes: number): T[][] {
   return chunks;
 }
 
+/**
+ * Yields one parsed value per line. When iteration stops before the end of the stream (the consumer breaks out of
+ * the loop, or a line is not valid JSON and the generator throws), the stream is cancelled so a fetch body stops downloading.
+ */
 export async function* decodeNdjson(stream: ReadableStream<Uint8Array>): AsyncGenerator<unknown> {
   // TextDecoder in streaming mode instead of pipeThrough(new TextDecoderStream()): same multi-byte handling,
   // and TypeScript 6's DOM lib types TextDecoderStream's writable side as BufferSource, which does not accept a Uint8Array stream.
   const reader = stream.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let ended = false;
   try {
     for (;;) {
       const { value, done } = await reader.read();
       if (done) {
+        ended = true;
         buffer += decoder.decode();
         break;
       }
@@ -54,6 +60,8 @@ export async function* decodeNdjson(stream: ReadableStream<Uint8Array>): AsyncGe
     const tail = buffer.trim();
     if (tail) yield JSON.parse(tail);
   } finally {
+    // Not awaited: cancelling closes the stream at once, and a slow source cancel must not block the consumer.
+    if (!ended) reader.cancel().catch(() => {});
     reader.releaseLock();
   }
 }

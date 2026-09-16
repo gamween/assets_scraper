@@ -16,6 +16,22 @@ async function collect(stream: ReadableStream<Uint8Array>) {
   return out;
 }
 
+/** A stream that stays open after its parts, like a response body still downloading, and records a cancel. */
+function openStreamOf(parts: string[]) {
+  const state = { cancelled: false, pulls: 0 };
+  const stream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      const part = parts[state.pulls++];
+      if (part !== undefined) controller.enqueue(new TextEncoder().encode(part));
+      else return new Promise<void>(() => {});
+    },
+    cancel() {
+      state.cancelled = true;
+    },
+  });
+  return { stream, state };
+}
+
 const lineBytes = (items: unknown[]) => new TextEncoder().encode(`${JSON.stringify({ type: "assets", items })}\n`).length;
 
 describe("ndjson", () => {
@@ -32,6 +48,27 @@ describe("ndjson", () => {
     const cuts = [11, 12, 20, 21];
     const parts = [0, ...cuts].map((start, i) => bytes.slice(start, [...cuts, bytes.length][i]));
     expect(await collect(streamOf(parts))).toEqual([{ name: "Söhne 日本" }]);
+  });
+
+  it("cancels the stream when a line is not valid JSON", async () => {
+    const { stream, state } = openStreamOf(['{"a":1}\n', "<html>oops</html>\n", '{"b":2}\n']);
+    const out: unknown[] = [];
+    await expect(async () => {
+      for await (const value of decodeNdjson(stream)) out.push(value);
+    }).rejects.toThrow(SyntaxError);
+    expect(out).toEqual([{ a: 1 }]);
+    expect(state.cancelled).toBe(true);
+    expect(stream.locked).toBe(false);
+  });
+
+  it("cancels the stream when the consumer stops early", async () => {
+    const { stream, state } = openStreamOf(['{"a":1}\n{"b":2}\n', '{"c":3}\n']);
+    for await (const value of decodeNdjson(stream)) {
+      expect(value).toEqual({ a: 1 });
+      break;
+    }
+    expect(state.cancelled).toBe(true);
+    expect(stream.locked).toBe(false);
   });
 
   it("chunks items by serialized size", () => {
