@@ -1,4 +1,4 @@
-import type { Asset, FoundIn, FontFamily, ScanEvent, Tone, WarningCode } from "@/lib/contract";
+import type { Asset, FontFamily, FontFormat, FoundIn, ScanEvent, Tone, WarningCode } from "@/lib/contract";
 
 export interface ScanBackend {
   scan(input: { url: string }, options: { signal: AbortSignal }): AsyncIterable<ScanEvent>;
@@ -104,7 +104,7 @@ export interface RawCollectorOutput {
 }
 
 export interface FontBinaryMeta {
-  format: "woff2" | "woff" | "ttf" | "otf" | "eot" | "other";
+  format: FontFormat;
   familyName?: string;
   subfamilyName?: string;
   fullName?: string;

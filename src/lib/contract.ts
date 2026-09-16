@@ -44,7 +44,10 @@ export const AssetSource = z.object({
 export type AssetSource = z.infer<typeof AssetSource>;
 
 export const InlineSvg = z.object({ mime: z.literal("image/svg+xml"), text: z.string() });
+export type InlineSvg = z.infer<typeof InlineSvg>;
+
 export const InlineBytes = z.object({ mime: z.string(), base64: z.string() });
+export type InlineBytes = z.infer<typeof InlineBytes>;
 // `InlineBytes.mime` is any string, so `mime` does not narrow `Asset.inline`: use `"text" in inline` (SVG markup)
 // or `"base64" in inline` (bytes).
 
@@ -75,10 +78,13 @@ export const Asset = z.object({
 });
 export type Asset = z.infer<typeof Asset>;
 
+export const FontFormat = z.enum(["woff2", "woff", "ttf", "otf", "eot", "other"]);
+export type FontFormat = z.infer<typeof FontFormat>;
+
 export const FontFile = z.object({
   url: z.string(),
   proxy: z.string(),
-  format: z.enum(["woff2", "woff", "ttf", "otf", "eot", "other"]),
+  format: FontFormat,
   bytes: z.number().optional(),
   unicodeRange: z.string().optional(),
   coversLatin: z.boolean(),
@@ -140,12 +146,34 @@ export const PageInfo = z.object({
 });
 export type PageInfo = z.infer<typeof PageInfo>;
 
+/**
+ * Why a URL or SVG was dropped as noise (spec 8.1, 8.2). Producers count drops under these names in `ScanStats.hidden`
+ * and the UI turns them into the footer line (spec 12.2). The record stays open, so an unknown key still validates.
+ */
+export const HiddenReason = z.enum([
+  "tracker",             // tracker hosts, tracking paths 2 px wide or less
+  "spacer",              // spacer file names (pixel.gif, blank.png)
+  "pixel",               // decoded image of 2x2 px or less
+  "tiny-data-uri",       // raster data URI under 64 px or under 1 KB
+  "placeholder",         // SVG data URI with nothing drawable, blur placeholder
+  "not-image",           // response that is not an image (HTML error page)
+  "consent",             // consent manager host
+  "widget",              // third-party widget host (reCAPTCHA, hCaptcha, Intercom, maps)
+  "probe-failed",        // declared URL whose probe failed
+  "blob-unavailable",    // blob: URL without bytes
+  "lottie-frame",        // SVG frame of a Lottie animation
+  "tiny-svg",            // visible SVG under 6 px
+  "svg-too-large",       // SVG markup over the size cap
+  "unreferenced-symbol", // sprite symbol never referenced by <use>
+]);
+export type HiddenReason = z.infer<typeof HiddenReason>;
+
 export const ScanStats = z.object({
   assets: z.number(),
   svg: z.number(),
   images: z.number(),
   fonts: z.number(),
-  hidden: z.record(z.string(), z.number()),
+  hidden: z.record(z.string(), z.number()), // HiddenReason -> count
   durationMs: z.number(),
 });
 export type ScanStats = z.infer<typeof ScanStats>;

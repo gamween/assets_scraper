@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ApiError, Asset, FontFamily, ScanEvent, ScanRequest, Swatch } from "./contract";
+import { ApiError, Asset, FontFamily, HiddenReason, ScanEvent, ScanRequest, ScanStats, Swatch } from "./contract";
 
 const asset = {
   id: "a1", kind: "svg", role: "site-logo", name: "Fixture logo", filename: "fixture-logo.svg", format: "svg",
@@ -55,12 +55,23 @@ describe("contract", () => {
     for (const hex of ["#533AFD", "#53afd", "533afd", "#533afd80"]) expect(() => Swatch.parse({ hex })).toThrow();
   });
 
-  it("bounds font usage between 0 and 1", () => {
+  it("bounds font usage between 0 and 1 and checks font file formats", () => {
     expect(FontFamily.parse(family).faces[0].files[0].coversLatin).toBe(true);
     expect(FontFamily.parse({ ...family, usage: 0 }).usage).toBe(0);
     expect(FontFamily.parse({ ...family, usage: 1 }).usage).toBe(1);
     expect(() => FontFamily.parse({ ...family, usage: 1.2 })).toThrow();
     expect(() => FontFamily.parse({ ...family, usage: -0.1 })).toThrow();
+    const face = family.faces[0];
+    expect(() => FontFamily.parse({ ...family, faces: [{ ...face, files: [{ ...face.files[0], format: "svg" }] }] })).toThrow();
+  });
+
+  it("names the noise reasons and keeps the hidden counts open", () => {
+    // The reasons Track C tests for (plan C3) must all exist, so producers and the UI share one list.
+    for (const reason of ["tracker", "spacer", "pixel", "tiny-data-uri", "placeholder", "not-image", "consent", "widget"]) {
+      expect(HiddenReason.parse(reason)).toBe(reason);
+    }
+    const stats = { assets: 0, svg: 0, images: 0, fonts: 0, hidden: { tracker: 1, "future-reason": 2 }, durationMs: 1 };
+    expect(ScanStats.parse(stats).hidden).toEqual({ tracker: 1, "future-reason": 2 });
   });
 
   it("discriminates scan events by type", () => {
