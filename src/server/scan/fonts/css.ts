@@ -3,28 +3,52 @@ import type { RawFontFaceRule } from "../types";
 
 type FontSrc = RawFontFaceRule["src"][number];
 
-const SRC_ITEM =
-  /\b(url|local)\(\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|([^)]*?))\s*\)(?:\s*format\(\s*["']?([^"',)\s]+)["']?[^)]*\))?(?:\s*tech\([^)]*\))?/gi;
-
 const unescapeCss = (value: string) => value.replace(/\\(.)/g, "$1");
 
-/** Parses an `@font-face` `src` value into `local()` names and absolute `url()`s with their optional format hint. */
+const textOf = (node: csstree.CssNode) => (node.type === "String" ? node.value : node.type === "Identifier" ? node.name : "");
+
+/**
+ * Parses an `@font-face` `src` value into `local()` names and absolute `url()`s with their optional format hint
+ * (the first one of a legacy list). Uses the css-tree tokenizer: the value comes from scraped CSS, so no backtracking
+ * regex. A value css-tree cannot parse gives no sources, as browsers drop it.
+ */
 export function parseFontSrc(src: string, baseUrl: string): FontSrc[] {
+  let ast: csstree.CssNode;
+  try {
+    ast = csstree.parse(src, { context: "value", onParseError: () => {} });
+  } catch {
+    return [];
+  }
+  if (ast.type !== "Value") return [];
   const out: FontSrc[] = [];
-  for (const match of src.matchAll(SRC_ITEM)) {
-    const value = unescapeCss((match[2] ?? match[3] ?? match[4] ?? "").trim());
-    if (!value) continue;
-    if (match[1].toLowerCase() === "local") {
-      out.push({ local: value });
+  let current: FontSrc | null = null;
+  for (const node of ast.children.toArray()) {
+    if (node.type === "Operator" && node.value === ",") {
+      current = null;
       continue;
     }
-    let url: string;
-    try {
-      url = new URL(value, baseUrl).href;
-    } catch {
+    if (current) {
+      if (current.url && !current.format && node.type === "Function" && node.name.toLowerCase() === "format") {
+        const [first] = node.children.toArray();
+        const hint = first ? textOf(first).trim().toLowerCase() : "";
+        if (hint) current.format = hint;
+      }
       continue;
     }
-    out.push(match[5] ? { url, format: match[5].toLowerCase() } : { url });
+    if (node.type === "Url" && node.value.trim()) {
+      try {
+        current = { url: new URL(node.value.trim(), baseUrl).href };
+        out.push(current);
+      } catch {
+        // not a URL: skip this source
+      }
+    } else if (node.type === "Function" && node.name.toLowerCase() === "local") {
+      const name = node.children.toArray().map(textOf).filter(Boolean).join(" ").trim();
+      if (name) {
+        current = { local: name };
+        out.push(current);
+      }
+    }
   }
   return out;
 }

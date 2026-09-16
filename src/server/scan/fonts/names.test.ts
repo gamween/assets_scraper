@@ -27,6 +27,14 @@ describe("resolveFamilyName", () => {
     expect(resolveFamilyName({ nameId1: "ABCDEF0123456789ABCD" }, "Brand").name).toBe("Brand");
   });
 
+  it("stays linear on hostile name records", () => {
+    const started = performance.now();
+    expect(resolveFamilyName({ nameId1: `Inter${" ".repeat(200_000)}Bold` }, null).name).toBe("Inter");
+    expect(resolveFamilyName({ nameId1: `Inter${" ".repeat(200_000)}x` }, null).name).toBe("Inter x");
+    expect(resolveFamilyName({ nameId1: `${"a ".repeat(100_000)}x`, postscriptName: "-".repeat(100_000) }, `${"__a_".repeat(50_000)}`).name).toBe("__a_".repeat(50_000));
+    expect(performance.now() - started).toBeLessThan(2_000);
+  });
+
   it("keeps the CSS name and reports an unrelated embedded name", () => {
     expect(resolveFamilyName({ nameId1: "Source Sans 3" }, "Brand Serif")).toEqual({
       name: "Brand Serif",

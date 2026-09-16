@@ -45,6 +45,24 @@ describe("parseFontSrc", () => {
     ]);
   });
 
+  it("reads escaped and unquoted URLs and gives nothing for a value it cannot parse", () => {
+    expect(parseFontSrc(`url(a\\).woff2) format(woff2), local(Inter   Regular)`, "https://s.example/")).toEqual([
+      { url: "https://s.example/a).woff2", format: "woff2" },
+      { local: "Inter Regular" },
+    ]);
+    expect(parseFontSrc("url(url(url(", "https://s.example/")).toEqual([]);
+    expect(parseFontSrc("url(   ", "https://s.example/")).toEqual([]);
+  });
+
+  it("stays linear on hostile values", () => {
+    const started = performance.now();
+    for (const value of ["url(" + " ".repeat(50_000), "url(".repeat(20_000), `url("${"a".repeat(50_000)}`, "local(".repeat(20_000)]) {
+      parseFontSrc(value, "https://s.example/");
+      parseFontFaceCss(`@font-face{font-family:X;src:${value}}`, "https://s.example/");
+    }
+    expect(performance.now() - started).toBeLessThan(2_000);
+  });
+
   it("keeps the first format of a legacy list and drops unresolvable URLs", () => {
     expect(parseFontSrc(`url(a.woff) format("woff", "truetype"), url("http://[bad")`, "https://s.example/")).toEqual([
       { url: "https://s.example/a.woff", format: "woff" },

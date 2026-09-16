@@ -79,7 +79,8 @@ export interface ResolvedFamilyName {
  */
 export function resolveFamilyName(meta: NameMeta | null | undefined, cssFamily: string | null | undefined): ResolvedFamilyName {
   const css = cssFamily ? cleanCssFamily(cssFamily).replace(/\s+placeholder$/i, "") : null;
-  const clean = (name: string | undefined) => (typeof name === "string" ? name.replace(CONTROL_CHARS, "").trim() : name);
+  // Whitespace runs are collapsed so STYLE_WORDS (`\s+...$`) stays linear on hostile name records.
+  const clean = (name: string | undefined) => (typeof name === "string" ? name.replace(CONTROL_CHARS, "").replace(/\s+/g, " ").trim() : name);
   const valid = (name: string | undefined): name is string => {
     const cleaned = clean(name);
     return !!cleaned && cleaned.length >= 2 && cleaned.length <= 48 && /\p{L}{2,}/u.test(cleaned) && !BAD_NAME.test(cleaned);
