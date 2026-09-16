@@ -1535,7 +1535,7 @@ Owns: `src/server/net/*`, `src/server/security/*`, `src/app/api/asset/route.ts`,
 - [ ] **Step 1: Failing tests**
 
 ```ts
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { isOwnHost, isPublicIp, isTestAllowed, resolvePublicHost, SsrfError } from "./ip";
 
 describe("isPublicIp", () => {
@@ -1549,22 +1549,29 @@ describe("isPublicIp", () => {
 });
 
 describe("own hosts and test allowlist", () => {
-  const saved = { ...process.env };
-  afterEach(() => { process.env = { ...saved }; });
+  afterEach(() => { vi.unstubAllEnvs(); });
 
   it("treats Vercel and APP_HOSTS hosts as own", () => {
-    process.env.VERCEL_PROJECT_PRODUCTION_URL = "assets-scraper.vercel.app";
-    process.env.APP_HOSTS = "scraper.example.com, other.example";
+    vi.stubEnv("VERCEL_PROJECT_PRODUCTION_URL", "assets-scraper.vercel.app");
+    vi.stubEnv("APP_HOSTS", "scraper.example.com, other.example");
     expect(isOwnHost("assets-scraper.vercel.app")).toBe(true);
     expect(isOwnHost("SCRAPER.example.com")).toBe(true);
     expect(isOwnHost("stripe.com")).toBe(false);
   });
 
+  it("ignores a trailing root dot on either side", () => {
+    // normalizeInputUrl keeps the root dot: "https://assets-scraper.vercel.app./" has host "assets-scraper.vercel.app."
+    vi.stubEnv("VERCEL_PROJECT_PRODUCTION_URL", "assets-scraper.vercel.app");
+    vi.stubEnv("APP_HOSTS", "other.example.");
+    expect(isOwnHost("assets-scraper.vercel.app.")).toBe(true);
+    expect(isOwnHost("other.example")).toBe(true);
+  });
+
   it("honors the test allowlist only outside production and Vercel", () => {
-    process.env.SCAN_TEST_ALLOW_HOSTS = "127.0.0.1:8787";
+    vi.stubEnv("SCAN_TEST_ALLOW_HOSTS", "127.0.0.1:8787");
     expect(isTestAllowed("127.0.0.1", 8787)).toBe(true);
     expect(isTestAllowed("127.0.0.1", 8788)).toBe(false);
-    process.env.VERCEL = "1";
+    vi.stubEnv("VERCEL", "1");
     expect(isTestAllowed("127.0.0.1", 8787)).toBe(false);
   });
 });
@@ -1574,13 +1581,14 @@ describe("resolvePublicHost", () => {
     await expect(resolvePublicHost("127.0.0.1", 443)).rejects.toBeInstanceOf(SsrfError);
     await expect(resolvePublicHost("[::1]", 443)).rejects.toBeInstanceOf(SsrfError);
     await expect(resolvePublicHost("localhost", 80)).rejects.toBeInstanceOf(SsrfError);
+    await expect(resolvePublicHost("localhost.", 80)).rejects.toBeInstanceOf(SsrfError);
   });
 });
 ```
 
 - [ ] **Step 2: Run, see failures** (`pnpm exec vitest run src/server/net/ip.test.ts`, FAIL with NotImplementedError)
 
-- [ ] **Step 3: Implement** following `critic.md` R1 (`isPublicIp` with `::/96` block after IPv4-mapped unwrap, `resolvePublicHost` with `dns.lookup({ all: true, order: "verbatim" })`, own-host set built from `VERCEL_URL`, `VERCEL_BRANCH_URL`, `VERCEL_PROJECT_PRODUCTION_URL`, `APP_HOSTS` read on every call, lowercase, port stripped). `isTestAllowed` returns true only when `NODE_ENV !== "production"`, `VERCEL` is unset and `SCAN_TEST_ALLOW_HOSTS` contains the exact `host:port`. `resolvePublicHost` returns the host itself (literal) or the first checked address, and returns the literal/first address without the private check when `isTestAllowed(host, port)`.
+- [ ] **Step 3: Implement** following `critic.md` R1 (`isPublicIp` with `::/96` block after IPv4-mapped unwrap, `resolvePublicHost` with `dns.lookup({ all: true, order: "verbatim" })`, own-host set built from `VERCEL_URL`, `VERCEL_BRANCH_URL`, `VERCEL_PROJECT_PRODUCTION_URL`, `APP_HOSTS` read on every call, lowercase, port and trailing root dot stripped, on the configured hosts and on the host being checked). `isTestAllowed` returns true only when `NODE_ENV !== "production"`, `VERCEL` is unset and `SCAN_TEST_ALLOW_HOSTS` contains the exact `host:port`. `resolvePublicHost` returns the host itself (literal) or the first checked address, and returns the literal/first address without the private check when `isTestAllowed(host, port)`.
 
 - [ ] **Step 4: Run tests** (PASS) **Step 5: Commit** `feat(net): add public IP checks, own-host detection and test allowlist`
 
