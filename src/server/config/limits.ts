@@ -40,6 +40,7 @@ const defaults = {
   bodyReadMs: 8_000,
   bodyConcurrency: 24,
   bodyTotalBytes: 250 * MB,
+  // `blob:` image bytes kept for the client, also passed to the collector as maxBlobBytes and maxBlobTotalBytes
   blobMaxBytes: 2 * MB,
   blobTotalBytes: 16 * MB,
 
