@@ -299,7 +299,7 @@ The engine owns an `AbortController` tied to `request.signal` and to a hard dead
 | 10 | Post-processing in Node, including original verification and declared URL probes | `process` | 8 s for network work |
 | 11 | Emit `page`, `palette`, `assets` batches, `fonts`, `done` | | |
 
-`page` is emitted as soon as the title and final URL are known (after phase 4), so the UI can show the site header early.
+`page` is emitted twice. The first one goes out as soon as the title and final URL are known (after phase 4), so the UI can show the site header early; it has empty `brandLinks` and no `favicon`, which only exist after collection and post-processing. The second one, in phase 11, carries the brand links and the signed favicon. The client replaces its page info with each `page` event.
 
 ### 7.3 Browser
 

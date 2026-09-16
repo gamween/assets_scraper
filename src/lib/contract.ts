@@ -168,6 +168,9 @@ export type Diagnostics = z.infer<typeof Diagnostics>;
 export const ScanEvent = z.discriminatedUnion("type", [
   z.object({ type: z.literal("accepted"), scanId: z.string(), url: z.string() }),
   z.object({ type: z.literal("step"), step: StepId, state: z.enum(["start", "done"]) }),
+  // Sent twice (spec 7.2). Early, after navigation, so the UI can show the site header: `brandLinks` is empty and
+  // there is no `favicon`. Final, after post-processing and before `palette`: brand links from the collector and the
+  // signed favicon. The client replaces its page info with each `page` event, so the last one wins.
   z.object({ type: z.literal("page"), page: PageInfo }),
   z.object({ type: z.literal("palette"), palette: Palette.nullable() }),
   z.object({ type: z.literal("assets"), items: z.array(Asset) }),
