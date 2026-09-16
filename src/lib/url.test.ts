@@ -13,7 +13,7 @@ describe("normalizeInputUrl", () => {
     ["https://x.com/#!/route", "https://x.com/#!/route"],
     ["https://x.com/page#section", "https://x.com/page"],
     ["例え.jp", "https://xn--r8jz45g.jp/"],
-    ["linear.app.", "https://linear.app./"],
+    ["linear.app.", "https://linear.app/"],
     ["https://x.com/a).", "https://x.com/a"],
     // wrappers and punctuation
     ["(linear.app)", "https://linear.app/"],
@@ -21,7 +21,7 @@ describe("normalizeInputUrl", () => {
     ["(linear.app).", "https://linear.app/"],
     ["(https://x.com/a).", "https://x.com/a"],
     ["https://en.wikipedia.org/wiki/Foo_(bar)", "https://en.wikipedia.org/wiki/Foo_(bar)"],
-    ["https://linear.app.", "https://linear.app./"],
+    ["https://linear.app.", "https://linear.app/"],
     ["x.com/docs.", "https://x.com/docs"],
     // wrappers before trailing punctuation
     ['"linear.app",', "https://linear.app/"],
@@ -29,7 +29,8 @@ describe("normalizeInputUrl", () => {
     ["`x.com`.", "https://x.com/"],
     ["'https://x.com/a',", "https://x.com/a"],
     ['("https://x.com/a").', "https://x.com/a"],
-    ['"linear.app."', "https://linear.app./"],
+    ['"linear.app."', "https://linear.app/"],
+    ["linear.app..", "https://linear.app/"],
     // ports 80 and 443 are allowed with either scheme
     ["https://x.com:80/", "https://x.com:80/"],
     ["http://x.com:443/a", "http://x.com:443/a"],
@@ -47,15 +48,20 @@ describe("normalizeInputUrl", () => {
     expect(normalizeInputUrl("http://[::1]/")).toMatchObject({ ok: true, host: "[::1]" });
   });
 
-  it("keeps a root dot on domain hosts", () => {
-    expect(normalizeInputUrl("https://assets-scraper.vercel.app./")).toMatchObject({ ok: true, host: "assets-scraper.vercel.app." });
-    expect(normalizeInputUrl("localhost.")).toMatchObject({ ok: true, host: "localhost." });
-    expect(normalizeInputUrl("www.x.com.")).toMatchObject({ ok: true, host: "www.x.com." });
+  it("drops the root dot from domain hosts, so every consumer sees one form", () => {
+    expect(normalizeInputUrl("https://assets-scraper.vercel.app./")).toEqual({
+      ok: true, url: "https://assets-scraper.vercel.app/", host: "assets-scraper.vercel.app",
+    });
+    expect(normalizeInputUrl("localhost.")).toEqual({ ok: true, url: "https://localhost/", host: "localhost" });
+    expect(normalizeInputUrl("https://www.x.com.:443/a?b=1#/c")).toEqual({ ok: true, url: "https://www.x.com/a?b=1#/c", host: "www.x.com" });
+    expect(normalizeInputUrl("linear.app./features")).toEqual({ ok: true, url: "https://linear.app/features", host: "linear.app" });
   });
 
   it.each([
     "", "   ", "ftp://x.com", "javascript:alert(1)", "not a url", "x", "mailto:a@b.c",
     "lin{ear.app", 'a"b.com', "x..com", "-x.com", "https://exa$mple.com", "()", "``",
+    // one label once the root dot is gone, or more than one root dot
+    "x.", ".", "https://intranet./", "linear.app../features",
   ])("rejects %j", (input) => {
     expect(normalizeInputUrl(input)).toEqual({ ok: false, code: "invalid-url" });
   });
