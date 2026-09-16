@@ -7,7 +7,7 @@
 - Every server-side request to a URL that came from a user or a scraped page goes through `safeFetch`. Chromium always runs behind the egress proxy.
 - Never insert scraped SVG markup into the DOM. Preview through blob URLs in `<img>`, show code as text.
 - UI copy: English, sentence case, no em dash, no en dash, no exclamation marks, no emojis.
-- In-page code lives in `src/server/scan/inpage/*.src.ts` and is bundled by `pnpm build:inpage`. It must not import runtime code from the app.
+- In-page code lives in `src/server/scan/inpage/*.src.ts` and is bundled by `pnpm build:inpage` (`pnpm dev` rebuilds it on change). It must not import runtime code from the app: the bundler rejects imports from outside that folder, `import type` is fine.
 
 <!-- BEGIN:nextjs-agent-rules -->
 

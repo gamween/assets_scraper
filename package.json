@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "build:inpage": "node scripts/build-inpage.mjs",
-    "dev": "pnpm build:inpage && next dev",
+    "dev": "node scripts/build-inpage.mjs --watch next dev",
     "build": "pnpm build:inpage && next build",
     "start": "next start",
     "lint": "eslint",
