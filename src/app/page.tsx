@@ -1,10 +1,7 @@
-import { TopBar } from "@/components/app-shell/top-bar";
+import { App } from "@/components/app/app";
 
-export default function Home() {
-  return (
-    <>
-      <TopBar />
-      <main className="page-x py-8" />
-    </>
-  );
+/** Reads `?url=` on the server so a shared link renders the scanning layout at once, without a landing flash. */
+export default async function Home({ searchParams }: PageProps<"/">) {
+  const { url } = await searchParams;
+  return <App initialUrl={typeof url === "string" ? url : null} />;
 }

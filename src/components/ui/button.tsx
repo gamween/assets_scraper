@@ -1,6 +1,6 @@
 import { Button as ButtonPrimitive } from "@base-ui/react/button";
 import { cva, type VariantProps } from "class-variance-authority";
-import { cn } from "cn";
+import { cn } from "@/components/common/cn";
 
 /**
  * Spec 12.6 buttons: primary is ink, secondary is a bordered surface, ghost is text with a well on hover.

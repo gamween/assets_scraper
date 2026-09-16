@@ -1,4 +1,4 @@
-import { cn } from "cn";
+import { cn } from "@/components/common/cn";
 
 /** The only looping animation in the app. Reduced motion turns it into a static dot. */
 export function Spinner({ className }: { className?: string }) {

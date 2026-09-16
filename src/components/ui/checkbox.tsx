@@ -1,7 +1,7 @@
 "use client";
 
 import { Checkbox as CheckboxPrimitive } from "@base-ui/react/checkbox";
-import { cn } from "cn";
+import { cn } from "@/components/common/cn";
 import { CheckIcon } from "lucide-react";
 
 /** Spec 12.6: 16 px, radius 4, 1.5 px strong border; checked is the accent fill with a white check. */

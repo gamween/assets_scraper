@@ -32,6 +32,8 @@ export interface ZipProgress {
 
 export interface AppState {
   phase: Phase;
+  /** Set once the client has read preferences and the address bar (after hydration). */
+  booted: boolean;
   /** Text of the URL field, shared by the landing and the top bar. */
   input: string;
   inputError: string | null;
@@ -62,6 +64,7 @@ export interface AppState {
   zip: ZipProgress | null;
   recent: string[];
 
+  setBooted(): void;
   setInput(input: string): void;
   setInputError(message: string | null): void;
   beginScan(target: { url: string; host: string }): void;
@@ -133,6 +136,7 @@ function applyStep(steps: AppState["steps"], step: StepId, state: "start" | "don
 export function createAppStore() {
   return createStore<AppState>()((set, get) => ({
     phase: "idle",
+    booted: false,
     input: "",
     inputError: null,
     url: null,
@@ -144,6 +148,7 @@ export function createAppStore() {
     expanded: [],
     recent: [],
 
+    setBooted: () => set({ booted: true }),
     setInput: (input) => set({ input, inputError: null }),
     setInputError: (inputError) => set({ inputError }),
 

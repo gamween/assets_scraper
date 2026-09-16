@@ -1,4 +1,4 @@
-import { cn } from "cn";
+import { cn } from "@/components/common/cn";
 
 /** App mark: an ink tile holding a transparency checker, the one image every asset tool shows. */
 export function Mark({ className }: { className?: string }) {

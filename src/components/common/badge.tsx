@@ -1,4 +1,4 @@
-import { cn } from "cn";
+import { cn } from "@/components/common/cn";
 
 /** Spec 12.6 badge: mono-xs, well fill, 1 px border, radius 4. Uppercase only for formats. */
 export function Badge({ children, className, tone = "neutral" }: { children: React.ReactNode; className?: string; tone?: "neutral" | "surface" | "success" }) {

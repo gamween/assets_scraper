@@ -8,6 +8,9 @@ export const INVALID_URL_MESSAGE = "Enter a web address, like linear.app";
 
 let current: ScanHandle | null = null;
 
+/** `&asset=<id>` from the address bar waits for the results. */
+let pendingDetail: string | null = null;
+
 type HistoryMode = "push" | "replace" | "none";
 
 /** `/?url=<encoded>`, plus `&asset=<id>` while a detail view is open (spec 12.1). */
@@ -119,9 +122,6 @@ export function syncFromLocation(): void {
   if (asset) pendingDetail = asset;
 }
 
-/** `&asset=<id>` from the address bar waits for the results. */
-let pendingDetail: string | null = null;
-
 export function takePendingDetail(): string | null {
   const id = pendingDetail;
   pendingDetail = null;
@@ -133,6 +133,7 @@ export function bootstrap(): void {
   store.loadPreferences();
   store.setRecent(readRecent());
   syncFromLocation();
+  appStore.getState().setBooted();
 }
 
 /** Keeps `&asset=` in the address bar in step with the detail view, without adding history entries. */

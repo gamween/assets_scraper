@@ -1,4 +1,4 @@
-import { cn } from "cn";
+import { cn } from "@/components/common/cn";
 
 /** Shortcut chip: mono-xs, radius 4. `onInk` for chips inside primary buttons. */
 export function Kbd({ children, className, onInk = false }: { children: React.ReactNode; className?: string; onInk?: boolean }) {
