@@ -2112,8 +2112,9 @@ describe("parseFontFaceCss", () => {
   - `Brand Serif`: `usedOnPage: true`, `googleFamily: "Source Sans 3"`, `convertible: true`;
   - `Unused Face`: `usedOnPage: false`, one face with `loaded: false`, files listed but no bytes;
   - families sorted by `usage` descending, then used before unused;
-  - every file has a signed `proxy`.
-- [ ] **Step 2: Run, see failures** **Step 3: Implement** spec section 9 (grouping stages 1 to 3, faces keyed by css family, weight, style, stretch; source classification by host; usage shares; Adobe `downloadable: false`; licence; Google matching of display names and embedded names; signing). **Step 4: Run** (PASS) **Step 5: Commit** `feat(fonts): build font families with faces, usage, source and licence`
+  - every remote file has a signed `proxy`;
+  - a second case adds an `Inline Face` `@font-face` whose `src` is a `data:font/woff2;base64,` URI of `ss3.woff2`: its family has `source: "data-uri"` and one file with `inline.base64` equal to the file bytes, `url` and `proxy` both `""`, and nothing signed for it.
+- [ ] **Step 2: Run, see failures** **Step 3: Implement** spec section 9 (grouping stages 1 to 3, faces keyed by css family, weight, style, stretch; source classification by host; usage shares; Adobe `downloadable: false`; licence; Google matching of display names and embedded names; signing; `data:` files decoded, base64 or percent-encoded, into `inline` with empty `url` and `proxy`, as the `FontFile` comment in the contract says; the `fonts` line is not batched, so inline files can take it past the 256 KB line target). **Step 4: Run** (PASS) **Step 5: Commit** `feat(fonts): build font families with faces, usage, source and licence`
 
 ### Task D5: PR
 
@@ -2172,10 +2173,10 @@ Build against the contract with mocked NDJSON. Create realistic fixtures from la
 
 - [ ] **Step 1: Failing tests**
   - `scan-client.test.ts` (mock `fetch`): `startScan("linear.app", handlers)` POSTs JSON with `x-access-code` when stored; parses streamed events in order into `handlers.onEvent`; maps a JSON `ApiError` 429 to `onError({ code: "budget" })`; on an `error busy` event retries once after a jittered delay (fake timers) and reports `busy` if it happens again; `abort()` cancels the stream and calls no further handlers.
-  - `asset-bytes.test.ts`: inline SVG returns a `image/svg+xml` Blob without network; inline base64 decodes; https remote tries direct CORS first and falls back to `proxy` on a thrown fetch or non-OK status; `http:` goes straight to the proxy; a failing proxy throws `AssetUnavailableError`.
+  - `asset-bytes.test.ts`: inline SVG returns a `image/svg+xml` Blob without network; inline base64 decodes; https remote tries direct CORS first and falls back to `proxy` on a thrown fetch or non-OK status; `http:` goes straight to the proxy; a failing proxy throws `AssetUnavailableError`; a `FontFile` with `inline` (a data URI font: `url` and `proxy` are `""`, the proxy cannot fetch `data:` and the CSP blocks fetching it) decodes without any fetch.
   - `filters.test.ts`: `sectionize(assets, fonts, { tab: "all", query: "", sort: "relevance" })` puts `site-logo`, `logo`, `favicon` in `logos`, small icons (longest rendered side <= 48) in `smallIcons`, `declaredOnly` in `stylesheets`, sorts by score; `tab: "svg"` has no `logos` section; `query` matches name, filename, URLs and font names case-insensitively; sort `largest`, `file-size`, `name`, `page-order` behave.
   - `store.test.ts`: `select`, `toggle`, `selectRange` over visual order, `selectAllVisible` excludes collapsed sections, `clearSelection`, selection survives tab change, `openDetail`/`next`/`previous` wrap within the visible list.
-  - `zip.test.ts` (Node, client-zip works with `Response`): `buildZip(selection, host)` yields entries `linear.app-assets/svg/<filename>`, `images/`, `fonts/<family>/`, adds `.ttf` for convertible WOFF2 fonts through `proxy&fmt=ttf`, skips failed entries and reports them.
+  - `zip.test.ts` (Node, client-zip works with `Response`): `buildZip(selection, host)` yields entries `linear.app-assets/svg/<filename>`, `images/`, `fonts/<family>/`, adds `.ttf` for convertible WOFF2 fonts through `proxy&fmt=ttf`, adds inline font files from their bytes (named from family, weight, style and format, never from the empty `url`; when convertible, their `.ttf` comes from the in-browser WOFF2 conversion of spec 9, since `fmt=ttf` needs the proxy), skips failed entries and reports them.
   - `recent.test.ts`: keeps the last 5 unique hosts, survives `localStorage` throwing.
 - [ ] **Step 2: Run, see failures** **Step 3: Implement** (spec 12.1, 12.3 previews, 12.4, critic G3 `getAssetBlob`, client-zip `downloadZip` with an async generator and 6 concurrent fetches, `showSaveFilePicker` when available, zustand store). **Step 4: Run** (PASS) **Step 5: Commit** `feat(client): add scan client, asset bytes, filters, selection store and ZIP builder`
 
