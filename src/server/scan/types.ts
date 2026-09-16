@@ -82,6 +82,8 @@ export interface CollectorOptions {
   maxSvgNormalizations: number;
   maxSvgBytes: number;
   maxSvgTotalBytes: number;
+  spriteFetchMs: number;                    // external sprite fetch (spec 8.6)
+  maxBrandLinks: number;                    // spec 8.1
 }
 
 export interface RawCollectorOutput {
