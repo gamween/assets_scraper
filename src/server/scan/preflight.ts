@@ -1,5 +1,8 @@
-import { NotImplementedError } from "@/server/errors";
-import type { SafeFetch } from "./types";
+import type { ErrorCode } from "@/lib/contract";
+import { limits } from "@/server/config/limits";
+import { ScanFailure } from "@/server/errors";
+import { SafeFetchError, type SafeFetchErrorCode } from "@/server/net/safe-fetch";
+import type { SafeFetch, SafeResponse } from "./types";
 
 export interface PageHead {
   title?: string;
@@ -204,7 +207,87 @@ export function parseHead(html: string, baseUrl: string): PageHead {
   return head;
 }
 
-export function preflight(url: string, options: { fetch: SafeFetch; signal: AbortSignal }): Promise<PreflightResult>;
-export async function preflight(): Promise<PreflightResult> {
-  throw new NotImplementedError("B: preflight");
+const HTML_TYPES = new Set(["text/html", "application/xhtml+xml"]);
+/** Statuses that often come with a bot wall: the browser still gets a chance (spec 7.2 phase 1). */
+const SCANNABLE_ERRORS = new Set([403, 429, 503]);
+
+const FAILURE: Record<SafeFetchErrorCode, { code: ErrorCode; message: string }> = {
+  "invalid-url": { code: "invalid-url", message: "The address is not a valid web address" },
+  "blocked-address": { code: "blocked-address", message: "Local and private network addresses are blocked" },
+  "own-host": { code: "own-host", message: "The scanner cannot scan itself" },
+  "unsupported-port": { code: "unsupported-port", message: "Only ports 80 and 443 are supported" },
+  dns: { code: "dns", message: "The host could not be resolved" },
+  connect: { code: "connect", message: "The host could not be reached" },
+  timeout: { code: "timeout", message: "The page took too long to answer" },
+  aborted: { code: "timeout", message: "The page took too long to answer" },
+  "too-many-redirects": { code: "http", message: "The page redirects too many times" },
+  "too-large": { code: "internal", message: "The page was larger than expected" },
+};
+
+function toScanFailure(error: unknown, signal: AbortSignal): unknown {
+  if (signal.aborted) return signal.reason;
+  if (!(error instanceof SafeFetchError)) return error;
+  const { code, message } = FAILURE[error.code];
+  return new ScanFailure(code, message);
+}
+
+/** Up to `maxBytes` of the body. A body that ends early, errors or outlives the signal gives what arrived. */
+async function readStart(response: SafeResponse, maxBytes: number, signal: AbortSignal): Promise<string> {
+  const reader = response.stream().getReader();
+  const stop = () => void reader.cancel().catch(() => {});
+  signal.addEventListener("abort", stop, { once: true });
+  if (signal.aborted) stop();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (size < maxBytes) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      size += value.length;
+    }
+  } catch {
+    // Keep what arrived.
+  } finally {
+    signal.removeEventListener("abort", stop);
+    stop();
+  }
+  return new TextDecoder().decode(Buffer.concat(chunks).subarray(0, maxBytes));
+}
+
+/**
+ * Spec 7.2 phase 1: fetch the page through `safeFetch` before any browser work. Maps network and address failures to
+ * scan errors, stops on HTTP errors other than 403, 429 and 503, and parses the head of HTML pages for the fallback.
+ * A response that is not HTML resolves with `head: null`; the caller decides what to do with it.
+ */
+export async function preflight(url: string, options: { fetch: SafeFetch; signal: AbortSignal }): Promise<PreflightResult> {
+  const { signal } = options;
+  signal.throwIfAborted();
+  const maxBytes = limits.preflightMaxBytes;
+  const deadline = AbortSignal.any([signal, AbortSignal.timeout(limits.preflightMs)]);
+  let response: SafeResponse;
+  try {
+    response = await options.fetch(url, { method: "GET", headers: { accept: "text/html,*/*;q=0.8" }, maxBytes, timeoutMs: limits.preflightMs, signal: deadline });
+  } catch (error) {
+    throw toScanFailure(error, signal);
+  }
+
+  const headers: Record<string, string> = {};
+  response.headers.forEach((value, name) => (headers[name.toLowerCase()] = value));
+  const contentType = (headers["content-type"] ?? "").split(";")[0].trim().toLowerCase();
+  const result = { finalUrl: response.url, status: response.status, contentType, headers };
+
+  if (response.status >= 400 && !SCANNABLE_ERRORS.has(response.status)) {
+    await response.cancel().catch(() => {});
+    throw new ScanFailure("http", `The page returned ${response.status}`, { httpStatus: response.status });
+  }
+  if (contentType && !HTML_TYPES.has(contentType)) {
+    await response.cancel().catch(() => {});
+    return { ...result, head: null };
+  }
+  const html = await readStart(response, maxBytes, deadline);
+  signal.throwIfAborted();
+  // No content type at all: trust the markup only if it looks like a document.
+  if (!contentType && !/^\s*(<!doctype html|<html|<head|<body)/i.test(html)) return { ...result, head: null };
+  return { ...result, head: parseHead(html, response.url) };
 }
