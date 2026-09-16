@@ -60,6 +60,7 @@ export interface AppState {
   selectionMode: boolean;
   detailId: string | null;
   zip: ZipProgress | null;
+  recent: string[];
 
   setInput(input: string): void;
   setInputError(message: string | null): void;
@@ -89,6 +90,7 @@ export interface AppState {
   previousDetail(): void;
 
   setZip(progress: ZipProgress | null): void;
+  setRecent(recent: string[]): void;
 }
 
 const SORT_KEY = "assets-scraper:sort";
@@ -140,6 +142,7 @@ export function createAppStore() {
     sort: "relevance",
     background: "auto",
     expanded: [],
+    recent: [],
 
     setInput: (input) => set({ input, inputError: null }),
     setInputError: (inputError) => set({ inputError }),
@@ -241,6 +244,7 @@ export function createAppStore() {
     previousDetail: () => set((state) => ({ detailId: stepDetail(state, -1) })),
 
     setZip: (zip) => set({ zip }),
+    setRecent: (recent) => set({ recent }),
   }));
 }
 
