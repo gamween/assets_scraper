@@ -23,6 +23,13 @@ describe("normalizeInputUrl", () => {
     ["https://en.wikipedia.org/wiki/Foo_(bar)", "https://en.wikipedia.org/wiki/Foo_(bar)"],
     ["https://linear.app.", "https://linear.app./"],
     ["x.com/docs.", "https://x.com/docs"],
+    // wrappers before trailing punctuation
+    ['"linear.app",', "https://linear.app/"],
+    ["<https://x.com>.", "https://x.com/"],
+    ["`x.com`.", "https://x.com/"],
+    ["'https://x.com/a',", "https://x.com/a"],
+    ['("https://x.com/a").', "https://x.com/a"],
+    ['"linear.app."', "https://linear.app./"],
     // ports 80 and 443 are allowed with either scheme
     ["https://x.com:80/", "https://x.com:80/"],
     ["http://x.com:443/a", "http://x.com:443/a"],
@@ -38,6 +45,12 @@ describe("normalizeInputUrl", () => {
 
   it("returns IPv6 hosts with their brackets", () => {
     expect(normalizeInputUrl("http://[::1]/")).toMatchObject({ ok: true, host: "[::1]" });
+  });
+
+  it("keeps a root dot on domain hosts", () => {
+    expect(normalizeInputUrl("https://assets-scraper.vercel.app./")).toMatchObject({ ok: true, host: "assets-scraper.vercel.app." });
+    expect(normalizeInputUrl("localhost.")).toMatchObject({ ok: true, host: "localhost." });
+    expect(normalizeInputUrl("www.x.com.")).toMatchObject({ ok: true, host: "www.x.com." });
   });
 
   it.each([
