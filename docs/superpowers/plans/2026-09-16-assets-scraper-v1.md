@@ -2297,6 +2297,7 @@ git push -u origin feat/ui && gh pr create --title "feat: results UI, selection 
 - [ ] **Step 2:** SSRF probes with the ops token: `http://127.0.0.1/`, `http://169.254.169.254/latest/meta-data/`, `http://[::1]/`, `http://127.0.0.1.nip.io/`, `https://httpbin.org/redirect-to?url=http://127.0.0.1/`, `http://0x7f000001/`, `https://assets-scraper.vercel.app/` must all return `blocked-address` or `own-host` (gate) or an `error` event with those codes (preflight).
 - [ ] **Step 3:** Asset proxy abuse probes: unsigned `u` gives 403, cross-site `Sec-Fetch-Site` gives 403, HTML upstream gives 415.
 - [ ] **Step 4:** Browser check of the production UI at 1470x956 (scan linear.app, open detail, select 3 assets, download ZIP).
+  Read the browser console on page load and during the scan: there must be no CSP violation. BotID's client loads Kasada scripts (`p.js`, `c.js`) from its same-origin rewrite path, and the production CSP has no `'unsafe-eval'` or `'wasm-unsafe-eval'`; if those scripts are blocked, every scan fails with `bot` 403. Then add only the keyword they need to `script-src` in `next.config.ts` (prefer `'wasm-unsafe-eval'` over `'unsafe-eval'`) and redeploy.
 - [ ] **Step 5:** Open item from spec 17: run the same site list with `CHROMIUM_MULTIPROCESS=1` (if implemented as a launch toggle in Track B) and compare memory, CPU and `/tmp`; keep the better default.
 
 ---
