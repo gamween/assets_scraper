@@ -2,6 +2,13 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 
+/*
+ * Light theme only. Without this line Tailwind v4 applies `dark:` utilities under `prefers-color-scheme: dark`,
+ * so the shadcn components would switch to dark styles on a system in dark mode. No `.dark` class is ever set,
+ * so `dark:` never matches.
+ */
+@custom-variant dark (&:is(.dark *));
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
