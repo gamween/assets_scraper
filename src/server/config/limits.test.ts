@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 import { limitEnvName, limits } from "./limits";
 
 describe("limits", () => {
@@ -45,12 +45,10 @@ describe("limits", () => {
     expect(Object.isFrozen(limits)).toBe(true);
   });
 
-  it("types values as number, so callers can use them as defaults and override them", () => {
-    const wait = (timeoutMs = limits.preflightMs) => timeoutMs;
-    let deadline = limits.scanDeadlineMs;
-    deadline = 15_000;
-    const options = { maxBytes: limits.proxyMaxBytes };
-    options.maxBytes = 1_024;
-    expect([wait(5_000), deadline, options.maxBytes]).toEqual([5_000, 15_000, 1_024]);
+  it("types values as number, not literals, so callers can use them as defaults and override them", () => {
+    // Checked by tsc in `pnpm typecheck`: expectTypeOf does nothing at runtime.
+    expectTypeOf(limits.preflightMs).toEqualTypeOf<number>();
+    expectTypeOf(limits.proxyMaxBytes).toEqualTypeOf<number>();
+    expectTypeOf(limits.scansPerDay).toEqualTypeOf<number>();
   });
 });
