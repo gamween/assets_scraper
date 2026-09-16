@@ -45,6 +45,8 @@ export type AssetSource = z.infer<typeof AssetSource>;
 
 export const InlineSvg = z.object({ mime: z.literal("image/svg+xml"), text: z.string() });
 export const InlineBytes = z.object({ mime: z.string(), base64: z.string() });
+// `InlineBytes.mime` is any string, so `mime` does not narrow `Asset.inline`: use `"text" in inline` (SVG markup)
+// or `"base64" in inline` (bytes).
 
 export const Asset = z.object({
   id: z.string(),
