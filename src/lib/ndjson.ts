@@ -2,14 +2,22 @@ import type { ScanEvent } from "./contract";
 
 export const encodeEvent = (event: ScanEvent): string => `${JSON.stringify(event)}\n`;
 
+/** Room left in each line for the event around the items, such as `{"type":"assets","items":[...]}` and the newline. */
+const EVENT_ENVELOPE_BYTES = 64;
+
+/**
+ * Splits items into batches whose encoded event line (items plus an envelope of up to 64 bytes) fits in `maxBytes`.
+ * Best effort: an item too large to fit in a line by itself still gets its own batch, and its own line.
+ */
 export function chunkByBytes<T>(items: T[], maxBytes: number): T[][] {
   const encoder = new TextEncoder();
+  const budget = maxBytes - EVENT_ENVELOPE_BYTES;
   const chunks: T[][] = [];
   let current: T[] = [];
   let size = 0;
   for (const item of items) {
-    const itemSize = encoder.encode(JSON.stringify(item)).length + 1;
-    if (current.length && size + itemSize > maxBytes) {
+    const itemSize = encoder.encode(JSON.stringify(item)).length + 1; // + 1 for the separating comma
+    if (current.length && size + itemSize > budget) {
       chunks.push(current);
       current = [];
       size = 0;
