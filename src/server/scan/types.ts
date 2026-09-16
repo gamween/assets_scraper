@@ -1,4 +1,4 @@
-import type { Asset, FontFamily, FontFormat, FoundIn, ScanEvent, Tone, WarningCode } from "@/lib/contract";
+import type { Asset, FontFamily, FontFormat, FoundIn, HiddenReason, ScanEvent, Tone, WarningCode } from "@/lib/contract";
 
 export interface ScanBackend {
   scan(input: { url: string }, options: { signal: AbortSignal }): AsyncIterable<ScanEvent>;
@@ -99,7 +99,7 @@ export interface RawCollectorOutput {
   unreadableSheets: string[];
   blobs: { url: string; mime: string; base64: string }[];
   brandLinks: { href: string; text: string }[];
-  noise: Record<string, number>;
+  noise: Partial<Record<HiddenReason, number>>;
   stats: { elements: number; ms: number; truncated: boolean };
 }
 
@@ -199,5 +199,5 @@ export interface PostInput {
   deadline: number;                 // epoch ms
 }
 
-export interface AssetsOutput { assets: Asset[]; hidden: Record<string, number>; warnings: WarningCode[] }
-export interface FontsOutput { families: FontFamily[]; hidden: Record<string, number> }
+export interface AssetsOutput { assets: Asset[]; hidden: Partial<Record<HiddenReason, number>>; warnings: WarningCode[] }
+export interface FontsOutput { families: FontFamily[]; hidden: Partial<Record<HiddenReason, number>> }
