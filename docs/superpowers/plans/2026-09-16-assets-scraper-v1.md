@@ -184,7 +184,7 @@ Inside `@theme inline`, replace the self-referencing font lines with:
 --font-heading: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
 ```
 
-Remove every `.dark` block and the `@custom-variant dark` line (light theme only).
+Remove every `.dark` block (light theme only). Keep `@custom-variant dark (&:is(.dark *));` after the imports: without it Tailwind v4 applies `dark:` utilities under `prefers-color-scheme: dark`, and no `.dark` class is ever set, so the line keeps them inert.
 
 - [ ] **Step 8: Verify and commit**
 
@@ -1535,7 +1535,7 @@ Owns: `src/server/net/*`, `src/server/security/*`, `src/app/api/asset/route.ts`,
 - [ ] **Step 1: Failing tests**
 
 ```ts
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { isOwnHost, isPublicIp, isTestAllowed, resolvePublicHost, SsrfError } from "./ip";
 
 describe("isPublicIp", () => {
@@ -1549,22 +1549,29 @@ describe("isPublicIp", () => {
 });
 
 describe("own hosts and test allowlist", () => {
-  const saved = { ...process.env };
-  afterEach(() => { process.env = { ...saved }; });
+  afterEach(() => { vi.unstubAllEnvs(); });
 
   it("treats Vercel and APP_HOSTS hosts as own", () => {
-    process.env.VERCEL_PROJECT_PRODUCTION_URL = "assets-scraper.vercel.app";
-    process.env.APP_HOSTS = "scraper.example.com, other.example";
+    vi.stubEnv("VERCEL_PROJECT_PRODUCTION_URL", "assets-scraper.vercel.app");
+    vi.stubEnv("APP_HOSTS", "scraper.example.com, other.example");
     expect(isOwnHost("assets-scraper.vercel.app")).toBe(true);
     expect(isOwnHost("SCRAPER.example.com")).toBe(true);
     expect(isOwnHost("stripe.com")).toBe(false);
   });
 
+  it("ignores a trailing root dot on either side", () => {
+    // normalizeInputUrl drops the root dot, but env values and redirect targets can still end with one
+    vi.stubEnv("VERCEL_PROJECT_PRODUCTION_URL", "assets-scraper.vercel.app");
+    vi.stubEnv("APP_HOSTS", "other.example.");
+    expect(isOwnHost("assets-scraper.vercel.app.")).toBe(true);
+    expect(isOwnHost("other.example")).toBe(true);
+  });
+
   it("honors the test allowlist only outside production and Vercel", () => {
-    process.env.SCAN_TEST_ALLOW_HOSTS = "127.0.0.1:8787";
+    vi.stubEnv("SCAN_TEST_ALLOW_HOSTS", "127.0.0.1:8787");
     expect(isTestAllowed("127.0.0.1", 8787)).toBe(true);
     expect(isTestAllowed("127.0.0.1", 8788)).toBe(false);
-    process.env.VERCEL = "1";
+    vi.stubEnv("VERCEL", "1");
     expect(isTestAllowed("127.0.0.1", 8787)).toBe(false);
   });
 });
@@ -1574,13 +1581,14 @@ describe("resolvePublicHost", () => {
     await expect(resolvePublicHost("127.0.0.1", 443)).rejects.toBeInstanceOf(SsrfError);
     await expect(resolvePublicHost("[::1]", 443)).rejects.toBeInstanceOf(SsrfError);
     await expect(resolvePublicHost("localhost", 80)).rejects.toBeInstanceOf(SsrfError);
+    await expect(resolvePublicHost("localhost.", 80)).rejects.toBeInstanceOf(SsrfError);
   });
 });
 ```
 
 - [ ] **Step 2: Run, see failures** (`pnpm exec vitest run src/server/net/ip.test.ts`, FAIL with NotImplementedError)
 
-- [ ] **Step 3: Implement** following `critic.md` R1 (`isPublicIp` with `::/96` block after IPv4-mapped unwrap, `resolvePublicHost` with `dns.lookup({ all: true, order: "verbatim" })`, own-host set built from `VERCEL_URL`, `VERCEL_BRANCH_URL`, `VERCEL_PROJECT_PRODUCTION_URL`, `APP_HOSTS` read on every call, lowercase, port stripped). `isTestAllowed` returns true only when `NODE_ENV !== "production"`, `VERCEL` is unset and `SCAN_TEST_ALLOW_HOSTS` contains the exact `host:port`. `resolvePublicHost` returns the host itself (literal) or the first checked address, and returns the literal/first address without the private check when `isTestAllowed(host, port)`.
+- [ ] **Step 3: Implement** following `critic.md` R1 (`isPublicIp` with `::/96` block after IPv4-mapped unwrap, `resolvePublicHost` with `dns.lookup({ all: true, order: "verbatim" })`, own-host set built from `VERCEL_URL`, `VERCEL_BRANCH_URL`, `VERCEL_PROJECT_PRODUCTION_URL`, `APP_HOSTS` read on every call, lowercase, port and trailing root dot stripped, on the configured hosts and on the host being checked). `isTestAllowed` returns true only when `NODE_ENV !== "production"`, `VERCEL` is unset and `SCAN_TEST_ALLOW_HOSTS` contains the exact `host:port`. `resolvePublicHost` returns the host itself (literal) or the first checked address, and returns the literal/first address without the private check when `isTestAllowed(host, port)`.
 
 - [ ] **Step 4: Run tests** (PASS) **Step 5: Commit** `feat(net): add public IP checks, own-host detection and test allowlist`
 
@@ -1854,7 +1862,7 @@ describe("detectBlock", () => {
 **Files:** `src/server/scan/engine.ts`, `tests/integration/engine/engine.test.ts`
 
 - [ ] **Step 1: Failing tests** with `createScanEngine({ assembleAssets: fake, buildFontFamilies: fake, extractPalette: fake, collectorSource: FAKE_COLLECTOR })` where `FAKE_COLLECTOR` defines `globalThis.__assetsScraper.collect` returning a minimal valid `RawCollectorOutput`:
-  - event order on the fixture: `accepted`, `step open start`, `page`, `step open done`, `step load ...`, `step scroll ...`, `step collect ...`, `step process ...`, `palette`, `assets`, `fonts`, `done`; the stream ends after `done`; `done.diagnostics.collector` is `isolated`;
+  - event order on the fixture: `accepted`, `step open start`, `page` (early: empty `brandLinks`, no `favicon`), `step open done`, `step load ...`, `step scroll ...`, `step collect ...`, `step process ...`, `page` (final: `brandLinks` from the fake collector output), `palette`, `assets`, `fonts`, `done`; the stream ends after `done`; `done.diagnostics.collector` is `isolated`;
   - a PDF URL yields `error not-html` with one fallback asset of that URL;
   - a blocked page (route returning a Cloudflare-style challenge title with status 403) yields `error blocked` with fallback assets and `diagnostics.blockReason`;
   - a page with `while(true){}` yields `done` with `partial: true` or `error timeout` within `SCAN_DEADLINE_MS=15000` + 10 s, and the Chrome process is gone afterwards;
@@ -1862,7 +1870,7 @@ describe("detectBlock", () => {
   - a page whose script triggers a file download (`<a download>` click) does not write to disk and the scan completes;
   - `http://127.0.0.1:<victim>/` gives `error blocked-address` before launching Chrome;
   - the real (stub) collectors: `createScanEngine()` on the fixture yields `error internal` (not an unhandled rejection), proving failure handling.
-- [ ] **Step 2: Run, see failures** **Step 3: Implement** spec section 7.2 end to end: `AbortSignal.any` with the request signal and the deadline, preflight, `startEgressProxy`, `withBrowser` (emitting `step queue` from `onQueued`), `startCapture` before `openPage`, `detectBlock` on the navigation result, `page` event, `loadAndScroll`, `prepareForCollection`, `extractPalette` then `runInPage(page, COLLECTOR_SOURCE, "globalThis.__assetsScraper.collect(<options>)")`, `capture.settle`, close browser, post-processing (`assembleAssets` and `buildFontFamilies` in parallel with a shared signer from `createSigner({ max: limits.maxSignedUrls })`), batching `assets` with `chunkByBytes`, `done` with stats and diagnostics (egress stats, phases, health, `version` from `VERCEL_GIT_COMMIT_SHA` or `dev`). Every thrown `ScanFailure` becomes an `error` event; any other error becomes `internal` with the diagnostics. The deadline path emits whatever results exist with `partial: true` and a `warning partial`. **Step 4: Run** (PASS) **Step 5: Commit** `feat(scan): add scan engine orchestration with deadlines and cancellation`
+- [ ] **Step 2: Run, see failures** **Step 3: Implement** spec section 7.2 end to end: `AbortSignal.any` with the request signal and the deadline, preflight, `startEgressProxy`, `withBrowser` (emitting `step queue` from `onQueued`), `startCapture` before `openPage`, `detectBlock` on the navigation result, early `page` event (empty `brandLinks`, no `favicon`), `loadAndScroll`, `prepareForCollection`, `extractPalette` then `runInPage(page, COLLECTOR_SOURCE, "globalThis.__assetsScraper.collect(<options>)")`, `capture.settle`, close browser, post-processing (`assembleAssets` and `buildFontFamilies` in parallel with a shared signer from `createSigner({ max: limits.maxSignedUrls })`), final `page` event (collector `brandLinks`, `favicon` from the favicon asset's signed source), batching `assets` with `chunkByBytes`, `done` with stats and diagnostics (egress stats, phases, health, `version` from `VERCEL_GIT_COMMIT_SHA` or `dev`). Every thrown `ScanFailure` becomes an `error` event; any other error becomes `internal` with the diagnostics. The deadline path emits whatever results exist with `partial: true` and a `warning partial`. **Step 4: Run** (PASS) **Step 5: Commit** `feat(scan): add scan engine orchestration with deadlines and cancellation`
 
 ### Task B8: Scan route
 
@@ -1984,7 +1992,7 @@ it("builds the same variant key for size variants", () => {
   - `roles.test.ts`: header SVG in a home link with a logo word scores 8 and becomes `site-logo`; `og:image` becomes `social`; a 24x24 rendered SVG becomes `icon`; a favicon is never `icon`; `relevanceScore` orders site-logo above a large visible image above a hidden icon.
   - `naming.test.ts`: display name priority (`aria-label` over `<title>` over `alt` over file basename); hashed basenames (`logo.a1b2c3d4.svg`, `hero-3f9ab1c2e4.png`) are cleaned; filenames are prefixed with the site slug once (`linear-logo.svg`, not `linear-linear-logo.svg`), capped at 80 characters, clash to `-2`, and `../evil/<name>` becomes safe.
   - `tone.test.ts`: generate PNGs with sharp in the test (white shape on transparent gives `light`, black shape on transparent gives `dark`, opaque red gives `opaque`, half gray gives `mixed`); a JPEG buffer gives `opaque` without decoding; `toneFromSvg('<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" fill="#fff"/></svg>')` gives `opaque`, a white circle on transparent gives `light`; invalid bytes give `unknown`.
-- [ ] **Step 2: Run, see failures** **Step 3: Implement** (spec 8.2, 8.3, 8.5, 8.7, 8.8; port `noise.mjs` host lists). **Step 4: Run** (PASS) **Step 5: Commit** `feat(assets): add noise filter, variant grouping, roles, naming and tone`
+- [ ] **Step 2: Run, see failures** **Step 3: Implement** (spec 8.2, 8.3, 8.5, 8.7, 8.8; port `noise.mjs` host lists; noise reasons are the `HiddenReason` names from the contract, not the lab strings). **Step 4: Run** (PASS) **Step 5: Commit** `feat(assets): add noise filter, variant grouping, roles, naming and tone`
 
 ### Task C4: Verification
 
@@ -2024,7 +2032,7 @@ it("builds the same variant key for size variants", () => {
   - `hero.jpg` is a separate asset; `pixel.gif` is absent and `hidden.spacer` or `hidden.pixel` is at least 1; the lazy GIF placeholder is absent;
   - `hover.png` has `declaredOnly: true`; `mask.svg` is `kind: "svg"`;
   - `og.png` has role `social` and `foundIn` containing `og-image`;
-  - the JSON-LD logo at `example.invalid` is absent (failed probe) and counted in `hidden`;
+  - the JSON-LD logo at `example.invalid` is absent (failed probe) and counted in `hidden["probe-failed"]`;
   - the blob image has `inline.base64` and `display: null`;
   - filenames are unique; every non-inline asset has `proxy` from the signer; every asset has a `tone`;
   - assets are sorted by `score` descending, `site-logo` first.
@@ -2104,8 +2112,9 @@ describe("parseFontFaceCss", () => {
   - `Brand Serif`: `usedOnPage: true`, `googleFamily: "Source Sans 3"`, `convertible: true`;
   - `Unused Face`: `usedOnPage: false`, one face with `loaded: false`, files listed but no bytes;
   - families sorted by `usage` descending, then used before unused;
-  - every file has a signed `proxy`.
-- [ ] **Step 2: Run, see failures** **Step 3: Implement** spec section 9 (grouping stages 1 to 3, faces keyed by css family, weight, style, stretch; source classification by host; usage shares; Adobe `downloadable: false`; licence; Google matching of display names and embedded names; signing). **Step 4: Run** (PASS) **Step 5: Commit** `feat(fonts): build font families with faces, usage, source and licence`
+  - every remote file has a signed `proxy`;
+  - a second case adds an `Inline Face` `@font-face` whose `src` is a `data:font/woff2;base64,` URI of `ss3.woff2`: its family has `source: "data-uri"` and one file with `inline.base64` equal to the file bytes, `url` and `proxy` both `""`, and nothing signed for it.
+- [ ] **Step 2: Run, see failures** **Step 3: Implement** spec section 9 (grouping stages 1 to 3, faces keyed by css family, weight, style, stretch; source classification by host; usage shares; Adobe `downloadable: false`; licence; Google matching of display names and embedded names; signing; `data:` files decoded, base64 or percent-encoded, into `inline` with empty `url` and `proxy`, as the `FontFile` comment in the contract says; the `fonts` line is not batched, so inline files can take it past the 256 KB line target). **Step 4: Run** (PASS) **Step 5: Commit** `feat(fonts): build font families with faces, usage, source and licence`
 
 ### Task D5: PR
 
@@ -2164,10 +2173,10 @@ Build against the contract with mocked NDJSON. Create realistic fixtures from la
 
 - [ ] **Step 1: Failing tests**
   - `scan-client.test.ts` (mock `fetch`): `startScan("linear.app", handlers)` POSTs JSON with `x-access-code` when stored; parses streamed events in order into `handlers.onEvent`; maps a JSON `ApiError` 429 to `onError({ code: "budget" })`; on an `error busy` event retries once after a jittered delay (fake timers) and reports `busy` if it happens again; `abort()` cancels the stream and calls no further handlers.
-  - `asset-bytes.test.ts`: inline SVG returns a `image/svg+xml` Blob without network; inline base64 decodes; https remote tries direct CORS first and falls back to `proxy` on a thrown fetch or non-OK status; `http:` goes straight to the proxy; a failing proxy throws `AssetUnavailableError`.
+  - `asset-bytes.test.ts`: inline SVG returns a `image/svg+xml` Blob without network; inline base64 decodes; https remote tries direct CORS first and falls back to `proxy` on a thrown fetch or non-OK status; `http:` goes straight to the proxy; a failing proxy throws `AssetUnavailableError`; a `FontFile` with `inline` (a data URI font: `url` and `proxy` are `""`, the proxy cannot fetch `data:` and the CSP blocks fetching it) decodes without any fetch.
   - `filters.test.ts`: `sectionize(assets, fonts, { tab: "all", query: "", sort: "relevance" })` puts `site-logo`, `logo`, `favicon` in `logos`, small icons (longest rendered side <= 48) in `smallIcons`, `declaredOnly` in `stylesheets`, sorts by score; `tab: "svg"` has no `logos` section; `query` matches name, filename, URLs and font names case-insensitively; sort `largest`, `file-size`, `name`, `page-order` behave.
   - `store.test.ts`: `select`, `toggle`, `selectRange` over visual order, `selectAllVisible` excludes collapsed sections, `clearSelection`, selection survives tab change, `openDetail`/`next`/`previous` wrap within the visible list.
-  - `zip.test.ts` (Node, client-zip works with `Response`): `buildZip(selection, host)` yields entries `linear.app-assets/svg/<filename>`, `images/`, `fonts/<family>/`, adds `.ttf` for convertible WOFF2 fonts through `proxy&fmt=ttf`, skips failed entries and reports them.
+  - `zip.test.ts` (Node, client-zip works with `Response`): `buildZip(selection, host)` yields entries `linear.app-assets/svg/<filename>`, `images/`, `fonts/<family>/`, adds `.ttf` for convertible WOFF2 fonts through `proxy&fmt=ttf`, adds inline font files from their bytes (named from family, weight, style and format, never from the empty `url`; when convertible, their `.ttf` comes from the in-browser WOFF2 conversion of spec 9, since `fmt=ttf` needs the proxy), skips failed entries and reports them.
   - `recent.test.ts`: keeps the last 5 unique hosts, survives `localStorage` throwing.
 - [ ] **Step 2: Run, see failures** **Step 3: Implement** (spec 12.1, 12.3 previews, 12.4, critic G3 `getAssetBlob`, client-zip `downloadZip` with an async generator and 6 concurrent fetches, `showSaveFilePicker` when available, zustand store). **Step 4: Run** (PASS) **Step 5: Commit** `feat(client): add scan client, asset bytes, filters, selection store and ZIP builder`
 
@@ -2175,7 +2184,7 @@ Build against the contract with mocked NDJSON. Create realistic fixtures from la
 
 **Files:** `src/app/globals.css`, `src/app/layout.tsx`, `src/app/robots.ts`, `src/components/app-shell/top-bar.tsx`
 
-- [ ] **Step 1:** Put the token block from spec 12.6 in `:root`, map them in `@theme inline` (colors, radii, fonts), add `.bg-grid` checkerboard, tabular numbers utility, reduced-motion rules. `layout.tsx`: Geist Sans and Mono through `geist/font`, `metadata` with `title: "Assets Scraper"`, `robots: { index: false, follow: false }`. `robots.ts`: disallow `/`.
+- [ ] **Step 1:** Put the token block from spec 12.6 in `:root`, map them in `@theme inline` (colors, radii, fonts), add `.bg-grid` checkerboard, tabular numbers utility, reduced-motion rules. Keep the `@custom-variant dark` line (Task 0.1 step 7) so `dark:` utilities stay inert. `layout.tsx`: Geist Sans and Mono through `geist/font`, `metadata` with `title: "Assets Scraper"`, `robots: { index: false, follow: false }`. `robots.ts`: disallow `/`.
 - [ ] **Step 2:** Render check: `pnpm dev`, open `http://localhost:3000` at 1470x956 with the browser tools, confirm Geist renders (computed font family starts with Geist) and there are no console CSP errors.
 - [ ] **Step 3: Commit** `feat(ui): add light design tokens and app shell`
 
@@ -2192,8 +2201,8 @@ Build against the contract with mocked NDJSON. Create realistic fixtures from la
 
 **Files:** `src/components/results/*`, `e2e/results.spec.ts`
 
-- [ ] **Step 1: Failing E2E tests** on the linear fixture: header meta, `Copy link`, `Rescan`, `Download all`; palette strip with swatches, clicking one copies its hex (clipboard permission granted) and shows the toast `Copied #5e6ad2`; brand link chip starts a scan of that URL; tabs with counts and keys `1` to `4`; `Logos` section first in `All` and absent in `SVG`; `Small icons` collapsed with `Show`; search with `/` filters and shows `Nothing matches "zzz"` with `Clear search`; sort changes order; background control changes tile backgrounds; tiles show filename and mono meta; a remote image that 404s falls back to the proxy URL (assert the `src` changes); no scraped SVG markup is present in the DOM (`page.locator("main svg[data-scraped]")` count 0 and no element contains the fixture's unique path data); `9 hidden: tracking pixels and spacer images` footer; partial banner for a `done partial` fixture.
-- [ ] **Step 2: Run, see failures** **Step 3: Implement** spec 12.2 results and 12.3 cards, grid breakpoints, `content-visibility`, lazy previews, tone mapping. **Step 4: Run** (PASS) **Step 5: Commit** `feat(ui): add results grid, sections, cards, palette strip and brand links`
+- [ ] **Step 1: Failing E2E tests** on the linear fixture: header meta, `Copy link`, `Rescan`, `Download all`; palette strip with swatches, clicking one copies its hex (clipboard permission granted) and shows the toast `Copied #5e6ad2`; brand link chips come from the last `page` event (the fixture sends an early `page` with empty `brandLinks`, then the final one; the client replaces, never merges) and a chip starts a scan of that URL; tabs with counts and keys `1` to `4`; `Logos` section first in `All` and absent in `SVG`; `Small icons` collapsed with `Show`; search with `/` filters and shows `Nothing matches "zzz"` with `Clear search`; sort changes order; background control changes tile backgrounds; tiles show filename and mono meta; a remote image that 404s falls back to the proxy URL (assert the `src` changes); no scraped SVG markup is present in the DOM (`page.locator("main svg[data-scraped]")` count 0 and no element contains the fixture's unique path data); `9 hidden: tracking pixels and spacer images` footer; partial banner for a `done partial` fixture.
+- [ ] **Step 2: Run, see failures** **Step 3: Implement** spec 12.2 results and 12.3 cards, grid breakpoints, `content-visibility`, lazy previews, tone mapping, footer text built from the `HiddenReason` keys of `stats.hidden` (unknown keys count toward the total). **Step 4: Run** (PASS) **Step 5: Commit** `feat(ui): add results grid, sections, cards, palette strip and brand links`
 
 ### Task F5: Fonts rows
 
@@ -2249,7 +2258,7 @@ git push -u origin feat/ui && gh pr create --title "feat: results UI, selection 
 
 **Files:** `tests/integration/engine/fixture-e2e.test.ts`
 
-- [ ] **Step 1: Failing test**: `scanEngine.scan({ url: fixture.origin + "/" })` with `SCAN_TEST_ALLOW_HOSTS` set yields `done` (not partial), `assets` satisfying the Task C6 golden assertions, `fonts` satisfying Task D4, a non-null `palette`, `page.brandLinks` with `Press kit`, and `diagnostics.collector === "isolated"`.
+- [ ] **Step 1: Failing test**: `scanEngine.scan({ url: fixture.origin + "/" })` with `SCAN_TEST_ALLOW_HOSTS` set yields `done` (not partial), `assets` satisfying the Task C6 golden assertions, `fonts` satisfying Task D4, a non-null `palette`, two `page` events where the first has empty `brandLinks` and the last has `brandLinks` with `Press kit`, and `diagnostics.collector === "isolated"`.
 - [ ] **Step 2: Run, fix, pass. Step 3: Commit** `test(engine): add full fixture scan test`
 
 ### Task 2.3: Reference sites locally
@@ -2288,6 +2297,7 @@ git push -u origin feat/ui && gh pr create --title "feat: results UI, selection 
 - [ ] **Step 2:** SSRF probes with the ops token: `http://127.0.0.1/`, `http://169.254.169.254/latest/meta-data/`, `http://[::1]/`, `http://127.0.0.1.nip.io/`, `https://httpbin.org/redirect-to?url=http://127.0.0.1/`, `http://0x7f000001/`, `https://assets-scraper.vercel.app/` must all return `blocked-address` or `own-host` (gate) or an `error` event with those codes (preflight).
 - [ ] **Step 3:** Asset proxy abuse probes: unsigned `u` gives 403, cross-site `Sec-Fetch-Site` gives 403, HTML upstream gives 415.
 - [ ] **Step 4:** Browser check of the production UI at 1470x956 (scan linear.app, open detail, select 3 assets, download ZIP).
+  Read the browser console on page load and during the scan: there must be no CSP violation. BotID's client loads Kasada scripts (`p.js`, `c.js`) from its same-origin rewrite path, and the production CSP has no `'unsafe-eval'` or `'wasm-unsafe-eval'`; if those scripts are blocked, every scan fails with `bot` 403. Then add only the keyword they need to `script-src` in `next.config.ts` (prefer `'wasm-unsafe-eval'` over `'unsafe-eval'`) and redeploy.
 - [ ] **Step 5:** Open item from spec 17: run the same site list with `CHROMIUM_MULTIPROCESS=1` (if implemented as a launch toggle in Track B) and compare memory, CPU and `/tmp`; keep the better default.
 
 ---

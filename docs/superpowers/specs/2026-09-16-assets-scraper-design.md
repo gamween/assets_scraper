@@ -299,7 +299,7 @@ The engine owns an `AbortController` tied to `request.signal` and to a hard dead
 | 10 | Post-processing in Node, including original verification and declared URL probes | `process` | 8 s for network work |
 | 11 | Emit `page`, `palette`, `assets` batches, `fonts`, `done` | | |
 
-`page` is emitted as soon as the title and final URL are known (after phase 4), so the UI can show the site header early.
+`page` is emitted twice. The first one goes out as soon as the title and final URL are known (after phase 4), so the UI can show the site header early; it has empty `brandLinks` and no `favicon`, which only exist after collection and post-processing. The second one, in phase 11, carries the brand links and the signed favicon. The client replaces its page info with each `page` event.
 
 ### 7.3 Browser
 
@@ -463,7 +463,7 @@ The palette module is a port of the validated lab code (v2 with every fix enable
 
 ### 11.3 Budgets and switches
 
-- `BudgetStore.take(key, limit, ttlSeconds)` implementations, selected at runtime: Upstash Redis when `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` exist, Vercel Runtime Cache when available on the plan, otherwise in-memory per instance. If the store errors, fall back to the in-memory counter.
+- `BudgetStore.incr(key, by, ttlSeconds)` implementations (atomic increment that returns the new total; `takeScanBudget` and `takeProxyBytes` compare it with the limit), selected at runtime: Upstash Redis when `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` exist, Vercel Runtime Cache when available on the plan, otherwise in-memory per instance. If the store errors, fall back to the in-memory counter.
 - Defaults: 80 scans per day, 800 per month, 300 MB proxied per day. All env-overridable.
 - Kill switch `SCAN_DISABLED=1`. Optional `ACCESS_CODE`.
 - BotID (basic) protects `POST /api/scan`, initialized in `instrumentation-client.ts`.

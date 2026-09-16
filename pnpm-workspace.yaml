@@ -1,0 +1,7 @@
+allowBuilds:
+  sharp: false
+  unrs-resolver: false
+  esbuild: true
+peerDependencyRules:
+  allowedVersions:
+    eslint: "10"
