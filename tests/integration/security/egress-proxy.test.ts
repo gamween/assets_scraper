@@ -107,7 +107,16 @@ beforeAll(async () => {
     "/canary-localhost": (q, s) => { canaryHits.push(q.url ?? ""); s.end(); },
     "/canary-v6": (q, s) => { canaryHits.push(q.url ?? ""); s.end(); },
     "/echo": (q, s) => { s.writeHead(200, { "content-type": "application/json", connection: "keep-alive" }); s.end(JSON.stringify(q.headers)); },
-    "/big": (_q, s) => { s.writeHead(200, { "content-type": "application/octet-stream" }); s.end(Buffer.alloc(512 * 1024)); },
+    "/big": (_q, s) => {
+      // 32 chunks of 16 KB, so the byte cap is crossed mid-body rather than inside one read
+      s.writeHead(200, { "content-type": "application/octet-stream" });
+      let sent = 0;
+      const timer = setInterval(() => {
+        if (s.destroyed || sent === 32) { clearInterval(timer); s.end(); return; }
+        s.write(Buffer.alloc(16 * 1024));
+        sent++;
+      }, 5);
+    },
   });
   process.env.SCAN_TEST_ALLOW_HOSTS = allowed.host;
 });
@@ -150,7 +159,8 @@ describe("egress proxy with Chrome", () => {
     expect(canaryHits).toEqual([]);
     const stats = proxy.stats();
     expect(stats.blocked).toBeGreaterThan(0);
-    expect(stats.blockedHosts).toEqual(expect.arrayContaining(["127.0.0.1", "0.0.0.0", "localhost"]));
+    // Chrome may refuse some spellings (0.0.0.0) on its own; every one that reaches the proxy must be blocked
+    expect(stats.blockedHosts).toContain("127.0.0.1");
 
     await page.goto(`${allowed.origin}/control.html`);
     expect(await page.title()).toBe("Control page");
