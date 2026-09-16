@@ -1,0 +1,40 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Fixture Co</title>
+<link rel="icon" href="/assets/logo.svg" type="image/svg+xml"><link rel="apple-touch-icon" href="/assets/touch.png">
+<meta property="og:image" content="/assets/og.png"><meta property="og:site_name" content="Fixture">
+<link rel="stylesheet" href="/assets/style.css">
+<script type="application/ld+json">{"@type":"Organization","logo":"https://example.invalid/jsonld-logo.png"}</script>
+</head><body>
+<header><a href="/" aria-label="Fixture home"><svg class="logo" width="120" height="32" viewBox="0 0 120 32"><title>Fixture</title><path fill="currentColor" d="M0 0h120v32H0z"/></svg></a></header>
+<svg style="display:none"><symbol id="sym-check" viewBox="0 0 24 24"><path d="M4 12l5 5L20 6" stroke="currentColor" stroke-width="3" fill="none"/></symbol>
+<linearGradient id="grad1"><stop offset="0" stop-color="var(--brand)"/><stop offset="1" stop-color="#00f"/></linearGradient></svg>
+<main>
+<p>Plain text in Inter. Кириллица. <span style="font-family:'Brand Serif'">Serif text</span></p>
+<svg class="page-icons" width="24" height="24" style="color:#c00"><use href="#sym-check"/></svg>
+<svg width="24" height="24"><use href="/assets/sprite.svg#ext-star" fill="orange"/></svg>
+<svg width="48" height="24"><rect width="48" height="24" fill="url(#grad1)"/></svg>
+<svg class="page-icons" viewBox="0 0 10 10" width="40" height="40"><path d="M0 0h10v10z"/></svg>
+<svg class="page-icons" viewBox="0 0 10 10" width="40" height="40"><path d="M0 0h10v10z"/></svg>
+<svg width="30" height="30"><circle cx="15" cy="15" r="12" fill="var(--brand, #000)"/></svg>
+<svg viewBox="0 0 20 20" width="20" height="20"><style>.st0{fill:#123456}</style><path class="st0" d="M0 0h20v20H0z"/></svg>
+<svg width="64" height="16"><defs><clipPath id=":r1:"><rect width="32" height="16"/></clipPath></defs><rect width="64" height="16" clip-path="url(#:r1:)" fill="#333"/></svg>
+<svg width="64" height="16"><defs><clipPath id=":r2:"><rect width="32" height="16"/></clipPath></defs><rect width="64" height="16" clip-path="url(#:r2:)" fill="#333"/></svg>
+<svg style="display:none" width="40" height="40"><path d="M0 0h40v40z"/></svg>
+<img src="/assets/photo-small.png" srcset="/assets/photo-small.png 200w, /assets/photo-large.png 1600w" sizes="200px" alt="Photo">
+<picture><source srcset="/assets/hero.jpg 1200w" type="image/jpeg" media="(min-width: 800px)"><img src="/assets/photo-small.png" alt="Hero"></picture>
+<img class="lazyload" src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" data-src="/assets/lazy.jpg" alt="lazy">
+<noscript><img src="/assets/noscript.jpg"></noscript>
+<video poster="/assets/poster.jpg" width="320" height="180"></video>
+<div class="hero-bg"></div><div class="pseudo"></div><div class="imgset"></div><div class="masked"></div>
+<img src="/assets/pixel.gif" width="1" height="1" alt="">
+<img src="/assets/logo.svg" alt="Fixture logo" width="100">
+<my-card></my-card>
+<iframe src="/frame.html" width="400" height="200"></iframe>
+<img id="blobimg" alt="blob">
+<svg width="30" height="30" data-testid="illustration"><image href="/assets/og.png" width="30" height="30"/></svg>
+</main>
+<footer><a href="/press">Press kit</a> <a href="https://other.example/brand">Other brand</a></footer>
+<script>
+customElements.define('my-card', class extends HTMLElement { constructor(){ super(); const r = this.attachShadow({mode:'open'}); r.innerHTML = '<style>svg{fill:#09f}</style><img src="/assets/shadow.png" alt="shadow"><svg width="16" height="16"><path d="M0 0h16v16H0z"/></svg>'; } });
+fetch('/assets/iframe.png').then(r => r.blob()).then(b => { const u = URL.createObjectURL(b); const i = document.getElementById('blobimg'); i.onload = () => URL.revokeObjectURL(u); i.src = u; });
+</script>
+</body></html>

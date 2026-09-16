@@ -1,0 +1,12 @@
+@font-face { font-family: "__Inter_d65c78"; src: url(__inter.woff2) format("woff2"); font-weight: 100 900; unicode-range: U+0000-00FF; }
+@font-face { font-family: "__Inter_d65c78"; src: url(jbm-cyr.woff2) format("woff2"); font-weight: 100 900; unicode-range: U+0400-045F; }
+@font-face { font-family: "Brand Serif"; src: url(ss3.woff2) format("woff2"); font-weight: 400; }
+@font-face { font-family: "Unused Face"; src: url(missing.woff2) format("woff2"); }
+.hero-bg { background-image: url(bg.png); width: 300px; height: 300px; }
+.hero-bg:hover { background-image: url(hover.png); }
+.pseudo::before { content: url(pseudo.png); }
+.imgset { background-image: image-set("imgset-1x.png" 1x, "imgset-2x.png" 2x); width: 100px; height: 100px; }
+.masked { -webkit-mask-image: url(mask.svg); mask-image: url(mask.svg); background: #e33; width: 16px; height: 16px; }
+.page-icons path { fill: #0a7; }
+body { font-family: "__Inter_d65c78", sans-serif; color: rgb(20, 30, 40); --brand: #ff3366; }
+@media (max-width: 600px) { .hero-bg { background-image: url(photo-small.png); } }
