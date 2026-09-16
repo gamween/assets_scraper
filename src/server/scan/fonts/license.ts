@@ -22,9 +22,10 @@ const httpUrl = (value: string | undefined): string | undefined => {
 /**
  * Licence from name records 0 (copyright), 13 (description) and 14 (URL), spec section 9: `open` when a record names
  * an open licence or the font comes from Google Fonts, `commercial` for Adobe Fonts or any other text, `unknown`
- * without text. `url` is kept only when it is an http(s) URL, since the UI may link it.
+ * without text. Without a `source` only the records count. `url` is kept only when it is an http(s) URL, since the
+ * UI may link it.
  */
-export function classifyLicense(meta: LicenseMeta | null | undefined, source: FontFamily["source"]): FontLicense {
+export function classifyLicense(meta: LicenseMeta | null | undefined, source?: FontFamily["source"]): FontLicense {
   const copyright = clean(meta?.copyright);
   const description = clean(meta?.licenseDescription);
   const rawUrl = clean(meta?.licenseUrl);

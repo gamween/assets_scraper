@@ -1,19 +1,24 @@
+import type { FontBinaryMeta, FontsOutput, PostInput, SafeFetch } from "../types";
 import { NotImplementedError } from "@/server/errors";
-import type { FontBinaryMeta, FontsOutput, PostInput, RawFontFaceRule, SafeFetch } from "../types";
+import { matchGoogleFamilies } from "./google";
+import { classifyLicense } from "./license";
+import { resolveFamilyName } from "./names";
 
-export function parseFontBinary(buffer: Buffer): FontBinaryMeta | null;
-export function parseFontBinary(): FontBinaryMeta | null {
-  throw new NotImplementedError("D: parseFontBinary");
-}
+export { parseFontBinary } from "./binary";
+export { parseFontFaceCss } from "./css";
 
-export function parseFontFaceCss(cssText: string, baseUrl: string): RawFontFaceRule[];
-export function parseFontFaceCss(): RawFontFaceRule[] {
-  throw new NotImplementedError("D: parseFontFaceCss");
-}
-
-export function isConvertibleFont(meta: FontBinaryMeta | null, options: { fetch: SafeFetch; signal: AbortSignal }): Promise<boolean>;
-export async function isConvertibleFont(): Promise<boolean> {
-  throw new NotImplementedError("D: isConvertibleFont");
+/**
+ * Whether a font file may be converted to TTF (the asset proxy `fmt=ttf`, spec 9 and 11.2): an open licence in its
+ * name records, or no licence text at all and a family name that Google Fonts knows. A commercial licence or an
+ * unreadable file never converts.
+ */
+export async function isConvertibleFont(meta: FontBinaryMeta | null, options: { fetch: SafeFetch; signal: AbortSignal }): Promise<boolean> {
+  if (!meta) return false;
+  const { kind } = classifyLicense(meta);
+  if (kind !== "unknown") return kind === "open";
+  const { name } = resolveFamilyName(meta, null);
+  const matches = await matchGoogleFamilies([name], options);
+  return matches.has(name);
 }
 
 export function buildFontFamilies(input: PostInput): Promise<FontsOutput>;
