@@ -16,29 +16,39 @@ function pkgDir(entry: string, up = 1): string {
 
 const chromiumFiles = [`./${pkgDir("@sparticuz/chromium")}/bin/**`, `./${pkgDir("playwright-core", 0)}/browsers.json`];
 
+// React needs eval() in development only (error stack reconstruction, see the Next.js CSP guide).
+const isDev = process.env.NODE_ENV === "development";
+
 const CSP = [
   "default-src 'self'",
   "img-src 'self' blob: data: https:",
   "font-src 'self' blob: data:",
   "connect-src 'self' https:",
   "style-src 'self' 'unsafe-inline'",
-  "script-src 'self' 'unsafe-inline'",
+  `script-src 'self' 'unsafe-inline'${isDev ? " 'unsafe-eval'" : ""}`,
   "object-src 'none'",
   "base-uri 'self'",
   "frame-ancestors 'none'",
 ].join("; ");
+
+/**
+ * Every path except the asset proxy. Next only copies a route handler header when the config did not set it
+ * already, so an app-wide CSP would replace the proxy's own sandbox CSP (spec 11.2).
+ */
+const APP_CSP_SOURCE = "/((?!api/asset(?:/|$)).*)";
 
 const nextConfig: NextConfig = {
   typedRoutes: true,
   reactCompiler: true,
   serverExternalPackages: ["@sparticuz/chromium", "playwright-core", "sharp", "fontkit", "wawoff2"],
   outputFileTracingIncludes: { "/api/scan": chromiumFiles },
+  poweredByHeader: false,
   async headers() {
     return [
+      { source: APP_CSP_SOURCE, headers: [{ key: "Content-Security-Policy", value: CSP }] },
       {
         source: "/:path*",
         headers: [
-          { key: "Content-Security-Policy", value: CSP },
           { key: "X-Robots-Tag", value: "noindex, nofollow" },
           { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
           { key: "X-Content-Type-Options", value: "nosniff" },
