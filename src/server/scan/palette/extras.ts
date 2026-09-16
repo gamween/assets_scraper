@@ -1,5 +1,73 @@
 /** Node-side palette extras: colors of the site icon and of the web manifest. */
+import type { SafeFetch, SafeResponse } from "../types";
 import { rgbToHex } from "./color";
+import type { RawPaletteSignals } from "./signals";
+
+const ICON_MAX_BYTES = 512 * 1024;
+const MANIFEST_MAX_BYTES = 256 * 1024;
+
+export interface PaletteExtras {
+  /** SVG markup, or raster bytes for in-page decoding. */
+  icon: { svg: string } | { b64: string; mime: string } | null;
+  manifest: { themeColor: string | null; backgroundColor: string | null } | null;
+}
+
+/**
+ * Fetches the best icon (candidates in order, first image wins) and the web manifest in parallel, through `fetch`
+ * (safeFetch in production). Returns whatever arrived within `budgetMs`, then aborts what is still pending.
+ */
+export async function fetchPaletteExtras(
+  signals: Pick<RawPaletteSignals, "iconUrls" | "manifestUrl">,
+  options: { fetch: SafeFetch; signal: AbortSignal; budgetMs: number },
+): Promise<PaletteExtras> {
+  const found: PaletteExtras = { icon: null, manifest: null };
+  const budget = new AbortController();
+  const stop = () => budget.abort();
+  const timer = setTimeout(stop, options.budgetMs);
+  options.signal.addEventListener("abort", stop, { once: true });
+  if (options.signal.aborted) stop();
+
+  const get = async (url: string, maxBytes: number): Promise<SafeResponse | null> => {
+    const res = await options.fetch(url, { maxBytes, timeoutMs: options.budgetMs, signal: budget.signal });
+    if (res.status >= 200 && res.status < 300) return res;
+    await res.cancel().catch(() => {});
+    return null;
+  };
+  const icon = async () => {
+    for (const url of signals.iconUrls) {
+      if (budget.signal.aborted) return;
+      try {
+        const res = await get(url, ICON_MAX_BYTES);
+        if (!res) continue;
+        const type = (res.headers.get("content-type") ?? "").toLowerCase();
+        const body = await res.buffer();
+        if (body.length < 16 || type.includes("html")) continue;
+        const head = body.subarray(0, 256).toString("latin1");
+        found.icon = type.includes("svg") || /<svg[\s>]/i.test(head) ? { svg: body.toString("utf8") } : { b64: body.toString("base64"), mime: type };
+        return;
+      } catch {
+        // next candidate
+      }
+    }
+  };
+  const manifest = async () => {
+    if (!signals.manifestUrl || budget.signal.aborted) return;
+    try {
+      const res = await get(signals.manifestUrl, MANIFEST_MAX_BYTES);
+      const json = res ? await res.json<Record<string, unknown> | null>() : null;
+      if (json && typeof json === "object") found.manifest = { themeColor: normHex(json.theme_color), backgroundColor: normHex(json.background_color) };
+    } catch {
+      // no manifest colors
+    }
+  };
+
+  const done = new Promise<void>((resolve) => budget.signal.addEventListener("abort", () => resolve(), { once: true }));
+  await Promise.race([Promise.all([icon(), manifest()]), done]);
+  clearTimeout(timer);
+  options.signal.removeEventListener("abort", stop);
+  stop();
+  return { icon: found.icon, manifest: found.manifest };
+}
 
 /** 3, 4, 6 or 8 digit hex, with or without `#`, to lowercase `#rrggbb` (alpha dropped); anything else to null. */
 export const normHex = (value: unknown): string | null => {
