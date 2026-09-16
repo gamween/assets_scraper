@@ -15,16 +15,41 @@ describe("normalizeInputUrl", () => {
     ["例え.jp", "https://xn--r8jz45g.jp/"],
     ["linear.app.", "https://linear.app./"],
     ["https://x.com/a).", "https://x.com/a"],
+    // wrappers and punctuation
+    ["(linear.app)", "https://linear.app/"],
+    ["`linear.app`", "https://linear.app/"],
+    ["(linear.app).", "https://linear.app/"],
+    ["(https://x.com/a).", "https://x.com/a"],
+    ["https://en.wikipedia.org/wiki/Foo_(bar)", "https://en.wikipedia.org/wiki/Foo_(bar)"],
+    ["https://linear.app.", "https://linear.app./"],
+    ["x.com/docs.", "https://x.com/docs"],
+    // ports 80 and 443 are allowed with either scheme
+    ["https://x.com:80/", "https://x.com:80/"],
+    ["http://x.com:443/a", "http://x.com:443/a"],
+    // IP literals and localhost pass here; the gate blocks them
+    ["http://[::1]/", "http://[::1]/"],
+    ["[2606:4700:4700::1111]", "https://[2606:4700:4700::1111]/"],
+    ["http://0x7f000001/", "http://127.0.0.1/"],
+    ["localhost", "https://localhost/"],
+    ["my_site.example.com", "https://my_site.example.com/"],
   ])("%s -> %s", (input, expected) => {
     expect(normalizeInputUrl(input)).toEqual({ ok: true, url: expected, host: new URL(expected).hostname });
   });
 
-  it.each(["", "   ", "ftp://x.com", "javascript:alert(1)", "not a url", "x", "mailto:a@b.c"])("rejects %j", (input) => {
+  it("returns IPv6 hosts with their brackets", () => {
+    expect(normalizeInputUrl("http://[::1]/")).toMatchObject({ ok: true, host: "[::1]" });
+  });
+
+  it.each([
+    "", "   ", "ftp://x.com", "javascript:alert(1)", "not a url", "x", "mailto:a@b.c",
+    "lin{ear.app", 'a"b.com', "x..com", "-x.com", "https://exa$mple.com", "()", "``",
+  ])("rejects %j", (input) => {
     expect(normalizeInputUrl(input)).toEqual({ ok: false, code: "invalid-url" });
   });
 
   it("rejects non-default ports", () => {
     expect(normalizeInputUrl("http://x.com:8080")).toEqual({ ok: false, code: "unsupported-port" });
     expect(normalizeInputUrl("localhost:3000")).toEqual({ ok: false, code: "unsupported-port" });
+    expect(normalizeInputUrl("[::1]:8443")).toEqual({ ok: false, code: "unsupported-port" });
   });
 });
