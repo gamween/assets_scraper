@@ -411,7 +411,8 @@ Tone decides the preview background of a tile.
 `detectBlock(status, title, html, headers, elementCount)`:
 
 - `cf-mitigated: challenge` header.
-- Title matches `/just a moment|attention required|access denied|access to this page has been denied|are you a robot|verify you are (a )?human|please verify you are a human|pardon our interruption|request unsuccessful|security check|one more step|checking your browser/i`.
+- Title matches a challenge phrase, as whole words: `/just a moment|attention required|access to this page has been denied|are you a robot|verify you are (a )?human|please verify you are a human|pardon our interruption|checking your browser/i` always counts.
+- Title matches a generic phrase, `/access denied|request unsuccessful|security check|one more step/i`, only when the status is 400 or more or the page has fewer than 300 elements (ordinary pages use these words too).
 - Challenge markup (`cf-chl-`, `/cdn-cgi/challenge-platform/`, `captcha-delivery.com`, `px-captcha`, `_Incapsula_Resource`, `perimeterx.net`, `_pxAppId`, `ak-challenge`, `sec-cpt`) only when the status is 400 or more or the page has fewer than 60 elements.
 - Captcha-only page (fewer than 80 elements with hCaptcha, reCAPTCHA or Turnstile).
 - 403, 429 or 503 with fewer than 300 elements.
