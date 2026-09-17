@@ -18,11 +18,16 @@ describe("matchGoogleFamilies", () => {
     expect(fetch.calls[0].options).toMatchObject({ method: "GET", timeoutMs: 2_000 });
   });
 
-  it("requests at most 8 unique names and skips names the API cannot take", async () => {
+  it("requests at most 8 unique names by default and skips names the API cannot take", async () => {
     const fetch = fakeGoogleFetch([]);
     const names = ["A1", "A1", "(unknown)", "Inter:wght@700", "Sohne; x", ...Array.from({ length: 12 }, (_, i) => `Family ${i}`)];
     await matchGoogleFamilies(names, { fetch });
     expect(fetch.calls.map((call) => new URL(call.url).searchParams.get("family"))).toEqual(["A1", ...Array.from({ length: 7 }, (_, i) => `Family ${i}`)]);
+
+    clearGoogleFontsCache();
+    const wider = fakeGoogleFetch([]);
+    await matchGoogleFamilies(names, { fetch: wider, maxNames: 10 });
+    expect(wider.calls).toHaveLength(10);
   });
 
   it("gives an empty map when the fetch throws or the API fails", async () => {

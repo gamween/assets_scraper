@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { FontFamily } from "@/lib/contract";
 import { SignLimitError } from "@/server/security/sign";
 import { fakeGoogleFetch } from "../../../../tests/integration/fonts/fake-google";
@@ -9,13 +9,21 @@ import { parseFontBinary } from "./binary";
 import { clearGoogleFontsCache } from "./google";
 import { buildFontFamilies, isConvertibleFont } from "./index";
 
+vi.mock("./binary", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./binary")>();
+  return { ...actual, parseFontBinary: vi.fn(actual.parseFontBinary) };
+});
+
 const signal = new AbortController().signal;
 const bytes = (name: string) => readFileSync(path.join(process.cwd(), "tests/fixtures/site/assets", name));
 const interMeta = parseFontBinary(bytes("__inter.woff2"));
 const jbmMeta = parseFontBinary(bytes("jbm-cyr.woff2"));
 const PAGE = "https://www.site.example/";
 
-beforeEach(() => clearGoogleFontsCache());
+beforeEach(() => {
+  clearGoogleFontsCache();
+  vi.mocked(parseFontBinary).mockClear();
+});
 
 describe("isConvertibleFont", () => {
   it("is true for an open licence without any request", async () => {
@@ -112,7 +120,7 @@ describe("buildFontFamilies", () => {
   it("reads rules from captured cross-origin stylesheets and classifies Google Fonts and Adobe Fonts", async () => {
     const gstatic = "https://fonts.gstatic.com/s/inter/v13/latin.woff2";
     const typekit = "https://use.typekit.net/af/1a2b3c/000000000000000000017701/27/l?primer=7cdcb4&fvd=n4&v=3";
-    const { byName, families } = await build({
+    const { byName, families, signer } = await build({
       sheets: [
         { url: "https://fonts.googleapis.com/css2?family=Inter", status: 200, cssText: `@font-face{font-family:'Inter';src:url(${gstatic}) format('woff2');unicode-range:U+0000-00FF}` },
         { url: "https://use.typekit.net/abc1def.css", status: 200, cssText: `@font-face{font-family:"argent-pixel-cf";src:url("${typekit}") format("woff2")}` },
@@ -144,7 +152,9 @@ describe("buildFontFamilies", () => {
       downloadable: false,
       usage: 0.25,
     });
-    expect(byName.get("argent-pixel-cf")!.faces[0].files[0]).toMatchObject({ url: typekit, format: "woff2", proxy: `signed:${typekit}` });
+    // Adobe Fonts files are listed but never offered, so they are not signed
+    expect(byName.get("argent-pixel-cf")!.faces[0].files[0]).toMatchObject({ url: typekit, format: "woff2", proxy: "" });
+    expect(signer.signed).toEqual([gstatic]);
   });
 
   it("groups captured files without a rule by binary name and ignores failed or unreadable captures", async () => {
@@ -155,10 +165,38 @@ describe("buildFontFamilies", () => {
       fontUsage: [{ stack: '"JetBrains Mono", monospace', weight: "500", style: "normal", chars: 12 }],
     });
     expect(families).toHaveLength(1);
-    expect(families[0]).toMatchObject({ name: "JetBrains Mono", cssFamilies: [], source: "third-party", sourceHost: "cdn.other.example", usedOnPage: true, usage: 1 });
+    expect(families[0]).toMatchObject({ name: "JetBrains Mono", cssFamilies: ["JetBrains Mono"], source: "third-party", sourceHost: "cdn.other.example", usedOnPage: true, usage: 1 });
     expect(families[0].faces).toEqual([
       { weight: "500", style: "normal", loaded: true, subfamily: "Medium", files: [{ url, proxy: `signed:${url}`, format: "woff2", bytes: 1_000, coversLatin: false }] },
     ]);
+  });
+
+  it("names captured files without a rule after the family the page registered them under", async () => {
+    const inter = "https://cdn.site.example/f/inter.woff2";
+    const unreadable = "https://cdn.site.example/f/brand.woff2";
+    const { byName, families } = await build({
+      // "Fallback" is declared by a local() rule, so it is not a registered family
+      fontFaces: [rule("Fallback", [{ local: "Arial" }])],
+      fonts: [captured(inter), captured(unreadable, null)],
+      fontStatuses: [loaded("MyInter"), loaded("Brand Display"), loaded("Fallback")],
+      fontUsage: [
+        { stack: "MyInter, sans-serif", weight: "400", style: "normal", chars: 6 },
+        { stack: "'Brand Display', Fallback", weight: "400", style: "normal", chars: 2 },
+      ],
+    });
+    expect(families.map((family) => family.name)).toEqual(["Inter", "Brand Display"]);
+    expect(byName.get("Inter")).toMatchObject({ cssFamilies: ["MyInter"], usedOnPage: true, usage: 0.75 });
+    expect(byName.get("Brand Display")).toMatchObject({ cssFamilies: ["Brand Display"], usedOnPage: true, usage: 0.25, license: { kind: "unknown" } });
+    expect(byName.get("Brand Display")!.faces).toEqual([
+      { weight: "400", style: "normal", loaded: true, files: [{ url: unreadable, proxy: `signed:${unreadable}`, format: "woff2", bytes: 1_000, coversLatin: true }] },
+    ]);
+
+    // with two registered families left, an unreadable file cannot be named and is dropped
+    const ambiguous = await build({
+      fonts: [captured(unreadable, null)],
+      fontStatuses: [loaded("Brand Display"), loaded("Brand Text")],
+    });
+    expect(ambiguous.families).toEqual([]);
   });
 
   it("merges CSS families that resolve to one name, keeps their faces apart and attributes Wix-style stacks", async () => {
@@ -174,6 +212,15 @@ describe("buildFontFamilies", () => {
     expect(families).toHaveLength(1);
     expect(families[0]).toMatchObject({ name: "Inter", cssFamilies: ["Inter", "Inter Medium"], source: "self-hosted", usage: 0.5 });
     expect(families[0].faces).toHaveLength(2);
+  });
+
+  it("parses only the data: URI source a rule picks", async () => {
+    const font = bytes("jbm-cyr.woff2");
+    const { families } = await build({
+      fontFaces: [rule("Tiny", [{ url: `data:font/woff;base64,${Buffer.from("wOFF, not picked").toString("base64")}` }, { url: `data:font/woff2;base64,${font.toString("base64")}` }])],
+    });
+    expect(families[0].faces[0].files).toMatchObject([{ format: "woff2", bytes: font.length }]);
+    expect(vi.mocked(parseFontBinary).mock.calls.map(([buffer]) => buffer.length)).toEqual([font.length]);
   });
 
   it("keeps percent-encoded data: URI fonts inline even when unused, and never signs them", async () => {
@@ -212,15 +259,42 @@ describe("buildFontFamilies", () => {
     expect(byName.get("Multi")!.faces[0].files.map((file) => [file.url, file.format])).toEqual([[`${base}multi.woff2`, "woff2"]]);
   });
 
-  it("stops signing at the signing cap without failing", async () => {
-    const urls = ["a", "b", "c"].map((name) => `https://www.site.example/${name}.woff2`);
-    const { families, signer } = await build({
-      fontFaces: urls.map((url, index) => rule(`Face ${index}`, [url])),
-      signer: signerThatSigns(1),
+  it("stops signing at the signing cap without failing, loaded files first", async () => {
+    const [declared, loadedFace, loadedFile] = ["a", "b", "c"].map((name) => `https://www.site.example/${name}.woff2`);
+    const { byName, families, signer } = await build({
+      fontFaces: [
+        rule("Face", [declared], { weight: "300" }),
+        rule("Face", [loadedFace], { weight: "400" }),
+        rule("Face", [loadedFile], { weight: "700" }),
+      ],
+      fonts: [captured(loadedFile)],
+      fontStatuses: [loaded("Face", "400")],
+      signer: signerThatSigns(2),
     });
-    const files = families.flatMap((family) => family.faces.flatMap((face) => face.files));
-    expect(signer.signed).toHaveLength(1);
-    expect(files.map((file) => file.proxy).sort()).toEqual(["", "", `signed:${signer.signed[0]}`]);
+    expect(families).toHaveLength(1);
+    expect(signer.signed).toEqual([loadedFile, loadedFace]);
+    expect(byName.get("Face")!.faces.map((face) => [face.weight, face.loaded, face.files[0].proxy])).toEqual([
+      ["300", false, ""],
+      ["400", true, `signed:${loadedFace}`],
+      ["700", true, `signed:${loadedFile}`],
+    ]);
+  });
+
+  it("checks Google Fonts for the first 8 used families, by display name and embedded name", async () => {
+    const faces = Array.from({ length: 9 }, (_, index) => rule(index ? `Face ${index}` : "Brand Serif", [`https://www.site.example/${index}.woff2`]));
+    const { byName, fetch } = await build({
+      fontFaces: faces,
+      fonts: [captured("https://www.site.example/0.woff2")],
+      fontStatuses: faces.map((face) => loaded(face.family)),
+      fontUsage: faces.map((face, index) => ({ stack: face.family, weight: "400", style: "normal", chars: 20 - index })),
+      google: ["Inter"],
+    });
+    expect(byName.get("Brand Serif")).toMatchObject({ googleFamily: "Inter" });
+    expect(fetch.calls.map((call) => new URL(call.url).searchParams.get("family"))).toEqual([
+      "Brand Serif",
+      "Inter",
+      ...Array.from({ length: 7 }, (_, index) => `Face ${index + 1}`),
+    ]);
   });
 
   it("offers TTF for an unknown licence only when Google Fonts knows the family, and skips the check past the deadline", async () => {

@@ -34,14 +34,16 @@ async function isGoogleFamily(name: string, fetch: SafeFetch, timeoutMs: number,
 
 /**
  * Asks the Google Fonts CSS API (spec section 9) whether each name is a Google Fonts family, through `safeFetch`,
- * in parallel, for at most `limits.googleFontsMaxFamilies` unique names with `limits.googleFontsMs` each. Answers
- * are cached per name for 5 minutes. Returns the names that matched, mapped to the exact family name. Never throws.
+ * in parallel, with `limits.googleFontsMs` each. Checks at most `maxNames` unique names, by default
+ * `limits.googleFontsMaxFamilies` (one name per family). Answers are cached per name for 5 minutes. Returns the names
+ * that matched, mapped to the exact family name. Never throws.
  */
 export async function matchGoogleFamilies(
   names: readonly string[],
-  options: { fetch: SafeFetch; signal?: AbortSignal; timeoutMs?: number },
+  options: { fetch: SafeFetch; signal?: AbortSignal; timeoutMs?: number; maxNames?: number },
 ): Promise<Map<string, string>> {
-  const unique = [...new Set(names.map((name) => name.trim()))].filter((name) => CHECKABLE_NAME.test(name)).slice(0, limits.googleFontsMaxFamilies);
+  const maxNames = options.maxNames ?? limits.googleFontsMaxFamilies;
+  const unique = [...new Set(names.map((name) => name.trim()))].filter((name) => CHECKABLE_NAME.test(name)).slice(0, maxNames);
   const timeoutMs = Math.min(options.timeoutMs ?? limits.googleFontsMs, limits.googleFontsMs);
   if (timeoutMs <= 0) return new Map();
   const matched = await Promise.all(unique.map((name) => isGoogleFamily(name, options.fetch, timeoutMs, options.signal)));

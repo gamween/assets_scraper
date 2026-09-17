@@ -10,7 +10,8 @@ export interface FileRecord {
   format: FontFormat;
   bytes?: number;
   inline?: InlineBytes;
-  meta: FontBinaryMeta | null;
+  /** For a `data:` URI, parsed on first read, so sources a rule does not pick are never parsed. */
+  readonly meta: FontBinaryMeta | null;
   captured: boolean;
   source: FontSource;
   host?: string;
@@ -89,8 +90,8 @@ export function classifySource(url: string, pageHost: string): { source: FontSou
 }
 
 /**
- * Returns a lookup that builds each file once, by URL: a `data:` URI is decoded and parsed, a remote file takes the
- * bytes count and metadata of its capture when it loaded. Null for a `data:` URI without bytes.
+ * Returns a lookup that builds each file once, by URL: a `data:` URI is decoded (and parsed when its `meta` is read), a
+ * remote file takes the bytes count and metadata of its capture when it loaded. Null for a `data:` URI without bytes.
  */
 export function createFileLookup(captured: Map<string, CapturedFont>, pageHost: string) {
   const files = new Map<string, FileRecord | null>();
@@ -101,12 +102,23 @@ export function createFileLookup(captured: Map<string, CapturedFont>, pageHost: 
     if (isDataUri(url)) {
       const decoded = decodeDataUri(url);
       if (decoded) {
-        const meta = parseFontBinary(decoded.bytes);
         const sniffed = sniffFontFormat(decoded.bytes);
         const format = sniffed !== "other" ? sniffed : (hinted ?? "other");
         const mime = FORMAT_MIME[format] ?? (decoded.mime || "application/octet-stream");
         const inline = { mime, base64: decoded.bytes.toString("base64") };
-        record = { url: "", format, bytes: decoded.bytes.length, inline, meta, captured: false, source: "data-uri" };
+        let meta: FontBinaryMeta | null | undefined;
+        record = {
+          url: "",
+          format,
+          bytes: decoded.bytes.length,
+          inline,
+          get meta() {
+            if (meta === undefined) meta = parseFontBinary(decoded.bytes);
+            return meta;
+          },
+          captured: false,
+          source: "data-uri",
+        };
       }
     } else {
       const font = captured.get(url);
