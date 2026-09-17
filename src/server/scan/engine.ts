@@ -65,6 +65,11 @@ const POST_GRACE_MS = 5_000;
 /** How long a cancelled scan waits for its cleanup (browser kill, proxy close) before the stream ends anyway. */
 const CANCEL_CLEANUP_MS = 10_000;
 const WATCHDOG_INTERVAL_MS = 500;
+/**
+ * How long a scan waits for its egress proxy to stop. It stops after page work, when the page deadline may have passed
+ * already, so a close that hangs must not hold the scan past its own deadline.
+ */
+const EGRESS_CLOSE_MS = 1_000;
 const MB = 1024 * 1024;
 
 /**
@@ -567,9 +572,11 @@ async function runBrowserStage(input: ScanContext & {
     clearInterval(watchdogTimer);
     clearTimeout(closeTimer);
     if (egress) {
-      const stats = egress.stats();
+      const proxy = egress;
+      const stats = proxy.stats();
       diagnostics.egress = { bytes: stats.bytes, blocked: stats.blocked };
-      await egress.close().catch(() => {});
+      // Not awaited past its cap: a close that hangs finishes in the background.
+      await orAfter((async () => proxy.close())().catch(() => {}), EGRESS_CLOSE_MS, undefined);
     }
   }
 

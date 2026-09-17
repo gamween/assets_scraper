@@ -612,6 +612,33 @@ describe("scan engine", () => {
     await expect.poll(() => isProcessAlive(pids[0]), { timeout: 5000 }).toBe(false);
   });
 
+  it("ends the scan when stopping the egress proxy hangs", async () => {
+    let closeCalled = 0;
+    let stopped: Promise<void> | undefined;
+    const { deps } = testDeps({
+      startEgressProxy: async () => {
+        const proxy = await startTestProxy({ allow: [fixture.host] });
+        return {
+          port: proxy.port,
+          stats: proxy.stats,
+          close: () => {
+            closeCalled = Date.now();
+            stopped = proxy.close();
+            return new Promise<void>(() => {});
+          },
+        };
+      },
+    });
+    const events = await scan(deps, `${fixture.origin}/`);
+    await stopped;
+    const done = events.at(-1);
+    if (done?.type !== "done") throw new Error(`expected done, got ${done && describeEvent(done)}`);
+    expect(done.partial).toBe(false);
+    expect(closeCalled).toBeGreaterThan(0);
+    expect(done.diagnostics.phases.process).toBeDefined();
+    expect(Date.now() - closeCalled).toBeLessThan(5_000);
+  }, 60_000);
+
   it("gives what post-processing finished as a partial result when it runs out of time", async () => {
     vi.stubEnv("VERIFY_MS", "100");
     const { deps } = testDeps({ assembleAssets: () => new Promise<AssetsOutput>(() => {}) });
