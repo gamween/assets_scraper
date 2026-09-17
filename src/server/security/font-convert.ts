@@ -60,8 +60,8 @@ export function createSlots(size: number): TakeSlot {
 /** The conversion slots of this instance. */
 export const takeConversionSlot = createSlots(CONVERSION_SLOTS);
 
-/** The last decompression queued; see `decompressWoff2`. */
-let decompressing: Promise<unknown> = Promise.resolve();
+/** Settles once the last decompression queued is done, without holding its output; see `decompressWoff2`. */
+let decompressing: Promise<void> = Promise.resolve();
 
 /**
  * The sfnt bytes of a WOFF2 file, or null when woff2 refuses them. wawoff2 answers with a view of its WebAssembly heap,
@@ -75,7 +75,7 @@ function decompressWoff2(source: Uint8Array): Promise<Uint8Array<ArrayBuffer> | 
     const { decompress } = await import("wawoff2");
     return new Uint8Array(await decompress(source));
   }).catch(() => null);
-  decompressing = run;
+  decompressing = run.then(() => {});
   return run;
 }
 
