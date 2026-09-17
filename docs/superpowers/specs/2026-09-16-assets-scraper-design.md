@@ -437,6 +437,8 @@ On a block: `error { code: "blocked", fallback }` where `fallback` contains asse
 
 The palette module is a port of the validated lab code (v2 with every fix enabled): in-page signal collection, node-side extras and post-processing.
 
+`extractPalette(page, options)` owns its in-page execution: it opens its own isolated world (the main world only when that fails, as in 7.5) and evaluates a fresh copy of the palette bundle for each call, so nothing is installed on the page. The engine only calls it, before the collector.
+
 - In-page: hide consent overlays and dialogs (including hosts outside `<body>` and zero-size fixed hosts), detect the logo, walk the DOM (8,000 elements or 600 ms) and record weighted color samples by source (`bg`, `text`, `link`, `cta`, `grad` with exclusive area, `svg`, `border`, `var`, `meta`, logo), normalizing every color through a 1x1 canvas and compositing alpha over the effective backdrop. Restore everything afterwards.
 - Node: fetch the best icon and the web manifest through `safeFetch` (600 ms), take a viewport PNG screenshot while overlays are hidden, quantize it (5-bit histogram, media rects masked except full-viewport smooth backgrounds), pool vivid hues.
 - Post: normalize shares per source, split neutral vs chromatic in OKLCh, cluster perceptually, score brand evidence, pick at most 6 brand colors and 4 neutrals (plus one slot for a dominant neutral covering at least 20 percent of the viewport), label roles only when confident.
