@@ -66,9 +66,8 @@ export function fontFileEntries(family: FontFamily): FontFileEntry[] {
 
 /**
  * A TTF is offered for WOFF2 files of convertible (open licence) families that the proxy can fetch. The conversion
- * runs on the server (`fmt=ttf`, which checks the licence again). Inline data-URI files have no proxy path, and the
- * in-browser wawoff2 conversion of spec 9 cannot run under the app CSP (WebAssembly needs 'wasm-unsafe-eval'), so
- * they get no TTF.
+ * runs on the server (`fmt=ttf`, which checks the licence again), so a file needs a proxy path (spec 9): inline
+ * data-URI files and remote files left unsigned by the signing cap get no TTF.
  */
 export function hasTtf(family: Pick<FontFamily, "convertible">, file: FontFile): boolean {
   return family.convertible && file.format === "woff2" && !file.inline && file.proxy.length > 0;

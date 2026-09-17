@@ -102,8 +102,8 @@ describe("buildZip", () => {
     expect(text(byName.get("linear-logo.svg")!)).toBe("<svg>logo</svg>");
     expect(text(byName.get("linear-hero-2.png")!)).toBe("OTHER");
     expect(text(byName.get("inter-variable-100-900.ttf")!)).toBe("TTF-REGULAR");
-    // Inline data-URI fonts come from their own bytes. They get no TTF: the proxy cannot fetch them and the app CSP
-    // blocks the WebAssembly the in-browser converter needs.
+    // Inline data-URI fonts come from their own bytes. They get no TTF: the conversion runs on the server through the
+    // proxy, and they have no proxy path.
     expect(Buffer.from(byName.get("brand-serif-400.woff2")!)).toEqual(interWoff2);
 
     expect(failed).toEqual([{ name: "Broken image", path: "linear.app-assets/images/linear-broken.png" }]);

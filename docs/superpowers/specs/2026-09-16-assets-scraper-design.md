@@ -508,7 +508,7 @@ No analytics, no public listing, `noindex` everywhere, no server-side storage of
 
 - SVG actions: `Copy SVG code` (C), `Download SVG` (D), `Open source` (O, remote files only).
 - Image actions: `Download` (D) with the real format, `Download as displayed` when `aspectChanged`, `Open source` (O).
-- Font row actions: `Download` (file or small ZIP), `Download TTF` when `convertible`, `Copy name`, `Google Fonts` link when matched, `Adobe Fonts` link instead of downloads for Adobe.
+- Font row actions: `Download` (file or small ZIP), `Download TTF` when `convertible` and the file has a proxy path (not for data-URI files or files past the signing cap), `Copy name`, `Google Fonts` link when matched, `Adobe Fonts` link instead of downloads for Adobe.
 
 **Errors.** Error panels replace the status block (copy in section 13). Blocked sites show `From public sources` assets under the message when any. `Copy debug info` copies the diagnostics JSON.
 
