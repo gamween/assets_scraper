@@ -70,7 +70,7 @@ describe("buildZip", () => {
     expect(zipFileName("linear.app")).toBe("linear.app-assets.zip");
   });
 
-  it("lays out svg, images and fonts, converts open WOFF2 fonts and reports failures", async () => {
+  it("lays out svg, images and fonts, adds TTFs for open remote WOFF2 fonts and reports failures", async () => {
     const fetchMock = mockFetch();
     const items: ZipItem[] = [
       { type: "asset", asset: logo },
@@ -97,18 +97,17 @@ describe("buildZip", () => {
       "linear.app-assets/fonts/Inter Variable/inter-variable-100-900-italic.ttf",
       "linear.app-assets/fonts/Berkeley Mono/berkeley-mono-400.woff2",
       "linear.app-assets/fonts/Brand Serif/brand-serif-400.woff2",
-      "linear.app-assets/fonts/Brand Serif/brand-serif-400.ttf",
     ]);
     const byName = new Map(entries.map((entry) => [entry.name.split("/").slice(-1)[0], entry.data]));
     expect(text(byName.get("linear-logo.svg")!)).toBe("<svg>logo</svg>");
     expect(text(byName.get("linear-hero-2.png")!)).toBe("OTHER");
     expect(text(byName.get("inter-variable-100-900.ttf")!)).toBe("TTF-REGULAR");
+    // Inline data-URI fonts come from their own bytes. They get no TTF: the proxy cannot fetch them and the app CSP
+    // blocks the WebAssembly the in-browser converter needs.
     expect(Buffer.from(byName.get("brand-serif-400.woff2")!)).toEqual(interWoff2);
-    // Inline fonts have no proxy path, so the TTF comes from the in-browser WOFF2 conversion.
-    expect([...byName.get("brand-serif-400.ttf")!.slice(0, 4)]).toEqual([0x00, 0x01, 0x00, 0x00]);
 
     expect(failed).toEqual([{ name: "Broken image", path: "linear.app-assets/images/linear-broken.png" }]);
-    expect(progress.at(-1)).toEqual([11, 11]);
+    expect(progress.at(-1)).toEqual([10, 10]);
     expect(fetchMock.mock.calls.some((call) => String(call[0]).startsWith("https://static.linear.app/fonts/Berkeley") && String(call[0]).includes("fmt"))).toBe(false);
   });
 

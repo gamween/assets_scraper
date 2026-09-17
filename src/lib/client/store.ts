@@ -17,6 +17,7 @@ import {
 } from "./filters";
 import type { ScanErrorInfo } from "./scan-client";
 import { readString, writeString } from "./storage";
+import type { ZipFailure } from "./zip";
 
 export type Phase = "idle" | "scanning" | "results" | "error";
 export type StepStatus = "active" | "done";
@@ -62,6 +63,8 @@ export interface AppState {
   selectionMode: boolean;
   detailId: string | null;
   zip: ZipProgress | null;
+  /** Entries a finished ZIP had to skip, listed by the toast's `Show` action. */
+  zipFailures: ZipFailure[] | null;
   recent: string[];
 
   setBooted(): void;
@@ -93,6 +96,7 @@ export interface AppState {
   previousDetail(): void;
 
   setZip(progress: ZipProgress | null): void;
+  setZipFailures(failures: ZipFailure[] | null): void;
   setRecent(recent: string[]): void;
 }
 
@@ -117,6 +121,7 @@ const scanReset = {
   selectionMode: false,
   detailId: null,
   zip: null,
+  zipFailures: null,
 } satisfies Partial<AppState>;
 
 function applyStep(steps: AppState["steps"], step: StepId, state: "start" | "done"): AppState["steps"] {
@@ -249,6 +254,7 @@ export function createAppStore() {
     previousDetail: () => set((state) => ({ detailId: stepDetail(state, -1) })),
 
     setZip: (zip) => set({ zip }),
+    setZipFailures: (zipFailures) => set({ zipFailures }),
     setRecent: (recent) => set({ recent }),
   }));
 }
@@ -278,13 +284,20 @@ export function getSections(state: AppState): Section[] {
   return value;
 }
 
-let visibleCache: { sections: Section[]; expanded: SectionId[]; value: Item[] } | null = null;
+/** Collapsed sections open while a search is active, so matching small icons and declared files show up. */
+export const isSearching = (state: Pick<AppState, "query">) => state.query.trim().length > 0;
+
+let visibleCache: { sections: Section[]; expanded: SectionId[]; searching: boolean; value: Item[] } | null = null;
 
 export function getVisibleItems(state: AppState): Item[] {
   const sections = getSections(state);
-  if (visibleCache && visibleCache.sections === sections && visibleCache.expanded === state.expanded) return visibleCache.value;
-  const value = visibleItems(sections, new Set(state.expanded));
-  visibleCache = { sections, expanded: state.expanded, value };
+  const searching = isSearching(state);
+  if (visibleCache && visibleCache.sections === sections && visibleCache.expanded === state.expanded && visibleCache.searching === searching) {
+    return visibleCache.value;
+  }
+  const expanded = searching ? new Set(sections.map((section) => section.id)) : new Set(state.expanded);
+  const value = visibleItems(sections, expanded);
+  visibleCache = { sections, expanded: state.expanded, searching, value };
   return value;
 }
 

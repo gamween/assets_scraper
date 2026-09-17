@@ -94,7 +94,8 @@ export function standInPng(seed: string, width: number, height: number, tone: St
     return encodePng(w, h, rgba);
   }
 
-  const ink: Rgb = tone === "light" ? [246, 246, 248] : tone === "dark" ? [24, 24, 27] : hsl(hue, 0.6, 0.5);
+  const ink: Rgb = tone === "light" ? [246, 246, 248] : tone === "dark" ? [24, 24, 27] : hsl(hue, 0.55, 0.52);
+  const glyph: Rgb = tone === "light" ? [24, 24, 27] : tone === "dark" ? [246, 246, 248] : [255, 255, 255];
   const inset = Math.min(w, h) * 0.12;
   const corner = Math.min(w, h) * 0.22;
   for (let y = 0; y < h; y++) {
@@ -105,8 +106,10 @@ export function standInPng(seed: string, width: number, height: number, tone: St
       const dx = Math.max(inset + corner - x, x - (w - inset - corner), 0);
       const dy = Math.max(inset + corner - y, y - (h - inset - corner), 0);
       if (Math.hypot(dx, dy) > corner) continue;
-      const stripe = tone === "mixed" && (x + y) % 24 < 8;
-      set(i, stripe ? [128, 128, 136] : ink, 255);
+      // A soft transparent edge and a simple glyph, like an app icon.
+      const edge = Math.hypot(dx, dy) > corner - 1.5 ? 140 : 255;
+      const inGlyph = Math.hypot(x - w / 2, y - h / 2) < Math.min(w, h) * 0.16;
+      set(i, inGlyph ? glyph : ink, edge);
     }
   }
   return encodePng(w, h, rgba);

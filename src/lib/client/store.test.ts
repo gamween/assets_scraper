@@ -103,6 +103,14 @@ describe("app store", () => {
     expect(keys(store)).toContain("asset:icon");
   });
 
+  it("opens collapsed sections while a search is active", () => {
+    const store = loadedStore();
+    store.getState().setQuery("icon");
+    expect(getVisibleItems(store.getState()).map((item) => item.key)).toEqual(["asset:icon"]);
+    store.getState().selectAllVisible();
+    expect(keys(store)).toEqual(["asset:icon"]);
+  });
+
   it("keeps the selection across tab changes", () => {
     const store = loadedStore();
     store.getState().toggle("asset:hero");

@@ -1,4 +1,5 @@
 import { normalizeInputUrl } from "@/lib/url";
+import { revokePreviewUrls } from "./preview-urls";
 import { addRecent, readRecent, removeRecent } from "./recent";
 import { startScan, type ScanHandle } from "./scan-client";
 import { appStore } from "./store";
@@ -30,6 +31,7 @@ function writeHistory(path: string, mode: HistoryMode) {
 /** Starts a scan of an already normalized URL. Any scan in flight is aborted first. */
 export function runScan(url: string, host: string, history: HistoryMode = "push"): void {
   current?.abort();
+  revokePreviewUrls();
   const store = appStore.getState();
   store.beginScan({ url, host });
   writeHistory(shareablePath(url), history);
