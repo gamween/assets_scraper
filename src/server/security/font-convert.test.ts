@@ -90,10 +90,12 @@ describe("convertWoff2", () => {
   it("decompresses to TrueType or CFF sfnt, labelled by outline format", async () => {
     const ttf = await convertWoff2(inter, new AbortController().signal);
     expect(ttf).toMatchObject({ ok: true, contentType: "font/ttf" });
-    expect(ttf.ok && ttf.bytes.subarray(0, 4).toString("hex")).toBe("00010000");
+    expect(ttf.ok && Buffer.from(ttf.bytes.subarray(0, 4)).toString("hex")).toBe("00010000");
+    // a copy that owns exactly its bytes, not a view of the WebAssembly heap
+    expect(ttf.ok && ttf.bytes.buffer.byteLength).toBe(ttf.ok && ttf.bytes.byteLength);
     const otf = await convertWoff2(ss3, new AbortController().signal);
     expect(otf).toMatchObject({ ok: true, contentType: "font/otf" });
-    expect(otf.ok && otf.bytes.subarray(0, 4).toString("latin1")).toBe("OTTO");
+    expect(otf.ok && Buffer.from(otf.bytes.subarray(0, 4)).toString("latin1")).toBe("OTTO");
     // the licence is read from the sfnt woff2 produced, so fontkit never decodes untrusted brotli streams in JavaScript
     expect(fonts.parseFontBinary.mock.calls.map(([buffer]) => buffer.subarray(0, 4).toString("latin1"))).toEqual(["\0\x01\0\0", "OTTO"]);
     expect(fonts.isConvertibleFont.mock.calls.map(([meta]) => meta)).toEqual([{ format: "ttf" }, { format: "otf" }]);

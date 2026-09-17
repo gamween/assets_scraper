@@ -144,12 +144,19 @@ async function convertFont(
           : errorResponse(415, "not-convertible", "The font could not be converted.");
       }
       const { bytes, contentType } = converted;
-      served = bytes.length;
-      return new Response(new Uint8Array(bytes), {
+      served = bytes.byteLength;
+      // one chunk of a stream, because Response copies a typed array body: the converted bytes are never copied again
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(bytes);
+          controller.close();
+        },
+      });
+      return new Response(body, {
         headers: {
           ...RESPONSE_HEADERS,
           "content-type": contentType,
-          "content-length": String(bytes.length),
+          "content-length": String(bytes.byteLength),
           "content-disposition": contentDisposition(dl, contentType),
         },
       });

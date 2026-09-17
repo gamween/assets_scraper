@@ -68,18 +68,19 @@ let decompressing: Promise<unknown> = Promise.resolve();
  * which the next decompression overwrites (or detaches when the heap grows), and hands it over through an `await`, so two
  * conversions that reach it in the same turn corrupt each other before either copies. Decompressions therefore run one
  * at a time, each copied out before the next starts; they block the main thread anyway, so this costs no throughput.
+ * That copy is the only one: callers keep and serve it as it is.
  */
-function decompressWoff2(source: Uint8Array): Promise<Buffer | null> {
+function decompressWoff2(source: Uint8Array): Promise<Uint8Array<ArrayBuffer> | null> {
   const run = decompressing.then(async () => {
     const { decompress } = await import("wawoff2");
-    return Buffer.from(await decompress(source));
+    return new Uint8Array(await decompress(source));
   }).catch(() => null);
   decompressing = run;
   return run;
 }
 
 export type Woff2Conversion =
-  | { ok: true; bytes: Buffer; contentType: "font/ttf" | "font/otf" }
+  | { ok: true; bytes: Uint8Array<ArrayBuffer>; contentType: "font/ttf" | "font/otf" }
   | { ok: false; reason: "license" | "not-convertible" };
 
 /**
@@ -97,7 +98,7 @@ export async function convertWoff2(source: Buffer, signal: AbortSignal): Promise
   if (!output || (contentType !== "font/ttf" && contentType !== "font/otf")) return { ok: false, reason: "not-convertible" };
   let meta: FontBinaryMeta | null = null;
   try {
-    meta = parseFontBinary(output);
+    meta = parseFontBinary(Buffer.from(output.buffer, output.byteOffset, output.byteLength));
   } catch {}
   const convertible = await untilAborted(isConvertibleFont(meta, { fetch: safeFetch, signal }), signal);
   signal.throwIfAborted();
