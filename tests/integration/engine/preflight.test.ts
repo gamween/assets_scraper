@@ -225,7 +225,9 @@ describe("buildFallback", () => {
     const query = new URL(wikidataRequests[0].url).searchParams.get("query") ?? "";
     expect(query).toContain("wdt:P856");
     expect(query).toContain("wdt:P154");
-    expect(query).toContain('"example.com"');
+    // Exact website IRIs, which the query service answers from its index; a text filter would time out.
+    expect(query).toContain("VALUES ?site { <https://example.com/> <https://example.com> <https://www.example.com/> <https://www.example.com>");
+    expect(query).not.toContain("FILTER");
   });
 
   it("keeps the fallback small enough for one NDJSON line, with every source represented", async () => {

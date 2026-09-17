@@ -147,11 +147,26 @@ interface SparqlResults {
   results?: { bindings?: { logo?: { value?: string }; site?: { value?: string } }[] };
 }
 
-/** Wikidata P154 (logo image) of the item whose P856 (official website) is this host (spec 8.9). */
+/**
+ * The official website IRIs Wikidata may hold for a host: http or https, with or without `www.`, with or without the
+ * trailing slash. Empty for a host that is not a plain DNS name (an IP literal in brackets cannot be one).
+ */
+export function officialWebsiteIris(host: string): string[] {
+  const bareHost = host.toLowerCase().replace(/^www\./, "");
+  if (!/^[a-z0-9-]+(\.[a-z0-9-]+)*$/.test(bareHost)) return [];
+  return ["https", "http"].flatMap((scheme) => ["", "www."].flatMap((www) => ["/", ""].map((slash) => `<${scheme}://${www}${bareHost}${slash}>`)));
+}
+
+/**
+ * Wikidata P154 (logo image) of the item whose P856 (official website) is this host (spec 8.9). The query matches the
+ * website IRIs exactly, which the query service answers from its index in well under a second; a text filter over
+ * every official website (`FILTER(CONTAINS(...))`) scans them all and never answers within `limits.wikidataMs`.
+ */
 async function wikidataLogo(host: string, fetch: SafeFetch, signal: AbortSignal): Promise<Draft | null> {
   const bareHost = host.toLowerCase().replace(/^www\./, "");
-  const literal = JSON.stringify(bareHost);
-  const query = `SELECT ?logo ?site WHERE { ?item wdt:P856 ?site . FILTER(CONTAINS(LCASE(STR(?site)), ${literal})) ?item wdt:P154 ?logo } LIMIT 5`;
+  const iris = officialWebsiteIris(host);
+  if (!iris.length) return null;
+  const query = `SELECT ?logo ?site WHERE { VALUES ?site { ${iris.join(" ")} } ?item wdt:P856 ?site . ?item wdt:P154 ?logo } LIMIT 5`;
   const response = await fetch(`https://query.wikidata.org/sparql?format=json&query=${encodeURIComponent(query)}`, {
     headers: { "user-agent": PUBLIC_SOURCE_USER_AGENT, accept: "application/sparql-results+json" },
     timeoutMs: limits.wikidataMs,
@@ -164,7 +179,7 @@ async function wikidataLogo(host: string, fetch: SafeFetch, signal: AbortSignal)
   const data = await response.json<SparqlResults>();
   for (const binding of data.results?.bindings ?? []) {
     try {
-      // CONTAINS also matches other sites ("x.com" is in "dropbox.com"), so keep the exact host only.
+      // The query only asks for this host's IRIs; a binding for any other host is ignored all the same.
       if (new URL(binding.site?.value ?? "").hostname.toLowerCase().replace(/^www\./, "") !== bareHost) continue;
       const url = new URL(binding.logo?.value ?? "");
       if (url.protocol === "http:") url.protocol = "https:";
