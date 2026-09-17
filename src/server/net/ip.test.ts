@@ -8,7 +8,7 @@ vi.mock("node:dns/promises", async (importOriginal) => {
   return { ...actual, default: { ...actual, lookup: dnsMock.lookup }, lookup: dnsMock.lookup };
 });
 
-import { isOwnHost, isPublicIp, isTestAllowed, privateHostReason, resolvePublicHost, SsrfError } from "./ip";
+import { isOwnHost, isPublicIp, isTestAllowed, pinnedConnectOptions, pinnedLookup, privateHostReason, resolvePublicAddresses, resolvePublicHost, SsrfError } from "./ip";
 
 describe("isPublicIp", () => {
   it.each([
@@ -142,6 +142,15 @@ describe("resolvePublicHost", () => {
     await expect(resolvePublicHost("example.com", 443)).resolves.toBe("93.184.215.14");
     expect(dnsMock.lookup).toHaveBeenLastCalledWith("example.com", { all: true, order: "verbatim" });
 
+    // every checked record, in resolver order and without duplicates, so callers can fall back to the next one
+    dnsMock.lookup.mockResolvedValueOnce([
+      { address: "2606:2800:21f:cb07:6820:80da:af6b:8b2c", family: 6 },
+      { address: "93.184.215.14", family: 4 },
+      { address: "93.184.215.14", family: 4 },
+    ]);
+    await expect(resolvePublicAddresses("example.com", 443)).resolves.toEqual(["2606:2800:21f:cb07:6820:80da:af6b:8b2c", "93.184.215.14"]);
+    await expect(resolvePublicAddresses("[2606:4700:4700::1111]", 443)).resolves.toEqual(["2606:4700:4700::1111"]);
+
     dnsMock.lookup.mockResolvedValueOnce([{ address: "93.184.215.14", family: 4 }, { address: "10.0.0.7", family: 4 }]);
     await expect(resolvePublicHost("rebind.example", 443)).rejects.toMatchObject({ reason: "private-dns", host: "rebind.example" });
 
@@ -171,5 +180,29 @@ describe("resolvePublicHost", () => {
     await expect(resolvePublicHost("127.0.0.1", 443)).rejects.toMatchObject({ reason: "private-ip" });
     dnsMock.lookup.mockResolvedValueOnce([{ address: "127.0.0.1", family: 4 }]);
     await expect(resolvePublicHost("localhost", 3000)).resolves.toBe("127.0.0.1");
+  });
+});
+
+describe("pinned connections", () => {
+  const addresses = ["2606:4700:4700::1111", "1.1.1.1"];
+
+  it("answers a lookup with the checked addresses only, all of them when asked", () => {
+    const lookup = pinnedLookup(addresses);
+    const all = vi.fn();
+    lookup("anything.example", { all: true }, all);
+    expect(all).toHaveBeenCalledWith(null, [{ address: "2606:4700:4700::1111", family: 6 }, { address: "1.1.1.1", family: 4 }]);
+    const one = vi.fn();
+    lookup("anything.example", {}, one);
+    expect(one).toHaveBeenCalledWith(null, "2606:4700:4700::1111", 6);
+    expect(dnsMock.lookup).not.toHaveBeenCalled();
+  });
+
+  it("connects to a single address directly and lets Node try several in turn", () => {
+    expect(pinnedConnectOptions("[2606:4700:4700::1111]", ["2606:4700:4700::1111"])).toEqual({ host: "2606:4700:4700::1111" });
+    expect(pinnedConnectOptions("one.example", ["1.1.1.1"])).toEqual({ host: "1.1.1.1" });
+    const several = pinnedConnectOptions("dual.example", addresses);
+    expect(several).toMatchObject({ host: "dual.example", autoSelectFamily: true, lookup: expect.any(Function) });
+    // Node skips the lookup for an IP literal host, so such a host only ever reaches the first checked address
+    expect(pinnedConnectOptions("1.1.1.1", addresses)).toEqual({ host: "2606:4700:4700::1111" });
   });
 });

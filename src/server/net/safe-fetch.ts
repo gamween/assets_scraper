@@ -2,7 +2,7 @@ import net from "node:net";
 import { Agent, fetch as undiciFetch } from "undici";
 import { limits } from "@/server/config/limits";
 import type { SafeFetch, SafeFetchOptions, SafeResponse } from "@/server/scan/types";
-import { isOwnHost, isTestAllowed, privateHostReason, resolvePublicHost, SsrfError } from "./ip";
+import { isOwnHost, isTestAllowed, pinnedLookup, privateHostReason, resolvePublicAddresses, SsrfError } from "./ip";
 
 export type SafeFetchErrorCode = "invalid-url" | "blocked-address" | "own-host" | "unsupported-port" | "dns" | "connect" | "timeout" | "too-large" | "too-many-redirects" | "aborted";
 
@@ -20,37 +20,43 @@ const DNS_CODES = new Set(["ENOTFOUND", "EAI_AGAIN", "EAI_NONAME", "EAI_NODATA",
 const CONNECT_TIMEOUT_MS = 10_000;
 
 /**
- * DNS for every hostname undici connects to goes through `resolvePublicHost`, and the socket connects to the address
- * it returned, so a second resolution can never swap in a private address. Node skips `lookup` for IP literals, which
- * `checkTarget` checks before each request. Port 0 never matches the test allowlist, so this agent always applies the
- * private checks: allowlisted test origins use `testAgent` instead.
+ * DNS for every hostname undici connects to goes through `resolvePublicAddresses`, and the socket connects only to the
+ * addresses it returned (the next one when a connection fails), so a second resolution can never swap in a private
+ * address. Node skips `lookup` for IP literals, which `checkTarget` checks before each request. The lookup gets no
+ * port, so it takes one: port 0 never matches the test allowlist, and allowlisted test origins get an agent per port.
  */
-const checkedLookup: net.LookupFunction = (hostname, options, callback) => {
-  resolvePublicHost(hostname, 0).then(
-    (address) => {
-      const family = net.isIP(address);
-      if (options.all) callback(null, [{ address, family }]);
-      else callback(null, address, family);
-    },
-    (error: NodeJS.ErrnoException) => callback(error, ""),
-  );
-};
+function checkedLookup(port: number): net.LookupFunction {
+  return (hostname, options, callback) => {
+    resolvePublicAddresses(hostname, port).then(
+      (addresses) => pinnedLookup(addresses)(hostname, options, callback),
+      (error: NodeJS.ErrnoException) => callback(error, ""),
+    );
+  };
+}
 
-const publicAgent = new Agent({ connect: { lookup: checkedLookup, timeout: CONNECT_TIMEOUT_MS } });
-let testAgent: Agent | undefined;
+const checkedAgent = (port: number) =>
+  new Agent({ connect: { lookup: checkedLookup(port), autoSelectFamily: true, timeout: CONNECT_TIMEOUT_MS } });
 
-type Target = "public" | "test";
+const publicAgent = checkedAgent(0);
+const testAgents = new Map<number, Agent>();
 
-/** URL policy for one hop: scheme, own host, IP literal, port. DNS names are checked at connect time. */
-function checkTarget(url: URL): Target {
+/**
+ * URL policy for one hop: scheme, own host, IP literal, port. Returns the agent to connect with; DNS names are checked
+ * at connect time by its lookup.
+ */
+function checkTarget(url: URL): Agent {
   if (url.protocol !== "http:" && url.protocol !== "https:") throw new SafeFetchError("invalid-url", `Unsupported scheme: ${url.protocol}`);
   const hostname = url.hostname.replace(/^\[(.*)\]$/, "$1");
   const port = Number(url.port || (url.protocol === "https:" ? 443 : 80));
   if (isOwnHost(hostname)) throw new SafeFetchError("own-host", `Own host: ${hostname}`);
-  if (isTestAllowed(hostname, port)) return "test";
+  if (isTestAllowed(hostname, port)) {
+    let agent = testAgents.get(port);
+    if (!agent) testAgents.set(port, (agent = checkedAgent(port)));
+    return agent;
+  }
   if (privateHostReason(hostname)) throw new SafeFetchError("blocked-address", `Blocked address: ${hostname}`);
   if (port !== 80 && port !== 443) throw new SafeFetchError("unsupported-port", `Unsupported port: ${port}`);
-  return "public";
+  return publicAgent;
 }
 
 function parseUrl(value: string | URL, base?: URL): URL {
@@ -199,8 +205,7 @@ export const safeFetch: SafeFetch = async (input: string, options: SafeFetchOpti
   let url = parseUrl(input);
   for (let redirects = 0; ; redirects++) {
     if (callerSignal?.aborted) throw new SafeFetchError("aborted", "Request aborted");
-    const target = checkTarget(url);
-    const dispatcher = target === "test" ? (testAgent ??= new Agent({ connect: { timeout: CONNECT_TIMEOUT_MS } })) : publicAgent;
+    const dispatcher = checkTarget(url);
     let response: Awaited<ReturnType<typeof undiciFetch>>;
     try {
       response = await undiciFetch(url, { method, headers, redirect: "manual", signal, dispatcher });

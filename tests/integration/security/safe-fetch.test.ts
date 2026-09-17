@@ -4,12 +4,12 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { serveFixture, type FixtureServer } from "../../fixtures/serve";
 
 /** Fixed answers for chosen names; every other name goes to the real resolver. */
-const dns = vi.hoisted(() => ({ answers: new Map<string, string>(), lookup: vi.fn() }));
+const dns = vi.hoisted(() => ({ answers: new Map<string, string | string[]>(), lookup: vi.fn() }));
 vi.mock("node:dns/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:dns/promises")>();
   dns.lookup.mockImplementation(async (hostname: string, options: LookupAllOptions) => {
-    const address = dns.answers.get(hostname);
-    return address === undefined ? actual.lookup(hostname, options) : [{ address, family: net.isIP(address) }];
+    const answer = dns.answers.get(hostname);
+    return answer === undefined ? actual.lookup(hostname, options) : [answer].flat().map((address) => ({ address, family: net.isIP(address) }));
   });
   return { ...actual, default: { ...actual, lookup: dns.lookup }, lookup: dns.lookup };
 });
@@ -105,6 +105,20 @@ describe("safeFetch", () => {
     await expect(safeFetch(`${allowed.origin}/redirect-name`)).rejects.toMatchObject({ code: "blocked-address" });
     expect(dns.lookup).toHaveBeenCalledWith("victim.test", expect.anything());
     expect(victimHits).toBe(0);
+  });
+
+  it("falls back to the next checked address when the first one fails", async () => {
+    // `::1` has no listener on this port (or no IPv6 at all), 127.0.0.1 has the fixture server
+    dns.answers.set("dual.test", ["::1", "127.0.0.1"]);
+    process.env.SCAN_TEST_ALLOW_HOSTS = `${allowed.host},dual.test:${allowed.port}`;
+    try {
+      const res = await safeFetch(`http://dual.test:${allowed.port}/`, { timeoutMs: 5_000 });
+      expect(res.status).toBe(200);
+      expect(await res.text()).toContain("Fixture Co");
+      expect(dns.lookup).toHaveBeenCalledWith("dual.test", expect.objectContaining({ all: true }));
+    } finally {
+      process.env.SCAN_TEST_ALLOW_HOSTS = allowed.host;
+    }
   });
 
   it("closes the connection on cancel() after stream() was taken", async () => {

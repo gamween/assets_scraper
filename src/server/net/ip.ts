@@ -91,12 +91,13 @@ export function privateHostReason(host: string): "private-ip" | "private-dns" | 
 const DNS_NAME = /^(?=.{1,253}$)[a-z0-9_-]{1,63}(?:\.[a-z0-9_-]{1,63})*$/;
 
 /**
- * Resolves a host once and returns the address callers must connect to (never re-resolve, so DNS rebinding has no
- * window). IP literals, including bracketed IPv6 and legacy IPv4 spellings, are checked without DNS and returned in
- * canonical form. Every A and AAAA record must be public. Own hosts are always denied; an exact test allowlist entry
- * skips the private checks.
+ * Resolves a host once and returns every address callers may connect to, in resolver order, without duplicates. Callers
+ * never resolve again, so DNS rebinding has no window: they connect to these addresses, trying the next one when a
+ * connection fails (`pinnedConnectOptions`, `pinnedLookup`). IP literals, including bracketed IPv6 and legacy IPv4
+ * spellings, are checked without DNS and returned alone in canonical form. Every A and AAAA record must be public. Own
+ * hosts are always denied; an exact test allowlist entry skips the private checks.
  */
-export async function resolvePublicHost(host: string, port: number): Promise<string> {
+export async function resolvePublicAddresses(host: string, port: number): Promise<string[]> {
   let name = host.toLowerCase();
   const bracketed = name.startsWith("[");
   if (bracketed) {
@@ -112,7 +113,7 @@ export async function resolvePublicHost(host: string, port: number): Promise<str
 
   if (ipaddr.isValid(name)) {
     if (reason) throw new SsrfError(reason, name);
-    return ipaddr.parse(name).toString();
+    return [ipaddr.parse(name).toString()];
   }
   if (!DNS_NAME.test(name)) throw new SsrfError("invalid-host", host);
   if (reason) throw new SsrfError(reason, name);
@@ -125,5 +126,34 @@ export async function resolvePublicHost(host: string, port: number): Promise<str
   }
   if (records.length === 0) throw new SsrfError("dns-failure", name);
   if (!allowed && records.some((record) => !isPublicIp(record.address))) throw new SsrfError("private-dns", name);
-  return records[0].address;
+  return [...new Set(records.map((record) => record.address))];
+}
+
+/** The first address `resolvePublicAddresses` returns, for callers that connect to one address only. */
+export async function resolvePublicHost(host: string, port: number): Promise<string> {
+  return (await resolvePublicAddresses(host, port))[0];
+}
+
+/**
+ * A `lookup` for `net.connect` (and undici or `http.request`, which pass it through) that answers with addresses that
+ * were already checked and never queries DNS. With `all`, as Node asks when it autoselects the address family, every
+ * address is returned, so a dead first record falls back to the next one.
+ */
+export function pinnedLookup(addresses: readonly string[]): net.LookupFunction {
+  const records = addresses.map((address) => ({ address, family: net.isIP(address) }));
+  return (_hostname, options, callback) => {
+    if (options.all) callback(null, records);
+    else callback(null, records[0].address, records[0].family);
+  };
+}
+
+/**
+ * `net.connect` or `http.request` target options that reach only `addresses` (from `resolvePublicAddresses(host)`):
+ * one address is connected to directly; several go through `pinnedLookup` with family autoselection, which tries them
+ * in turn (IPv6 and IPv4 interleaved, 250 ms per attempt before the next one starts, the last one until the caller's
+ * connect timeout).
+ */
+export function pinnedConnectOptions(host: string, addresses: readonly string[]): { host: string; lookup?: net.LookupFunction; autoSelectFamily?: boolean } {
+  if (addresses.length === 1 || net.isIP(host)) return { host: addresses[0] };
+  return { host, lookup: pinnedLookup(addresses), autoSelectFamily: true };
 }
