@@ -241,4 +241,9 @@ describe("directAsset", () => {
     expect(asset).toMatchObject({ kind: "image", role: "image", format: "other", name: "Annual Report", filename: "files-annual-report.pdf", original: { url: "https://files.example.com/docs/Annual%20Report.pdf?v=2" } });
     expect(directAsset({ url: "https://example.com/logo.svg", contentType: "image/svg+xml", signer: createFakeSigner() })).toMatchObject({ kind: "svg", format: "svg", filename: "example-logo.svg" });
   });
+
+  it("keeps a file name with a malformed percent escape as it is", () => {
+    const asset = directAsset({ url: "https://example.com/docs/100%25%zz.pdf", contentType: "application/pdf", signer: createFakeSigner() });
+    expect(asset).toMatchObject({ name: "100%25%zz", filename: "example-100-25-zz.pdf", original: { url: "https://example.com/docs/100%25%zz.pdf" } });
+  });
 });

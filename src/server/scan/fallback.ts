@@ -97,11 +97,20 @@ function toAssets(drafts: Draft[], host: string, signer: Signer): Asset[] {
   return assets;
 }
 
+/** `100%25.pdf` gives `100%.pdf`; a malformed escape (`%zz`) keeps the segment as it is. */
+function decodePathSegment(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+}
+
 /** The single asset of a URL that turned out to be a file, not a page (spec 7.2 phase 1, `not-html`). */
 export function directAsset(input: { url: string; contentType: string; bytes?: number; signer: Signer }): Asset {
   const { url, contentType, bytes, signer } = input;
   const host = new URL(url).hostname;
-  const file = decodeURIComponent(new URL(url).pathname.split("/").pop() ?? "").replace(/\.[a-z0-9]{1,5}$/i, "");
+  const file = decodePathSegment(new URL(url).pathname.split("/").pop() ?? "").replace(/\.[a-z0-9]{1,5}$/i, "");
   const name = file.trim() || `${capitalize(hostLabel(host))} file`;
   const format = formatOf(url, contentType);
   const [asset] = toAssets([{ url, role: "image", foundIn: "network", name, basename: name, format, bytes }], host, signer);
