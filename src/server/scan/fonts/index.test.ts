@@ -387,10 +387,40 @@ describe("buildFontFamilies", () => {
       expect(byName.get(family)!.faces.flatMap((face) => face.files.map((file) => file.url)), family).toEqual([url]);
     }
 
-    // Past the cap, a CSSOM rule that lists more sources costs nothing more
-    const inputs = new Map<number, PostInput>();
-    const hostile = (size: number) => inputs.get(size) ?? inputs.set(size, inputOf({ fontFaces: [rule("Face", urls("f", size))] })).get(size)!;
-    expect(await growthFactor((size) => buildFontFamilies(hostile(size)), 20_000)).toBeLessThan(2);
+    // Past the cap, a CSSOM rule that lists more sources costs nothing more: its other entries are never read
+    const read = new Set<string>();
+    const src = new Proxy(rule("Face", urls("f", 160_000)).src, {
+      get(target, key, receiver) {
+        if (typeof key === "string" && /^\d+$/.test(key)) read.add(key);
+        return Reflect.get(target, key, receiver);
+      },
+    });
+    const { families } = await buildFontFamilies(inputOf({ fontFaces: [{ ...rule("Face", []), src }] }));
+    expect(families.map((family) => family.name)).toEqual(["Face"]);
+    expect([...read]).toEqual(Array.from({ length: 16 }, (_, index) => String(index)));
+  });
+
+  it("stops reading captured stylesheets once the scan deadline passes or the scan is aborted", async () => {
+    const sheet = (family: string): CapturedSheet => ({ url: `${PAGE}${family}.css`, status: 200, cssText: `@font-face{font-family:${family};src:url(/${family}.woff2)}` });
+    const late = await build({ fontFaces: [rule("Cssom", [`${PAGE}c.woff2`])], sheets: [sheet("Sheet")], deadline: Date.now() - 1 });
+    expect(late.families.map((family) => family.name)).toEqual(["Cssom"]);
+
+    // Aborted while the first stylesheet is read: the next one is not
+    const controller = new AbortController();
+    const { cssText, ...first } = sheet("First");
+    const input = inputOf({
+      sheets: [
+        Object.defineProperty({ ...first, cssText: "" }, "cssText", {
+          get: () => {
+            controller.abort();
+            return cssText;
+          },
+        }),
+        sheet("Second"),
+      ],
+    });
+    const { families } = await buildFontFamilies({ ...input, signal: controller.signal });
+    expect(families.map((family) => family.name)).toEqual(["First"]);
   });
 
   it("skips families longer than 1,024 characters from the CSSOM and document.fonts before decoding them", async () => {

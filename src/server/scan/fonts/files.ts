@@ -49,16 +49,15 @@ const SNIFF_BYTES = 36;
 
 export const isDataUri = (url: string): boolean => /^data:/i.test(url);
 
-/** Absolute http(s) URL without its fragment, or null. */
+/**
+ * Absolute http(s) URL without its fragment, or null. Not `new URL`: pages can list a million invalid URLs, and a throw
+ * costs 10 times a parse.
+ */
 export function remoteUrl(url: string, base?: string): string | null {
-  try {
-    const parsed = new URL(url, base);
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
-    parsed.hash = "";
-    return parsed.href;
-  } catch {
-    return null;
-  }
+  const parsed = URL.parse(url, base);
+  if (!parsed || (parsed.protocol !== "http:" && parsed.protocol !== "https:")) return null;
+  parsed.hash = "";
+  return parsed.href;
 }
 
 /** The media type of a `data:` URI, whether its payload is base64, and the payload. Null without a comma. */

@@ -150,13 +150,15 @@ function pageHostOf(page: PostInput["page"]): string {
  * Rules from the CSSOM and from captured stylesheets (cross-origin sheets the CSSOM cannot read), normalized, with their
  * families decoded, at most `MAX_RULES_PER_SOURCE` from each, and the first `MAX_SRC_ENTRIES` sources of each rule, as
  * `parseFontSrc` reads them. A rule found in both adds the same file to the same face twice, which `addToGroup` ignores.
- * Also returns the lowercase families of every rule, including rules with `local()` sources only.
+ * Stylesheets are read one by one until the scan deadline passes or the scan is aborted, since each one can take a
+ * while to tokenize and nothing can interrupt it. Also returns the lowercase families of every rule, including rules
+ * with `local()` sources only.
  */
 function collectRules(input: PostInput): { rules: RawFontFaceRule[]; declaredFamilies: Set<string> } {
   const sheetRules: RawFontFaceRule[] = [];
   for (const sheet of input.network.sheets) {
     const maxRules = MAX_RULES_PER_SOURCE - sheetRules.length;
-    if (maxRules <= 0) break;
+    if (maxRules <= 0 || Date.now() > input.deadline || input.signal.aborted) break;
     if (isOk(sheet.status)) for (const rule of parseFontFaceCss(sheet.cssText, sheet.url, { maxRules })) sheetRules.push(rule);
   }
   const rules: RawFontFaceRule[] = [];

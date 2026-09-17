@@ -99,12 +99,9 @@ class ByteStack {
 }
 
 function absoluteUrl(value: string, baseUrl: string): FontSrc | null {
-  if (!value) return null;
-  try {
-    return { url: new URL(value, baseUrl).href };
-  } catch {
-    return null;
-  }
+  // Not `new URL`: a stylesheet can hold a million invalid URLs, and a throw costs 10 times a parse
+  const url = value ? URL.parse(value, baseUrl) : null;
+  return url ? { url: url.href } : null;
 }
 
 /** A `url(`, `local(` or `format(` function of a `src` entry, read at its own nesting level. */

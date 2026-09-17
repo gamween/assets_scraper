@@ -204,7 +204,7 @@ describe("parseFontSrc", () => {
     expect(factor).toBeLessThan(LINEAR_GROWTH_BOUND);
   });
 
-  it("reads at most 16 url() and local() sources, valid or not, and stops reading the value there", async () => {
+  it("reads at most 16 url() and local() sources, valid or not, and stops reading the value there", () => {
     const sources = (count: number) => Array.from({ length: count }, (_, index) => `url(${index}.woff2) format(woff2)`).join(",");
     const first16 = Array.from({ length: 16 }, (_, index) => ({ url: `https://s.example/css/${index}.woff2`, format: "woff2" }));
     expect(MAX_SRC_ENTRIES).toBe(16);
@@ -215,10 +215,20 @@ describe("parseFontSrc", () => {
     expect(parseFontSrc(`${'url("http://[bad") '.repeat(16)}url(a.woff2)`, BASE)).toEqual([]);
     expect(parseFontSrc(`${"local(), ".repeat(15)}local(A), local(B), url(b.woff2)`, BASE)).toEqual([{ local: "A" }]);
     // A 15 MB stylesheet with one rule of a million sources took 2 seconds and 338 MB to list one file. Past the cap,
-    // the rest of the value is not tokenized again, so a longer list costs nothing more.
-    const lists = new Map<number, string>();
-    const list = (size: number) => lists.get(size) ?? lists.set(size, sources(size)).get(size)!;
-    expect(await growthFactor((size) => parseFontSrc(list(size), BASE), 20_000)).toBeLessThan(2);
+    // the rest of the value is neither tokenized again nor parsed as URLs, so a longer list costs nothing more.
+    const parses = vi.spyOn(URL, "parse");
+    const read = (count: number) => {
+      tokenizer.tokens = 0;
+      parses.mockClear();
+      parseFontSrc(sources(count), BASE);
+      return { tokens: tokenizer.tokens, urls: parses.mock.calls.length };
+    };
+    try {
+      expect(read(160_000)).toEqual(read(17));
+      expect(read(17).urls).toBe(16);
+    } finally {
+      parses.mockRestore();
+    }
   });
 
   it("keeps the first format of a legacy list and drops unresolvable URLs", () => {
