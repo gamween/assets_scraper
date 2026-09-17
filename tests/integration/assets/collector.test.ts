@@ -26,6 +26,16 @@ beforeAll(async () => {
         <a href="/logout">Log out</a> <a href="/wordpress-tips">Tips</a> <a href="/brand-assets">Assets</a> <a href="/brand-assets#top">Assets again</a>
       </body></html>`);
     },
+    "/labels.html": (_req, res) => {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(`<!doctype html><html><head><title>Labels</title></head><body>
+        <a href="/a" aria-label="Link label"><svg width="30" height="30" alt="Alt one"><title>Title one</title><rect width="30" height="30"/></svg></a>
+        <svg width="31" height="31" alt="Alt two" title="Attribute two" data-framer-name="Framer two"><title>Title two</title><rect width="31" height="31"/></svg>
+        <svg width="32" height="32" alt="Alt three" title="Attribute three"><rect width="32" height="32"/></svg>
+        <div data-framer-name="Framer four"><img src="/assets/og.png" title="Attribute four"></div>
+        <img src="/assets/touch.png" title="Attribute five">
+      </body></html>`);
+    },
   });
   browser = await launchChrome();
   const { context, page } = await openPage(browser, `${server.origin}/`);
@@ -190,6 +200,20 @@ describe("collector noise and edge cases", () => {
     expect(edge.svgs.find((s) => s.markup.includes("Plain"))).toMatchObject({ hasLiveText: false });
     expect(edge.brandLinks).toEqual([{ href: `${server.origin}/brand-assets`, text: "Assets" }]);
     expect(edge.manifestUrl).toBe(`${server.origin}/site.webmanifest`);
+  });
+});
+
+describe("collector labels", () => {
+  it("takes the first label in order: aria-label, link aria-label, <title>, alt, data-framer-name, title attribute", async () => {
+    const { context, page } = await openPage(browser, `${server.origin}/labels.html`);
+    const labels = await runCollector(page, collectorOptions(server.host, "Fixture"));
+    await context.close();
+    const svgLabel = (width: number) => labels.svgs.find((s) => s.rect?.width === width)?.label;
+    expect(svgLabel(30)).toBe("Link label");
+    expect(svgLabel(31)).toBe("Title two");
+    expect(svgLabel(32)).toBe("Alt three");
+    expect(labels.candidates.find((c) => c.url === asset("og.png"))?.label).toBe("Framer four");
+    expect(labels.candidates.find((c) => c.url === asset("touch.png"))?.label).toBe("Attribute five");
   });
 });
 
