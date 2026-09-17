@@ -8,6 +8,8 @@ permissions:
 env:
   NODE_VERSION: 24
   CHROME_EXECUTABLE_PATH: /usr/bin/google-chrome
+  NO_COLOR: "1"
+  FORCE_COLOR: "0"
 
 jobs:
   diag:
@@ -30,12 +32,12 @@ jobs:
           set +e
           C=tests/integration/engine/capture.test.ts
           L=tests/integration/engine/launch.test.ts
-          for s in 1 2 3 4 5 6; do (while :; do :; done) & done
           case "${{ matrix.variant }}" in
-            orphan-orig) F=$L; T="ORIG kills a browser left behind" ;;
-            orphan-fixed) F=$L; T="(?<!ORIG )kills a browser left behind" ;;
-            capture-orig) F=$C; T="ORIG (keeps the bytes|reserves the per-body)" ;;
-            capture-fixed) F=$C; T="(?<!ORIG )(keeps the bytes of the reads in flight|reserves the per-body cap)" ;;
+            orphan-orig) F=$L; N=40; T="ORIG kills a browser left behind"; for s in 1 2 3 4 5 6; do (while :; do :; done) & done ;;
+            orphan-fixed) F=$L; N=40; T="(?<!ORIG )kills a browser left behind"; for s in 1 2 3 4 5 6; do (while :; do :; done) & done ;;
+            capture-orig) F=$C; N=24; T="ORIG (keeps the bytes|reserves the per-body)" ;;
+            capture-fixed) F=$C; N=24; T="(?<!ORIG )(keeps the bytes of the reads in flight|reserves the per-body cap)" ;;
           esac
-          for i in $(seq 1 20); do DIAG_LAUNCH=1 npx vitest run --project integration $F -t "$T" 2>&1 | grep -E "DIAG stale|× |✓ .*(kills|keeps|reserves)|expected|Tests  "; done
-          kill $(jobs -p) || true
+          for i in $(seq 1 $N); do npx vitest run --project integration $F -t "$T" > out.txt 2>&1; grep -E "Tests " out.txt; grep -E "AssertionError" out.txt | grep -v "##" ; done | sort | uniq -c
+          kill $(jobs -p) 2>/dev/null
+          true
