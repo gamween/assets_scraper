@@ -54,7 +54,7 @@ function SearchField() {
   const inputRef = useRef<HTMLInputElement>(null);
 
   return (
-    <div className="relative min-w-0 flex-1 sm:w-[240px] sm:flex-none lg:w-[280px]">
+    <div className="relative min-w-0 flex-1 sm:max-w-[280px] lg:w-[280px] lg:flex-none">
       <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-text-3" aria-hidden="true" />
       <input
         ref={inputRef}
@@ -158,7 +158,49 @@ export function BackgroundControl({ value, onChange, className }: { value: Backg
   );
 }
 
-/** Spec 12.2 sticky filter row: tabs with counts, search (`/`), sort and the preview background control. */
+/** A swatch of a preview background: `Auto` is half light, half dark. */
+function BackgroundSwatch({ value }: { value: Background }) {
+  return (
+    <span aria-hidden="true" className={cn("relative size-3.5 shrink-0 overflow-hidden rounded-[3px] border border-border-strong", value === "grid" ? "bg-grid [background-size:7px_7px]" : value === "dark" ? "bg-preview-dark" : "bg-preview-light")}>
+      {value === "auto" ? <span className="absolute inset-y-0 right-0 w-1/2 bg-preview-dark" /> : null}
+    </span>
+  );
+}
+
+/**
+ * The same `Auto · Light · Dark · Grid` choice for phones, where the segmented control does not fit the filter row: a
+ * swatch of the current background over a native select, so the options open in the system picker.
+ */
+function BackgroundSelect({ value, onChange, className }: { value: Background; onChange: (value: Background) => void; className?: string }) {
+  return (
+    <div
+      className={cn(
+        "relative flex h-8 shrink-0 items-center gap-1 rounded-md border border-border bg-surface pr-1.5 pl-2 text-text-3 transition-colors duration-100 hover:border-border-strong has-[select:focus-visible]:border-accent has-[select:focus-visible]:shadow-[0_0_0_3px_var(--accent-soft)]",
+        className,
+      )}
+    >
+      <BackgroundSwatch value={value} />
+      <ChevronDown className="size-3.5" aria-hidden="true" />
+      <select
+        aria-label="Preview background"
+        value={value}
+        onChange={(event) => onChange(event.target.value as Background)}
+        className="absolute inset-0 size-full cursor-pointer appearance-none opacity-0 outline-none"
+      >
+        {BACKGROUNDS.map((option) => (
+          <option key={option} value={option}>
+            {BACKGROUND_LABELS[option]}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+/**
+ * Spec 12.2 sticky filter row: tabs with counts, search (`/`), sort and the preview background control. One row from
+ * 1024 px; below, the tabs sit over the controls, and phones pick the background from a compact select next to the tabs.
+ */
 export function FilterBar() {
   const background = useApp((s) => s.background);
   const setBackground = useApp((s) => s.setBackground);
@@ -168,11 +210,12 @@ export function FilterBar() {
 
   return (
     <div className="sticky top-[calc(var(--top-bar-height)+env(safe-area-inset-top,0px))] z-30 mt-6 border-b border-border bg-bg">
-      <div className="page-x flex flex-wrap items-stretch gap-x-6 md:h-(--filter-bar-height) md:flex-nowrap">
-        <div className="flex h-11 min-w-0 flex-1 items-stretch md:h-auto md:flex-none">
+      <div className="page-x flex flex-wrap items-stretch gap-x-6 lg:h-(--filter-bar-height) lg:flex-nowrap">
+        <div className="flex h-11 min-w-0 flex-1 items-stretch lg:h-auto lg:flex-none">
           <Tabs />
+          <BackgroundSelect value={background} onChange={setBackground} className="ml-auto self-center sm:hidden" />
         </div>
-        <div className="flex w-full items-center gap-2 pb-2.5 md:ml-auto md:w-auto md:pb-0">
+        <div className="flex w-full items-center gap-2 pb-2.5 lg:ml-auto lg:w-auto lg:pb-0">
           <SearchField />
           <SortSelect />
           <BackgroundControl value={background} onChange={setBackground} className="hidden sm:flex" />

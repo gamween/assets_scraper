@@ -102,3 +102,15 @@ for (const viewport of VIEWPORTS) {
     });
   });
 }
+
+test("results never scroll sideways between the reference widths", async ({ page }) => {
+  await openResults(page);
+  for (const width of [360, 480, 640, 768, 900, 1024, 1280, 1680]) {
+    await page.setViewportSize({ width, height: 900 });
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+    expect(overflow, `${width} px scrolls horizontally`).toBeLessThanOrEqual(0);
+    // Spec 12.6 page gutter: 32, or 16 on phones.
+    const gutter = await page.locator("[data-testid=results] .page-x").first().evaluate((el) => getComputedStyle(el).paddingLeft);
+    expect(gutter).toBe(width < 640 ? "16px" : "32px");
+  }
+});

@@ -208,6 +208,25 @@ test.describe("results", () => {
     await expect(page.getByText("9 hidden: tracking pixels and spacer images")).toBeVisible();
   });
 
+  test.describe("on a phone", () => {
+    test.use({ viewport: { width: 390, height: 844 } });
+
+    test("the background control is a compact select next to the tabs", async ({ page }) => {
+      await openResults(page, linear);
+      await expect(page.getByRole("radiogroup", { name: "Preview background" })).toBeHidden();
+      const select = page.getByRole("combobox", { name: "Preview background" });
+      await expect(select).toBeVisible();
+      await expect(select.locator("option")).toHaveText(["Auto", "Light", "Dark", "Grid"]);
+      const well = section(page, "Logos").getByTestId("asset-card").first().getByTestId("preview-well");
+      await expect(well).toHaveAttribute("data-background", "dark");
+      await select.selectOption("grid");
+      await expect(well).toHaveAttribute("data-background", "grid");
+      // Both controls write the same preference.
+      await page.setViewportSize({ width: 1024, height: 768 });
+      await expect(page.getByRole("radiogroup", { name: "Preview background" }).getByRole("radio", { name: "Grid" })).toHaveAttribute("aria-checked", "true");
+    });
+  });
+
   test("a partial scan shows the banner", async ({ page }) => {
     const partial = withDone(loadFixture("framer"), (done) => ({ ...done, partial: true }));
     await openResults(page, partial, {}, "https://framer.com/");

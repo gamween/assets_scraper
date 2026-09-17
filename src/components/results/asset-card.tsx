@@ -108,14 +108,18 @@ export const AssetCard = memo(function AssetCard({ asset }: { asset: Asset }) {
           </IconAction>
         </div>
       </div>
-      <div className="flex min-w-0 flex-col gap-0.5 border-t border-border px-3 pt-2 pb-2.5">
+      <div className="flex min-w-0 flex-col gap-0.5 border-t border-border p-3">
         <span data-testid="asset-filename" className="flex min-w-0 text-small text-text">
           <span className="truncate">{base}</span>
           <span className="shrink-0">{extension}</span>
         </span>
-        <span data-testid="asset-meta" id={`meta-${asset.id}`} className="truncate font-mono text-mono text-text-3 tabular-nums">
+        {/*
+         * One line of whole parts, most useful first: a part that does not fit wraps onto a hidden second line, so a
+         * narrow tile shows `JPG · 1200×630` rather than a part cut by an ellipsis. The detail view lists everything.
+         */}
+        <span data-testid="asset-meta" id={`meta-${asset.id}`} className="flex h-4 min-w-0 flex-wrap overflow-hidden font-mono text-mono text-text-3 tabular-nums">
           {assetMetaParts(asset).map((part, index) => (
-            <span key={index}>
+            <span key={index} className="whitespace-pre">
               {/* Mono spaces are wide: pull the separator in so the reference 221 px tile fits the whole line. */}
               {index > 0 ? <span className="-mx-[4px] text-text-3/60">{" · "}</span> : null}
               {part}
