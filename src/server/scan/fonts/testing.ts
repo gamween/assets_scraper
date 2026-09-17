@@ -60,15 +60,35 @@ const GROWTH = 8;
  */
 export const LINEAR_GROWTH_BOUND = 20;
 
+/** The shortest round `msPerRun` times: shorter runs repeat, so that timer resolution does not decide the result. */
+const MIN_ROUND_MS = 20;
+
+/** Milliseconds per run of `task`: the fastest of 3 rounds, each running it again until it took `MIN_ROUND_MS`. */
+async function msPerRun(task: () => unknown): Promise<number> {
+  let fastest = Infinity;
+  for (let round = 0; round < 3; round += 1) {
+    const started = performance.now();
+    let runs = 0;
+    let elapsed = 0;
+    while (elapsed < MIN_ROUND_MS) {
+      await task();
+      runs += 1;
+      elapsed = performance.now() - started;
+    }
+    fastest = Math.min(fastest, elapsed / runs);
+  }
+  return fastest;
+}
+
 /**
  * How many times slower `task` gets when its input grows from `size` to `GROWTH` times `size`: about 8 for linear work
- * and 64 for quadratic work, whatever the speed of the machine. Warms up first and keeps the fastest of 3 runs per size.
- * Pick a `size` where one run takes a few milliseconds at least, and where `GROWTH` times `size` stays under the caps of
- * the code under test.
+ * and 64 for quadratic work, whatever the speed of the machine. Warms up first, and repeats runs shorter than
+ * `MIN_ROUND_MS`, so a fast task is measured as precisely as a slow one. Pick a `size` where the work under test costs
+ * more than the setup of the task, and where `GROWTH` times `size` stays under the caps of the code under test.
  */
 export async function growthFactor(task: (size: number) => unknown, size: number): Promise<number> {
   await task(size);
-  const small = await fastestMs(() => task(size));
-  const large = await fastestMs(() => task(size * GROWTH));
-  return large / Math.max(small, 1);
+  const small = await msPerRun(() => task(size));
+  const large = await msPerRun(() => task(size * GROWTH));
+  return large / small;
 }
