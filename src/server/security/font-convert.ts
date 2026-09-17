@@ -63,18 +63,37 @@ export const takeConversionSlot = createSlots(CONVERSION_SLOTS);
 /** Settles once the last decompression queued is done, without holding its output; see `decompressWoff2`. */
 let decompressing: Promise<void> = Promise.resolve();
 
+/** What wawoff2 throws for bytes woff2 refuses, the one failure that is expected. */
+const WOFF2_REFUSED = "ConvertWOFF2ToTTF failed";
+
+const errorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
 /**
- * The sfnt bytes of a WOFF2 file, or null when woff2 refuses them. wawoff2 answers with a view of its WebAssembly heap,
+ * The sfnt bytes of a WOFF2 file, or null when they cannot be had. wawoff2 answers with a view of its WebAssembly heap,
  * which the next decompression overwrites (or detaches when the heap grows), and hands it over through an `await`, so two
  * conversions that reach it in the same turn corrupt each other before either copies. Decompressions therefore run one
  * at a time, each copied out before the next starts; they block the main thread anyway, so this costs no throughput.
  * That copy is the only one: callers keep and serve it as it is.
+ *
+ * Only bytes woff2 refuses fail silently. A module that does not load (a bundling or tracing problem) or a runtime
+ * abort, after which every later call on the instance fails, would otherwise look like input it refused, so they are logged.
  */
 function decompressWoff2(source: Uint8Array): Promise<Uint8Array<ArrayBuffer> | null> {
   const run = decompressing.then(async () => {
-    const { decompress } = await import("wawoff2");
-    return new Uint8Array(await decompress(source));
-  }).catch(() => null);
+    let decompress: typeof import("wawoff2").decompress;
+    try {
+      ({ decompress } = await import("wawoff2"));
+    } catch (error) {
+      console.error(`WOFF2 conversion unavailable, wawoff2 did not load: ${errorMessage(error)}`);
+      return null;
+    }
+    try {
+      return new Uint8Array(await decompress(source));
+    } catch (error) {
+      if (!(error instanceof Error && error.message === WOFF2_REFUSED)) console.error(`WOFF2 decompression failed: ${errorMessage(error)}`);
+      return null;
+    }
+  });
   decompressing = run.then(() => {});
   return run;
 }

@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const fonts = vi.hoisted(() => ({
   parseFontBinary: vi.fn((buffer: Buffer) => ({ format: ({ wOF2: "woff2", OTTO: "otf", "\0\x01\0\0": "ttf" } as Record<string, string>)[buffer.subarray(0, 4).toString("latin1")] ?? "other" })),
@@ -154,5 +154,45 @@ describe("convertWoff2", () => {
     expect(await convertWoff2(truncated, new AbortController().signal)).toEqual({ ok: false, reason: "not-convertible" });
     expect(fonts.parseFontBinary).not.toHaveBeenCalled();
     expect(fonts.isConvertibleFont).not.toHaveBeenCalled();
+  });
+});
+
+describe("convertWoff2 when wawoff2 itself fails", () => {
+  afterEach(() => {
+    vi.doUnmock("wawoff2");
+    vi.resetModules();
+    vi.restoreAllMocks();
+  });
+
+  /** `convertWoff2` from a fresh module graph, so a mocked wawoff2 is imported again. */
+  async function freshConvert(): Promise<typeof convertWoff2> {
+    vi.resetModules();
+    return (await import("./font-convert")).convertWoff2;
+  }
+
+  it("logs nothing for bytes woff2 refuses", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(await convertWoff2(Buffer.from(inter.subarray(0, 64)), new AbortController().signal)).toEqual({ ok: false, reason: "not-convertible" });
+    expect(log).not.toHaveBeenCalled();
+  });
+
+  it("logs a wawoff2 module that fails to load", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.doMock("wawoff2", () => {
+      throw new Error("Cannot find package 'wawoff2'");
+    });
+    const convert = await freshConvert();
+    expect(await convert(inter, new AbortController().signal)).toEqual({ ok: false, reason: "not-convertible" });
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(String(log.mock.calls[0][0])).toContain("wawoff2");
+  });
+
+  it("logs a runtime abort, which is not a refusal of the bytes", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.doMock("wawoff2", () => ({ decompress: async () => { throw new WebAssembly.RuntimeError("Aborted(OOM)"); } }));
+    const convert = await freshConvert();
+    expect(await convert(inter, new AbortController().signal)).toEqual({ ok: false, reason: "not-convertible" });
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(String(log.mock.calls[0][0])).toContain("Aborted(OOM)");
   });
 });
