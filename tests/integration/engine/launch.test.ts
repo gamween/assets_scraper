@@ -90,6 +90,36 @@ describe("withBrowser", () => {
     expect(onDequeued.mock.calls).toEqual([[Math.max(...queueTimes)]]);
   });
 
+  it("starts the egress proxy of a queued call only once it has its slot", async () => {
+    const order: string[] = [];
+    let release = () => {};
+    const held = withBrowser(open(), () => {
+      order.push("first runs");
+      return new Promise<void>((resolve) => (release = resolve));
+    });
+    await expect.poll(() => order, { timeout: 20_000 }).toContain("first runs");
+    const startProxy = vi.fn(async () => {
+      order.push("proxy started");
+      return proxy.port;
+    });
+    const second = withBrowser(
+      { egressPort: startProxy, signal: new AbortController().signal, onQueued: () => order.push("queued"), onDequeued: () => order.push("dequeued") },
+      async () => void order.push("second runs"),
+    );
+    await delay(300);
+    expect(startProxy).not.toHaveBeenCalled();
+    release();
+    await Promise.all([held, second]);
+    expect(order).toEqual(["first runs", "queued", "dequeued", "proxy started", "second runs"]);
+  });
+
+  it("never starts the egress proxy when the health gate refuses the launch", async () => {
+    vi.stubEnv("MIN_TMP_FREE_MB", String(2 ** 40));
+    const startProxy = vi.fn(async () => proxy.port);
+    await expect(withBrowser({ egressPort: startProxy, signal: new AbortController().signal }, async () => {})).rejects.toBeInstanceOf(BusyError);
+    expect(startProxy).not.toHaveBeenCalled();
+  });
+
   it("rejects queued calls with BusyError after the queue wait", async () => {
     vi.stubEnv("MAX_CONCURRENT_SCANS", "1");
     vi.stubEnv("QUEUE_WAIT_MS", "200");
@@ -155,6 +185,30 @@ describe("withBrowser", () => {
     await expect.poll(() => isProcessAlive(pid), { timeout: 5000 }).toBe(false);
 
     expect(await withBrowser(open(), async () => "next scan runs")).toBe("next scan runs");
+  });
+
+  it("stops waiting for a hung graceful close and kills the browser as soon as the signal aborts", async () => {
+    const controller = new AbortController();
+    let pid = 0;
+    let finished = false;
+    const running = withBrowser({ egressPort: proxy.port, signal: controller.signal }, async ({ browser, pid: launchedPid }) => {
+      pid = launchedPid ?? 0;
+      // A busy page can hang the close of a single-process browser (critic R6): here the first close never answers.
+      const close = browser.close.bind(browser);
+      let calls = 0;
+      browser.close = (options) => (calls++ === 0 ? new Promise<void>(() => {}) : close(options));
+      finished = true;
+      return "collected";
+    });
+    await expect.poll(() => finished, { timeout: 20_000 }).toBe(true);
+    await delay(500);
+    expect(isProcessAlive(pid)).toBe(true);
+    const started = Date.now();
+    controller.abort(new Error("deadline"));
+    // What fn returned is kept: only the wait for the close is cut short.
+    await expect(running).resolves.toBe("collected");
+    expect(Date.now() - started).toBeLessThan(2000);
+    await expect.poll(() => isProcessAlive(pid), { timeout: 2000 }).toBe(false);
   });
 
   it("kills a browser left behind by a Node process that died mid-scan before launching", async () => {

@@ -8,6 +8,9 @@ import { BusyError, withBrowser } from "@/server/browser/launch";
 import { NotImplementedError } from "@/server/errors";
 import { SafeFetchError } from "@/server/net/safe-fetch";
 import { createScanEngine, type ScanEngineDeps } from "@/server/scan/engine";
+import { buildFontFamilies } from "@/server/scan/fonts";
+import { COLLECTOR_SOURCE } from "@/server/scan/inpage/generated/collector";
+import { assembleAssets } from "@/server/scan/post/assemble";
 import type { AssetsOutput, FontsOutput, PostInput } from "@/server/scan/types";
 import { serveFixture, type FixtureServer } from "../../fixtures/serve";
 import { createFakeFetch, createFakeSigner, isProcessAlive, startTestProxy, type TestProxy } from "./helpers";
@@ -49,6 +52,15 @@ beforeAll(async () => {
     "/challenge": html(403, '<!doctype html><html><head><title>Just a moment...</title><link rel="icon" href="/assets/touch.png"></head><body><div id="challenge"></div></body></html>'),
     "/loop.html": html(200, '<!doctype html><title>Busy</title><div style="height:4000px">Busy</div><img src="/assets/photo-small.png"><script>setTimeout(() => { for (;;) {} }, 500)</script>'),
     "/download.html": html(200, `<!doctype html><title>Download</title><a id="file" href="/download.bin" download="${downloadName}">file</a><script>document.getElementById("file").click()</script>`),
+    // An unreferenced sprite symbol and a Lottie frame: drops the collector itself counts (spec 8.1, 8.2).
+    "/sprites.html": html(
+      200,
+      `<!doctype html><title>Sprites</title>
+      <div class="lottie-player"><svg width="100" height="100"><g id="__lottie_element_1"><rect width="100" height="100"/></g></svg></div>
+      <svg style="display:none"><symbol id="used" viewBox="0 0 8 8"><path d="M0 0h8v8z"/></symbol><symbol id="unused" viewBox="0 0 8 8"><circle cx="4" cy="4" r="4"/></symbol></svg>
+      <svg width="16" height="16"><use href="#used"/></svg>
+      <img src="/assets/photo-small.png" alt="Photo">`,
+    ),
     "/wall": (_req, res) => {
       res.writeHead(403, { "content-type": "text/plain" });
       res.end("error code: 1010");
@@ -91,8 +103,8 @@ const fakeAssets = async (input: PostInput): Promise<AssetsOutput> => {
     id: "photo", kind: "image", role: "image", name: "Photo", filename: "fixture-photo.png", format: "png", foundIn: ["network"], visible: true, declaredOnly: false,
     order: 0, score: 100, usedCount: 1, tone: photo?.tone ?? "unknown", display: source, original: source,
   };
-  // Like the real assembleAssets, hidden only counts what post-processing drops: the engine adds the collector's noise.
-  return { assets: [asset], hidden: { spacer: 2 }, warnings: [] };
+  // Like the real assembleAssets, hidden holds the collector's drops and adds what post-processing drops.
+  return { assets: [asset], hidden: { ...input.collector.noise, spacer: 2 }, warnings: [] };
 };
 const fakeFonts = async (): Promise<FontsOutput> => ({ families: [], hidden: {} });
 
@@ -169,6 +181,7 @@ describe("scan engine", () => {
     const done = events.at(-1);
     if (done?.type !== "done") throw new Error("expected done");
     expect(done.partial).toBe(false);
+    // The collector's drop reaches stats.hidden once, through assembleAssets.
     expect(done.stats).toMatchObject({ assets: 1, svg: 0, images: 1, fonts: 0, hidden: { spacer: 2, "unreferenced-symbol": 1 } });
     expect(done.diagnostics).toMatchObject({ collector: "isolated", version: "dev", bodyTimeouts: 0 });
     expect(done.diagnostics.egress.bytes).toBeGreaterThan(0);
@@ -331,7 +344,7 @@ describe("scan engine", () => {
       await expect.poll(() => holding, { timeout: 20_000 }).toBe(true);
       // The next browser launch fails its health gate.
       vi.stubEnv("MIN_TMP_FREE_MB", String(2 ** 40));
-      const { deps } = testDeps();
+      const { deps, proxies } = testDeps();
       const events = await scan(deps, `${fixture.origin}/`, {
         onEvent: (event) => {
           if (event.type === "step" && event.step === "queue" && event.state === "start") setTimeout(() => release(), 300);
@@ -339,6 +352,8 @@ describe("scan engine", () => {
       });
       await held;
       expect(events.map(describeEvent)).toEqual(["accepted", "step open start", "step queue start", "step queue done", "error busy"]);
+      // Neither the wait for the slot nor the refused launch started an egress proxy.
+      expect(proxies).not.toHaveBeenCalled();
       const last = events.at(-1);
       expect(last?.type === "error" && last.diagnostics?.queueMs).toBeGreaterThanOrEqual(250);
     } finally {
@@ -357,6 +372,42 @@ describe("scan engine", () => {
     expect(events.find((event) => event.type === "palette")).toEqual({ type: "palette", palette: null });
     expect(done.diagnostics.phases.palette).toBeGreaterThanOrEqual(3_900);
     expect(done.diagnostics.phases.palette).toBeLessThan(6_000);
+  });
+
+  it("keeps what page work collected when the browser close hangs past the page deadline", async () => {
+    vi.stubEnv("SCAN_DEADLINE_MS", "16000");
+    const started = Date.now();
+    // Page work stops 5 s before the scan deadline. Collection ends 1 s before that, then the graceful close hangs.
+    const pageDeadlineAt = started + 11_000;
+    const lateCollector = `${FAKE_COLLECTOR}
+{
+  const collect = globalThis.__assetsScraper.collect;
+  globalThis.__assetsScraper.collect = async (options) => {
+    await new Promise((resolve) => setTimeout(resolve, Math.max(0, ${pageDeadlineAt - 1_000} - Date.now())));
+    return collect(options);
+  };
+}`;
+    const { deps, pids } = testDeps({
+      collectorSource: lateCollector,
+      withBrowser: (options, fn) =>
+        withBrowser(options, (session) => {
+          if (session.pid) pids.push(session.pid);
+          const close = session.browser.close.bind(session.browser);
+          let calls = 0;
+          session.browser.close = (closeOptions) => (calls++ === 0 ? new Promise<void>(() => {}) : close(closeOptions));
+          return fn(session);
+        }),
+    });
+    const events = await scan(deps, `${fixture.origin}/`);
+    const done = events.at(-1);
+    if (done?.type !== "done") throw new Error(`expected done, got ${done && describeEvent(done)}`);
+    // The page deadline kills the browser instead of waiting 5 s for the close, so post-processing still has its time.
+    expect(Date.now() - started).toBeLessThan(13_000);
+    expect(done.partial).toBe(false);
+    expect(events.find((event) => event.type === "assets")).toMatchObject({ items: [{ id: "photo" }] });
+    expect(done.stats.hidden).toEqual({ spacer: 2, "unreferenced-symbol": 1 });
+    expect(pids).toHaveLength(1);
+    await expect.poll(() => isProcessAlive(pids[0]), { timeout: 5000 }).toBe(false);
   });
 
   it("gives what post-processing finished as a partial result when it runs out of time", async () => {
@@ -416,15 +467,52 @@ describe("scan engine", () => {
   });
 
   it("runs the default in-page and post-processing modules end to end", async () => {
-    // Only the network, proxy and signer are faked here. While the asset, font and palette tracks are stubs this ends
-    // with an internal error; with the real modules it ends with done. Either way it never throws or hangs.
+    // Only the network, proxy and signer are faked; the real modules run behind pass-through spies.
     const log = vi.spyOn(console, "error").mockImplementation(() => {});
     const { deps } = testDeps();
     const { fetch, startEgressProxy, withBrowser: browser, createSigner } = deps;
-    const events = await scan({ fetch, startEgressProxy, withBrowser: browser, createSigner }, `${fixture.origin}/`);
+    const stubs: string[] = [];
+    const recordStub = (error: unknown) => {
+      if (error instanceof NotImplementedError) stubs.push(error.message);
+      throw error;
+    };
+    let collectorNoise: PostInput["collector"]["noise"] = {};
+    let assetsOut: AssetsOutput | undefined;
+    let fontsOut: FontsOutput | undefined;
+    const events = await scan(
+      {
+        fetch,
+        startEgressProxy,
+        withBrowser: browser,
+        createSigner,
+        assembleAssets: async (input) => {
+          collectorNoise = input.collector.noise;
+          return (assetsOut = await assembleAssets(input).catch(recordStub));
+        },
+        buildFontFamilies: async (input) => (fontsOut = await buildFontFamilies(input).catch(recordStub)),
+      },
+      `${fixture.origin}/sprites.html`,
+    );
+    const logged = log.mock.calls;
     log.mockRestore();
-    const last = events.at(-1);
-    expect(last?.type === "done" || (last?.type === "error" && last.code === "internal")).toBe(true);
     expect(events.filter((event) => event.type === "done" || event.type === "error")).toHaveLength(1);
+    const last = events.at(-1);
+
+    if (COLLECTOR_SOURCE.includes("Not implemented") || stubs.length) {
+      // While the collector or a post-processing track is a stub on this branch, the scan fails as an internal error.
+      expect(last).toMatchObject({ type: "error", code: "internal", message: "Something went wrong on our side" });
+      expect(logged).toContainEqual([expect.stringMatching(/^Scan [0-9a-f-]{36} failed$/), expect.objectContaining({ message: expect.stringContaining("Not implemented") })]);
+      return;
+    }
+
+    // With the real modules: done, and each drop counted once. assembleAssets reports the collector's drops, and the
+    // engine only sums the assets' and the fonts' counts.
+    if (last?.type !== "done" || !assetsOut || !fontsOut) throw new Error(`expected done, got ${last && describeEvent(last)}`);
+    expect(collectorNoise).toMatchObject({ "unreferenced-symbol": 1 });
+    expect(last.stats.hidden["unreferenced-symbol"]).toBe(1);
+    for (const [reason, count] of Object.entries(collectorNoise)) expect(assetsOut.hidden[reason as keyof typeof collectorNoise]).toBeGreaterThanOrEqual(count ?? 0);
+    const expected: Record<string, number> = {};
+    for (const counts of [assetsOut.hidden, fontsOut.hidden]) for (const [reason, count] of Object.entries(counts)) if (count) expected[reason] = (expected[reason] ?? 0) + count;
+    expect(last.stats.hidden).toEqual(expected);
   });
 });

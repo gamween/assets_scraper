@@ -261,7 +261,8 @@ async function runScan({ url, deps, cancel, emit }: ScanContext): Promise<void> 
     const [assetsResult, fontsResult] = outputs;
     if (!assetsResult && !fontsResult) throw new ScanFailure("timeout", "Processing the page took too long");
     const processedPartly = !assetsResult || !fontsResult;
-    const assetsOut: AssetsOutput = assetsResult?.value ?? { assets: [], hidden: {}, warnings: [] };
+    // assembleAssets reports the collector's drops in its own `hidden`; when it ran out of time, they are reported here.
+    const assetsOut: AssetsOutput = assetsResult?.value ?? { assets: [], hidden: collector.noise, warnings: [] };
     const fontsOut: FontsOutput = fontsResult?.value ?? { families: [], hidden: {} };
     step("process", "done");
 
@@ -304,9 +305,9 @@ async function runScan({ url, deps, cancel, emit }: ScanContext): Promise<void> 
         svg: assets.filter((asset) => asset.kind === "svg").length,
         images: assets.filter((asset) => asset.kind === "image").length,
         fonts: fontsOut.families.length,
-        // Spec 8.2: the collector's drops and post-processing's drops. assembleAssets and buildFontFamilies only count
-        // their own, so each reason is counted once.
-        hidden: mergeCounts(collector.noise, assetsOut.hidden, fontsOut.hidden),
+        // Spec 8.2, each drop counted once: assembleAssets owns the collector's drops (`collector.noise`: Lottie frames,
+        // unreferenced symbols, oversized inline SVGs) and adds them to its own `hidden`, so they are not added again here.
+        hidden: mergeCounts(assetsOut.hidden, fontsOut.hidden),
         durationMs: Date.now() - startedAt,
       },
       diagnostics: snapshot(),
@@ -373,8 +374,8 @@ async function runBrowserStage(input: ScanContext & {
   let partial = false;
   let collectStarted = false;
   let queuedAt: number | undefined;
+  let egress: EgressProxy | undefined;
 
-  const egress = await deps.startEgressProxy({ maxBytes: limits.egressMaxBytes, maxSockets: limits.egressMaxSockets });
   const watchdogTimer = process.platform === "linux" ? setInterval(() => void checkMemory(), WATCHDOG_INTERVAL_MS) : undefined;
   async function checkMemory() {
     const available = await readMemAvailableMb();
@@ -384,7 +385,11 @@ async function runBrowserStage(input: ScanContext & {
   try {
     await deps.withBrowser(
       {
-        egressPort: egress.port,
+        // Spec 7.2 phase 3: the proxy starts once the scan has its browser slot, right before the launch.
+        egressPort: async () => {
+          egress = await deps.startEgressProxy({ maxBytes: limits.egressMaxBytes, maxSockets: limits.egressMaxSockets });
+          return egress.port;
+        },
         signal,
         onQueued: () => {
           queuedAt = performance.now();
@@ -475,9 +480,11 @@ async function runBrowserStage(input: ScanContext & {
     partial = true;
   } finally {
     clearInterval(watchdogTimer);
-    const stats = egress.stats();
-    diagnostics.egress = { bytes: stats.bytes, blocked: stats.blocked };
-    await egress.close().catch(() => {});
+    if (egress) {
+      const stats = egress.stats();
+      diagnostics.egress = { bytes: stats.bytes, blocked: stats.blocked };
+      await egress.close().catch(() => {});
+    }
   }
 
   if (!nav) throw new ScanFailure("timeout", "The page took too long to load");

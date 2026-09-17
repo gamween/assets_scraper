@@ -293,17 +293,27 @@ function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   });
 }
 
-/** Resolves with the result, or with undefined once `ms` have passed. */
-const within = <T>(promise: Promise<T>, ms: number): Promise<T | undefined> =>
+/** Resolves with the result, or with undefined once `ms` have passed or the signal aborts. */
+const within = <T>(promise: Promise<T>, ms: number, signal?: AbortSignal): Promise<T | undefined> =>
   new Promise((resolve, reject) => {
-    const timer = setTimeout(() => resolve(undefined), ms);
+    if (signal?.aborted) return resolve(undefined);
+    const stop = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", giveUp);
+    };
+    const giveUp = () => {
+      stop();
+      resolve(undefined);
+    };
+    const timer = setTimeout(giveUp, ms);
+    signal?.addEventListener("abort", giveUp, { once: true });
     promise.then(
       (value) => {
-        clearTimeout(timer);
+        stop();
         resolve(value);
       },
       (error: unknown) => {
-        clearTimeout(timer);
+        stop();
         reject(error);
       },
     );
@@ -330,9 +340,12 @@ async function launch(slot: number, executable: Executable, egressPort: number):
   return { browser, pid: await readPid(pidfile), pidfile };
 }
 
-/** Graceful close when the scan ended normally, SIGKILL otherwise or when close hangs (critic R6). */
-async function shutdown({ browser, pid, pidfile }: Launched, graceful: boolean): Promise<void> {
-  const closed = graceful && (await within(browser.close().then(() => true, () => false), 5_000));
+/**
+ * Graceful close when the scan ended normally, SIGKILL otherwise or when close hangs (critic R6). A graceful close stops
+ * waiting as soon as the signal aborts too, so a hung close never holds a scan past its deadline.
+ */
+async function shutdown({ browser, pid, pidfile }: Launched, graceful: boolean, signal: AbortSignal): Promise<void> {
+  const closed = graceful && (await within(browser.close().then(() => true, () => false), 5_000, signal));
   if (pid && (!closed || isAlive(pid))) killProcessTree(pid);
   if (!closed) await within(browser.close().catch(() => {}), 2_000);
   await rm(pidfile, { force: true });
@@ -380,7 +393,13 @@ async function blockMediaEverywhere(context: BrowserContext, page: Page): Promis
 let launchedBefore = false;
 
 export interface WithBrowserOptions {
-  egressPort: number;
+  /**
+   * The egress proxy every browser request goes through: its port, or a function that starts it and returns its port.
+   * The function runs only once the call has its slot and passed the health gate, right before the launch (spec 7.2
+   * phases 2 and 3), so a queued or refused call never holds a proxy. Its caller stops the proxy it started.
+   */
+  egressPort: number | (() => Promise<number>);
+  /** Aborting it kills the browser. It also cuts short the graceful close that follows `fn`. */
   signal: AbortSignal;
   /** Called at once when every slot is busy and the call starts waiting. */
   onQueued?: () => void;
@@ -406,9 +425,11 @@ export async function withBrowser<T>(options: WithBrowserOptions, fn: (session: 
     const executable = await resolveExecutable();
     const health = await prepareLaunch(slot, executable.binary);
     signal.throwIfAborted();
+    const egressPort = typeof options.egressPort === "number" ? options.egressPort : await options.egressPort();
+    signal.throwIfAborted();
 
     const started = performance.now();
-    launching = launch(slot, executable, options.egressPort);
+    launching = launch(slot, executable, egressPort);
     launched = await untilAborted(launching, signal);
     const launchMs = Math.max(1, Math.round(performance.now() - started));
     const cold = !launchedBefore;
@@ -437,11 +458,11 @@ export async function withBrowser<T>(options: WithBrowserOptions, fn: (session: 
     return result;
   } finally {
     if (launched) {
-      await shutdown(launched, succeeded);
+      await shutdown(launched, succeeded, signal);
       releaseSlot(slot);
     } else if (launching) {
       // Aborted mid-launch: reject now, kill the browser once it is up, and keep the slot (and its pidfile) until then.
-      void launching.then((late) => shutdown(late, false), () => {}).finally(() => releaseSlot(slot));
+      void launching.then((late) => shutdown(late, false, signal), () => {}).finally(() => releaseSlot(slot));
     } else {
       releaseSlot(slot);
     }
