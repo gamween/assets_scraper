@@ -44,8 +44,11 @@ describe("parseFontFaceCss", () => {
       `@font-face junk{font-family:prelude;src:url(p.woff2)}@font-face (x){font-family:parens;src:url(p.woff2)}@font-face <!--{font-family:cdo;src:url(c.woff2)}`,
       `.style{${face("nested")}}.value{--x:${face("custom")};color:red}@keyframes k{from{opacity:0}}a ${face("selector")}`,
       `@media screen{.a{b:c}${face("media")}}/* ${face("comment")} */`,
+      // a semicolon ends an at-rule, but belongs to the prelude of a qualified rule, which runs up to its block
+      `.a; ${face("semi")} a{} ; ${face("afterSemi")} @media screen{.a; ${face("mediaSemi")}};${face("leading")}`,
+      `@charset "x"; ${face("afterAtRule")} .b;c{} ${face("afterRule")}`,
     ].join("\n");
-    expect(parseFontFaceCss(css, BASE).map((rule) => rule.family)).toEqual(["top", "container", "upper", "escaped", "media"]);
+    expect(parseFontFaceCss(css, BASE).map((rule) => rule.family)).toEqual(["top", "container", "upper", "escaped", "media", "afterAtRule", "afterRule"]);
   });
 
   it("reads a family as one string or identifiers and other names with CSS escapes decoded, and drops other families", () => {
@@ -54,14 +57,15 @@ describe("parseFontFaceCss", () => {
     expect(families([`"\\5FAE\\8F6F\\96C5\\9ED1"`, `\\5FAE\\8F6F\\96C5\\9ED1`])).toEqual(["\u5fae\u8f6f\u96c5\u9ed1", "\u5fae\u8f6f\u96c5\u9ed1"]);
     expect(families([`'Brand \\'Serif\\''`, `Brand\\ Sans  Text`, `\\31 23 Grotesk`, `" Spaced  Out "`])).toEqual(["Brand 'Serif'", "Brand Sans Text", "123 Grotesk", " Spaced  Out "]);
     expect(families([`"Brand" Sans`, `Brand "Sans"`, `"a" "b"`, `3M Sans`, `Brand, Sans`, `"broken\nstring"`, `""`])).toEqual([]);
-    expect(parseFontFaceCss(`@f\\6f nt-face{font\\-family:Escaped;s\\72 c:url(a.woff2);font-weight:bold !IMPOR\\54 ANT}`, BASE)).toMatchObject([{ family: "Escaped", weight: "700" }]);
+    expect(parseFontFaceCss(`@f\\6f nt-face{font\\-family:Escaped;s\\72 c:url(a.woff2);font-weight:bold !IMPOR\\54 ANT}`, BASE)).toMatchObject([{ family: "Escaped", weight: "400" }]);
   });
 
-  it("reads comments as spaces, drops !important and keeps the last of repeated descriptors", () => {
-    const css = `@font-face{font-family:Brand/* x */Sans !important;src:url(a.woff2)/**/format("woff2"),url(b.woff);font-weight:300;font-weight:bold ! IMPORTANT;unicode-range:U+0-FF/* latin */}`;
+  it("reads comments as spaces and keeps the last of repeated descriptors, skipping those marked !important as browsers do", () => {
+    const css = `@font-face{font-family:Brand/* x */Sans;font-family:Other !important;src:url(a.woff2)/**/format("woff2"),url(b.woff);font-weight:300;font-weight:bold;font-weight:900 ! IMPORTANT /* c */;unicode-range:U+0-FF/* latin */}`;
     expect(parseFontFaceCss(css, BASE)).toEqual([
       { family: "Brand Sans", src: [{ url: "https://s.example/css/a.woff2", format: "woff2" }, { url: "https://s.example/css/b.woff" }], weight: "700", style: "normal", unicodeRange: "U+0-FF", baseUrl: BASE, origin: "network" },
     ]);
+    expect(parseFontFaceCss(`@font-face{font-family:imp !important;src:url(a.woff2)}@font-face{font-family:source;src:url(a.woff2) !important}`, BASE)).toEqual([]);
   });
 
   it("stops after maxRules rules", () => {

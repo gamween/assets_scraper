@@ -193,9 +193,8 @@ interface FontFaceBlock {
   valueStart: number;
   /** The value text before each comment, each comment read as a space. */
   parts: string[];
-  /** Where a trailing `!important` starts, or -1. */
-  important: number;
-  bang: number;
+  /** Whether the last token other than whitespace and comments was `!`. */
+  bang: boolean;
   invalid: boolean;
 }
 
@@ -204,11 +203,12 @@ class EnoughRules extends Error {}
 /**
  * Collects `@font-face` rules from stylesheet text, at the top level and in `@media`, `@supports`, `@layer` and the
  * other conditional group rules, in one pass over css-tree tokens. As in browsers, a rule starts a statement and has
- * no prelude: an `@font-face` inside a declaration value or a style rule, or followed by anything but whitespace and
- * comments before its block, is not a rule. Names are read with their CSS escapes decoded. Relative URLs resolve
- * against `baseUrl` (the stylesheet URL). Stops after `maxRules` rules. Broken CSS never throws: invalid declarations
- * are skipped and blocks left open at the end are closed. In a descriptor value a comment reads as a space and
- * `!important` is dropped.
+ * no prelude: an `@font-face` inside a declaration value or a style rule, after a qualified rule's prelude (which runs
+ * over semicolons up to its block), or followed by anything but whitespace and comments before its block, is not a
+ * rule. Names are read with their CSS escapes decoded. Relative URLs resolve against `baseUrl` (the stylesheet URL).
+ * Stops after `maxRules` rules. Broken CSS never throws: invalid declarations are skipped and blocks left open at the
+ * end are closed. In a descriptor value a comment reads as a space, and a descriptor marked `!important` is dropped, as
+ * browsers drop it.
  */
 export function parseFontFaceCss(cssText: string, baseUrl: string, options: { maxRules?: number } = {}): RawFontFaceRule[] {
   const maxRules = options.maxRules ?? Infinity;
@@ -225,10 +225,9 @@ export function parseFontFaceCss(cssText: string, baseUrl: string, options: { ma
 
   const endDeclaration = (block: FontFaceBlock, end: number) => {
     if (block.name && block.valueStart >= 0 && !block.invalid) {
-      const valueEnd = block.important >= block.valueStart ? block.important : end;
-      block.descriptors[block.name] = block.parts.join("") + cssText.slice(block.valueStart, valueEnd);
+      block.descriptors[block.name] = block.parts.join("") + cssText.slice(block.valueStart, end);
     }
-    Object.assign(block, { name: null, valueStart: -1, parts: [], important: -1, bang: -1, invalid: false });
+    Object.assign(block, { name: null, valueStart: -1, parts: [], bang: false, invalid: false });
   };
 
   const endFontFace = (end: number) => {
@@ -249,14 +248,11 @@ export function parseFontFaceCss(cssText: string, baseUrl: string, options: { ma
       else if (type === T.Colon && block.name !== null) block.valueStart = end;
       else if (type !== T.WhiteSpace) block.invalid = true;
     } else if (type === T.Delim && cssText[start] === "!") {
-      block.bang = start;
-      block.important = -1;
-    } else if (type === T.Ident && block.bang >= 0 && ident.decode(cssText.slice(start, end)).toLowerCase() === "important") {
-      block.important = block.bang;
-      block.bang = -1;
+      block.bang = true;
+    } else if (type === T.Ident && block.bang && ident.decode(cssText.slice(start, end)).toLowerCase() === "important") {
+      block.invalid = true;
     } else if (type !== T.WhiteSpace) {
-      block.bang = -1;
-      block.important = -1;
+      block.bang = false;
     }
   };
 
@@ -286,7 +282,8 @@ export function parseFontFaceCss(cssText: string, baseUrl: string, options: { ma
         readDeclaration(fontFace, type, start, end);
       }
     } else if (atRules) {
-      if (type === T.Semicolon) {
+      // A semicolon ends an at-rule without a block. In a qualified rule's prelude it is one more prelude token.
+      if (type === T.Semicolon && atRule !== null) {
         statementStart = true;
         atRule = null;
       } else if (type === T.AtKeyword && statementStart) {
@@ -304,7 +301,7 @@ export function parseFontFaceCss(cssText: string, baseUrl: string, options: { ma
     const ruleBlock = type === T.LeftCurlyBracket && atRules && !fontFace;
     stack.push(ruleBlock && GROUP_RULES.has(atRule ?? "") ? closer | HOLDS_RULES : closer);
     if (ruleBlock && atRule === "font-face" && !prelude) {
-      fontFace = { depth: stack.length, descriptors: {}, name: null, valueStart: -1, parts: [], important: -1, bang: -1, invalid: false };
+      fontFace = { depth: stack.length, descriptors: {}, name: null, valueStart: -1, parts: [], bang: false, invalid: false };
     }
     if (ruleBlock) {
       statementStart = true;
