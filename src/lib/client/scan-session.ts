@@ -130,7 +130,12 @@ export function takePendingDetail(): string | null {
   return id;
 }
 
+let bootstrapped = false;
+
+/** Runs once per page load (React StrictMode runs effects twice in development, which would scan twice). */
 export function bootstrap(): void {
+  if (bootstrapped) return;
+  bootstrapped = true;
   const store = appStore.getState();
   store.loadPreferences();
   store.setRecent(readRecent());

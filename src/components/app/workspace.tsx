@@ -6,6 +6,7 @@ import { ResultsView } from "@/components/results/results-view";
 import { ScanStatus } from "@/components/scan/scan-status";
 import { SkeletonGrid } from "@/components/scan/skeleton-grid";
 import { SiteHeader } from "@/components/scan/site-header";
+import { SelectionBar, ZipFailuresDialog } from "@/components/selection/selection-bar";
 import { useApp } from "@/lib/client/store";
 import { useResultsShortcuts } from "./shortcuts";
 
@@ -29,7 +30,9 @@ export function Workspace({ pendingHost }: { pendingHost: string | null }) {
         ) : null}
         {phase === "results" ? <ResultsView /> : null}
       </main>
+      <SelectionBar />
       <DetailDialog />
+      <ZipFailuresDialog />
     </div>
   );
 }

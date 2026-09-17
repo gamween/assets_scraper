@@ -62,6 +62,7 @@ export const AssetCard = memo(function AssetCard({ asset }: { asset: Asset }) {
       data-asset-id={asset.id}
       data-role={asset.role}
       data-name={asset.name}
+      data-filename={asset.filename}
       data-selected={selected || undefined}
       className={cn(
         "group/card relative flex min-w-0 flex-col overflow-hidden rounded-lg border bg-surface transition-colors duration-100",

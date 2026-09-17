@@ -4,7 +4,7 @@ import { notify } from "@/components/results/asset-actions";
 import { toast } from "@/components/ui/toast";
 import { formatBytes, formatCount } from "@/lib/format";
 import { assetBytes, assetKey, fontBytes, fontKey } from "@/lib/client/filters";
-import { appStore, getVisibleItems, type ZipProgress } from "@/lib/client/store";
+import { appStore, getVisibleItems, type AppState, type ZipProgress } from "@/lib/client/store";
 import { planZip, saveZip, type ZipFailure, type ZipItem } from "@/lib/client/zip";
 
 const LARGE_ZIP_BYTES = 300 * 1024 * 1024;
@@ -15,8 +15,7 @@ const toZipItem = (item: ReturnType<typeof getVisibleItems>[number]): ZipItem =>
   item.kind === "asset" ? { type: "asset", asset: item.asset } : { type: "font", font: item.font };
 
 /** Selected items in page order, across tabs and searches (the selection survives both). */
-export function selectedItems(): ZipItem[] {
-  const state = appStore.getState();
+export function selectedItems(state: AppState = appStore.getState()): ZipItem[] {
   const assets = state.assets.length ? state.assets : (state.error?.fallback ?? []);
   return [
     ...assets.filter((asset) => state.selection.has(assetKey(asset.id))).map((asset): ZipItem => ({ type: "asset", asset })),
@@ -51,7 +50,7 @@ function startZip(items: ZipItem[], source: ZipProgress["source"]) {
     return;
   }
   const bytes = itemsBytes(items);
-  if (bytes > LARGE_ZIP_BYTES && !("showSaveFilePicker" in globalThis)) {
+  if (bytes > LARGE_ZIP_BYTES && typeof (globalThis as { showSaveFilePicker?: unknown }).showSaveFilePicker !== "function") {
     notify(`Large ZIP (${formatBytes(bytes)})`, { description: "Your browser keeps it in memory until it is saved." });
   }
 
