@@ -39,6 +39,11 @@ beforeAll(async () => {
       res.writeHead(200, { "content-type": "text/html", "content-length": String(body.length) });
       res.end(body);
     },
+    "/shift-jis": (_req, res) => {
+      res.writeHead(200, { "content-type": "text/html; charset=Shift_JIS" });
+      // og:site_name "テスト" in Shift_JIS.
+      res.end(Buffer.concat([Buffer.from('<html><head><title>Shop</title><meta property="og:site_name" content="'), Buffer.from([0x83, 0x65, 0x83, 0x58, 0x83, 0x67]), Buffer.from('"></head></html>')]));
+    },
     "/gone": (_req, res) => {
       res.writeHead(404, { "content-type": "text/html" });
       res.end("<title>Not found</title>");
@@ -85,6 +90,11 @@ describe("preflight", () => {
     expect(result.head?.title).toBe("Fixture Co");
     expect(result.head?.icons).toContainEqual({ href: `${fixture.origin}/assets/touch.png`, rel: "apple-touch-icon" });
     expect(result.head?.ogImages).toEqual([`${fixture.origin}/assets/og.png`]);
+  });
+
+  it("decodes the head with the page's charset", async () => {
+    const result = await preflight(`${fixture.origin}/shift-jis`, { fetch, signal: signal() });
+    expect(result.head).toMatchObject({ title: "Shop", siteName: "テスト" });
   });
 
   it("returns no head for a file", async () => {

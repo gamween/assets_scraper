@@ -234,8 +234,34 @@ function toScanFailure(error: unknown, signal: AbortSignal): unknown {
   return new ScanFailure(code, message);
 }
 
+/** How far a browser looks for a `<meta>` charset (HTML standard, encoding sniffing). */
+const CHARSET_PRESCAN_BYTES = 1024;
+
+function decoderFor(label: string | undefined): TextDecoder | undefined {
+  if (!label) return undefined;
+  try {
+    return new TextDecoder(label);
+  } catch {
+    return undefined; // Not an encoding label.
+  }
+}
+
+/**
+ * Decodes the start of an HTML page with the encoding a browser would pick: a byte order mark, then the `charset` of
+ * the content type, then a `<meta>` charset in the first 1024 bytes, then UTF-8. A `<meta>` cannot declare UTF-16,
+ * since it is itself read as ASCII: that means UTF-8, as in browsers.
+ */
+export function decodeHtml(bytes: Uint8Array, contentType = ""): string {
+  const bom = bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf ? "utf-8" : bytes[0] === 0xfe && bytes[1] === 0xff ? "utf-16be" : bytes[0] === 0xff && bytes[1] === 0xfe ? "utf-16le" : undefined;
+  const header = /;\s*charset\s*=\s*"?([^";\s]+)/i.exec(contentType)?.[1];
+  const prescan = Buffer.from(bytes.buffer, bytes.byteOffset, Math.min(bytes.length, CHARSET_PRESCAN_BYTES)).toString("latin1");
+  const meta = decoderFor(/<meta\s[^>]*?charset\s*=\s*["']?\s*([\w.:-]+)/i.exec(prescan)?.[1]);
+  const decoder = decoderFor(bom) ?? decoderFor(header) ?? (meta?.encoding.startsWith("utf-16") ? undefined : meta);
+  return (decoder ?? new TextDecoder()).decode(bytes);
+}
+
 /** Up to `maxBytes` of the body. A body that ends early, errors or outlives the signal gives what arrived. */
-async function readStart(response: SafeResponse, maxBytes: number, signal: AbortSignal): Promise<string> {
+async function readStart(response: SafeResponse, maxBytes: number, signal: AbortSignal): Promise<Buffer> {
   const reader = response.stream().getReader();
   const stop = () => void reader.cancel().catch(() => {});
   signal.addEventListener("abort", stop, { once: true });
@@ -255,7 +281,7 @@ async function readStart(response: SafeResponse, maxBytes: number, signal: Abort
     signal.removeEventListener("abort", stop);
     stop();
   }
-  return new TextDecoder().decode(Buffer.concat(chunks).subarray(0, maxBytes));
+  return Buffer.concat(chunks).subarray(0, maxBytes);
 }
 
 /**
@@ -296,7 +322,7 @@ export async function preflight(url: string, options: { fetch: SafeFetch; signal
     await response.cancel().catch(() => {});
     return { ...result, head: null, file: response.status < 400 };
   }
-  const html = await readStart(response, maxBytes, deadline);
+  const html = decodeHtml(await readStart(response, maxBytes, deadline), headers["content-type"]);
   signal.throwIfAborted();
   // No content type at all: trust the markup only if it looks like a document.
   if (!contentType && !/^\s*(<!doctype html|<html|<head|<body)/i.test(html)) return { ...result, head: null, file: false };

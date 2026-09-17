@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseHead } from "./preflight";
+import { decodeHtml, parseHead } from "./preflight";
 
 const BASE = "https://www.example.com/products/page";
 
@@ -81,3 +81,33 @@ describe("parseHead", () => {
     expect(parseHead(html, BASE)).toEqual({ title: "Big", icons: [], ogImages: [], jsonLdLogos: [] });
   });
 });
+
+describe("decodeHtml", () => {
+  const ascii = (text: string) => [...Buffer.from(text, "latin1")];
+  // "テスト" in Shift_JIS, and "Café" in windows-1252.
+  const shiftJis = [0x83, 0x65, 0x83, 0x58, 0x83, 0x67];
+  const cafe1252 = [0x43, 0x61, 0x66, 0xe9];
+
+  it("uses the charset of the content type", () => {
+    const bytes = new Uint8Array([...ascii('<meta property="og:site_name" content="'), ...shiftJis, ...ascii('">')]);
+    expect(decodeHtml(bytes, "text/html; charset=Shift_JIS")).toBe('<meta property="og:site_name" content="テスト">');
+    expect(decodeHtml(bytes, 'text/html; charset="shift_jis"')).toContain("テスト");
+  });
+
+  it("uses a meta charset in the first 1024 bytes when the content type has none", () => {
+    const meta = new Uint8Array([...ascii('<html><head><meta charset="windows-1252"><title>'), ...cafe1252, ...ascii("</title>")]);
+    expect(decodeHtml(meta, "text/html")).toBe('<html><head><meta charset="windows-1252"><title>Café</title>');
+    const httpEquiv = new Uint8Array([...ascii('<meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1"><title>'), ...cafe1252, ...ascii("</title>")]);
+    expect(decodeHtml(httpEquiv, "")).toContain("<title>Café</title>");
+    const late = new Uint8Array([...ascii(" ".repeat(1100)), ...ascii('<meta charset="windows-1252">'), ...cafe1252]);
+    expect(decodeHtml(late, "text/html")).toContain("Caf\uFFFD");
+  });
+
+  it("prefers a byte order mark, and falls back to UTF-8 on unknown or impossible labels", () => {
+    expect(decodeHtml(new Uint8Array([0xef, 0xbb, 0xbf, ...Buffer.from("Café")]), "text/html; charset=windows-1252")).toBe("Café");
+    expect(decodeHtml(new Uint8Array(Buffer.from("<title>Café</title>")), "text/html; charset=no-such-charset")).toBe("<title>Café</title>");
+    expect(decodeHtml(new Uint8Array(Buffer.from('<meta charset="utf-16"><title>Café</title>')), "text/html")).toBe('<meta charset="utf-16"><title>Café</title>');
+    expect(decodeHtml(new Uint8Array(Buffer.from("<title>Café</title>")))).toBe("<title>Café</title>");
+  });
+});
+
