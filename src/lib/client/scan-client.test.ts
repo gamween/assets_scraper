@@ -58,7 +58,7 @@ describe("startScan", () => {
     const lines: ScanEvent[] = [
       { type: "accepted", scanId: "s1", url: "https://linear.app/" },
       { type: "step", step: "open", state: "start" },
-      { type: "page", page: { requestedUrl: "https://linear.app/", finalUrl: "https://linear.app/", host: "linear.app", title: "Linear – Plan", status: 200, brandLinks: [] } },
+      { type: "page", page: { requestedUrl: "https://linear.app/", finalUrl: "https://linear.app/", host: "linear.app", title: "Linear: Plan", status: 200, brandLinks: [] } },
       done,
     ];
     const fetchMock = vi.fn(async () => ndjsonResponse(lines).response);
