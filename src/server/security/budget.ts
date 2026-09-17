@@ -137,6 +137,23 @@ export async function takeProxyBytes(bytes: number, now: Date = new Date()): Pro
   return false;
 }
 
+/**
+ * Takes `bytes` from today's budget, like `takeProxyBytes`, for work whose served size is only known once it is done.
+ * Resolves with `settle(served)`, which keeps at most the reserved bytes and hands the rest back to the day the
+ * reservation was taken from (only its first call counts), or with null when the reservation does not fit.
+ */
+export async function reserveProxyBytes(bytes: number, now: Date = new Date()): Promise<((served: number) => Promise<void>) | null> {
+  const reserved = byteCount(bytes);
+  if (!(await takeProxyBytes(reserved, now))) return null;
+  let settled = false;
+  return async (served) => {
+    if (settled) return;
+    settled = true;
+    const unused = reserved - Math.min(byteCount(served), reserved);
+    if (unused > 0) await incr(proxyKey(now), -unused, PROXY_DAY_TTL);
+  };
+}
+
 /** Counts bytes already served (a body of unknown length, counted once it ends), even past the limit. */
 export async function countProxyBytes(bytes: number, now: Date = new Date()): Promise<void> {
   await incr(proxyKey(now), byteCount(bytes), PROXY_DAY_TTL);

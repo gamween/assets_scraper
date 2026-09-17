@@ -63,6 +63,7 @@ beforeAll(async () => {
       s.end();
     },
     "/woff2-stall": (_q, s) => { s.writeHead(200, { "content-type": "font/woff2" }); s.write(woff2.subarray(0, 64)); },
+    "/woff2-truncated": (_q, s) => { s.writeHead(200, { "content-type": "font/woff2" }); s.end(woff2.subarray(0, 64)); },
     "/chunked-late": (_q, s) => {
       s.writeHead(200, { "content-type": "image/png" });
       s.write(Buffer.concat([png.subarray(0, 8), Buffer.alloc(4088)]));
@@ -90,6 +91,7 @@ afterAll(async () => {
 
 beforeEach(() => {
   setBudgetStoreForTests(new MemoryBudgetStore());
+  fonts.parseFontBinary.mockClear();
   fonts.isConvertibleFont.mockClear();
   fonts.isConvertibleFont.mockResolvedValue(true);
 });
@@ -100,6 +102,9 @@ afterEach(() => {
 });
 
 const SAME_ORIGIN = { "sec-fetch-site": "same-origin" };
+
+/** Today's proxied bytes in `store`. */
+const spentIn = (store: MemoryBudgetStore) => store.incr(`proxy:d:${new Date().toISOString().slice(0, 10)}`, 0, 60);
 
 /** A request for the signed proxy path of an upstream asset, from this app's own pages unless `site` says otherwise. */
 function proxied(assetPath: string, extra = "", site: string | null = "same-origin"): Request {
@@ -302,9 +307,8 @@ describe("handleAssetRequest", () => {
 
   it("answers 429 once the daily proxied bytes are spent", async () => {
     vi.stubEnv("PROXY_BYTES_PER_DAY", String(png.length + 10));
-    // refused requests are not counted: 4 KB and a converted font do not fit, the PNG still does
+    // a refused take is not counted: 4 KB do not fit, the PNG still does
     expect(await errorOf(await handleAssetRequest(proxied("/declared-big")))).toMatchObject({ status: 429, code: "budget" });
-    expect(await errorOf(await handleAssetRequest(proxied("/assets/__inter.woff2", "&fmt=ttf")))).toMatchObject({ status: 429, code: "budget" });
     expect((await handleAssetRequest(proxied("/sized.png"))).status).toBe(200);
     expect(await errorOf(await handleAssetRequest(proxied("/sized.png")))).toMatchObject({ status: 429 });
 
@@ -315,6 +319,40 @@ describe("handleAssetRequest", () => {
     // bytes of unknown length are counted once the body ends, without holding the response
     await vi.waitFor(async () => expect(await takeProxyBytes(0)).toBe(false));
     expect(await errorOf(await handleAssetRequest(proxied("/assets/logo.svg")))).toMatchObject({ status: 429 });
+  });
+
+  it("counts every source byte a conversion downloads, whatever the outcome", async () => {
+    const store = new MemoryBudgetStore();
+    setBudgetStoreForTests(store);
+    fonts.isConvertibleFont.mockResolvedValue(false);
+    expect(await errorOf(await handleAssetRequest(proxied("/assets/__inter.woff2", "&fmt=ttf")))).toMatchObject({ status: 403, code: "license" });
+    expect(await spentIn(store)).toBe(woff2.length);
+    fonts.isConvertibleFont.mockResolvedValue(true);
+    expect(await errorOf(await handleAssetRequest(proxied("/woff2-truncated", "&fmt=ttf")))).toMatchObject({ status: 415, code: "not-convertible" });
+    expect(await spentIn(store)).toBe(woff2.length + 64);
+    // a source over the cap is counted up to where its download stopped
+    expect(await errorOf(await handleAssetRequest(proxied("/big.woff2", "&fmt=ttf")))).toMatchObject({ status: 413, code: "too-large" });
+    const overCap = (await spentIn(store)) - woff2.length - 64;
+    expect(overCap).toBeGreaterThan(9 * 1024 * 1024);
+    expect(overCap).toBeLessThanOrEqual(10 * 1024 * 1024);
+    // a served conversion counts its source and its output; the rest of the output reservation is handed back
+    const before = await spentIn(store);
+    const ttf = await handleAssetRequest(proxied("/assets/__inter.woff2", "&fmt=ttf"));
+    expect(ttf.status).toBe(200);
+    const served = (await ttf.arrayBuffer()).byteLength;
+    expect(await spentIn(store)).toBe(before + woff2.length + served);
+  });
+
+  it("converts only once the budget covers the largest output woff2 can return", async () => {
+    vi.stubEnv("PROXY_BYTES_PER_DAY", String(20 * 1024 * 1024));
+    const store = new MemoryBudgetStore();
+    setBudgetStoreForTests(store);
+    expect(await errorOf(await handleAssetRequest(proxied("/assets/__inter.woff2", "&fmt=ttf")))).toMatchObject({ status: 429, code: "budget" });
+    expect(fonts.parseFontBinary).not.toHaveBeenCalled();
+    expect(fonts.isConvertibleFont).not.toHaveBeenCalled();
+    // the source stays counted, the refused reservation does not
+    expect(await spentIn(store)).toBe(woff2.length);
+    expect((await handleAssetRequest(proxied("/sized.png"))).status).toBe(200);
   });
 
   it("maps upstream failures and never reaches private addresses", async () => {

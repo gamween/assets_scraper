@@ -8,7 +8,7 @@ const fonts = vi.hoisted(() => ({
 }));
 vi.mock("@/server/scan/fonts/index", () => fonts);
 
-import { convertWoff2, createSlots } from "./font-convert";
+import { convertWoff2, createSlots, WOFF2_MAX_OUTPUT_BYTES } from "./font-convert";
 
 const ASSETS = path.join(import.meta.dirname, "../../../tests/fixtures/site/assets");
 const inter = readFileSync(path.join(ASSETS, "__inter.woff2"));
@@ -107,6 +107,23 @@ describe("convertWoff2", () => {
     const concurrent = await Promise.all([convertWoff2(inter, signal), convertWoff2(ss3, signal), convertWoff2(inter, signal)]);
     const bytes = (result: Awaited<ReturnType<typeof convertWoff2>>) => (result.ok ? Buffer.from(result.bytes) : null);
     expect(concurrent.map(bytes)).toEqual([bytes(sequential[0]), bytes(sequential[1]), bytes(sequential[0])]);
+  });
+
+  it("never returns more than WOFF2_MAX_OUTPUT_BYTES, whatever size the header declares", async () => {
+    const signal = new AbortController().signal;
+    const declaring = (totalSfntSize: number) => {
+      const copy = Buffer.from(inter);
+      copy.writeUInt32BE(totalSfntSize, 16);
+      return copy;
+    };
+    const real = await convertWoff2(inter, signal);
+    expect(real.ok && real.bytes.length).toBe(inter.readUInt32BE(16));
+    // a smaller declared size does not shrink the output, a larger one pads it: the header bounds nothing
+    const small = await convertWoff2(declaring(1), signal);
+    expect(small.ok && small.bytes.length).toBe(inter.readUInt32BE(16));
+    const huge = await convertWoff2(declaring(0xffffffff), signal);
+    expect(huge.ok ? huge.bytes.length : 0).toBeGreaterThan(20 * 1024 * 1024);
+    expect(huge.ok ? huge.bytes.length : 0).toBeLessThanOrEqual(WOFF2_MAX_OUTPUT_BYTES);
   });
 
   it("refuses a font whose licence does not allow conversion, and bytes that are not WOFF2", async () => {

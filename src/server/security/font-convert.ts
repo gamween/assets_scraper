@@ -9,6 +9,11 @@ import { sniffContentType } from "./sniff";
  * conversions, download included, run at once per instance.
  */
 export const WOFF2_MAX_SOURCE_BYTES = 10 * 1024 * 1024;
+/**
+ * The most woff2 returns for any input (its `kDefaultMaxSize`). The size a WOFF2 header declares is no bound: woff2
+ * ignores a smaller one and pads the output up to a larger one, so a tiny file can come back as this many bytes.
+ */
+export const WOFF2_MAX_OUTPUT_BYTES = 30 * 1024 * 1024;
 const CONVERSION_SLOTS = 2;
 
 /** Takes a slot, waiting in order for a free one. Resolves with its idempotent release, or null when `signal` aborts first. */

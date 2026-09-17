@@ -2,9 +2,9 @@ import { limits } from "@/server/config/limits";
 import { HttpError } from "@/server/errors";
 import { safeFetch, SafeFetchError, type SafeFetchErrorCode } from "@/server/net/safe-fetch";
 import type { SafeResponse } from "@/server/scan/types";
-import { countProxyBytes, takeProxyBytes } from "./budget";
+import { countProxyBytes, reserveProxyBytes, takeProxyBytes } from "./budget";
 import { contentDisposition } from "./download-name";
-import { convertWoff2, takeConversionSlot, WOFF2_MAX_SOURCE_BYTES } from "./font-convert";
+import { convertWoff2, takeConversionSlot, WOFF2_MAX_OUTPUT_BYTES, WOFF2_MAX_SOURCE_BYTES } from "./font-convert";
 import { verifyAssetParams } from "./sign";
 import { SNIFF_BYTES, sniffContentType } from "./sniff";
 
@@ -81,20 +81,33 @@ async function peek(
   return { head: Buffer.concat(chunks), rest: reader };
 }
 
-async function readAll(reader: ReadableStreamDefaultReader<Uint8Array>, head: Uint8Array): Promise<Buffer> {
+/** `head` and the rest of the body in one buffer. Every byte read is counted against the budget, also when the read fails. */
+async function readCounted(reader: ReadableStreamDefaultReader<Uint8Array>, head: Uint8Array): Promise<Buffer> {
   const chunks = [head];
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) return Buffer.concat(chunks);
-    chunks.push(value);
+  let size = head.byteLength;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return Buffer.concat(chunks);
+      chunks.push(value);
+      size += value.byteLength;
+    }
+  } finally {
+    await countProxyBytes(size);
   }
 }
 
 /**
- * `fmt=ttf`: an open-licence WOFF2 of at most `WOFF2_MAX_SOURCE_BYTES`, buffered whole, served as the sfnt it wraps
- * (`convertWoff2`), so callers name the file from the content type. Other sources get 415 from their first bytes,
- * before the rest is downloaded: TTF and OTF files are served as they are without `fmt`. The whole exchange, waiting
- * for a conversion slot included, stays within `timeoutMs`; no free slot in time gives 503.
+ * `fmt=ttf`: a WOFF2 of at most `WOFF2_MAX_SOURCE_BYTES`, buffered whole and served as the sfnt it wraps when its
+ * licence allows (`convertWoff2`), so callers name the file from the content type. Other sources get 415 from their
+ * first bytes, before the rest is downloaded: TTF and OTF files are served as they are without `fmt`.
+ *
+ * Budget: every source byte downloaded is counted whatever happens next (a source over the cap, a licence refusal,
+ * bytes woff2 refuses), so repeated failures spend the budget like any download instead of costing CPU for free. The
+ * conversion then runs only once the most woff2 can return (`WOFF2_MAX_OUTPUT_BYTES`) is reserved, and the part not
+ * served is handed back, so the work is never done for an output the budget then refuses.
+ *
+ * The whole exchange, waiting for a conversion slot included, stays within `timeoutMs`; no free slot in time gives 503.
  */
 async function convertFont(
   url: string,
@@ -111,35 +124,39 @@ async function convertFont(
     if (remainingMs <= 0) return busy();
     const upstream = await fetchAsset(url, signal, Math.min(maxBytes, WOFF2_MAX_SOURCE_BYTES), remainingMs);
     if (upstream instanceof Response) return upstream;
-    return await decompressFont(upstream, signal, dl);
+    const { head, rest } = await peek(upstream.stream(), WOFF2_SIGNATURE_BYTES);
+    if (sniffContentType(head) !== "font/woff2") {
+      await rest.cancel().catch(() => {});
+      return errorResponse(415, "not-convertible", "Only WOFF2 fonts can be converted.");
+    }
+    const source = await readCounted(rest, head);
+
+    const settle = await reserveProxyBytes(WOFF2_MAX_OUTPUT_BYTES);
+    if (!settle) return errorResponse(429, "budget", "Daily download limit reached.");
+    let served = 0;
+    try {
+      const converted = await convertWoff2(source, signal);
+      if (!converted.ok) {
+        return converted.reason === "license"
+          ? errorResponse(403, "license", "This font's licence does not allow conversion.")
+          : errorResponse(415, "not-convertible", "The font could not be converted.");
+      }
+      const { bytes, contentType } = converted;
+      served = bytes.length;
+      return new Response(new Uint8Array(bytes), {
+        headers: {
+          ...RESPONSE_HEADERS,
+          "content-type": contentType,
+          "content-length": String(bytes.length),
+          "content-disposition": contentDisposition(dl, contentType),
+        },
+      });
+    } finally {
+      await settle(served);
+    }
   } finally {
     release();
   }
-}
-
-async function decompressFont(upstream: SafeResponse, signal: AbortSignal, dl: string | undefined): Promise<Response> {
-  const { head, rest } = await peek(upstream.stream(), WOFF2_SIGNATURE_BYTES);
-  if (sniffContentType(head) !== "font/woff2") {
-    await rest.cancel().catch(() => {});
-    return errorResponse(415, "not-convertible", "Only WOFF2 fonts can be converted.");
-  }
-  const source = await readAll(rest, head);
-  const converted = await convertWoff2(source, signal);
-  if (!converted.ok) {
-    return converted.reason === "license"
-      ? errorResponse(403, "license", "This font's licence does not allow conversion.")
-      : errorResponse(415, "not-convertible", "The font could not be converted.");
-  }
-  const { bytes, contentType } = converted;
-  if (!(await takeProxyBytes(bytes.length))) return errorResponse(429, "budget", "Daily download limit reached.");
-  return new Response(new Uint8Array(bytes), {
-    headers: {
-      ...RESPONSE_HEADERS,
-      "content-type": contentType,
-      "content-length": String(bytes.length),
-      "content-disposition": contentDisposition(dl, contentType),
-    },
-  });
 }
 
 /**

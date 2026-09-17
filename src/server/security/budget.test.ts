@@ -64,6 +64,7 @@ import {
   countProxyBytes,
   getBudgetStore,
   MemoryBudgetStore,
+  reserveProxyBytes,
   RuntimeCacheBudgetStore,
   setBudgetStoreForTests,
   takeProxyBytes,
@@ -127,6 +128,29 @@ describe("budget", () => {
     await countProxyBytes(50, day1);
     expect(await takeProxyBytes(0, day1)).toBe(false);
     expect(await takeProxyBytes(0, day2)).toBe(true);
+  });
+
+  it("reserves proxied bytes and hands back the unserved part once, to the day it was taken from", async () => {
+    vi.stubEnv("PROXY_BYTES_PER_DAY", "1000");
+    expect(await reserveProxyBytes(1200, day1)).toBeNull();
+    const settle = await reserveProxyBytes(800, day1);
+    expect(settle).toBeTypeOf("function");
+    // the reservation holds the budget until it is settled
+    expect(await takeProxyBytes(300, day1)).toBe(false);
+    await settle!(150);
+    await settle!(0);
+    expect(await takeProxyBytes(850, day1)).toBe(true);
+    expect(await takeProxyBytes(1, day1)).toBe(false);
+
+    const seen: [string, number][] = [];
+    setBudgetStoreForTests({ incr: async (key, by) => { seen.push([key, by]); return by; } });
+    // serving more than was reserved keeps only the reservation
+    const over = await reserveProxyBytes(500, day1);
+    await over!(900);
+    // settled on a later day (the clock is past day1), the unserved part still goes back to day1
+    const under = await reserveProxyBytes(500, day1);
+    await under!(200);
+    expect(seen).toEqual([["proxy:d:2026-09-16", 500], ["proxy:d:2026-09-16", 500], ["proxy:d:2026-09-16", -300]]);
   });
 
   it("uses the documented keys and lifetimes", async () => {
