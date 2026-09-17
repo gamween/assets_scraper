@@ -100,6 +100,11 @@ class Stop extends Error {}
  * parser keeps buffers the size of the largest sheet it ever read. A declaration is the text between `{`, `;` or `}`
  * and the next `;` or `}` of a block, outside parentheses; text that ends at `{` is a rule's prelude. Broken CSS never
  * throws: stray closers are skipped and a declaration left open at the end is read.
+ *
+ * Where this differs from a parse tree, on malformed or rare CSS: a `{}` block inside a custom property's value is read
+ * as a nested rule, so `--y: { cursor: url(c.png) }` gives property `cursor` (filtered) rather than `--y`; and a
+ * declaration with no `;` before a nested rule becomes that rule's prelude, so `background: url(a.png) .b { ... }`
+ * yields no URL.
  */
 export function forEachStylesheetUrl(cssText: string, baseUrl: string, visit: (item: StylesheetUrl) => void | "stop"): void {
   if (!/url\(|image-set\(/i.test(cssText)) return;
