@@ -174,8 +174,10 @@ describe("assembleAssets CDN original probes", () => {
     const wrapper = `https://www.gymshark.com/_next/image?url=${encodeURIComponent(intermediate)}&w=1920&q=75`;
     // The first candidate is the fully stripped URL: its probe outlives the deadline, so `verifyUrl` returns
     // `verify-skipped` without the limiter ever queueing a task, and only `resolve` knows the check was partial.
+    const deadline = Date.now() + 300;
+    // Outlives the deadline however the machine schedules it, so the probe always ends as `verify-skipped`.
     const tooSlow: SafeFetch = async () => {
-      await new Promise((resolve) => setTimeout(resolve, 200));
+      while (Date.now() < deadline + 20) await new Promise((resolve) => setTimeout(resolve, 20));
       throw new Error("after the deadline");
     };
     const collector = collectorOutput({
@@ -198,7 +200,7 @@ describe("assembleAssets CDN original probes", () => {
         fonts: [], sheets: [], bodyTimeouts: 0, skippedBodies: 0,
       },
       page: { requestedUrl: PAGE, finalUrl: PAGE, host: "shop.example", siteName: "Shop", title: "Shop" },
-      signer: { sign: proxyOf, count: 0 }, fetch: tooSlow, signal: new AbortController().signal, deadline: Date.now() + 120,
+      signer: { sign: proxyOf, count: 0 }, fetch: tooSlow, signal: new AbortController().signal, deadline,
     };
     const { assets, warnings } = await assembleAssets(input);
     expect(assets.map((asset) => asset.original?.url)).toContain(intermediate);
