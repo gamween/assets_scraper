@@ -3,7 +3,7 @@ import type { FontFaceInfo, FontFamily, FontFile, FontFormat } from "@/lib/contr
 import { limits } from "@/server/config/limits";
 import { SignLimitError } from "@/server/security/sign";
 import type { CapturedFont, FontBinaryMeta, FontsOutput, PostInput, RawFontFaceRule, RawFontStatus, RawFontUsage, SafeFetch, Signer } from "../types";
-import { normalizeStretch, normalizeStyle, normalizeWeight, parseFontFaceCss } from "./css";
+import { MAX_SRC_ENTRIES, normalizeStretch, normalizeStyle, normalizeWeight, parseFontFaceCss } from "./css";
 import { createFileLookup, isDataUri, remoteUrl, type FileRecord } from "./files";
 import { matchGoogleFamilies } from "./google";
 import { classifyLicense } from "./license";
@@ -19,6 +19,7 @@ export { parseFontFaceCss } from "./css";
  * URI font bounds are in `files.ts`.
  * - `@font-face` rules read from the CSSOM, and again from captured stylesheets. Pages with the most rules, CJK fonts
  *   split in about 100 `unicode-range` subsets per weight, have a few thousand.
+ * - Sources of each rule: at most `MAX_SRC_ENTRIES` (`css.ts`), from the CSSOM too.
  * - Families `document.fonts` registered without a rule, and binary names of captured files without a rule: each name
  *   is matched against each family, in time that grows with the family's length. A registered family longer than
  *   `MAX_MATCHED_FAMILY_LENGTH` is deliberately not matched: binary names have 48 characters at most, but a longer
@@ -146,9 +147,9 @@ function pageHostOf(page: PostInput["page"]): string {
 
 /**
  * Rules from the CSSOM and from captured stylesheets (cross-origin sheets the CSSOM cannot read), normalized, with their
- * families decoded, at most `MAX_RULES_PER_SOURCE` from each. A rule found in both adds the same file to the same face
- * twice, which `addToGroup` ignores. Also returns the lowercase families of every rule, including rules with `local()`
- * sources only.
+ * families decoded, at most `MAX_RULES_PER_SOURCE` from each, and the first `MAX_SRC_ENTRIES` sources of each rule, as
+ * `parseFontSrc` reads them. A rule found in both adds the same file to the same face twice, which `addToGroup` ignores.
+ * Also returns the lowercase families of every rule, including rules with `local()` sources only.
  */
 function collectRules(input: PostInput): { rules: RawFontFaceRule[]; declaredFamilies: Set<string> } {
   const sheetRules: RawFontFaceRule[] = [];
@@ -162,7 +163,7 @@ function collectRules(input: PostInput): { rules: RawFontFaceRule[]; declaredFam
   for (const raw of [...input.collector.fontFaces.slice(0, MAX_RULES_PER_SOURCE).filter(isRawRule), ...sheetRules]) {
     const family = ruleFamily(raw);
     if (family) declaredFamilies.add(family.toLowerCase());
-    const src = raw.src.flatMap((entry: unknown) => {
+    const src = raw.src.slice(0, MAX_SRC_ENTRIES).flatMap((entry: unknown) => {
       if (!isObject(entry) || typeof entry.url !== "string" || !entry.url) return [];
       const url = isDataUri(entry.url) ? entry.url : remoteUrl(entry.url, raw.baseUrl);
       return url ? [{ url, format: typeof entry.format === "string" ? entry.format : undefined }] : [];

@@ -18,6 +18,16 @@ const CLOSERS: Partial<Record<number, number>> = {
 
 const isBlank = (type: number) => type === T.WhiteSpace || type === T.Comment;
 
+/**
+ * The most `url()` and `local()` sources read from one `src` value, valid or not. Real rules list 6 at most, and each
+ * source read costs objects and a URL parse, synchronously: a rule of a million sources in a 15 MB stylesheet took 2
+ * seconds and 338 MB to list one file.
+ */
+export const MAX_SRC_ENTRIES = 16;
+
+/** Thrown from a tokenizer callback to stop tokenizing once enough has been read. */
+class Enough extends Error {}
+
 /** A stack of numbers below 256, one byte each: CSS can nest as deep as it is long. */
 class ByteStack {
   private bytes = new Uint8Array(64);
@@ -63,8 +73,9 @@ interface SrcFunction {
  * Parses an `@font-face` `src` value into `local()` names and absolute `url()`s with their optional format hint
  * (the first one of a legacy list), from css-tree tokens: the value comes from scraped CSS, so no backtracking regex.
  * Lenient like the discovery lab: in each comma-separated entry, the first valid `url()` or non-empty `local()` is the
- * source, whatever comes before it, and the first `format()` after a `url()` is its hint. Unbalanced closing tokens
- * are skipped and functions left open at the end of the value are closed.
+ * source, whatever comes before it, and the first `format()` after a `url()` is its hint. At most `MAX_SRC_ENTRIES`
+ * `url()` and `local()` sources are read, valid or not: tokenizing stops at the next one. Unbalanced closing tokens are
+ * skipped and functions left open at the end of the value are closed.
  */
 export function parseFontSrc(src: string, baseUrl: string): FontSrc[] {
   const out: FontSrc[] = [];
@@ -72,6 +83,12 @@ export function parseFontSrc(src: string, baseUrl: string): FontSrc[] {
   // The source of the current comma-separated entry, once found
   let current: FontSrc | null = null;
   let fn: SrcFunction | null = null;
+  let read = 0;
+
+  const startSource = () => {
+    if (read === MAX_SRC_ENTRIES) throw new Enough();
+    read += 1;
+  };
 
   const addSource = (source: FontSrc | null) => {
     if (source) out.push((current = source));
@@ -91,7 +108,7 @@ export function parseFontSrc(src: string, baseUrl: string): FontSrc[] {
     }
   };
 
-  tokenize(src, (type, start, end) => {
+  const onToken = (type: number, start: number, end: number) => {
     if (type === closers.top()) {
       closers.pop();
       if (!closers.length && fn) endFunction();
@@ -111,17 +128,28 @@ export function parseFontSrc(src: string, baseUrl: string): FontSrc[] {
       if (type === T.Comma) {
         current = null;
       } else if (!current && type === T.Url) {
+        startSource();
         addSource(absoluteUrl(cssUrl.decode(src.slice(start, end)).trim(), baseUrl));
       } else if (type === T.Function) {
         const name = ident.decode(src.slice(start, end - 1)).toLowerCase();
-        if (!current && (name === "url" || name === "local")) fn = { kind: name, texts: [], other: false };
-        else if (current?.url && !current.format && name === "format") fn = { kind: "format", texts: [], other: false };
+        if (!current && (name === "url" || name === "local")) {
+          startSource();
+          fn = { kind: name, texts: [], other: false };
+        } else if (current?.url && !current.format && name === "format") {
+          fn = { kind: "format", texts: [], other: false };
+        }
       }
     }
     const closer = CLOSERS[type];
     if (closer !== undefined) closers.push(closer);
-  });
-  if (fn) endFunction();
+  };
+
+  try {
+    tokenize(src, onToken);
+    if (fn) endFunction();
+  } catch (error) {
+    if (!(error instanceof Enough)) throw error;
+  }
   return out;
 }
 
@@ -198,8 +226,6 @@ interface FontFaceBlock {
   invalid: boolean;
 }
 
-class EnoughRules extends Error {}
-
 /**
  * Collects `@font-face` rules from stylesheet text, at the top level and in `@media`, `@supports`, `@layer` and the
  * other conditional group rules, in one pass over css-tree tokens. As in browsers, a rule starts a statement and has
@@ -237,7 +263,7 @@ export function parseFontFaceCss(cssText: string, baseUrl: string, options: { ma
     const rule = toRule(block.descriptors, baseUrl);
     if (!rule) return;
     rules.push(rule);
-    if (rules.length >= maxRules) throw new EnoughRules();
+    if (rules.length >= maxRules) throw new Enough();
   };
 
   const readDeclaration = (block: FontFaceBlock, type: number, start: number, end: number) => {
@@ -313,7 +339,7 @@ export function parseFontFaceCss(cssText: string, baseUrl: string, options: { ma
     tokenize(cssText, onToken);
     if (fontFace) endFontFace(cssText.length);
   } catch (error) {
-    if (!(error instanceof EnoughRules)) throw error;
+    if (!(error instanceof Enough)) throw error;
   }
   return rules;
 }

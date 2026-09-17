@@ -1,6 +1,6 @@
 import parse from "css-tree/parser";
 import { describe, expect, it } from "vitest";
-import { parseFontFaceCss, parseFontSrc } from "./css";
+import { MAX_SRC_ENTRIES, parseFontFaceCss, parseFontSrc } from "./css";
 import { fastestMs, growthFactor, LINEAR_GROWTH_BOUND } from "./testing";
 
 const MIB = 1024 * 1024;
@@ -133,6 +133,23 @@ describe("parseFontSrc", () => {
       }
     }, 20_000);
     expect(factor).toBeLessThan(LINEAR_GROWTH_BOUND);
+  });
+
+  it("reads at most 16 url() and local() sources, valid or not, and stops reading the value there", async () => {
+    const sources = (count: number) => Array.from({ length: count }, (_, index) => `url(${index}.woff2) format(woff2)`).join(",");
+    const first16 = Array.from({ length: 16 }, (_, index) => ({ url: `https://s.example/css/${index}.woff2`, format: "woff2" }));
+    expect(MAX_SRC_ENTRIES).toBe(16);
+    expect(parseFontSrc(sources(16), BASE)).toEqual(first16);
+    expect(parseFontSrc(sources(17), BASE)).toEqual(first16);
+    expect(parseFontFaceCss(`@font-face{font-family:X;src:${sources(1_000)}}`, BASE)).toMatchObject([{ family: "X", src: first16 }]);
+    // sources that give nothing count too, in one entry or in many
+    expect(parseFontSrc(`${'url("http://[bad") '.repeat(16)}url(a.woff2)`, BASE)).toEqual([]);
+    expect(parseFontSrc(`${"local(), ".repeat(15)}local(A), local(B), url(b.woff2)`, BASE)).toEqual([{ local: "A" }]);
+    // A 15 MB stylesheet with one rule of a million sources took 2 seconds and 338 MB to list one file. Past the cap,
+    // the rest of the value is not tokenized again, so a longer list costs nothing more.
+    const lists = new Map<number, string>();
+    const list = (size: number) => lists.get(size) ?? lists.set(size, sources(size)).get(size)!;
+    expect(await growthFactor((size) => parseFontSrc(list(size), BASE), 20_000)).toBeLessThan(2);
   });
 
   it("keeps the first format of a legacy list and drops unresolvable URLs", () => {

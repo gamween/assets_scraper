@@ -374,6 +374,25 @@ describe("buildFontFamilies", () => {
     expect(urls).not.toContain("https://www.site.example/more.woff2");
   });
 
+  it("reads at most 16 sources of a rule from the CSSOM or a captured stylesheet, however many it lists", async () => {
+    const urls = (prefix: string, count: number) => Array.from({ length: count }, (_, index) => `${PAGE}${prefix}${index}.woff2`);
+    const { byName } = await build({
+      fontFaces: [rule("Cssom", urls("c", 1_000))],
+      sheets: [{ url: `${PAGE}a.css`, status: 200, cssText: `@font-face{font-family:Sheet;src:${urls("s", 1_000).map((url) => `url(${url})`).join(",")}}` }],
+      // The 17th source of each rule loaded: past the cap, it is a file without a rule, named by its binary
+      fonts: [captured(`${PAGE}c16.woff2`), captured(`${PAGE}s16.woff2`, jbmMeta)],
+    });
+    expect([...byName.keys()].sort()).toEqual(["Cssom", "Inter", "JetBrains Mono", "Sheet"]);
+    for (const [family, url] of [["Cssom", `${PAGE}c0.woff2`], ["Sheet", `${PAGE}s0.woff2`], ["Inter", `${PAGE}c16.woff2`], ["JetBrains Mono", `${PAGE}s16.woff2`]]) {
+      expect(byName.get(family)!.faces.flatMap((face) => face.files.map((file) => file.url)), family).toEqual([url]);
+    }
+
+    // Past the cap, a CSSOM rule that lists more sources costs nothing more
+    const inputs = new Map<number, PostInput>();
+    const hostile = (size: number) => inputs.get(size) ?? inputs.set(size, inputOf({ fontFaces: [rule("Face", urls("f", size))] })).get(size)!;
+    expect(await growthFactor((size) => buildFontFamilies(hostile(size)), 20_000)).toBeLessThan(2);
+  });
+
   it("stays linear on hostile collector output", async () => {
     const long = "Face".repeat(25);
     const hostile: Record<string, (size: number) => Parts> = {
