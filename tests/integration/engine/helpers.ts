@@ -21,6 +21,7 @@ export async function startTestProxy(options: { allow: string[] }): Promise<Test
   let bytes = 0;
   const block = (target: string) => blockedHosts.push(target);
 
+  // Chrome resets connections freely (killed browsers, cancelled requests): no socket error may go unhandled.
   const server = http.createServer((req, res) => {
     const target = req.url ?? "";
     requests.push(target);
@@ -40,9 +41,11 @@ export async function startTestProxy(options: { allow: string[] }): Promise<Test
     const upstream = http.request({ host: url.hostname, port, method: req.method, path: `${url.pathname}${url.search}`, headers: req.headers }, (response) => {
       res.writeHead(response.statusCode ?? 502, response.headers);
       response.on("data", (chunk: Buffer) => (bytes += chunk.length));
+      response.on("error", () => res.destroy());
       response.pipe(res);
     });
     upstream.on("error", () => res.destroy());
+    req.on("error", () => upstream.destroy());
     res.on("close", () => upstream.destroy());
     req.pipe(upstream);
   });
@@ -52,6 +55,7 @@ export async function startTestProxy(options: { allow: string[] }): Promise<Test
     requests.push(`CONNECT ${target}`);
     if (!allowed.has(target)) {
       block(target);
+      socket.on("error", () => socket.destroy());
       socket.end("HTTP/1.1 403 Forbidden\r\n\r\n");
       return;
     }
@@ -66,6 +70,7 @@ export async function startTestProxy(options: { allow: string[] }): Promise<Test
     upstream.on("error", () => socket.destroy());
     socket.on("error", () => upstream.destroy());
   });
+  server.on("clientError", (_error, socket) => socket.destroy());
   server.on("connection", (socket) => {
     sockets.add(socket);
     socket.on("close", () => sockets.delete(socket));
