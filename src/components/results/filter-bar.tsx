@@ -146,8 +146,8 @@ export function BackgroundControl({ value, onChange, className }: { value: Backg
             tabIndex={active ? 0 : -1}
             onClick={() => onChange(option)}
             className={cn(
-              "h-full rounded-[4px] px-2.5 text-small transition-colors duration-100 outline-none focus-visible:outline-2 focus-visible:outline-accent",
-              active ? "bg-surface font-medium text-text shadow-[0_0_0_1px_var(--border),0_1px_2px_rgb(0_0_0/0.05)]" : "text-text-2 hover:text-text",
+              "h-full rounded-[4px] border px-2.5 text-small transition-colors duration-100 outline-none focus-visible:outline-2 focus-visible:outline-accent",
+              active ? "border-border bg-surface font-medium text-text" : "border-transparent text-text-2 hover:text-text",
             )}
           >
             {BACKGROUND_LABELS[option]}

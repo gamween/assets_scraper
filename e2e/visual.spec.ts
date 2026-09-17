@@ -103,6 +103,46 @@ for (const viewport of VIEWPORTS) {
   });
 }
 
+/**
+ * Spec 12.6 "Flat surfaces": the float shadow only on the selection bar, dialog and toasts, and no other shadow
+ * anywhere (focus rings aside, and nothing has focus here).
+ */
+async function strayShadows(page: Page): Promise<string[]> {
+  return page.evaluate(() => {
+    const probe = document.createElement("div");
+    probe.style.boxShadow = "var(--shadow-float)";
+    document.body.append(probe);
+    const float = getComputedStyle(probe).boxShadow;
+    probe.remove();
+    return [...document.querySelectorAll("body *")].flatMap((element) => {
+      const shadow = getComputedStyle(element).boxShadow;
+      if (shadow === "none") return [];
+      if (shadow === float && element.closest('[role="dialog"], [aria-label="Selection"], [data-testid="toast"]')) return [];
+      return [`${element.tagName.toLowerCase()} ${String(element.getAttribute("class")).slice(0, 100)}: ${shadow}`];
+    });
+  });
+}
+
+test("surfaces stay flat outside the selection bar, dialog and toasts", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await openResults(page);
+  const card = page.getByTestId("asset-card").first();
+  await card.hover();
+  expect(await strayShadows(page)).toEqual([]);
+
+  await card.locator("[data-card-main]").click({ modifiers: ["ControlOrMeta"] });
+  await expect(page.getByRole("region", { name: "Selection" })).toBeVisible();
+  await page.getByRole("button", { name: "Copy link" }).click();
+  await expect(page.getByTestId("toast")).toBeVisible();
+  expect(await strayShadows(page)).toEqual([]);
+
+  await page.keyboard.press("Escape");
+  await page.getByTestId("asset-card").nth(1).locator("[data-card-main]").click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await page.getByRole("dialog").getByRole("button", { name: "Next" }).hover();
+  expect(await strayShadows(page)).toEqual([]);
+});
+
 test("results never scroll sideways between the reference widths", async ({ page }) => {
   await openResults(page);
   for (const width of [360, 480, 640, 768, 900, 1024, 1280, 1680]) {

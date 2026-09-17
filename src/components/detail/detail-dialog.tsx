@@ -125,7 +125,7 @@ function NavButton({ direction, onClick }: { direction: "previous" | "next"; onC
             aria-label={direction === "previous" ? "Previous" : "Next"}
             onClick={onClick}
             className={cn(
-              "absolute top-1/2 z-10 grid size-9 -translate-y-1/2 place-items-center rounded-md border border-border bg-surface/95 text-text-2 shadow-[0_1px_2px_rgb(0_0_0/0.06)] transition-colors hover:border-border-strong hover:text-text focus-visible:outline-2 focus-visible:outline-accent",
+              "absolute top-1/2 z-10 grid size-9 -translate-y-1/2 place-items-center rounded-md border border-border bg-surface/95 text-text-2 transition-colors hover:border-border-strong hover:text-text focus-visible:outline-2 focus-visible:outline-accent",
               direction === "previous" ? "left-3" : "right-3",
             )}
           />

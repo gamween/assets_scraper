@@ -29,7 +29,7 @@ function SwatchButton({ swatch, group }: { swatch: Swatch; group: "brand" | "neu
       >
         <span
           aria-hidden="true"
-          className="size-8 rounded-md shadow-[inset_0_0_0_1px_rgb(0_0_0/0.1)] transition-transform duration-100 ease-enter group-hover/swatch:scale-[1.06] motion-reduce:transform-none"
+          className="size-8 rounded-md border border-swatch-edge transition-transform duration-100 ease-enter group-hover/swatch:scale-[1.06] motion-reduce:transform-none"
           style={{ backgroundColor: swatch.hex }}
         />
         <span className="font-mono text-mono-xs text-text-3 transition-colors group-hover/swatch:text-text">{swatch.hex}</span>

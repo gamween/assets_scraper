@@ -40,6 +40,8 @@
   --warning-line: color-mix(in srgb, var(--warning) 22%, var(--surface));
   --success-soft: color-mix(in srgb, var(--success) 6%, var(--surface));
   --success-line: color-mix(in srgb, var(--success) 20%, var(--surface));
+  /* Edge of a color swatch: reads on white and on near-black swatches alike. */
+  --swatch-edge: color-mix(in srgb, var(--ink) 10%, transparent);
 
   --top-bar-height: 56px;
   --filter-bar-height: 52px;
@@ -69,6 +71,7 @@
   --color-warning-line: var(--warning-line);
   --color-success-soft: var(--success-soft);
   --color-success-line: var(--success-line);
+  --color-swatch-edge: var(--swatch-edge);
   --color-preview-light: var(--preview-light);
   --color-preview-dark: var(--preview-dark);
   --color-grid-a: var(--grid-a);

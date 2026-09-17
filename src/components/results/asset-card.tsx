@@ -36,7 +36,7 @@ function IconAction({ label, onClick, children }: { label: string; onClick: () =
               event.stopPropagation();
               onClick();
             }}
-            className="grid size-7 place-items-center rounded-md border border-border bg-surface text-text-2 shadow-[0_1px_2px_rgb(0_0_0/0.06)] transition-colors duration-100 hover:border-border-strong hover:text-text focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent [&_svg]:size-3.5"
+            className="grid size-7 place-items-center rounded-md border border-border bg-surface text-text-2 transition-colors duration-100 hover:border-border-strong hover:text-text focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent [&_svg]:size-3.5"
           />
         }
       >

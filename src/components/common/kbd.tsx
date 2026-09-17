@@ -6,7 +6,7 @@ export function Kbd({ children, className, onInk = false }: { children: React.Re
     <kbd
       className={cn(
         "inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-sm border px-1 font-mono text-mono-xs font-medium",
-        onInk ? "border-white/15 bg-white/10 text-ink-fg/75" : "border-border bg-surface text-text-3",
+        onInk ? "border-ink-fg/15 bg-ink-fg/10 text-ink-fg/75" : "border-border bg-surface text-text-3",
         className,
       )}
     >
