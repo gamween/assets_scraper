@@ -175,6 +175,38 @@ describe("buildPalette rules", () => {
     expect(hueDiff(hue(palette.brand[0]), 265)).toBeLessThanOrEqual(20);
   });
 
+  it("stays fast on thousands of near-neutral colors, masks and logo rects with a screenshot", () => {
+    // Dark near-grays all land in one neutral cluster, whose representative search used to be quadratic
+    const grays: string[] = [];
+    for (let r = 20; r < 60; r++) {
+      for (let g = 20; g < 60; g++) {
+        for (let b = 20; b < 60; b++) {
+          const rgb: RGB = [r, g, b], lch = oklabToLch(rgbToOklab(rgb));
+          if (lch.c < 0.02) grays.push(`#${[r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("")}`);
+        }
+      }
+    }
+    expect(grays.length).toBeGreaterThan(8_000);
+    const width = 1440, height = 900;
+    // 450 distinct gray blocks of 0.22 percent each, so every block is a pixel bin
+    const blocks = Array.from({ length: 450 }, (_, k) => ({ rect: [(k % 30) * 48, Math.floor(k / 30) * 60, 48, 60] as [number, number, number, number], hex: grays[(k * 17) % grays.length] }));
+    const pixels = screenshot(width, height, "#1e1e1e", blocks);
+    const input = signals({
+      vw: width,
+      vh: height,
+      samples: grays.map((hex, i): RawPaletteSignals["samples"][number] => ["bg", hex, 1000 - (i % 900), 1]),
+      mediaRects: Array.from({ length: 2_000 }, (_, i): RawPaletteSignals["mediaRects"][number] =>
+        i % 2 ? [1 + 3 * (i % 480) + 0.1, 0, 1, height, "img"] : [0, 0, width - (i % 7), height, "bgimg"]),
+      logoImageRects: Array.from({ length: 20 }, (): [number, number, number, number] => [0, 0, width, height]),
+    });
+
+    const started = performance.now();
+    const palette = buildPalette(input, pixels);
+    expect(performance.now() - started).toBeLessThan(2_000);
+    expectShape(palette);
+    expect(palette.neutrals.length).toBeGreaterThan(0);
+  });
+
   it("samples raster logo colors from the pixels without their real backdrop", () => {
     // DOM says the logo sits on white, but a background image paints navy around it
     const pixels = screenshot(200, 100, "#ffffff", [

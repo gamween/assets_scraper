@@ -106,6 +106,17 @@ const RENDERED: PaletteSource[] = ["bg", "text", "border", "svg", "cta", "link",
 
 const EPS = 0.004;
 
+// Post-processing runs synchronously in Node, so every loop is bounded whatever the page sent (spec 7.2: nothing a page
+// does may stall the event loop, or the deadline, abort and memory watchdog timers could not fire).
+/** Most salient unique colors that enter clustering; real pages have a few hundred, pixel bins included. */
+const MAX_CLUSTER_COLORS = 1_500;
+/** Raster logo rects sampled from the screenshot, in DOM order. */
+const MAX_LOGO_RECTS = 4;
+/** Screenshot pixels read per raster logo: larger rects are sampled with a coarser step. */
+const MAX_LOGO_PIXELS = 300_000;
+/** Distinct viewport-sized background images checked for smoothness; the others stay masked. */
+const MAX_BACKDROP_CHECKS = 4;
+
 const oklabOf = (hex: string) => rgbToOklab(hexToRgb(hex));
 const lchOf = (hex: string) => oklabToLch(oklabOf(hex));
 
@@ -129,8 +140,17 @@ export function buildPalette(sig: RawPaletteSignals, pixels: Pixels | null, cfg:
   if (pixels) {
     const scale = pixels.width / sig.vw;
     // A smooth CSS background image covering the viewport is the page background (Discord), not a photo
-    const isBackdrop = (r: MediaRect) =>
-      r[4] === "bgimg" && r[2] * r[3] >= 0.9 * sig.vw * sig.vh && smoothness(pixels, [r[0], r[1], r[2], r[3]], scale) >= 0.85;
+    const backdrops = new Map<string, boolean>();
+    const isBackdrop = (r: MediaRect) => {
+      if (r[4] !== "bgimg" || r[2] * r[3] < 0.9 * sig.vw * sig.vh) return false;
+      const key = r.slice(0, 4).join();
+      let smooth = backdrops.get(key);
+      if (smooth === undefined) {
+        smooth = backdrops.size < MAX_BACKDROP_CHECKS && smoothness(pixels, [r[0], r[1], r[2], r[3]], scale) >= 0.85;
+        backdrops.set(key, smooth);
+      }
+      return smooth;
+    };
     const masks = sig.mediaRects.filter((r) => cfg.maskKinds.includes(r[4]) && !isBackdrop(r)).map((r): RectTuple => [r[0], r[1], r[2], r[3]]);
     const q = quantize(pixels, { scale, masks, minShare: 0 });
     coverage = q.coverage;
@@ -182,13 +202,14 @@ export function buildPalette(sig: RawPaletteSignals, pixels: Pixels | null, cfg:
     // Raster logos: sample their pixels without the backdrop (the DOM color and what really surrounds the logo on
     // screen, since a background image can hide the DOM color) and without anti-aliasing blends. Shares are relative
     // to the non-backdrop pixels, so small multi-color marks survive (Slack).
-    for (const r of sig.logoImageRects) {
+    for (const r of sig.logoImageRects.slice(0, MAX_LOGO_RECTS)) {
       const backs = [sig.logoBackdrop, ringColor(pixels, r, scale)].filter((h): h is string => !!h).map(oklabOf);
       const isBack = (hex: string) => {
         const p = oklabOf(hex);
         return backs.some((b) => oklabDistance(p, b) < 0.06);
       };
-      const all = quantize(pixels, { scale, region: r, step: 1, minShare: 0.003 }).all;
+      const step = Math.max(1, Math.ceil(Math.sqrt((r[2] * r[3] * scale * scale) / MAX_LOGO_PIXELS)));
+      const all = quantize(pixels, { scale, region: r, step, minShare: 0.003 }).all;
       const foreground = all.reduce((sum, [hex, share]) => sum + (isBack(hex) ? 0 : share), 0);
       for (const [hex, share] of dropBlends(all, 6)) {
         if (isBack(hex) || !(foreground > 0) || share / foreground < 0.03) continue;
@@ -223,7 +244,8 @@ export function buildPalette(sig: RawPaletteSignals, pixels: Pixels | null, cfg:
       const rgb = hexToRgb(hex), lab = rgbToOklab(rgb), lch = oklabToLch(lab), neutral = isNeutral(lch);
       return { hex, share, lab, lch, L: lstar(rgb), neutral, salience: weigh(share, neutral ? cfg.neutralWeights : cfg.brandWeights) };
     })
-    .sort((a, b) => b.salience - a.salience);
+    .sort((a, b) => b.salience - a.salience)
+    .slice(0, MAX_CLUSTER_COLORS);
 
   const neutralTolerance = (a: { L: number }, b: { L: number }) => (Math.min(a.L, b.L) < 30 ? cfg.neutralMergeDark : cfg.neutralMergeLight);
   const clusters: Cluster[] = [];
@@ -269,18 +291,21 @@ export function buildPalette(sig: RawPaletteSignals, pixels: Pixels | null, cfg:
       }
     }
     const rgbs = c.members.map(hexToRgb);
-    const key = (shares: Shares, i: number) => {
+    // Keys are computed once; only members with pixels (at most 500 bins over 0.2 percent) can credit a DOM member
+    const withPixels = c.memberShares.flatMap((shares, j) => (shares.pix ? [j] : []));
+    const keys = c.memberShares.map((shares, i) => {
       if (!(dominant === "bg" && pixels)) return shares[dominant] ?? 0;
       if (!shares.bg) return -1;
       let v = shares.bg;
-      c.memberShares.forEach((other, j) => {
-        if (Math.max(...rgbs[j].map((x, k) => Math.abs(x - rgbs[i][k]))) <= 3) v += other.pix ?? 0;
-      });
+      for (const j of withPixels) {
+        const a = rgbs[i], b = rgbs[j];
+        if (Math.abs(a[0] - b[0]) <= 3 && Math.abs(a[1] - b[1]) <= 3 && Math.abs(a[2] - b[2]) <= 3) v += c.memberShares[j].pix ?? 0;
+      }
       return v;
-    };
+    });
     let bi = 0;
-    c.memberShares.forEach((shares, i) => {
-      if (key(shares, i) > key(c.memberShares[bi], bi)) bi = i;
+    keys.forEach((key, i) => {
+      if (key > keys[bi]) bi = i;
     });
     if (bi) {
       const hex = c.members[bi], rgb = hexToRgb(hex);

@@ -38,7 +38,8 @@ export interface QuantizeOptions {
 
 /**
  * One pass, 5 bits per channel histogram. `coverage` is the unmasked fraction of the sampled pixels, so `masked`
- * shares are relative to the unmasked area.
+ * shares are relative to the unmasked area. Masks are merged per row into sorted intervals, so the cost is one pass
+ * over the sampled pixels plus rows times masks, whatever the masks overlap.
  */
 export function quantize(px: Pixels, options: QuantizeOptions = {}) {
   const step = options.step ?? 3, scale = options.scale ?? 1, minShare = options.minShare ?? 0.002;
@@ -47,18 +48,31 @@ export function quantize(px: Pixels, options: QuantizeOptions = {}) {
   const y0 = region ? Math.max(0, Math.floor(region[1] * scale)) : 0;
   const x1 = region ? Math.min(px.width, Math.ceil((region[0] + region[2]) * scale)) : px.width;
   const y1 = region ? Math.min(px.height, Math.ceil((region[1] + region[3]) * scale)) : px.height;
-  const masks = (options.masks ?? []).map((r) => [r[0] * scale, r[1] * scale, (r[0] + r[2]) * scale, (r[1] + r[3]) * scale]);
+  // [left, top, right, bottom] in screenshot px, left edges ascending
+  const masks = (options.masks ?? [])
+    .map((r) => [r[0] * scale, r[1] * scale, (r[0] + r[2]) * scale, (r[1] + r[3]) * scale])
+    .filter((m) => m[2] > m[0] && m[3] > m[1])
+    .sort((a, b) => a[0] - b[0]);
   const all: Histogram = new Map(), masked: Histogram = new Map();
+  /** Masked [start, end) intervals of the current row, flattened, disjoint and ascending. */
+  const row: number[] = [];
   let nAll = 0, nMasked = 0;
   for (let y = y0; y < y1; y += step) {
-    const row = masks.filter((m) => y >= m[1] && y < m[3]);
+    row.length = 0;
+    for (const m of masks) {
+      if (y < m[1] || y >= m[3]) continue;
+      if (row.length && m[0] <= row[row.length - 1]) row[row.length - 1] = Math.max(row[row.length - 1], m[2]);
+      else row.push(m[0], m[2]);
+    }
+    let k = 0;
     for (let x = x0; x < x1; x += step) {
       const i = (y * px.width + x) * px.channels;
       const r = px.data[i], g = px.data[i + 1], b = px.data[i + 2];
       const key = binKey(r, g, b);
       addToBin(all, key, r, g, b);
       nAll++;
-      if (!row.length || !row.some((m) => x >= m[0] && x < m[2])) {
+      while (k < row.length && x >= row[k + 1]) k += 2;
+      if (k >= row.length || x < row[k]) {
         addToBin(masked, key, r, g, b);
         nMasked++;
       }
@@ -96,17 +110,21 @@ export function dropBlends(list: [string, number][], anchors = 4): [string, numb
 export function ringColor(px: Pixels, r: RectTuple, scale: number): string | null {
   const bins: Histogram = new Map();
   let n = 0;
-  const x0 = Math.floor((r[0] - 6) * scale), x1 = Math.ceil((r[0] + r[2] + 6) * scale);
-  const y0 = Math.floor((r[1] - 6) * scale), y1 = Math.ceil((r[1] + r[3] + 6) * scale);
-  const ix0 = (r[0] - 2) * scale, ix1 = (r[0] + r[2] + 2) * scale;
+  const x0 = Math.max(0, Math.floor((r[0] - 6) * scale)), x1 = Math.min(px.width, Math.ceil((r[0] + r[2] + 6) * scale));
+  const y0 = Math.max(0, Math.floor((r[1] - 6) * scale)), y1 = Math.min(px.height, Math.ceil((r[1] + r[3] + 6) * scale));
   const iy0 = (r[1] - 2) * scale, iy1 = (r[1] + r[3] + 2) * scale;
-  for (let y = Math.max(0, y0); y < Math.min(px.height, y1); y++) {
-    for (let x = Math.max(0, x0); x < Math.min(px.width, x1); x++) {
-      if (x >= ix0 && x < ix1 && y >= iy0 && y < iy1) continue;
-      const i = (y * px.width + x) * px.channels;
-      addToBin(bins, binKey(px.data[i], px.data[i + 1], px.data[i + 2]), px.data[i], px.data[i + 1], px.data[i + 2]);
-      n++;
-    }
+  // Columns [skipFrom, skipTo) of the rows crossing the inner rect are left out, so only the band is read
+  const skipFrom = Math.min(x1, Math.max(x0, Math.ceil((r[0] - 2) * scale)));
+  const skipTo = Math.max(skipFrom, Math.min(x1, Math.ceil((r[0] + r[2] + 2) * scale)));
+  const add = (x: number, y: number) => {
+    const i = (y * px.width + x) * px.channels;
+    addToBin(bins, binKey(px.data[i], px.data[i + 1], px.data[i + 2]), px.data[i], px.data[i + 1], px.data[i + 2]);
+    n++;
+  };
+  for (let y = y0; y < y1; y++) {
+    const inner = y >= iy0 && y < iy1;
+    for (let x = x0; x < (inner ? skipFrom : x1); x++) add(x, y);
+    if (inner) for (let x = skipTo; x < x1; x++) add(x, y);
   }
   let best: [number, number, number, number] | null = null;
   for (const e of bins.values()) if (!best || e[3] > best[3]) best = e;
