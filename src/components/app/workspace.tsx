@@ -3,6 +3,7 @@
 import { TopBar } from "@/components/app-shell/top-bar";
 import { DetailDialog } from "@/components/detail/detail-dialog";
 import { ResultsView } from "@/components/results/results-view";
+import { ErrorView } from "@/components/scan/error-view";
 import { ScanStatus } from "@/components/scan/scan-status";
 import { SkeletonGrid } from "@/components/scan/skeleton-grid";
 import { SiteHeader } from "@/components/scan/site-header";
@@ -29,6 +30,7 @@ export function Workspace({ pendingHost }: { pendingHost: string | null }) {
           </div>
         ) : null}
         {phase === "results" ? <ResultsView /> : null}
+        {phase === "error" ? <ErrorView /> : null}
       </main>
       <SelectionBar />
       <DetailDialog />

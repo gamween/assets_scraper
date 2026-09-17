@@ -42,6 +42,13 @@ export function runScan(url: string, host: string, history: HistoryMode = "push"
       if (event.type === "done") appStore.getState().setRecent(addRecent(host));
     },
     onError(error) {
+      if (error.code === "invalid-url") {
+        // The gate disagreed with the client normalization: back to the landing with the inline message.
+        appStore.getState().reset(url);
+        appStore.getState().setInputError(INVALID_URL_MESSAGE);
+        writeHistory("/", "replace");
+        return;
+      }
       appStore.getState().failScan(error);
     },
     onRetry() {
