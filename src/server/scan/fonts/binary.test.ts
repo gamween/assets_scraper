@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { brotliCompressSync, brotliDecompressSync, constants, deflateSync } from "node:zlib";
 import * as fontkit from "fontkit";
@@ -285,7 +285,7 @@ describe("parse limits", () => {
     }
   });
 
-  it("allows 16 times the file size, at least 16 KiB and at most 32 MiB", () => {
+  it("allows 16 times the file size, at least 16 KiB and at most 30 MiB", () => {
     // A WOFF2 file of `fileBytes` whose one table, an empty `name` table, declares and decompresses to `length` bytes
     const sized = (length: number, fileBytes: number) =>
       toWoff2({ flavor: 0x00010000, totalSfntSize: length, tables: [{ tag: "name", data: nameTable([], Buffer.alloc(length - 6)) }] }, fileBytes);
@@ -293,9 +293,35 @@ describe("parse limits", () => {
     expect(withinParseLimits(sized(16 * KIB + 1, 100))).toBe(false);
     expect(withinParseLimits(sized(160_000, 10_000))).toBe(true);
     expect(withinParseLimits(sized(160_001, 10_000))).toBe(false);
-    expect(withinParseLimits(sized(32 * MIB, 3 * MIB))).toBe(true);
-    expect(withinParseLimits(sized(32 * MIB + 1, 3 * MIB))).toBe(false);
+    expect(withinParseLimits(sized(30 * MIB, 2 * MIB))).toBe(true);
+    expect(withinParseLimits(sized(30 * MIB + 1, 3 * MIB))).toBe(false);
     expect(withinParseLimits(asset("ss3.woff2").subarray(0, 40))).toBe(false);
+  });
+
+  it("refuses a WOFF2 whose table directory or header declares more than 30 MiB, whatever its stream holds", () => {
+    // woff2, which converts the fonts the proxy serves as TTF, returns 30 MiB at most. fontkit alone allocates the sum
+    // of the lengths the directory declares, and reads the names from this 2 MiB file.
+    const name = familyNameTable("Declared");
+    const stream = brotliCompressSync(name);
+    /** A 2 MiB WOFF2 file declaring `name`, then `post` and `gasp` tables of `padding` bytes, over a stream of `name` only. */
+    const declaring = (padding: number[], totalSfntSize = name.length) => {
+      const tags = [7, 17];
+      const directory = Buffer.from([5, ...base128(name.length), ...padding.flatMap((length, index) => [tags[index], ...base128(length)])]);
+      const header = Buffer.alloc(48);
+      header.write("wOF2", 0, "latin1");
+      header.writeUInt32BE(0x00010000, 4);
+      header.writeUInt32BE(2 * MIB, 8);
+      header.writeUInt16BE(1 + padding.length, 12);
+      header.writeUInt32BE(totalSfntSize, 16);
+      header.writeUInt32BE(stream.length, 20);
+      return Buffer.concat([header, directory, stream], 2 * MIB);
+    };
+    const rest = 30 * MIB - name.length;
+    expect(withinParseLimits(declaring([rest]))).toBe(true);
+    expect(withinParseLimits(declaring([rest / 2, rest / 2], 30 * MIB))).toBe(true);
+    expect(refusedBeforeFontkit(declaring([rest + 1]))).toBe(true);
+    expect(refusedBeforeFontkit(declaring([rest / 2, rest / 2 + 1]))).toBe(true);
+    expect(refusedBeforeFontkit(declaring([], 30 * MIB + 1))).toBe(true);
   });
 
   it("rejects WOFF tables that declare more than the file can hold", () => {
@@ -366,6 +392,16 @@ describe("parse limits", () => {
     expect(parseFontBinary(toSfnt(withTable(ss3, "fvar", fvar(64, 1_024))))).toMatchObject({ familyName: "Source Sans 3" });
     expect(refusedBeforeFontkit(toSfnt(withTable(ss3, "fvar", fvar(65, 1))))).toBe(true);
     expect(refusedBeforeFontkit(toSfnt(withTable(ss3, "fvar", fvar(1, 1_025))))).toBe(true);
+  });
+});
+
+describe("fonts module source", () => {
+  it("holds no raw control characters, so git diffs every file as text", () => {
+    // A NUL byte in a string literal made git show binary.ts as a binary file, with no diff
+    const directory = path.join(process.cwd(), "src/server/scan/fonts");
+    const files = readdirSync(directory).filter((file) => file.endsWith(".ts"));
+    expect(files).toContain("binary.ts");
+    for (const file of files) expect(readFileSync(path.join(directory, file), "utf8"), file).not.toMatch(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/);
   });
 });
 
