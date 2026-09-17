@@ -3,10 +3,20 @@ import { tokenize } from "css-tree/tokenizer";
 import { ident } from "css-tree/utils";
 import { describe, expect, it, vi } from "vitest";
 import { decodeIdent, MAX_DESCRIPTOR_CHARS, MAX_FAMILY_CHARS, MAX_SRC_ENTRIES, MAX_UNICODE_RANGE_CHARS, parseFontFaceCss, parseFontSrc } from "./css";
+import { MAX_URL_CHARS } from "./files";
 import { fastestMs, growthFactor, LINEAR_GROWTH_BOUND, random } from "./testing";
 
-// Counts the tokens the fonts code reads, to show where it stops tokenizing
+// Counts the tokens the fonts code reads and the CSS escapes it decodes, to show where it stops reading
 const tokenizer = vi.hoisted(() => ({ tokens: 0 }));
+const decoder = vi.hoisted(() => ({ calls: 0 }));
+vi.mock("css-tree/utils", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("css-tree/utils")>();
+  const decode: typeof actual.ident.decode = (text) => {
+    decoder.calls += 1;
+    return actual.ident.decode(text);
+  };
+  return { ...actual, ident: { ...actual.ident, decode } };
+});
 vi.mock("css-tree/tokenizer", async (importOriginal) => {
   const actual = await importOriginal<typeof import("css-tree/tokenizer")>();
   const tokenize: typeof actual.tokenize = (source, onToken) =>
@@ -18,7 +28,8 @@ vi.mock("css-tree/tokenizer", async (importOriginal) => {
 });
 
 const MIB = 1024 * 1024;
-const BASE = "https://s.example/css/a.css";
+const DIR = "https://s.example/css/";
+const BASE = `${DIR}a.css`;
 
 /** A stylesheet of `rules` minimal `@font-face` rules, about 50 bytes each. */
 const sheetOf = (rules: number) => Array.from({ length: rules }, (_, index) => `@font-face{font-family:f${index};src:url(${index}.woff2)}`).join("");
@@ -118,16 +129,17 @@ describe("parseFontFaceCss", () => {
       atRule: `@${name}{}@font-face{font-family:A;src:url(a.woff2)}`,
       important: `@font-face{font-family:A;src:url(a.woff2);font-display:swap !${name}}`,
       srcFunction: `@font-face{font-family:A;src:${name}(x),url(a.woff2)}`,
-      srcString: `@font-face{font-family:A;src:url("${name}")}`,
-      srcUrl: `@font-face{font-family:A;src:url(${name})}`,
-      srcLocal: `@font-face{font-family:A;src:local(${name})}`,
+      srcString: `@font-face{font-family:A;src:url("data:font/woff2,${name}")}`,
+      srcUrl: `@font-face{font-family:A;src:url(data:font/woff2,${name})}`,
+      // over the caps of a local() name and of a URL other than a data: URI
+      srcLocal: `@font-face{font-family:A;src:local(${name}),url(a.woff2)}`,
+      srcRemote: `@font-face{font-family:A;src:url(${name}),url(a.woff2)}`,
     };
     // Lengths of the first source of each rule found
     const found = Object.fromEntries(Object.entries(sheets).map(([key, css]) => [key, parseFontFaceCss(css, BASE).map((rule) => (rule.src[0].url ?? rule.src[0].local)!.length)]));
-    const decoded = `b${"a".repeat(2 * MIB)}`;
     const short = new URL("a.woff2", BASE).href.length;
-    const long = new URL(decoded, BASE).href.length;
-    expect(found).toEqual({ family: [], quotedFamily: [], descriptor: [short], atRule: [short], important: [short], srcFunction: [short], srcString: [long], srcUrl: [long], srcLocal: [decoded.length] });
+    const long = `data:font/woff2,b${"a".repeat(2 * MIB)}`.length;
+    expect(found).toEqual({ family: [], quotedFamily: [], descriptor: [short], atRule: [short], important: [short], srcFunction: [short], srcString: [long], srcUrl: [long], srcLocal: [short], srcRemote: [short] });
     for (const [key, css] of Object.entries(sheets)) {
       const parsing = await fastestMs(() => parseFontFaceCss(css, BASE));
       const tokenizing = await fastestMs(() => tokenize(css, () => {}));
@@ -247,6 +259,70 @@ describe("parseFontSrc", () => {
     } finally {
       parses.mockRestore();
     }
+  });
+
+  it("gives no source for a url() over 8 KiB as written or resolved, other than a data: URI, and resolves only absolute URLs against a longer base URL", () => {
+    expect(MAX_URL_CHARS).toBe(8 * 1_024);
+    // relative URLs that resolve to `length` characters
+    const name = (length: number) => "a".repeat(length - DIR.length);
+    // `./` segments resolve away: 8,192 and 8,193 characters as written, about 30 resolved
+    const dotted = (tail: string) => `${"./".repeat(4_092)}${tail}`;
+    for (const wrap of [(url: string) => `url(${url})`, (url: string) => `url("${url}")`]) {
+      const read = (urls: string[]) => parseFontSrc([...urls.map(wrap), wrap("z.woff2")].join(", "), BASE).map((source) => source.url);
+      expect(read([name(MAX_URL_CHARS), dotted("ab.woff2")])).toEqual([DIR + name(MAX_URL_CHARS), `${DIR}ab.woff2`, `${DIR}z.woff2`]);
+      expect(read([name(MAX_URL_CHARS + 1), dotted("abc.woff2")])).toEqual([`${DIR}z.woff2`]);
+      const data = `data:font/woff2;base64,${"A".repeat(MIB)}`;
+      expect(read([data])).toEqual([data, `${DIR}z.woff2`]);
+    }
+    const src = `url(a.woff2), url(https://cdn.example/b.woff2), url(data:font/woff2;base64,AAAA)`;
+    const base = (length: number) => `${BASE}?${"q".repeat(length - BASE.length - 1)}`;
+    expect(parseFontSrc(src, base(MAX_URL_CHARS))).toEqual([{ url: `${DIR}a.woff2` }, { url: "https://cdn.example/b.woff2" }, { url: "data:font/woff2;base64,AAAA" }]);
+    expect(parseFontSrc(src, base(MAX_URL_CHARS + 1))).toEqual([{ url: "https://cdn.example/b.woff2" }, { url: "data:font/woff2;base64,AAAA" }]);
+
+    // Resolving a URL reads its base URL again: the 80,000 sources of a stylesheet served at a 1 MB URL took 88 seconds,
+    // and a 15 MB url() went out twice in the fonts line. No URL over the cap is parsed, nor any base URL over it.
+    const parses = vi.spyOn(URL, "parse");
+    try {
+      const sheet = Array.from({ length: 500 }, (_, index) => `@font-face{font-family:F${index};src:${Array.from({ length: 16 }, (_, entry) => `url(${entry})`).join(",")}}`).join("");
+      expect(parseFontFaceCss(sheet, base(MIB))).toEqual([]);
+      expect(parseFontFaceCss(`@font-face{font-family:A;src:url(${"a".repeat(MIB)}),url("${"b".repeat(MIB)}")}`, BASE)).toEqual([]);
+      expect(parses).toHaveBeenCalled();
+      for (const [url, baseUrl] of parses.mock.calls) expect(Math.max(String(url).length, String(baseUrl ?? "").length)).toBeLessThanOrEqual(MAX_URL_CHARS);
+    } finally {
+      parses.mockRestore();
+    }
+  });
+
+  it("gives no source for a local() name over 1,024 characters before decoding, and decodes arguments only while they can make a source or a hint", () => {
+    const locals = (value: string) => parseFontSrc(`${value}, url(z.woff2)`, BASE).map((source) => source.local ?? source.url);
+    // strings count their quotes, identifiers their escapes, and each gap one space
+    expect(locals(`local(${"a".repeat(1_024)}), local("${"b".repeat(1_022)}"), local(\\63 ${"c".repeat(1_020)}), local(${"ab ".repeat(341)}c)`)).toEqual([
+      "a".repeat(1_024),
+      "b".repeat(1_022),
+      "c".repeat(1_021),
+      `${"ab ".repeat(341)}c`,
+      `${DIR}z.woff2`,
+    ]);
+    expect(locals(`local(${"a".repeat(1_025)}), local("${"b".repeat(1_023)}"), local(\\63 ${"c".repeat(1_021)}), local(${"ab ".repeat(341)}cd)`)).toEqual([`${DIR}z.woff2`]);
+
+    // A 15 MB local(ab ab ...) decoded and kept 5 million names to join them, and url("ab" "ab" ...) and
+    // format("ab" "ab" ...) decoded every string. Past the first few, longer lists cost no more decoding.
+    const hostile = [
+      (count: number) => `local(${"\\61 b ".repeat(count)}), url(a.woff2)`,
+      (count: number) => `url(${'"\\61" '.repeat(count)}), url(a.woff2)`,
+      (count: number) => `url(a.woff2) format(${'"\\61" '.repeat(count)})`,
+    ];
+    const decoding = (value: string) => {
+      decoder.calls = 0;
+      const sources = parseFontSrc(value, BASE);
+      return { sources, calls: decoder.calls };
+    };
+    for (const value of hostile) {
+      const many = decoding(value(100_000));
+      expect(many).toEqual(decoding(value(1_000)));
+      expect(many.calls).toBeLessThanOrEqual(200);
+    }
+    expect(hostile.map((value) => decoding(value(100_000)).sources)).toEqual([[{ url: `${DIR}a.woff2` }], [{ url: `${DIR}a.woff2` }], [{ url: `${DIR}a.woff2`, format: "a" }]]);
   });
 
   it("keeps the first format of a legacy list and drops unresolvable URLs", () => {

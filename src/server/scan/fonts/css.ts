@@ -1,6 +1,7 @@
 import { tokenize, tokenTypes as T } from "css-tree/tokenizer";
 import { ident } from "css-tree/utils";
 import type { RawFontFaceRule } from "../types";
+import { isDataUri, parseFileUrl } from "./files";
 
 // Only the css-tree tokenizer, never its parser. The parser is one shared object whose token buffers keep the size of
 // the largest source it ever parsed and are cleared on every parse: after one large stylesheet, each later parse costs
@@ -124,18 +125,22 @@ class ByteStack {
   }
 }
 
+/** The source of a `url()`: a `data:` URI of any length, or another URL within the bounds of `parseFileUrl`. */
 function absoluteUrl(value: string, baseUrl: string): FontSrc | null {
   // Not `new URL`: a stylesheet can hold a million invalid URLs, and a throw costs 10 times a parse
-  const url = value ? URL.parse(value, baseUrl) : null;
+  const url = !value ? null : isDataUri(value) ? URL.parse(value) : parseFileUrl(value, baseUrl);
   return url ? { url: url.href } : null;
 }
 
 /** A `url(`, `local(` or `format(` function of a `src` entry, read at its own nesting level. */
 interface SrcFunction {
   kind: "url" | "local" | "format";
+  /** Its strings and identifiers, decoded, while they can still make its source or hint. */
   texts: string[];
-  /** Tokens other than strings and identifiers, which make a quoted `url()` invalid. */
-  other: boolean;
+  /** For `local()`: characters of its strings and identifiers before decoding, with one space between each two. */
+  chars: number;
+  /** Whether it gives nothing: a `url()` with anything but one string or identifier, or a `local()` over its cap. */
+  invalid: boolean;
 }
 
 /**
@@ -143,8 +148,11 @@ interface SrcFunction {
  * (the first one of a legacy list), from css-tree tokens: the value comes from scraped CSS, so no backtracking regex.
  * Lenient like the discovery lab: in each comma-separated entry, the first valid `url()` or non-empty `local()` is the
  * source, whatever comes before it, and the first `format()` after a `url()` is its hint. At most `MAX_SRC_ENTRIES`
- * `url()` and `local()` sources are read, valid or not: tokenizing stops at the next one. Unbalanced closing tokens are
- * skipped and functions left open at the end of the value are closed.
+ * `url()` and `local()` sources are read, valid or not: tokenizing stops at the next one. A `local()` name over
+ * `MAX_FAMILY_CHARS` characters before decoding, and a `url()` other than a `data:` URI over `MAX_URL_CHARS`
+ * (`files.ts`), give no source. The arguments of a function are decoded only while they can still make its source or
+ * hint: 15 MB of `local(ab ab ...)` or `url("ab" "ab" ...)` cost no more than tokenizing them past the first few.
+ * Unbalanced closing tokens are skipped and functions left open at the end of the value are closed.
  */
 export function parseFontSrc(src: string, baseUrl: string): FontSrc[] {
   const out: FontSrc[] = [];
@@ -164,16 +172,41 @@ export function parseFontSrc(src: string, baseUrl: string): FontSrc[] {
   };
 
   const endFunction = () => {
-    const { kind, texts, other } = fn!;
+    const { kind, texts, invalid } = fn!;
     fn = null;
     if (kind === "format") {
       const hint = texts[0]?.trim().toLowerCase();
       if (hint && current) current.format = hint;
     } else if (kind === "local") {
-      const name = texts.join(" ").trim();
+      const name = invalid ? "" : texts.join(" ").trim();
       addSource(name ? { local: name } : null);
     } else {
-      addSource(texts.length === 1 && !other ? absoluteUrl(texts[0].trim(), baseUrl) : null);
+      addSource(texts.length === 1 && !invalid ? absoluteUrl(texts[0].trim(), baseUrl) : null);
+    }
+  };
+
+  const decodeText = (type: number, start: number, end: number) =>
+    type === T.String ? decodeString(src.slice(start, end)) : decodeIdent(src.slice(start, end));
+
+  /** Reads a token other than whitespace and comments at the top level of a function. */
+  const readArgument = (fn: SrcFunction, type: number, start: number, end: number) => {
+    if (fn.invalid) return;
+    const isText = type === T.String || type === T.Ident;
+    if (fn.kind === "format") {
+      // format() keeps its first argument, when it is a string or an identifier
+      if (!fn.texts.length) fn.texts.push(isText ? decodeText(type, start, end) : "");
+    } else if (fn.kind === "url") {
+      if (isText && !fn.texts.length) fn.texts.push(decodeText(type, start, end));
+      else fn.invalid = true;
+    } else if (isText) {
+      // local() skips other tokens
+      fn.chars += end - start + (fn.texts.length ? 1 : 0);
+      if (fn.chars <= MAX_FAMILY_CHARS) {
+        fn.texts.push(decodeText(type, start, end));
+      } else {
+        fn.invalid = true;
+        fn.texts = [];
+      }
     }
   };
 
@@ -184,15 +217,7 @@ export function parseFontSrc(src: string, baseUrl: string): FontSrc[] {
       return;
     }
     if (closers.length === 1 && fn && !isBlank(type)) {
-      const text = type === T.String ? decodeString(src.slice(start, end)) : type === T.Ident ? decodeIdent(src.slice(start, end)) : null;
-      // format() keeps its first argument, when it is a string or an identifier
-      if (fn.kind === "format") {
-        if (!fn.texts.length) fn.texts.push(text ?? "");
-      } else if (text === null) {
-        fn.other = true;
-      } else {
-        fn.texts.push(text);
-      }
+      readArgument(fn, type, start, end);
     } else if (!closers.length) {
       if (type === T.Comma) {
         current = null;
@@ -203,9 +228,9 @@ export function parseFontSrc(src: string, baseUrl: string): FontSrc[] {
         const name = decodeIdent(src.slice(start, end - 1)).toLowerCase();
         if (!current && (name === "url" || name === "local")) {
           startSource();
-          fn = { kind: name, texts: [], other: false };
+          fn = { kind: name, texts: [], chars: 0, invalid: false };
         } else if (current?.url && !current.format && name === "format") {
-          fn = { kind: "format", texts: [], other: false };
+          fn = { kind: "format", texts: [], chars: 0, invalid: false };
         }
       }
     }

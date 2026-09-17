@@ -6,7 +6,7 @@ import { SignLimitError } from "@/server/security/sign";
 import type { CapturedFont, CapturedSheet, FontBinaryMeta, PostInput, RawCollectorOutput, Signer } from "../types";
 import { parseFontBinary } from "./binary";
 import { MAX_DESCRIPTOR_CHARS, MAX_UNICODE_RANGE_CHARS, normalizeStretch, normalizeStyle, normalizeWeight } from "./css";
-import { MAX_INLINE_BYTES, MAX_INLINE_FONTS } from "./files";
+import { MAX_INLINE_BYTES, MAX_INLINE_FONTS, MAX_URL_CHARS } from "./files";
 import { clearGoogleFontsCache } from "./google";
 import { buildFontFamilies, isConvertibleFont } from "./index";
 import { fakeGoogleFetch, fastestMs, growthFactor, LINEAR_GROWTH_BOUND } from "./testing";
@@ -430,6 +430,29 @@ describe("buildFontFamilies", () => {
     const { families } = await buildFontFamilies(inputOf({ fontFaces: [{ ...rule("Face", []), src }] }));
     expect(families.map((family) => family.name)).toEqual(["Face"]);
     expect([...read]).toEqual(Array.from({ length: 16 }, (_, index) => String(index)));
+  });
+
+  it("lists no file whose URL is over 8 KiB, from the CSSOM, a stylesheet or a capture, and resolves only absolute URLs against a longer base URL", async () => {
+    // Absolute URLs of `length` characters
+    const url = (length: number, char: string) => `${PAGE}${char.repeat(length - PAGE.length)}`;
+    const longBase = `${PAGE}?${"q".repeat(MAX_URL_CHARS)}`;
+    const { byName } = await build({
+      fontFaces: [rule("CssomAt", [url(MAX_URL_CHARS, "c")]), rule("CssomOver", [url(MAX_URL_CHARS + 1, "c")]), rule("CssomBase", ["relative.woff2", `${PAGE}cssom.woff2`], { baseUrl: longBase })],
+      sheets: [
+        { url: `${PAGE}a.css`, status: 200, cssText: `@font-face{font-family:SheetAt;src:url(${url(MAX_URL_CHARS, "s")})}@font-face{font-family:SheetOver;src:url(${url(MAX_URL_CHARS + 1, "s")})}` },
+        { url: longBase, status: 200, cssText: `@font-face{font-family:SheetBase;src:url(relative.woff2),url(${PAGE}sheet.woff2)}` },
+      ],
+      // Files without a rule, named by their binaries
+      fonts: [captured(url(MAX_URL_CHARS, "i")), captured(url(MAX_URL_CHARS + 1, "j"), jbmMeta)],
+    });
+    const files = Object.fromEntries([...byName].map(([name, family]) => [name, family.faces.flatMap((face) => face.files.map((file) => file.url))]));
+    expect(files).toEqual({
+      CssomAt: [url(MAX_URL_CHARS, "c")],
+      CssomBase: [`${PAGE}cssom.woff2`],
+      SheetAt: [url(MAX_URL_CHARS, "s")],
+      SheetBase: [`${PAGE}sheet.woff2`],
+      Inter: [url(MAX_URL_CHARS, "i")],
+    });
   });
 
   it("stops reading captured stylesheets once the scan deadline passes or the scan is aborted", async () => {

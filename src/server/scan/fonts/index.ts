@@ -18,7 +18,11 @@ export { parseFontFaceCss } from "./css";
  * URI font bounds are in `files.ts`.
  * - `@font-face` rules read from the CSSOM, and again from captured stylesheets. Pages with the most rules, CJK fonts
  *   split in about 100 `unicode-range` subsets per weight, have a few thousand.
- * - Sources of each rule: at most `MAX_SRC_ENTRIES` (`css.ts`), from the CSSOM too.
+ * - Sources of each rule: at most `MAX_SRC_ENTRIES` (`css.ts`), from the CSSOM too. In stylesheets, a `local()` name
+ *   over `MAX_FAMILY_CHARS` before decoding gives no source (`css.ts`).
+ * - File URLs other than `data:` URIs, from stylesheets, the CSSOM and captures: at most `MAX_URL_CHARS` characters as
+ *   written and resolved, against base URLs of at most `MAX_URL_CHARS` (`files.ts`). A longer URL gives no file, and
+ *   a longer base URL resolves only absolute URLs.
  * - Family names: at most `MAX_FAMILY_CHARS` characters before decoding (`css.ts`), in stylesheets, the CSSOM and
  *   `document.fonts`. A rule or status with a longer one is skipped.
  * - Weights, styles and stretches: at most `MAX_DESCRIPTOR_CHARS` characters, and unicode ranges at most

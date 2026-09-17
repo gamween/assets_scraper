@@ -36,6 +36,14 @@ const SECOND_LEVEL_LABELS = /^(?:ac|co|com|edu|go|gov|ne|net|or|org)$/;
 const KIB = 1024;
 const MIB = 1024 * KIB;
 /**
+ * The most characters of a font file URL other than a `data:` URI, as written and once resolved, and of the base URL it
+ * resolves against. Real font URLs have a few hundred, and servers refuse longer request lines (8 KB for nginx and
+ * Apache). A file sends its URL twice in the `fonts` line, as `url` and in `proxy`: one 15 MB `url()` gave a 31.5 MB
+ * line. And each URL resolved reads its base URL again: the 80,000 sources of a stylesheet served at a 1 MB URL took 88
+ * seconds.
+ */
+export const MAX_URL_CHARS = 8 * KIB;
+/**
  * Bounds on the `data:` URI fonts one scan lists: each is decoded, parsed by fontkit synchronously (where the scan
  * deadline cannot stop it) and sent as base64 in the one `fonts` line. Pages that inline fonts use a few small ones.
  */
@@ -50,11 +58,19 @@ const SNIFF_BYTES = 36;
 export const isDataUri = (url: string): boolean => /^data:/i.test(url);
 
 /**
- * Absolute http(s) URL without its fragment, or null. Not `new URL`: pages can list a million invalid URLs, and a throw
- * costs 10 times a parse.
+ * `URL.parse` within `MAX_URL_CHARS`: null for a URL over it, as written or resolved. A base URL over it is not read, so
+ * only an absolute URL resolves then. Not `new URL`: pages can list a million invalid URLs, and a throw costs 10 times a
+ * parse.
  */
+export function parseFileUrl(url: string, base?: string): URL | null {
+  if (url.length > MAX_URL_CHARS) return null;
+  const parsed = URL.parse(url, base !== undefined && base.length <= MAX_URL_CHARS ? base : undefined);
+  return parsed && parsed.href.length <= MAX_URL_CHARS ? parsed : null;
+}
+
+/** Absolute http(s) URL without its fragment, from `parseFileUrl`, or null. */
 export function remoteUrl(url: string, base?: string): string | null {
-  const parsed = URL.parse(url, base);
+  const parsed = parseFileUrl(url, base);
   if (!parsed || (parsed.protocol !== "http:" && parsed.protocol !== "https:")) return null;
   parsed.hash = "";
   return parsed.href;
