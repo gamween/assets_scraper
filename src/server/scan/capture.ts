@@ -24,6 +24,8 @@ const FONT_TYPE = /font|woff|opentype|truetype|sfnt/i;
 const FONT_EXTENSION = /\.(woff2?|ttf|otf|eot)(?:[?#]|$)/i;
 const SVG = (url: string, contentType: string) => /image\/svg/i.test(contentType) || /\.svgz?(?:[?#]|$)/i.test(url);
 
+const isJpeg = (body: Buffer) => body[0] === 0xff && body[1] === 0xd8 && body[2] === 0xff;
+
 class BodyTimeout extends Error {}
 
 const timeoutAfter = <T>(promise: Promise<T>, ms: number): Promise<T> =>
@@ -45,6 +47,10 @@ const timeoutAfter = <T>(promise: Promise<T>, ms: number): Promise<T> =>
  * Network capture (spec 7.4), attached before navigation. Images, fonts and stylesheets are recorded once per URL;
  * 3xx responses are skipped. Bodies are read with caps (size, time, concurrency, total bytes), then hashed, measured,
  * toned or parsed and dropped. Only SVG text, CSS text and `blob:` bytes are kept.
+ *
+ * Playwright hands over a body only whole, so the total cap works by reservation: a read starts only when its declared
+ * length, or the per-body cap when no length is declared, still fits next to the bytes already read and the reads in
+ * flight. A read that does not fit waits for those to finish.
  */
 export function startCapture(page: Page, options: CaptureOptions): CaptureHandle {
   const tone = options.toneFromBytes ?? toneFromBytes;
@@ -55,11 +61,13 @@ export function startCapture(page: Page, options: CaptureOptions): CaptureHandle
   const fonts = new Map<string, CapturedFont>();
   const sheets = new Map<string, CapturedSheet>();
   const jobs = new Set<Promise<void>>();
-  const queue: (() => void)[] = [];
+  const queue: { reserve: number; start: () => void; drop: () => void }[] = [];
   let reading = 0;
+  let reserved = 0;
   let bytesRead = 0;
   let blobBytes = 0;
-  let toned = 0;
+  let tonedRasters = 0;
+  let tonedSvgs = 0;
   let toneMs = 0;
   let bodyTimeouts = 0;
   let skippedBodies = 0;
@@ -67,19 +75,43 @@ export function startCapture(page: Page, options: CaptureOptions): CaptureHandle
 
   const isStopped = () => stopped || options.signal.aborted;
 
-  /** Runs `read` when a body slot is free. Reads still queued when capture stops never start. */
-  const schedule = (read: () => Promise<void>) => {
+  /**
+   * Runs `read` once a body slot is free and its reservation fits in the total cap (see above). A body declared over
+   * the per-body cap, or over what is left of the total, is skipped without a read. Reads still queued when capture
+   * stops never start.
+   */
+  const schedule = (response: Response, read: (body: Buffer) => Promise<void> | void) => {
+    // Undefined gives NaN: no declared length.
+    const declared = Number(response.headers()["content-length"]);
+    const known = Number.isFinite(declared);
+    if (known && (declared > limits.bodyMaxBytes || bytesRead + declared > limits.bodyTotalBytes)) {
+      skippedBodies += 1;
+      return;
+    }
     const job = new Promise<void>((resolve) => {
-      queue.push(() => {
-        if (isStopped()) return resolve();
-        reading += 1;
-        read()
-          .catch(() => {})
-          .finally(() => {
-            reading -= 1;
-            resolve();
-            next();
-          });
+      queue.push({
+        reserve: known ? declared : limits.bodyMaxBytes,
+        drop: resolve,
+        start: () => {
+          // Started alone because it did not fit: what is left of the total still has to hold a declared length.
+          const left = limits.bodyTotalBytes - bytesRead;
+          if (left <= 0 || (known && declared > left)) {
+            skippedBodies += 1;
+            return resolve();
+          }
+          const reserve = Math.min(known ? declared : limits.bodyMaxBytes, left);
+          reading += 1;
+          reserved += reserve;
+          readBody(response)
+            .then((body) => body && read(body))
+            .catch(() => {})
+            .finally(() => {
+              reading -= 1;
+              reserved -= reserve;
+              resolve();
+              next();
+            });
+        },
       });
     });
     jobs.add(job);
@@ -87,20 +119,27 @@ export function startCapture(page: Page, options: CaptureOptions): CaptureHandle
     next();
   };
   const next = () => {
-    while (reading < limits.bodyConcurrency && queue.length) queue.shift()?.();
-    if (isStopped()) while (queue.length) queue.shift()?.();
+    if (isStopped()) {
+      for (const job of queue.splice(0)) job.drop();
+      return;
+    }
+    for (let i = 0; i < queue.length && reading < limits.bodyConcurrency; ) {
+      if (reading > 0 && bytesRead + reserved + queue[i].reserve > limits.bodyTotalBytes) {
+        i += 1;
+        continue;
+      }
+      queue.splice(i, 1)[0].start();
+    }
   };
 
-  /** The body within every cap, or undefined (counted as a timeout or a skip). */
-  const readBody = async (response: Response, read: () => Promise<Buffer>): Promise<Buffer | undefined> => {
-    const declared = Number(response.headers()["content-length"]);
-    if ((Number.isFinite(declared) && declared > limits.bodyMaxBytes) || bytesRead + (declared || 0) > limits.bodyTotalBytes) {
-      skippedBodies += 1;
-      return undefined;
-    }
+  /**
+   * The body within the caps, or undefined (counted as a timeout or a skip). A declared length can be smaller than the
+   * body (it counts compressed bytes), so the caps are checked again on the real size.
+   */
+  const readBody = async (response: Response): Promise<Buffer | undefined> => {
     let body: Buffer;
     try {
-      body = await timeoutAfter(read(), readMs);
+      body = await timeoutAfter(response.body(), readMs);
     } catch (error) {
       if (error instanceof BodyTimeout) bodyTimeouts += 1;
       return undefined;
@@ -113,9 +152,12 @@ export function startCapture(page: Page, options: CaptureOptions): CaptureHandle
     return body;
   };
 
-  const toneOf = async (body: Buffer, contentType: string): Promise<Tone> => {
-    if (toned >= limits.toneMaxRasters || body.length > limits.toneMaxBytes || toneMs >= limits.toneBudgetMs) return "unknown";
-    toned += 1;
+  const toneOf = async (body: Buffer, contentType: string, svg: boolean): Promise<Tone> => {
+    if (body.length > limits.toneMaxBytes || toneMs >= limits.toneBudgetMs) return "unknown";
+    // A JPEG is opaque without decoding (spec 8.8), so it uses none of the raster budget.
+    if (svg ? tonedSvgs >= limits.toneMaxSvgs : !isJpeg(body) && tonedRasters >= limits.toneMaxRasters) return "unknown";
+    if (svg) tonedSvgs += 1;
+    else if (!isJpeg(body)) tonedRasters += 1;
     const started = performance.now();
     try {
       return await tone(body, contentType);
@@ -126,13 +168,12 @@ export function startCapture(page: Page, options: CaptureOptions): CaptureHandle
     }
   };
 
-  const captureImage = async (record: CapturedImage, response: Response) => {
-    const body = await readBody(response, () => response.body());
-    if (!body) return;
+  const captureImage = async (record: CapturedImage, body: Buffer) => {
     record.bytes = body.length;
     record.sha1 = createHash("sha1").update(body).digest("hex");
     const svg = SVG(record.url, record.contentType);
-    if (!svg) {
+    // An SVG over the markup cap is dropped as noise (spec 8.2), so its size is never used: no need to parse it.
+    if (!svg || body.length <= limits.svgMaxBytes) {
       try {
         const { width, height } = await sharp(body).metadata();
         if (width && height) Object.assign(record, { width, height });
@@ -140,7 +181,7 @@ export function startCapture(page: Page, options: CaptureOptions): CaptureHandle
         // Not a format sharp reads (ico, broken bytes): no dimensions.
       }
     }
-    record.tone = await toneOf(body, record.contentType);
+    record.tone = await toneOf(body, record.contentType, svg);
     if (svg && body.length <= limits.svgMaxBytes) record.svgText = body.toString("utf8");
     if (record.url.startsWith("blob:") && body.length <= limits.blobMaxBytes && blobBytes + body.length <= limits.blobTotalBytes) {
       blobBytes += body.length;
@@ -148,9 +189,7 @@ export function startCapture(page: Page, options: CaptureOptions): CaptureHandle
     }
   };
 
-  const captureFont = async (record: CapturedFont, response: Response) => {
-    const body = await readBody(response, () => response.body());
-    if (!body) return;
+  const captureFont = (record: CapturedFont, body: Buffer) => {
     record.bytes = body.length;
     record.sha1 = createHash("sha1").update(body).digest("hex");
     try {
@@ -160,9 +199,8 @@ export function startCapture(page: Page, options: CaptureOptions): CaptureHandle
     }
   };
 
-  const captureSheet = async (record: CapturedSheet, response: Response) => {
-    const body = await readBody(response, () => response.body());
-    if (body) record.cssText = body.toString("utf8");
+  const captureSheet = (record: CapturedSheet, body: Buffer) => {
+    record.cssText = body.toString("utf8");
   };
 
   const onResponse = (response: Response) => {
@@ -179,18 +217,18 @@ export function startCapture(page: Page, options: CaptureOptions): CaptureHandle
       if (fonts.has(url)) return;
       const record: CapturedFont = { url, status, contentType, meta: null };
       fonts.set(url, record);
-      if (readable) schedule(() => captureFont(record, response));
+      if (readable) schedule(response, (body) => captureFont(record, body));
     } else if (resourceType === "image" || /^image\//i.test(contentType)) {
       if (images.has(url)) return;
       const record: CapturedImage = { url, status, contentType, tone: "unknown" };
       if (headers.server) record.server = headers.server;
       images.set(url, record);
-      if (readable) schedule(() => captureImage(record, response));
+      if (readable) schedule(response, (body) => captureImage(record, body));
     } else if (resourceType === "stylesheet" || /^text\/css/i.test(contentType)) {
       if (sheets.has(url)) return;
       const record: CapturedSheet = { url, status, cssText: "" };
       sheets.set(url, record);
-      if (readable) schedule(() => captureSheet(record, response));
+      if (readable) schedule(response, (body) => captureSheet(record, body));
     }
   };
 

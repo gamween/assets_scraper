@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
+import type http from "node:http";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import type { Page } from "playwright-core";
+import type { Page, Response } from "playwright-core";
 import sharp from "sharp";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { Tone } from "@/lib/contract";
@@ -14,8 +15,24 @@ const ASSETS = path.join(import.meta.dirname, "../../fixtures/site/assets");
 let fixture: FixtureServer;
 let proxy: TestProxy;
 
+/** A PNG of noise, about 60 KB (noise does not compress). */
+const noisePng = sharp(Buffer.from(Array.from({ length: 140 * 140 * 3 }, () => Math.floor(Math.random() * 256))), { raw: { width: 140, height: 140, channels: 3 } }).png().toBuffer();
+
+/** Headers at once, the body a little later with no declared length: the reads of all eight overlap. */
+const slowImages = Object.fromEntries(
+  Array.from({ length: 8 }, (_, i): [string, http.RequestListener] => [
+    `/slow/${i}.png`,
+    (_req, res) => {
+      res.writeHead(200, { "content-type": "image/png" });
+      res.flushHeaders();
+      void noisePng.then((png) => setTimeout(() => res.end(png), 400));
+    },
+  ]),
+);
+
 beforeAll(async () => {
   fixture = await serveFixture({
+    ...slowImages,
     "/hang.html": (_req, res) => {
       res.writeHead(200, { "content-type": "text/html" });
       res.end('<!doctype html><title>Hang</title><img src="/hang.png"><img src="/moved.png"><link rel="stylesheet" href="/assets/style.css">');
@@ -27,6 +44,10 @@ beforeAll(async () => {
     "/moved.png": (_req, res) => {
       res.writeHead(302, { location: "/assets/touch.png" });
       res.end();
+    },
+    "/many.html": (_req, res) => {
+      res.writeHead(200, { "content-type": "text/html" });
+      res.end(`<!doctype html><title>Many</title>${Array.from({ length: 8 }, (_, i) => `<img src="/slow/${i}.png">`).join("")}`);
     },
   });
   proxy = await startTestProxy({ allow: [fixture.host] });
@@ -72,6 +93,7 @@ describe("startCapture", () => {
 
     const logo = network.images.find((image) => image.url.endsWith("/assets/logo.svg"));
     expect(logo?.svgText).toBe(await readFile(path.join(ASSETS, "logo.svg"), "utf8"));
+    expect(logo).toMatchObject({ width: 100, height: 30 });
 
     const blob = network.images.find((image) => image.url.startsWith("blob:"));
     expect(blob?.blobBase64).toBe((await readFile(path.join(ASSETS, "iframe.png"))).toString("base64"));
@@ -106,6 +128,63 @@ describe("startCapture", () => {
     expect(network.images.find((image) => image.url.endsWith("/photo-small.png"))?.tone).toBe("light");
     expect(network.images.find((image) => image.url.endsWith("/hero.jpg"))?.tone).toBe("opaque");
     expect(network.fonts.find((font) => font.url.endsWith("/__inter.woff2"))?.meta).toEqual({ format: "woff2", familyName: "bytes 48432" });
+  });
+
+  it("tones SVGs with their own budget and JPEGs for free", async () => {
+    vi.stubEnv("TONE_MAX_RASTERS", "1");
+    const network = await onBrowser(async (page) => {
+      const capture = startCapture(page, { signal: new AbortController().signal, toneFromBytes: async () => "light" });
+      await page.goto(`${fixture.origin}/`, { waitUntil: "networkidle" });
+      return capture.settle(5000);
+    });
+    const read = network.images.filter((image) => image.sha1);
+    const svgs = read.filter((image) => image.contentType.startsWith("image/svg"));
+    const jpegs = read.filter((image) => image.contentType === "image/jpeg");
+    const rasters = read.filter((image) => !svgs.includes(image) && !jpegs.includes(image));
+    expect(svgs.length).toBeGreaterThan(0);
+    expect(jpegs.length).toBeGreaterThan(0);
+    expect(rasters.length).toBeGreaterThan(1);
+    for (const image of [...svgs, ...jpegs]) expect(image.tone).toBe("light");
+    expect(rasters.filter((image) => image.tone !== "unknown")).toHaveLength(1);
+  });
+
+  it("keeps the bytes of the reads in flight within the total body cap", async () => {
+    vi.stubEnv("BODY_MAX_BYTES", "100000");
+    vi.stubEnv("BODY_TOTAL_BYTES", "250000");
+    let restore = () => {};
+    let inFlight = 0;
+    let maxInFlight = 0;
+    try {
+      const network = await onBrowser(async (page) => {
+        // Registered before the capture listener, so reads made by the capture go through the counter.
+        page.once("response", (response) => {
+          const prototype = Object.getPrototypeOf(response) as { body: Response["body"] };
+          const body = prototype.body;
+          prototype.body = async function (this: Response) {
+            inFlight += 1;
+            maxInFlight = Math.max(maxInFlight, inFlight);
+            try {
+              return await body.call(this);
+            } finally {
+              inFlight -= 1;
+            }
+          };
+          restore = () => (prototype.body = body);
+        });
+        const capture = startCapture(page, { signal: new AbortController().signal, toneFromBytes: async () => "unknown" });
+        await page.goto(`${fixture.origin}/many.html`, { waitUntil: "load" });
+        return capture.settle(5000);
+      });
+      // No declared length: each read reserves the 100 KB per-body cap, so at most two fit in 250 KB at a time. Once
+      // three bodies are read, a fourth still fits on its own, and the last four go over the total.
+      const size = (await noisePng).length;
+      expect(size).toBeGreaterThan(50_000);
+      expect(maxInFlight).toBe(2);
+      expect(network.images.filter((image) => image.sha1).map((image) => image.bytes)).toEqual([size, size, size, size]);
+      expect(network.skippedBodies).toBe(4);
+    } finally {
+      restore();
+    }
   });
 
   it("gives up on a body that never ends, skips redirects and settles on time", async () => {
