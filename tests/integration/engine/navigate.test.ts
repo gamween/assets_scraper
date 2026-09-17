@@ -4,7 +4,7 @@ import type { Page } from "playwright-core";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { withBrowser } from "@/server/browser/launch";
 import { ScanFailure } from "@/server/errors";
-import { loadAndScroll, openPage, prepareForCollection } from "@/server/scan/navigate";
+import { loadAndScroll, openPage, prepareForCollection, readPageFacts } from "@/server/scan/navigate";
 import { serveFixture, type FixtureServer } from "../../fixtures/serve";
 import { startTestProxy, type TestProxy } from "./helpers";
 
@@ -41,6 +41,12 @@ beforeAll(async () => {
     },
     "/loop.html": html(`<div style="height:6000px">Busy page</div><script>setTimeout(() => { for (;;) {} }, 1000)</script>`),
     "/never.html": () => {},
+    "/heavy.html": (_req, res) => {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      const rows = Array.from({ length: 6000 }, (_, i) => `<div class="row" data-note="${"n".repeat(200)}">Row ${i}</div>`).join("");
+      res.end(`<!doctype html><html><head><title>Heavy</title><script src="/cdn-cgi/challenge-platform/scripts/jsd/main.js"></script><script>window._pxAppId = "PX123";</script></head><body>${rows}<script>/* ${"x".repeat(50_000)} */</script><div id="px-captcha"></div></body></html>`);
+    },
+    "/patched.html": html(`<div>One</div><div>Two</div><script>document.getElementsByTagName = () => ({ length: 1e9 }); Object.defineProperty(document, "title", { get: () => "Just a moment..." });</script>`),
   });
   proxy = await startTestProxy({ allow: [fixture.host] });
 });
@@ -66,7 +72,6 @@ describe("openPage", () => {
       expect(result.finalUrl).toBe(`${fixture.origin}/`);
       expect(result.headers["content-type"]).toBe("text/html; charset=utf-8");
       expect(result.elementCount).toBeGreaterThan(30);
-      expect(result.htmlSample).toContain("<title>Fixture Co</title>");
     });
   });
 
@@ -84,7 +89,61 @@ describe("openPage", () => {
   });
 });
 
+describe("readPageFacts", () => {
+  it("reads the element count and a markup sample bounded in size, from the start of the document", async () => {
+    await onBrowser(async (page) => {
+      await openPage(page, `${fixture.origin}/heavy.html`, { signal: idle() });
+      const facts = await readPageFacts(page, { signal: idle(), sampleChars: 4000 });
+      expect(facts?.title).toBe("Heavy");
+      expect(facts?.elementCount).toBeGreaterThan(6000);
+      expect(facts?.htmlSample.length).toBeLessThanOrEqual(4000);
+      expect(facts?.htmlSample).toContain('<script src="/cdn-cgi/challenge-platform/scripts/jsd/main.js">');
+      expect(facts?.htmlSample).toContain('window._pxAppId = "PX123"');
+      expect(facts?.htmlSample).not.toContain("px-captcha");
+    });
+  });
+
+  it("is not fooled by a page that patches the DOM API in its own world", async () => {
+    await onBrowser(async (page) => {
+      await openPage(page, `${fixture.origin}/patched.html`, { signal: idle() });
+      const facts = await readPageFacts(page, { signal: idle() });
+      expect(facts).toMatchObject({ title: "Test" });
+      expect(facts?.elementCount).toBeLessThan(20);
+    });
+  });
+
+  it("gives null when the page is stuck, and rejects when the signal aborts", async () => {
+    await onBrowser(async (page) => {
+      await openPage(page, `${fixture.origin}/loop.html`, { signal: idle() });
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      const started = Date.now();
+      expect(await readPageFacts(page, { signal: idle() })).toBeNull();
+      expect(Date.now() - started).toBeLessThan(5000);
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(new Error("scan deadline")), 200);
+      await expect(readPageFacts(page, { signal: controller.signal })).rejects.toThrow("scan deadline");
+    });
+  });
+});
+
 describe("loadAndScroll", () => {
+  it("runs onLoaded once the page has loaded, before it scrolls, and stops when onLoaded rejects", async () => {
+    await onBrowser(async (page) => {
+      await openPage(page, `${fixture.origin}/lazy.html`, { signal: idle() });
+      const steps: string[] = [];
+      const onLoaded = async () => {
+        steps.push(`loaded ${await page.evaluate(() => document.readyState)}`);
+      };
+      await loadAndScroll(page, { signal: idle(), onStep: (step, state) => steps.push(`${step} ${state}`), onLoaded });
+      expect(steps).toEqual(["load start", "load done", "loaded complete", "scroll start", "scroll done"]);
+
+      steps.length = 0;
+      const blocked = loadAndScroll(page, { signal: idle(), onStep: (step, state) => steps.push(`${step} ${state}`), onLoaded: () => Promise.reject(new Error("blocked")) });
+      await expect(blocked).rejects.toThrow("blocked");
+      expect(steps).toEqual(["load start", "load done"]);
+    });
+  });
+
   it("reports its steps and scrolls lazy content into view, then back to the top", async () => {
     await onBrowser(async (page) => {
       await openPage(page, `${fixture.origin}/lazy.html`, { signal: idle() });

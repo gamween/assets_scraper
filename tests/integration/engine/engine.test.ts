@@ -61,6 +61,36 @@ beforeAll(async () => {
       <svg width="16" height="16"><use href="#used"/></svg>
       <img src="/assets/photo-small.png" alt="Photo">`,
     ),
+    // An app that renders after a data fetch, behind Cloudflare with JavaScript detections: at domcontentloaded it is a
+    // near-empty shell holding the challenge-platform script (spec 8.9, medium.com in the lab).
+    "/app-shell": html(
+      200,
+      `<!doctype html><html><head><title>Shell App</title></head><body><div id="root"></div>
+      <script>fetch("/api/app-data").then((r) => r.json()).then((items) => {
+        document.getElementById("root").innerHTML = items.map((i) => '<section><h2>Item ' + i + '</h2><p>About ' + i + '</p><a href="/items/' + i + '">More</a></section>').join("");
+      });</script>
+      <script>(function(){var s=document.createElement('script');s.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.head.appendChild(s);})();</script></body></html>`,
+    ),
+    // A small app shell that loads reCAPTCHA v3 on every page.
+    "/recaptcha-shell": html(
+      200,
+      `<!doctype html><html><head><title>Signup</title><script src="https://www.google.com/recaptcha/api.js?render=site-key"></script></head><body><div id="root"></div>
+      <script>fetch("/api/app-data").then((r) => r.json()).then((items) => {
+        document.getElementById("root").innerHTML = items.map((i) => '<label>Field ' + i + '<input name="f' + i + '"></label>').join("");
+      });</script></body></html>`,
+    ),
+    "/api/app-data": (_req, res) => {
+      setTimeout(() => {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify(Array.from({ length: 40 }, (_, i) => i)));
+      }, 300);
+    },
+    "/cdn-cgi/challenge-platform/scripts/jsd/main.js": (_req, res) => {
+      res.writeHead(200, { "content-type": "text/javascript" });
+      res.end("");
+    },
+    // A PerimeterX wall that stays a nearly empty page once loaded, with a normal title and status.
+    "/px-wall": html(200, '<!doctype html><html><head><title>Welcome</title></head><body><div id="px-captcha"></div><script>window._pxAppId = "PX123";</script></body></html>'),
     "/wall": (_req, res) => {
       res.writeHead(403, { "content-type": "text/plain" });
       res.end("error code: 1010");
@@ -203,8 +233,28 @@ describe("scan engine", () => {
     const { deps, launches } = testDeps();
     const events = await scan(deps, `${fixture.origin}/wall`);
     expect(launches).toHaveBeenCalledTimes(1);
-    expect(events.map(describeEvent)).toEqual(["accepted", "step open start", "error blocked"]);
+    // The status rule counts elements, so it waits for the page to load.
+    expect(events.map(describeEvent)).toEqual(["accepted", "step open start", "page", "step open done", "step load start", "step load done", "error blocked"]);
     expect(events.at(-1)).toMatchObject({ diagnostics: { blockReason: "http-403" } });
+  });
+
+  it("never mistakes an app shell for a bot wall: the markup and captcha rules wait for the page to load", async () => {
+    for (const pathname of ["/app-shell", "/recaptcha-shell"]) {
+      const { deps } = testDeps();
+      const events = await scan(deps, `${fixture.origin}${pathname}`);
+      const last = events.at(-1);
+      expect(last && describeEvent(last), pathname).toBe("done");
+      expect(last).toMatchObject({ partial: false });
+    }
+  });
+
+  it("reports a wall that stays nearly empty once loaded as blocked", async () => {
+    const { deps, pids } = testDeps();
+    const events = await scan(deps, `${fixture.origin}/px-wall`);
+    expect(events.map(describeEvent)).toEqual(["accepted", "step open start", "page", "step open done", "step load start", "step load done", "error blocked"]);
+    expect(events.at(-1)).toMatchObject({ diagnostics: { blockReason: "challenge-markup" } });
+    expect(pids).toHaveLength(1);
+    await expect.poll(() => isProcessAlive(pids[0]), { timeout: 5000 }).toBe(false);
   });
 
   it("lets the browser open a page the preflight gave up on after too many redirects", async () => {

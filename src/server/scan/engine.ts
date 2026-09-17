@@ -8,13 +8,13 @@ import { ScanFailure } from "@/server/errors";
 import { type EgressProxy, startEgressProxy } from "@/server/net/egress-proxy";
 import { safeFetch } from "@/server/net/safe-fetch";
 import { createSigner } from "@/server/security/sign";
-import { detectBlock } from "./block";
+import { detectBlock, detectChallenge } from "./block";
 import { startCapture, type CaptureHandle } from "./capture";
 import { buildFallback, directAsset } from "./fallback";
 import { buildFontFamilies } from "./fonts";
 import { COLLECTOR_SOURCE } from "./inpage/generated/collector";
 import { InPageTimeoutError, runInPage } from "./inpage/run";
-import { loadAndScroll, openPage, prepareForCollection, type NavigationResult } from "./navigate";
+import { loadAndScroll, openPage, prepareForCollection, readPageFacts, type NavigationResult } from "./navigate";
 import { extractPalette } from "./palette";
 import { assembleAssets } from "./post/assemble";
 import { preflight, type PreflightResult } from "./preflight";
@@ -415,8 +415,9 @@ async function runBrowserStage(input: ScanContext & {
 
         capture = startCapture(page, { signal });
         const opened = await timed("open", () => openPage(page, url, { signal }));
-        const blockReason = detectBlock({ status: opened.status, title: opened.title, html: opened.htmlSample, headers: opened.headers, elementCount: opened.elementCount });
-        if (blockReason) throw new BlockedPage(blockReason);
+        // Spec 8.9 at domcontentloaded: only the header and title rules, which do not depend on how much of the page exists.
+        const challenge = detectChallenge(opened);
+        if (challenge) throw new BlockedPage(challenge);
         signal.throwIfAborted();
         nav = opened;
         const host = new URL(opened.finalUrl).hostname;
@@ -433,6 +434,12 @@ async function runBrowserStage(input: ScanContext & {
             if (state === "start") stepStarted[id] = performance.now();
             else diagnostics.phases[id] = Math.round(performance.now() - (stepStarted[id] ?? performance.now()));
             step(id, state);
+          },
+          // Every rule once the page has loaded and gone idle: at domcontentloaded an app shell is nearly empty.
+          onLoaded: async () => {
+            const facts = await readPageFacts(page, { signal });
+            const reason = facts && detectBlock({ status: opened.status, headers: opened.headers, title: facts.title, html: facts.htmlSample, elementCount: facts.elementCount });
+            if (reason) throw new BlockedPage(reason);
           },
         });
 

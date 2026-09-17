@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { detectBlock } from "./block";
+import { detectBlock, detectChallenge } from "./block";
 
 const base = { status: 200, title: "Home", html: "<html></html>", headers: {}, elementCount: 400 };
 
@@ -41,3 +41,17 @@ describe("detectBlock", () => {
     expect(detectBlock(base)).toBeNull();
   });
 });
+
+describe("detectChallenge", () => {
+  it("applies only the header and title rules, which hold before the page has loaded", () => {
+    expect(detectChallenge({ title: "Home", headers: { "CF-Mitigated": "challenge" } })).toBe("cloudflare-challenge");
+    expect(detectChallenge({ title: "Just a moment...", headers: {} })).toBe("challenge-title");
+    expect(detectChallenge({ title: "Home", headers: {} })).toBeNull();
+    // An app shell at domcontentloaded: few elements, Cloudflare's script and reCAPTCHA v3. Only detectBlock, once the
+    // page has loaded, may look at the markup and the element count.
+    const shell = { ...base, elementCount: 12, html: '<script src="/cdn-cgi/challenge-platform/scripts/jsd/main.js"></script><script src="https://www.google.com/recaptcha/api.js"></script>' };
+    expect(detectChallenge(shell)).toBeNull();
+    expect(detectBlock(shell)).toBe("challenge-markup");
+  });
+});
+
