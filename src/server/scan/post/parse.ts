@@ -1,4 +1,5 @@
-import * as csstree from "css-tree";
+import { tokenize, tokenTypes as T } from "css-tree/tokenizer";
+import { ByteStack } from "../byte-stack";
 
 /**
  * Parsers shared by post-processing. The in-page collector (`inpage/collector.src.ts`) cannot import app code, so it
@@ -76,43 +77,106 @@ export interface StylesheetUrl {
 /** Properties whose `url()` never points at an image asset. */
 const NON_IMAGE_PROPERTY = /^(?:cursor|behavior|clip-path|filter|marker(?:-start|-mid|-end)?|src)$/;
 
+/** The token that closes each opening token: functions, `(`, `[` and `{`. */
+const CLOSERS: Partial<Record<number, number>> = {
+  [T.Function]: T.RightParenthesis,
+  [T.LeftParenthesis]: T.RightParenthesis,
+  [T.LeftSquareBracket]: T.RightSquareBracket,
+  [T.LeftCurlyBracket]: T.RightCurlyBracket,
+};
+/** Marks a `{` block that is an `@font-face` rule or inside one. */
+const FONT_FACE = 0x80;
+const PROPERTY = /^(?:--[\w-]*|-?[A-Za-z_][\w-]*)$/;
+const COMMENT = /\/\*[\s\S]*?(?:\*\/|$)/g;
+
+/** Whether `visit` asked to stop. */
+class Stop extends Error {}
+
 /**
- * Image URLs declared in a stylesheet's text, for sheets the page could not read through CSSOM (spec 8.1).
- * `@font-face` rules are left to the fonts module.
+ * Image URLs declared in a stylesheet's text, for sheets the page could not read through CSSOM (spec 8.1), passed to
+ * `visit` in sheet order; `visit` returns `"stop"` to end the scan. `@font-face` rules are left to the fonts module.
+ *
+ * One pass over css-tree tokens, never its parser: a parse tree of a 15 MB sheet of 370,000 rules took 323 MB, and the
+ * parser keeps buffers the size of the largest sheet it ever read. A declaration is the text between `{`, `;` or `}`
+ * and the next `;` or `}` of a block, outside parentheses; text that ends at `{` is a rule's prelude. Broken CSS never
+ * throws: stray closers are skipped and a declaration left open at the end is read.
  */
+export function forEachStylesheetUrl(cssText: string, baseUrl: string, visit: (item: StylesheetUrl) => void | "stop"): void {
+  if (!/url\(|image-set\(/i.test(cssText)) return;
+  const stack = new ByteStack();
+  let segmentStart = 0;
+  let declaration = 0;
+
+  const readDeclaration = (end: number) => {
+    const top = stack.top();
+    if (top < 0 || (top & ~FONT_FACE) !== T.RightCurlyBracket || top & FONT_FACE) return;
+    const text = cssText.slice(segmentStart, end);
+    if (!/url\(|image-set\(/i.test(text)) return;
+    const colon = text.indexOf(":");
+    if (colon < 0) return;
+    let property = text.slice(0, colon).replace(COMMENT, "").trim();
+    if (!PROPERTY.test(property)) return;
+    if (!property.startsWith("--")) property = property.toLowerCase();
+    if (NON_IMAGE_PROPERTY.test(property)) return;
+    const value = text.slice(colon + 1);
+    const imageSet = /image-set\(/i.test(value);
+    for (const raw of extractCssUrls(value)) {
+      let url: string;
+      try {
+        url = new URL(raw, baseUrl).href;
+      } catch {
+        continue; // not a URL
+      }
+      if (visit({ url, property, declaration, imageSet }) === "stop") throw new Stop();
+    }
+    declaration++;
+  };
+
+  const onToken = (type: number, start: number, end: number) => {
+    const top = stack.top();
+    const inBlock = top < 0 || (top & ~FONT_FACE) === T.RightCurlyBracket;
+    if (top >= 0 && type === (top & ~FONT_FACE)) {
+      if (type === T.RightCurlyBracket) readDeclaration(start);
+      stack.pop();
+      if (type === T.RightCurlyBracket) segmentStart = end;
+      return;
+    }
+    if (!inBlock) {
+      const closer = CLOSERS[type];
+      if (closer !== undefined) stack.push(closer);
+      return;
+    }
+    if (type === T.Semicolon) {
+      readDeclaration(start);
+      segmentStart = end;
+    } else if (type === T.LeftCurlyBracket) {
+      const prelude = cssText.slice(segmentStart, start).replace(COMMENT, "").trim();
+      const fontFace = /^@font-face$/i.test(prelude) || (top >= 0 && (top & FONT_FACE) !== 0);
+      stack.push(fontFace ? T.RightCurlyBracket | FONT_FACE : T.RightCurlyBracket);
+      segmentStart = end;
+    } else if (type === T.RightCurlyBracket) {
+      // A stray closer at the top level
+      segmentStart = end;
+    } else {
+      const closer = CLOSERS[type];
+      if (closer !== undefined) stack.push(closer);
+    }
+  };
+
+  try {
+    tokenize(cssText, onToken);
+    while (stack.length && (stack.top() & ~FONT_FACE) !== T.RightCurlyBracket) stack.pop();
+    readDeclaration(cssText.length);
+  } catch (error) {
+    if (!(error instanceof Stop)) throw error;
+  }
+}
+
+/** Every image URL `forEachStylesheetUrl` reads from a stylesheet's text. */
 export function extractStylesheetUrls(cssText: string, baseUrl: string): StylesheetUrl[] {
   const out: StylesheetUrl[] = [];
-  let declaration = 0;
-  let ast: csstree.CssNode;
-  try {
-    ast = csstree.parse(cssText, {
-      parseValue: false,
-      parseRulePrelude: false,
-      parseAtrulePrelude: false,
-      parseCustomProperty: false,
-      onParseError: () => {},
-    });
-  } catch {
-    return out;
-  }
-  csstree.walk(ast, {
-    visit: "Declaration",
-    enter(node) {
-      if (this.atrule?.name.toLowerCase() === "font-face") return;
-      const property = node.property.startsWith("--") ? node.property : node.property.toLowerCase();
-      if (NON_IMAGE_PROPERTY.test(property)) return;
-      const value = node.value.type === "Raw" ? node.value.value : csstree.generate(node.value);
-      if (!/url\(|image-set\(/i.test(value)) return;
-      const imageSet = /image-set\(/i.test(value);
-      for (const raw of extractCssUrls(value)) {
-        try {
-          out.push({ url: new URL(raw, baseUrl).href, property, declaration, imageSet });
-        } catch {
-          // not a URL
-        }
-      }
-      declaration++;
-    },
+  forEachStylesheetUrl(cssText, baseUrl, (item) => {
+    out.push(item);
   });
   return out;
 }

@@ -59,6 +59,11 @@ const defaults = {
   verifyMs: 8_000,
   verifyConcurrency: 16,
   maxDeclaredProbes: 150,
+  /**
+   * URLs read from captured stylesheet text that the network did not load. Only `maxDeclaredProbes` of them are ever
+   * checked, and a page controls how many its sheets declare (a 15 MB sheet holds hundreds of thousands).
+   */
+  maxStylesheetUrls: 2_000,
 
   // Egress proxy and network capture (spec 7.4, 11.1)
   egressMaxBytes: 400 * MB,

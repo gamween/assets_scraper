@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decodeDataUri, extractCssUrls, extractStylesheetUrls, parseSrcset } from "./parse";
+import { decodeDataUri, extractCssUrls, extractStylesheetUrls, forEachStylesheetUrl, parseSrcset } from "./parse";
 
 describe("parseSrcset", () => {
   it("keeps commas inside URLs and reads descriptors", () => {
@@ -55,6 +55,23 @@ describe("extractStylesheetUrls", () => {
     expect(urls.map((u) => [u.url, u.declaration])).toEqual([
       ["https://s.example/a.png", 0], ["https://s.example/a2.png", 0], ["https://s.example/c.png", 1], ["https://s.example/c2.png", 1],
     ]);
+  });
+
+  it("reads nested rules, unquoted data URIs with semicolons and comments, and skips invalid property names", () => {
+    const css = `@supports (display:grid) { .a { .b:hover { /* c */ Background-Image: url(data:image/svg+xml;utf8,%3Csvg%3E) } --x: url(v.png); *zoom: url(z.png) } }`;
+    expect(extractStylesheetUrls(css, "https://s.example/").map((u) => [u.property, u.url])).toEqual([
+      ["background-image", "data:image/svg+xml;utf8,%3Csvg%3E"],
+      ["--x", "https://s.example/v.png"],
+    ]);
+  });
+
+  it("stops when the visitor asks", () => {
+    const seen: string[] = [];
+    forEachStylesheetUrl(".a{background:url(1.png)} .b{background:url(2.png)} .c{background:url(3.png)}", "https://s.example/", (item) => {
+      seen.push(item.url);
+      return seen.length === 2 ? "stop" : undefined;
+    });
+    expect(seen).toEqual(["https://s.example/1.png", "https://s.example/2.png"]);
   });
 
   it("survives broken CSS", () => {

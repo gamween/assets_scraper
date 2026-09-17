@@ -1,7 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { limits } from "@/server/config/limits";
 import { SignLimitError } from "@/server/security/sign";
-import type { CandidateContext, CapturedImage, PostInput, RawCandidate, RawCollectorOutput, SafeFetch, Signer } from "../types";
+import type { CandidateContext, CapturedImage, CapturedSheet, PostInput, RawCandidate, RawCollectorOutput, SafeFetch, Signer } from "../types";
 import { assembleAssets, siteLabel } from "./assemble";
 
 /** assembleAssets on synthetic collector output, with a fetch that answers every probe with a 404. */
@@ -48,10 +48,10 @@ const captured = (url: string, patch: Partial<CapturedImage> = {}): CapturedImag
 
 const proxyOf = (url: string) => `/api/asset?u=${encodeURIComponent(url)}`;
 
-const run = (collector: RawCollectorOutput, images: CapturedImage[] = [], signer: Signer = { sign: proxyOf, count: 0 }) => {
+const run = (collector: RawCollectorOutput, images: CapturedImage[] = [], signer: Signer = { sign: proxyOf, count: 0 }, sheets: CapturedSheet[] = []) => {
   const input: PostInput = {
     collector,
-    network: { images, fonts: [], sheets: [], bodyTimeouts: 0, skippedBodies: 0 },
+    network: { images, fonts: [], sheets, bodyTimeouts: 0, skippedBodies: 0 },
     page: { requestedUrl: PAGE, finalUrl: PAGE, host: "shop.example", siteName: "Shop", title: "Shop" },
     signer,
     fetch: notFound,
@@ -181,5 +181,37 @@ describe("assembleAssets on a heavy page", () => {
     expect(assets[0].original?.url).toMatch(/-640\.jpg$/);
     expect(warnings).toEqual(expect.arrayContaining(["truncated", "verify-skipped"]));
     expect(hidden["probe-failed"]).toBeUndefined();
+  }, 60_000);
+});
+
+describe("assembleAssets on URL-heavy stylesheets", () => {
+  afterEach(() => vi.unstubAllEnvs());
+  const sheet = (urls: string[]): CapturedSheet => ({
+    url: `${PAGE}site.css`,
+    status: 200,
+    cssText: urls.map((url, i) => `.a${i}{background:url(${url})}`).join("\n"),
+  });
+
+  it("reads at most maxStylesheetUrls URLs the network did not load, and every URL it did load", async () => {
+    vi.stubEnv("MAX_STYLESHEET_URLS", "5");
+    vi.stubEnv("MAX_DECLARED_PROBES", "1000");
+    const loaded = `${PAGE}img/loaded.png`;
+    const declared = Array.from({ length: 20 }, (_, i) => `${PAGE}img/${i}.png`);
+    const { assets, hidden, warnings } = await run(collectorOutput({ candidates: [candidate(`${PAGE}favicon.png`, 1, 1, { foundIn: "icon-link" })] }), [captured(`${PAGE}favicon.png`), captured(loaded)], undefined, [sheet([...declared, loaded])]);
+    // Five declared URLs get a record (and fail their probe), the other 15 never do
+    expect(hidden).toEqual({ "probe-failed": 5 });
+    expect(assets.find((asset) => asset.original?.url === loaded)?.foundIn).toEqual(["stylesheet"]);
+    expect(warnings).toContain("truncated");
+  });
+
+  it("reads a 15 MB sheet of 370,000 URLs quickly, keeping only the capped records", async () => {
+    const urls = Array.from({ length: 370_000 }, (_, i) => `/img/i${i}.png`);
+    const started = performance.now();
+    const { assets, hidden, warnings } = await run(collectorOutput({}), [], undefined, [sheet(urls)]);
+    expect(performance.now() - started).toBeLessThan(15_000);
+    expect(assets).toEqual([]);
+    // Probes stop at maxDeclaredProbes, the other capped records are skipped, the rest were never made
+    expect(hidden["probe-failed"]).toBeLessThanOrEqual(limits.maxDeclaredProbes);
+    expect(warnings).toEqual(expect.arrayContaining(["truncated", "verify-skipped"]));
   }, 60_000);
 });

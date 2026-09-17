@@ -8,7 +8,7 @@ import { originalCandidates, variantKey } from "./cdn";
 import { extensionFor, formatFromContentType, formatFromUrl, sniffFormat } from "./format";
 import { createFilenamer, displayName } from "./naming";
 import { noiseReason, svgNoiseReason } from "./noise";
-import { decodeDataUri, extractStylesheetUrls } from "./parse";
+import { decodeDataUri, forEachStylesheetUrl } from "./parse";
 import { assignRole, isSpriteSheet, logoScore, relevanceScore } from "./roles";
 import { createToneBudget } from "./tone";
 import { groupVariants, pickBest, sizeScore, type SizeHints, type VariantMember } from "./variants";
@@ -116,7 +116,7 @@ export async function assembleAssets(input: PostInput): Promise<AssetsOutput> {
   const limiter = createLimiter({ concurrency: limits.verifyConcurrency, deadline: verifyDeadline, signal: input.signal });
 
   try {
-    const records = await buildRecords(input, baseUrl, limiter, verifyDeadline);
+    const records = await buildRecords(input, baseUrl, limiter, verifyDeadline, warnings);
     const kept = [...records.values()].filter((record) => {
       const reason = recordNoise(record);
       if (reason) hide(reason);
@@ -205,7 +205,7 @@ export async function assembleAssets(input: PostInput): Promise<AssetsOutput> {
 }
 
 /** Candidates, URLs of captured stylesheets, manifest icons, /favicon.ico and network-only images, by URL. */
-async function buildRecords(input: PostInput, baseUrl: string, limiter: Limiter, deadline: number): Promise<Map<string, UrlRecord>> {
+async function buildRecords(input: PostInput, baseUrl: string, limiter: Limiter, deadline: number, warnings: Set<WarningCode>): Promise<Map<string, UrlRecord>> {
   const { collector, network, page } = input;
   const pageUrl = page.finalUrl;
   const records = new Map<string, UrlRecord>();
@@ -288,23 +288,54 @@ async function buildRecords(input: PostInput, baseUrl: string, limiter: Limiter,
 
   for (const candidate of collector.candidates) add(candidate);
 
+  // Captured bodies, by URL
+  const captured = new Map<string, CapturedImage>();
+  const ok = (status: number) => status >= 200 && status < 300;
+  for (const image of network.images) {
+    const existing = captured.get(image.url);
+    if (!existing || (!ok(existing.status) && ok(image.status))) captured.set(image.url, image);
+  }
+
   // Captured stylesheet text (spec 8.1). The CSSOM walk already declared every URL of the sheets it could read, so this
   // adds what it could not reach: cross-origin sheets, their @import children, sheets whose response URL differs from
   // their href after a redirect, and sheets no longer in the document. The URLs of one image-set() declaration share a group.
+  // A page controls how many URLs its sheets declare, and each one costs a record, while only `maxDeclaredProbes` of
+  // those the network did not load are ever checked: past `maxStylesheetUrls` such URLs, or at the deadline, the rest
+  // are left out with `truncated`. URLs the network loaded are always read.
   const parsedSheets = new Set<string>();
+  let declaredUrls = 0;
+  let visits = 0;
   for (const sheet of network.sheets) {
     if (sheet.status < 200 || sheet.status >= 400 || parsedSheets.has(sheet.url) || !/url\(|image-set\(/i.test(sheet.cssText)) continue;
+    // Reading a sheet is synchronous: let timers run between sheets
+    await new Promise((resolve) => setImmediate(resolve));
+    if (Date.now() >= deadline) {
+      warnings.add("truncated");
+      break;
+    }
     parsedSheets.add(sheet.url);
     const setGroups = new Map<number, number>();
-    for (const item of extractStylesheetUrls(sheet.cssText, sheet.url)) {
-      if (records.get(item.url)?.foundIn.includes("stylesheet")) continue;
+    forEachStylesheetUrl(sheet.cssText, sheet.url, (item) => {
+      if (++visits % 1024 === 0 && Date.now() >= deadline) {
+        warnings.add("truncated");
+        return "stop";
+      }
+      const record = records.get(item.url);
+      if (record?.foundIn.includes("stylesheet")) return;
+      if (!record && !ok(captured.get(item.url)?.status ?? 0)) {
+        if (declaredUrls >= limits.maxStylesheetUrls) {
+          warnings.add("truncated");
+          return;
+        }
+        declaredUrls++;
+      }
       let group = item.imageSet ? setGroups.get(item.declaration) : undefined;
       if (group === undefined) {
         group = nextGroup++;
         if (item.imageSet) setGroups.set(item.declaration, group);
       }
       add(synthetic(item.url, "stylesheet", { group }));
-    }
+    });
   }
 
   // Web manifest icons, fetched in Node
@@ -355,15 +386,9 @@ async function buildRecords(input: PostInput, baseUrl: string, limiter: Limiter,
     }
   }
 
-  // Captured bodies, and images only seen on the network
-  const captured = new Map<string, CapturedImage>();
-  for (const image of network.images) {
-    const existing = captured.get(image.url);
-    const ok = (status: number) => status >= 200 && status < 300;
-    if (!existing || (!ok(existing.status) && ok(image.status))) captured.set(image.url, image);
-  }
+  // Images only seen on the network
   for (const image of captured.values()) {
-    if (!records.has(image.url) && image.status >= 200 && image.status < 300 && !/^data:/i.test(image.url)) add(synthetic(image.url, "network"));
+    if (!records.has(image.url) && ok(image.status) && !/^data:/i.test(image.url)) add(synthetic(image.url, "network"));
   }
   const blobs = new Map(collector.blobs.map((blob) => [blob.url, blob]));
 
