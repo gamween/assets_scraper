@@ -80,7 +80,8 @@ export async function startTestProxy(options: { allow: string[] }): Promise<Test
   return {
     port: (server.address() as net.AddressInfo).port,
     requests,
-    stats: () => ({ bytes, blocked: blockedHosts.length, blockedHosts: [...blockedHosts] }),
+    // No socket or byte cap here, so nothing is ever refused for capacity.
+    stats: () => ({ bytes, blocked: blockedHosts.length, blockedHosts: [...blockedHosts], refused: 0 }),
     close: () =>
       new Promise<void>((resolve) => {
         for (const socket of sockets) socket.destroy();
