@@ -202,7 +202,11 @@ export const Diagnostics = z.object({
   bodyTimeouts: z.number(),
   // Outcome of every CDN original probe (spec 8.4): a group that adopts none falls back to the page's own bytes,
   // which looks identical from the result whatever went wrong, so these counters are the only way to tell why.
-  originals: z.object({ attempted: z.number(), adopted: z.number(), failed: z.number(), noise: z.number(), skipped: z.number() }).optional(),
+  // `attempted` counts requests that went out; `captured` is the separate case of an original the page declared and
+  // the browser already had, so no probe was needed.
+  originals: z
+    .object({ attempted: z.number(), adopted: z.number(), captured: z.number(), failed: z.number(), noise: z.number(), skipped: z.number() })
+    .optional(),
   blockReason: z.string().optional(),
   // `none`: the collector never started (a blocked page, a failed navigation, a scan stopped before collection).
   collector: z.enum(["isolated", "main", "none"]),

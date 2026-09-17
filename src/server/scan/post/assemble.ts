@@ -127,7 +127,7 @@ export async function assembleAssets(input: PostInput): Promise<AssetsOutput> {
     });
 
     let probes = 0;
-    const originals: OriginalProbes = { attempted: 0, adopted: 0, failed: 0, noise: 0, skipped: 0 };
+    const originals: OriginalProbes = { attempted: 0, adopted: 0, captured: 0, failed: 0, noise: 0, skipped: 0 };
     const resolve = async (members: UrlRecord[], best: UrlRecord): Promise<Resolved> => {
       const byUrl = new Map(members.map((member) => [member.url, member]));
       const attempts = new Set<string>();
@@ -143,14 +143,13 @@ export async function assembleAssets(input: PostInput): Promise<AssetsOutput> {
         const member = byUrl.get(url);
         if (member?.inline) return { kind: "inline", member };
         if (member?.capture) {
-          // The page served the original itself, so the group ends on the original after all.
-          if (candidates.has(url)) {
-            originals.attempted += 1;
-            originals.adopted += 1;
-          } else if (skipped) {
-            // Falling back to the page's own bytes ends the group, so a skip recorded above would never be reported.
-            warnings.add("verify-skipped");
-          }
+          // The page served the original itself, so the group ends on the original after all. No request went out for
+          // it, so it is not a probe: `captured` keeps `attempted` a count of probes.
+          if (candidates.has(url)) originals.captured += 1;
+          // Falling back to the page's own bytes ends the group, so a skip recorded above would never be reported.
+          // Independent of the branch above: a candidate can be a captured member too, which is the case the skip
+          // was swallowed in.
+          if (skipped) warnings.add("verify-skipped");
           return {
             kind: "remote", url, format: formatOf(member), contentType: member.contentType ?? "", tone: member.capture.tone,
             bytes: member.bytes, markup: member.capture.svgText, ...sizeOf(member),
