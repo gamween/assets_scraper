@@ -28,6 +28,14 @@ describe("toneFromBytes", () => {
     expect(await toneFromSvg('<svg xmlns="http://www.w3.org/2000/svg" width="20000" height="10000"><rect width="20000" height="10000" fill="#fff"/></svg>')).toBe("opaque");
   });
 
+  it("measures opacity as mean alpha, not as a count of fully opaque pixels", async () => {
+    // Every pixel is 99 percent opaque: no pixel is fully opaque, yet the tile needs no background.
+    expect(await toneFromBytes(await png(() => [255, 255, 255, 252]), "image/png")).toBe("opaque");
+    expect(await toneFromBytes(await png(() => [255, 255, 255, 230]), "image/png")).toBe("light");
+    // 97 percent of the pixels opaque, the rest transparent: under the threshold either way.
+    expect(await toneFromBytes(await png((x, y) => (y === 0 && x < 31 ? [0, 0, 0, 0] : [255, 255, 255, 255])), "image/png")).toBe("light");
+  });
+
   it("does not decode JPEG", async () => {
     const notReallyJpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]);
     expect(await toneFromBytes(notReallyJpeg, "image/jpeg")).toBe("opaque");

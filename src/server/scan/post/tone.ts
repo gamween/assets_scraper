@@ -5,9 +5,10 @@ import { formatFromContentType, sniffFormat } from "./format";
 
 /**
  * Preview tone (spec 8.8): decides the background of a tile. Rasters are reduced to 32 px, SVGs rendered at 64 px.
- * At least 98 percent opaque coverage is `opaque` (measured as mean alpha, so the soft edge that downscaling adds to a
- * fully covered image does not count as transparency); otherwise the alpha-weighted mean luminance (Rec. 709) of the
- * visible pixels gives `light` above 0.7, `dark` below 0.3 and `mixed` in between.
+ * At least 98 percent opaque coverage is `opaque`. Coverage is the mean alpha, a deliberate change from the spec's count
+ * of opaque pixels: the soft edge that downscaling adds to a fully covered image, or a uniform 99 percent alpha, does not
+ * count as transparency. Otherwise the alpha-weighted mean luminance (Rec. 709) of the visible pixels gives `light`
+ * above 0.7, `dark` below 0.3 and `mixed` in between.
  */
 
 const RASTER_SIZE = 32;
