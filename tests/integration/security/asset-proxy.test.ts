@@ -10,7 +10,7 @@ const fonts = vi.hoisted(() => ({
 vi.mock("@/server/scan/fonts/index", () => fonts);
 
 import { handleAssetRequest } from "@/server/security/asset-proxy";
-import { MemoryBudgetStore, setBudgetStoreForTests } from "@/server/security/budget";
+import { MemoryBudgetStore, setBudgetStoreForTests, takeProxyBytes } from "@/server/security/budget";
 import { createSigner } from "@/server/security/sign";
 
 const SITE = path.join(import.meta.dirname, "../../fixtures/site");
@@ -59,6 +59,8 @@ beforeAll(async () => {
     "/missing.png": (_q, s) => { s.writeHead(404, { "content-type": "image/png" }); s.end(); },
     "/redirect-private": (_q, s) => { s.writeHead(302, { location: `${victim.origin}/secret.png` }); s.end(); },
     "/sized.png": (_q, s) => { s.writeHead(200, { "content-type": "image/png", "content-length": String(png.length) }); s.end(png); },
+    "/not-a-png": (_q, s) => { s.writeHead(200, { "content-type": "image/png" }); s.end("MZ\x90\x00 this is not a png"); },
+    "/png-then-stall": (_q, s) => { s.writeHead(200, { "content-type": "font/woff2" }); s.write(png.subarray(0, 64)); },
     "/referer": (q, s) => { s.writeHead(200, { "content-type": "image/svg+xml" }); s.end(`<svg xmlns="http://www.w3.org/2000/svg"><title>${q.headers.referer}</title></svg>`); },
   };
   for (const [name, [, bytes]] of Object.entries(MAGIC)) {
@@ -179,7 +181,22 @@ describe("handleAssetRequest", () => {
     const tricky = await handleAssetRequest(proxied("/assets/logo.svg", `&dl=${encodeURIComponent("..\\Logo (dark)\u202Egvs.exe'\n.svg")}`));
     expect(tricky.headers.get("content-disposition")).toBe("attachment; filename*=UTF-8''Logo%20%28dark%29gvs.exe%27.svg");
     const dots = await handleAssetRequest(proxied("/assets/logo.svg", "&dl=.."));
-    expect(dots.headers.get("content-disposition")).toBe("attachment; filename*=UTF-8''download");
+    expect(dots.headers.get("content-disposition")).toBe("attachment; filename*=UTF-8''download.svg");
+    const emoji = await handleAssetRequest(proxied("/assets/logo.svg", `&dl=${encodeURIComponent(`${"a".repeat(199)}\u{1F600}.svg`)}`));
+    expect(emoji.status).toBe(200);
+    expect(emoji.headers.get("content-disposition")).toBe(`attachment; filename*=UTF-8''${"a".repeat(199)}%F0%9F%98%80.svg`);
+  });
+
+  it("names a download after the served type, whatever extension the unsigned name asks for", async () => {
+    // a signed image URL shared as an app link must not save its bytes as an executable
+    const response = await handleAssetRequest(proxied("/not-a-png", "&dl=Invoice.exe", "none"));
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("image/png");
+    expect(response.headers.get("content-disposition")).toBe("attachment; filename*=UTF-8''Invoice.png");
+    await response.arrayBuffer();
+    const sniffed = await handleAssetRequest(proxied("/magic/webp", "&dl=hero.png"));
+    expect(sniffed.headers.get("content-disposition")).toBe("attachment; filename*=UTF-8''hero.webp");
+    await sniffed.arrayBuffer();
   });
 
   it("decompresses an open-licence WOFF2 to its sfnt, labelled by outline format, and refuses other sources", async () => {
@@ -192,8 +209,9 @@ describe("handleAssetRequest", () => {
     expect(ttf.headers.get("content-length")).toBe(String(bytes.length));
     expect(fonts.isConvertibleFont).toHaveBeenCalledWith({ format: "woff2" }, expect.objectContaining({ fetch: expect.any(Function), signal: expect.any(AbortSignal) }));
 
-    const otf = await handleAssetRequest(proxied("/assets/ss3.woff2", "&fmt=ttf"));
+    const otf = await handleAssetRequest(proxied("/assets/ss3.woff2", "&fmt=ttf&dl=ss3.ttf"));
     expect(otf.headers.get("content-type")).toBe("font/otf");
+    expect(otf.headers.get("content-disposition")).toBe("attachment; filename*=UTF-8''ss3.otf");
     expect(Buffer.from(await otf.arrayBuffer()).subarray(0, 4).toString("latin1")).toBe("OTTO");
 
     fonts.isConvertibleFont.mockResolvedValue(false);
@@ -203,6 +221,10 @@ describe("handleAssetRequest", () => {
       expect(await errorOf(await handleAssetRequest(proxied(source, "&fmt=ttf"))), source).toMatchObject({ status: 415, code: "not-convertible" });
     }
     expect(fonts.isConvertibleFont).toHaveBeenCalledTimes(3);
+    // the first bytes decide: a source that is not WOFF2 is refused without waiting for the rest of its body
+    const start = performance.now();
+    expect(await errorOf(await handleAssetRequest(proxied("/png-then-stall", "&fmt=ttf"), { timeoutMs: 10_000 }))).toMatchObject({ status: 415, code: "not-convertible" });
+    expect(performance.now() - start).toBeLessThan(5_000);
     expect(await errorOf(await handleAssetRequest(proxied("/assets/__inter.woff2", "&fmt=ttf"), { maxBytes: 1024 }))).toMatchObject({ status: 413 });
   });
 
@@ -218,7 +240,8 @@ describe("handleAssetRequest", () => {
     vi.stubEnv("PROXY_BYTES_PER_DAY", "100");
     const streamed = await handleAssetRequest(proxied("/assets/bg.png"));
     expect(Buffer.from(await streamed.arrayBuffer())).toEqual(png);
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    // bytes of unknown length are counted once the body ends, without holding the response
+    await vi.waitFor(async () => expect(await takeProxyBytes(0)).toBe(false));
     expect(await errorOf(await handleAssetRequest(proxied("/assets/logo.svg")))).toMatchObject({ status: 429 });
   });
 
