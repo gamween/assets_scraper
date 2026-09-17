@@ -11,7 +11,7 @@ import { Tone } from "@/lib/contract";
 import { withBrowser } from "@/server/browser/launch";
 import { startCapture } from "@/server/scan/capture";
 import { serveFixture, type FixtureServer } from "../../fixtures/serve";
-import { startTestProxy, type TestProxy } from "./helpers";
+import { delay, startTestProxy, type TestProxy } from "./helpers";
 
 const ASSETS = path.join(import.meta.dirname, "../../fixtures/site/assets");
 let fixture: FixtureServer;
@@ -47,6 +47,17 @@ const slowGzipImages = Object.fromEntries(
   ]),
 );
 
+/**
+ * Responses of `/held.png`: headers and the PNG signature at once (Chrome reports an image response only once body
+ * bytes arrive), the rest of the body only once the test calls `endHeld`.
+ */
+const held: http.ServerResponse[] = [];
+const PNG_SIGNATURE_BYTES = 8;
+const endHeld = async () => {
+  const png = await noisePng;
+  for (const res of held.splice(0)) res.end(png.subarray(PNG_SIGNATURE_BYTES));
+};
+
 const gzipped = (contentType: string, text: string) => (_req: http.IncomingMessage, res: http.ServerResponse) => {
   const body = gzipSync(text);
   res.writeHead(200, { "content-type": contentType, "content-encoding": "gzip", "content-length": String(body.length) });
@@ -69,6 +80,23 @@ beforeAll(async () => {
     "/many-gzip.html": (_req, res) => {
       res.writeHead(200, { "content-type": "text/html" });
       res.end(`<!doctype html><title>Many gzip</title>${Array.from({ length: 8 }, (_, i) => `<img src="/slow-gzip/${i}.png">`).join("")}`);
+    },
+    "/held.png": (_req, res) => {
+      void noisePng.then((png) => {
+        res.writeHead(200, { "content-type": "image/png" });
+        res.write(png.subarray(0, PNG_SIGNATURE_BYTES));
+        held.push(res);
+      });
+    },
+    "/after.png": (_req, res) => {
+      void noisePng.then((png) => {
+        res.writeHead(200, { "content-type": "image/png" });
+        res.end(png);
+      });
+    },
+    "/held.html": (_req, res) => {
+      res.writeHead(200, { "content-type": "text/html" });
+      res.end('<!doctype html><title>Held</title><img src="/held.png">');
     },
     "/hang.html": (_req, res) => {
       res.writeHead(200, { "content-type": "text/html" });
@@ -99,8 +127,9 @@ afterAll(async () => {
   await fixture.close();
 });
 
-afterEach(() => {
+afterEach(async () => {
   vi.unstubAllEnvs();
+  await endHeld();
 });
 
 const onBrowser = <T>(fn: (page: Page) => Promise<T>) => withBrowser({ egressPort: proxy.port, signal: new AbortController().signal }, ({ page }) => fn(page));
@@ -108,6 +137,19 @@ const sha1 = (buffer: Buffer) => createHash("sha1").update(buffer).digest("hex")
 const failing = () => {
   throw new Error("Not implemented");
 };
+/** Loads an image in the page, and resolves once the capture listener has seen its response. */
+const loadImage = (page: Page, pathname: string) =>
+  Promise.all([
+    page.waitForResponse((response) => new URL(response.url()).pathname === pathname),
+    page.evaluate((src) => new Promise((resolve, reject) => Object.assign(document.body.appendChild(new Image()), { onload: resolve, onerror: reject, src })), pathname),
+  ]);
+/** Opens `/held.html` and waits until the capture gave up on the read of `/held.png`. */
+async function giveUpHeldRead(page: Page, bodyReadMs: number) {
+  await page.goto(`${fixture.origin}/held.html`, { waitUntil: "domcontentloaded" });
+  await expect.poll(() => held.length).toBe(1);
+  // Nothing marks a read as given up: wait well past its timeout.
+  await delay(bodyReadMs * 4);
+}
 
 describe("startCapture", () => {
   it("captures images, fonts and stylesheets of the fixture site", async () => {
@@ -319,6 +361,66 @@ describe("startCapture", () => {
       expect(network.images.find((image) => image.url.endsWith("/assets/touch.png"))?.sha1).toBeDefined();
       for (const image of network.images) expect(Tone.options).toContain(image.tone);
     });
+  });
+
+  it("keeps the slot of a read it gave up until Playwright is done with the body", async () => {
+    vi.stubEnv("BODY_CONCURRENCY", "1");
+    const bodyReadMs = 200;
+    const png = await noisePng;
+    const network = await onBrowser(async (page) => {
+      const toned: number[] = [];
+      const capture = startCapture(page, {
+        signal: new AbortController().signal,
+        bodyReadMs,
+        toneFromBytes: async (buffer) => {
+          toned.push(buffer.length);
+          return "unknown";
+        },
+      });
+      await giveUpHeldRead(page, bodyReadMs);
+      await loadImage(page, "/after.png");
+      // With its slot free, the read of /after.png would take a few milliseconds.
+      await delay(500);
+      expect(toned).toEqual([]);
+      await endHeld();
+      await expect.poll(() => toned, { timeout: 5000 }).toEqual([png.length]);
+      return capture.settle(5000);
+    });
+    expect(network.bodyTimeouts).toBe(1);
+    expect(network.images.find((image) => image.url.endsWith("/held.png"))?.sha1).toBeUndefined();
+    expect(network.images.find((image) => image.url.endsWith("/after.png"))).toMatchObject({ sha1: sha1(png), bytes: png.length });
+  });
+
+  it("counts the body of a read it gave up toward the total once the body lands", async () => {
+    const png = await noisePng;
+    const touch = await readFile(path.join(ASSETS, "touch.png"));
+    // Room for the held body, the small image and half of another noise PNG.
+    vi.stubEnv("BODY_TOTAL_BYTES", String(png.length + touch.length + Math.round(png.length / 2)));
+    vi.stubEnv("BODY_CONCURRENCY", "1");
+    const bodyReadMs = 200;
+    const network = await onBrowser(async (page) => {
+      const toned: number[] = [];
+      const capture = startCapture(page, {
+        signal: new AbortController().signal,
+        bodyReadMs,
+        toneFromBytes: async (buffer) => {
+          toned.push(buffer.length);
+          return "unknown";
+        },
+      });
+      await giveUpHeldRead(page, bodyReadMs);
+      await endHeld();
+      // The only slot is free again, so the held body has landed, once the small image is read.
+      await loadImage(page, "/assets/touch.png");
+      await expect.poll(() => toned, { timeout: 5000 }).toEqual([touch.length]);
+      await loadImage(page, "/after.png");
+      return capture.settle(5000);
+    });
+    expect(network.bodyTimeouts).toBe(1);
+    expect(network.images.find((image) => image.url.endsWith("/assets/touch.png"))?.sha1).toBe(sha1(touch));
+    // The held body took its bytes: another noise PNG no longer fits in the total.
+    expect(network.images.find((image) => image.url.endsWith("/after.png"))?.sha1).toBeUndefined();
+    expect(network.skippedBodies).toBe(1);
   });
 
   it("returns from settle at its own timeout while a read is still pending", async () => {

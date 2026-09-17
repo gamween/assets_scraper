@@ -71,6 +71,11 @@ const timeoutAfter = <T>(promise: Promise<T>, ms: number): Promise<T> =>
  * known once Playwright has read it whole into Node memory. The caps apply to that size, so a body with no declared
  * length, or one that decodes to far more than its declared length, is bounded by what the browser holds (and the
  * memory watchdog), not by the per-body cap.
+ *
+ * A read that times out is given up, but Playwright cannot cancel it: once the response ends, the whole body still
+ * crosses into Node. So a given-up read keeps its concurrency slot and its reservation until Playwright is done with the
+ * body, and that body counts toward the total when it lands. The concurrency and total caps hold for those bodies too;
+ * the price is that a response that never ends holds its slot until the browser closes.
  */
 export function startCapture(page: Page, options: CaptureOptions): CaptureHandle {
   const tone = options.toneFromBytes ?? toneFromBytes;
@@ -128,15 +133,25 @@ export function startCapture(page: Page, options: CaptureOptions): CaptureHandle
           const reserve = Math.min(reservation, left);
           reading += 1;
           reserved += reserve;
-          readBody(response)
+          const pending = response.body();
+          let givenUp = false;
+          // Settles once Playwright is done with the body, even for a read that was given up (see above).
+          const landed = pending.then(
+            (body) => {
+              if (givenUp) bytesRead += body.length;
+            },
+            () => {},
+          );
+          const done = readBody(pending, () => (givenUp = true))
             .then((body) => body && read(body))
-            .catch(() => {})
-            .finally(() => {
-              reading -= 1;
-              reserved -= reserve;
-              resolve();
-              next();
-            });
+            .catch(() => {});
+          // The job ends when the read does, so settle never waits for a given-up read; its slot is freed once both end.
+          void done.finally(resolve);
+          void Promise.all([done, landed]).finally(() => {
+            reading -= 1;
+            reserved -= reserve;
+            next();
+          });
         },
       });
     });
@@ -165,12 +180,15 @@ export function startCapture(page: Page, options: CaptureOptions): CaptureHandle
    * The body within the caps, or undefined (counted as a timeout or a skip). A declared length can be smaller than the
    * body (it counts encoded bytes), so the caps are checked again on the real size, once the body is in memory.
    */
-  const readBody = async (response: Response): Promise<Buffer | undefined> => {
+  const readBody = async (pending: Promise<Buffer>, onGiveUp: () => void): Promise<Buffer | undefined> => {
     let body: Buffer;
     try {
-      body = await timeoutAfter(response.body(), readMs);
+      body = await timeoutAfter(pending, readMs);
     } catch (error) {
-      if (error instanceof BodyTimeout) bodyTimeouts += 1;
+      if (error instanceof BodyTimeout) {
+        bodyTimeouts += 1;
+        onGiveUp();
+      }
       return undefined;
     }
     bytesRead += body.length;
