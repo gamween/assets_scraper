@@ -136,7 +136,7 @@ beforeAll(async () => {
         return;
       }
       res.writeHead(200, { "content-type": "image/x-icon" });
-      res.end(readFileSync(path.join(import.meta.dirname, "../../../src/app/favicon.ico")));
+      res.end(readFileSync(path.join(import.meta.dirname, "../../fixtures/site/assets/favicon.ico")));
     },
   });
   browser = await launchChrome();
