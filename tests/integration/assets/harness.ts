@@ -50,8 +50,13 @@ export function collectorOptions(host: string, siteName: string, patch: Partial<
   };
 }
 
-/** Runs the bundled collector in an isolated world of the main frame. */
-export async function runCollector(page: Page, options: CollectorOptions): Promise<RawCollectorOutput> {
+/**
+ * Runs the bundled collector in an isolated world of the main frame, or in the page's own world like the `runInPage`
+ * fallback does when the isolated world cannot be created (spec 7.5).
+ */
+export async function runCollector(page: Page, options: CollectorOptions, world: "isolated" | "main" = "isolated"): Promise<RawCollectorOutput> {
+  const expression = `${COLLECTOR_SOURCE}\n;globalThis.__assetsScraper.collect(${JSON.stringify(options)})`;
+  if (world === "main") return (await page.evaluate(expression)) as RawCollectorOutput;
   const cdp = await page.context().newCDPSession(page);
   try {
     const { frameTree } = await cdp.send("Page.getFrameTree");
@@ -61,7 +66,7 @@ export async function runCollector(page: Page, options: CollectorOptions): Promi
       grantUniveralAccess: false,
     });
     const result = await cdp.send("Runtime.evaluate", {
-      expression: `${COLLECTOR_SOURCE}\n;globalThis.__assetsScraper.collect(${JSON.stringify(options)})`,
+      expression,
       contextId: executionContextId,
       awaitPromise: true,
       returnByValue: true,

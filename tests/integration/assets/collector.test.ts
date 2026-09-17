@@ -218,7 +218,8 @@ describe("collector labels", () => {
 });
 
 describe("collector limits and hostile pages", () => {
-  it("still produces output when the page overrides built-ins", async () => {
+  // The isolated world cannot see the page's patches; the main world, where runInPage falls back, runs among them.
+  it.each(["isolated", "main"] as const)("still produces output when the page overrides built-ins, in the %s world", async (world) => {
     const { context, page } = await openPage(browser, `${server.origin}/`);
     await page.evaluate(() => {
       Array.prototype.includes = () => {
@@ -226,10 +227,11 @@ describe("collector limits and hostile pages", () => {
       };
       JSON.stringify = () => "{}";
     });
-    const tampered = await runCollector(page, collectorOptions(server.host, "Fixture"));
+    const tampered = await runCollector(page, collectorOptions(server.host, "Fixture"), world);
     await context.close();
     expect(tampered.svgs.length).toBe(output.svgs.length);
     expect(tampered.candidates.length).toBe(output.candidates.length);
+    expect(tampered.blobs).toHaveLength(1);
   });
 
   it("stops at the element cap and the SVG caps and says so", async () => {
