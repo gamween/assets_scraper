@@ -168,27 +168,53 @@ per weight, so the weight number is part of the name. Merging them would need a 
 which risks merging real families. The single family gaps on the other two sites are probably a page difference, not
 a rule difference.
 
-### R8: the CDN original is not adopted where the lab upgraded it (stripe.com, gymshark.com, coinbase.com, notion.com, porsche.com)
+### R8: the CDN original is not adopted on part of the candidates (stripe.com, gymshark.com, coinbase.com, notion.com)
 
 Evidence: the lab's "CDN originals verified ok (bigger)" column, the baseline named in the header of this document,
-reports 45 verified originals on stripe.com, 81 on gymshark.com, 32 on notion.com, 9 on coinbase.com and 7 on
-porsche.com. The app keeps the page's transformed URL instead on 5 of the 22 unblocked sites: 26 of stripe.com's 56
-image assets stay on `images.stripeassets.com` with the Contentful query intact, 39 of gymshark.com's 64 stay on
-`www.gymshark.com/_next/image?url=...&w=...`, and the same shape accounts for 5 on coinbase.com (`images.ctfassets.net`
-with a query), 4 on notion.com and 1 on porsche.com. The repeat scans in run1b give the identical sets.
+lists the originals the lab probed and found bigger than the page's URL. Counting how many of those the app's run1
+result actually carries: allbirds.com 26 of 26, framer.com 93 of 94, ilovechickpea.ca 40 of 40, ripple.com 12 of 12,
+squarespace.com 11 of 11, vercel.com 2 of 2, sanity.io 46 of 48, notion.com 28 of 32, stripe.com 28 of 45,
+coinbase.com 4 of 9, gymshark.com 4 of 81. Adoption therefore runs and succeeds on the majority of candidates,
+including on the same hosts and in the same runs as the losses. The open question is a per URL one: what separates the
+candidates it upgrades from the ones it leaves transformed.
+
+Where it does not: 26 of stripe.com's 56 image assets stay on `images.stripeassets.com` with the Contentful query
+intact, 39 of gymshark.com's 64 stay on `www.gymshark.com/_next/image?url=...&w=...`, and the same shape accounts for
+5 on coinbase.com (`images.ctfassets.net` with a query) and 4 on notion.com. The repeat scans in run1b give the
+identical sets. The other 30 stripe.com image assets are already clean `images.stripeassets.com` URLs, and all 28 that
+pair against the lab carried a query in the lab's observed URL, so those are real upgrades, not URLs the page served
+clean.
 
 This is not a stale baseline: two of the originals, re-fetched with the same `Accept` and range headers the app uses
 (`VERIFY_ACCEPT` and `bytes=0-262143` in `src/server/scan/post/verify.ts`), still answer 206 with an image body
 (stripe.com's `payments-electric-kettle.jpg`, 8979 bytes, and gymshark.com's `image__59_.png` on
-`images.ctfassets.net`). It is not a missing rule either: `src/server/scan/post/cdn.ts` carries both the `/_next/image`
-rule and the Contentful rule, and `cdn.test.ts` asserts that each returns the original for URLs of exactly this shape.
+`images.ctfassets.net`).
 
-Suspected cause: not identified, and this one needs a traced run rather than a guess. The verify budget is not the
-visible explanation: neither site emits a `verify-skipped` warning, and their whole `process` phase is 2299 ms
-(gymshark.com) and 1074 ms (stripe.com) against the 8000 ms `limits.verifyMs`. In `assemble.ts` `resolve` the original
-candidate is tried before the page's own captured bytes, and the fall back to those bytes returns without recording
-anything, so a candidate that is never produced and a candidate whose probe failed are indistinguishable from the
-outside. That missing signal is itself worth fixing before the cause can be found.
+Suspected cause on stripe.com: the rule never produces a candidate, so nothing downstream can adopt one.
+`originalCandidates` called on the 26 stuck URLs returns an empty list for 26 of 26. `images.stripeassets.com` is a
+Contentful custom domain, and the Contentful rule in `src/server/scan/post/cdn.ts` matches the host pattern
+`images.(eu.)ctfassets.net` or else the `server` hint, so on a custom domain it fires through the hint alone. That
+hint is `best.server` (`assemble.ts:133`), which comes from `capture.server` (`assemble.ts:411`) and so exists only
+for URLs whose response the collector captured. The `cdn.test.ts` case for this shape ("Contentful by Server header",
+`cdn.test.ts:42`) passes the hint as its fourth element, read at `cdn.test.ts:12`: it shows the rule needs the hint,
+not that the rule fires without it. This site needs the hint (or the rule) fixed and re-measured, not a traced run.
+
+Suspected cause on gymshark.com: not identified, and this one does need instrumentation. The `/_next/image` rule
+matches on the path alone, so the candidate is produced and the loss is inside `resolve`. The verify budget is still
+open despite no `verify-skipped` warning, because two paths suppress that warning. `verifyUrl` returns `SKIPPED` from
+its own deadline and abort check (`verify.ts:150`) without incrementing `limiter.skipped`, which only the limiter
+refusing to start a task does (`verify.ts:187`), so the global warning at `assemble.ts:199` never fires for that path.
+And inside `resolve` a `SKIPPED` result only sets the local `skipped` flag (`assemble.ts:169`); the loop then carries
+on to the member URLs, where the `member?.capture` branch (`assemble.ts:140-146`) returns before
+`warnings.add("verify-skipped")` at `assemble.ts:173` is reached. All 39 stuck gymshark.com assets carry `bytes`, so
+that member capture branch is what answered. A failed probe is not the explanation either: four of the stuck originals,
+probed with the app's exact headers, returned 206 with an image body (10206 B PNG, and 167313 B, 185758 B and
+172730 B JPEG).
+
+Three outcomes are indistinguishable from outside `resolve`, which is what has to be fixed before the cause can be
+found: a candidate that is never produced, a candidate whose probe failed, and a candidate whose probe succeeded and
+was then rejected by `noiseReason` against the size and type the request found (`assemble.ts:157-162`, where a hit
+does `noise ??= reason; continue`). All three fall through to the page's own captured bytes and record nothing.
 
 ### R9: smaller count differences worth one look
 
@@ -201,3 +227,12 @@ against 39.
 Suspected cause: sprite symbol handling on the two sites with large hidden sprite counts (the app both keeps more
 symbols and hides more than the lab counted), and, for squarespace.com, the two font or image bodies its diagnostics
 counted as timed out during capture, which also explains its lower SVG count.
+
+porsche.com is content drift, not a rule difference, and cannot be compared asset by asset with the lab: its homepage
+carousel rotates, so the two runs saw different assets. None of the lab's 7 verified-bigger `a.storyblok.com`
+originals (rule "strip `/m/<params>`") appear in the app's result in either form, transformed or original, and the 12
+`a.storyblok.com` URLs the app did find are already clean. The one URL the app keeps transformed,
+`shop.porsche.com/_next/image?url=...images.ctfassets.net...`, is a different host on a different rule and has no
+counterpart in the lab's result, so nothing establishes it as a loss. porsche.com is therefore left out of R8: a
+re-scan after a CDN adoption fix would still show 1 transformed `shop.porsche.com` URL and 0 of the lab's 7
+Storyblok originals, whether or not the fix worked.
