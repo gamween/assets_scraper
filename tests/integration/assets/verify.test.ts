@@ -113,11 +113,11 @@ describe("runVerifications", () => {
       started++;
       active++;
       maxActive = Math.max(maxActive, active);
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      await new Promise((resolve) => setTimeout(resolve, 200));
       active--;
       return { ok: true as const };
     };
-    const results = await runVerifications(Array.from({ length: 40 }, () => task), { concurrency: 16, deadline: Date.now() + 150 });
+    const results = await runVerifications(Array.from({ length: 40 }, () => task), { concurrency: 16, deadline: Date.now() + 300 });
     expect(maxActive).toBe(16);
     expect(started).toBe(32);
     expect(results.filter((r) => r.ok)).toHaveLength(32);

@@ -126,6 +126,7 @@ export async function assembleAssets(input: PostInput): Promise<AssetsOutput> {
         if (member) {
           if (probes >= limits.maxDeclaredProbes) {
             skipped = true;
+            warnings.add("verify-skipped");
             continue;
           }
           probes++;
@@ -142,8 +143,11 @@ export async function assembleAssets(input: PostInput): Promise<AssetsOutput> {
     };
 
     const groups = groupVariants(kept)
-      .map((members) => ({ members, best: pickBest(members) }))
-      .sort((a, b) => provisionalScore(b.members, b.best) - provisionalScore(a.members, a.best));
+      .map((members) => {
+        const best = pickBest(members);
+        return { members, best, score: provisionalScore(members, best) };
+      })
+      .sort((a, b) => b.score - a.score);
 
     const fileDrafts = await Promise.all(
       groups.map(async ({ members, best }) => {
@@ -327,11 +331,11 @@ async function buildRecords(input: PostInput, baseUrl: string, limiter: Limiter,
           record.sha1 = sha1(decoded.buffer);
         }
       } else {
-        // blob: bytes travel inline and are never merged with other URLs by content
+        // blob: bytes, network body first (spec 8.1). They travel inline and are never merged with other URLs by content.
         const blob = blobs.get(record.url);
         const capture = captured.get(record.url);
-        if (blob) record.inline = { mime: blob.mime, buffer: Buffer.from(blob.base64, "base64") };
-        else if (capture?.blobBase64) record.inline = { mime: capture.contentType, buffer: Buffer.from(capture.blobBase64, "base64") };
+        if (capture?.blobBase64) record.inline = { mime: capture.contentType, buffer: Buffer.from(capture.blobBase64, "base64") };
+        else if (blob) record.inline = { mime: blob.mime, buffer: Buffer.from(blob.base64, "base64") };
         if (record.inline) {
           record.contentType = record.inline.mime;
           record.bytes = record.inline.buffer.length;

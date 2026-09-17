@@ -140,6 +140,20 @@ describe("assembleAssets limits", () => {
     expect(late.assets.some((a) => a.original?.url.endsWith("/hover.png"))).toBe(false);
     expect(late.hidden["probe-failed"]).toBeUndefined();
 
+    process.env.MAX_DECLARED_PROBES = "1";
+    try {
+      // The one probe goes to the most relevant URL, the JSON-LD logo, which fails; the rest are skipped.
+      const probed = await assembleAssets({ ...input, signer: fakeSigner() });
+      expect(probed.warnings).toContain("verify-skipped");
+      expect(probed.hidden["probe-failed"]).toBe(1);
+      const captured = new Set(input.network.images.map((i) => i.url));
+      expect(probed.assets.filter((a) => a.original && !captured.has(a.original.url))).toEqual([]);
+      const photo = probed.assets.find((a) => a.display?.url.endsWith("/photo-small.png"));
+      expect(photo?.original?.url).toMatch(/\/photo-small\.png$/);
+    } finally {
+      delete process.env.MAX_DECLARED_PROBES;
+    }
+
     process.env.MAX_ASSETS = "5";
     try {
       const capped = await assembleAssets({ ...input, signer: fakeSigner() });

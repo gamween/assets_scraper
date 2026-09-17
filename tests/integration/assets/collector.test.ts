@@ -14,7 +14,19 @@ const candidates = (name: string): RawCandidate[] => output.candidates.filter((c
 const svgWith = (text: string): RawSvg[] => output.svgs.filter((s) => s.markup.includes(text));
 
 beforeAll(async () => {
-  server = await serveAssetsFixture();
+  server = await serveAssetsFixture({
+    "/edge.html": (_req, res) => {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(`<!doctype html><html><head><title>Edge</title><link rel="stylesheet" href="/assets/style.css"><link rel="manifest" href="/site.webmanifest"></head><body>
+        <div class="lottie-player"><svg width="100" height="100"><g id="__lottie_element_1"><rect width="100" height="100"/></g></svg></div>
+        <svg style="display:none"><symbol id="used" viewBox="0 0 8 8"><path d="M0 0h8v8z"/></symbol><symbol id="unused" viewBox="0 0 8 8"><circle cx="4" cy="4" r="4"/></symbol></svg>
+        <svg width="16" height="16"><use href="#used"/></svg>
+        <svg width="120" height="30"><text x="0" y="20" style="font-family: '__Inter_d65c78'">Brand</text></svg>
+        <svg width="120" height="30"><text x="0" y="20" style="font-family: serif">Plain</text></svg>
+        <a href="/logout">Log out</a> <a href="/wordpress-tips">Tips</a> <a href="/brand-assets">Assets</a> <a href="/brand-assets#top">Assets again</a>
+      </body></html>`);
+    },
+  });
   browser = await launchChrome();
   const { context, page } = await openPage(browser, `${server.origin}/`);
   output = await runCollector(page, collectorOptions(server.host, "Fixture"));
@@ -164,6 +176,20 @@ describe("collector on the fixture page", () => {
 
   it("finds same-site brand links", () => {
     expect(output.brandLinks).toEqual([{ href: `${server.origin}/press`, text: "Press kit" }]);
+  });
+});
+
+describe("collector noise and edge cases", () => {
+  it("drops Lottie frames and unreferenced symbols, flags live text and ignores look-alike links", async () => {
+    const { context, page } = await openPage(browser, `${server.origin}/edge.html`);
+    const edge = await runCollector(page, collectorOptions(server.host, "Fixture"));
+    await context.close();
+    expect(edge.noise).toMatchObject({ "lottie-frame": 1, "unreferenced-symbol": 1 });
+    expect(edge.svgs.filter((s) => s.source === "sprite-symbol").map((s) => s.label)).toEqual(["used"]);
+    expect(edge.svgs.find((s) => s.markup.includes("<text"))).toMatchObject({ hasLiveText: true });
+    expect(edge.svgs.find((s) => s.markup.includes("Plain"))).toMatchObject({ hasLiveText: false });
+    expect(edge.brandLinks).toEqual([{ href: `${server.origin}/brand-assets`, text: "Assets" }]);
+    expect(edge.manifestUrl).toBe(`${server.origin}/site.webmanifest`);
   });
 });
 
