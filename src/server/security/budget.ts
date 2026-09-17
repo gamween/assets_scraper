@@ -12,6 +12,8 @@ const SCAN_DAY_TTL = 2 * DAY_SECONDS;
 const SCAN_MONTH_TTL = 40 * DAY_SECONDS;
 const PROXY_DAY_TTL = 2 * DAY_SECONDS;
 const UPSTASH_TIMEOUT_MS = 2_000;
+/** After a shared store failure, requests use the in-memory counter alone for this long instead of waiting on it. */
+const STORE_RETRY_MS = 30_000;
 
 /** Per-instance counters. */
 export class MemoryBudgetStore implements BudgetStore {
@@ -63,6 +65,7 @@ export class RuntimeCacheBudgetStore implements BudgetStore {
 }
 
 let memory = new MemoryBudgetStore();
+let sharedStoreDownUntil = 0;
 let testStore: BudgetStore | null = null;
 let upstash: { credentials: string; store: UpstashBudgetStore } | null = null;
 const runtimeCache = new RuntimeCacheBudgetStore();
@@ -84,20 +87,24 @@ export function getBudgetStore(): BudgetStore {
 export function setBudgetStoreForTests(store: BudgetStore | null): void {
   testStore = store;
   memory = new MemoryBudgetStore();
+  sharedStoreDownUntil = 0;
 }
 
 /**
  * Every increment also lands in the in-memory counter. When the shared store throws, the in-memory total is used;
- * when it answers, the larger of both, so a store that silently loses writes cannot lift this instance's limit.
+ * when it answers, the larger of both, so a store that silently loses writes cannot lift this instance's limit. A
+ * failure skips the shared store for `STORE_RETRY_MS`, so a store that hangs until its timeout does not add that wait
+ * to every request.
  */
 async function incr(key: string, by: number, ttlSeconds: number): Promise<number> {
   const store = getBudgetStore();
   const local = await memory.incr(key, by, ttlSeconds);
-  if (store === memory) return local;
+  if (store === memory || Date.now() < sharedStoreDownUntil) return local;
   try {
     return Math.max(await store.incr(key, by, ttlSeconds), local);
   } catch (error) {
-    console.error(`Budget store failed, using the in-memory counter: ${error instanceof Error ? error.message : String(error)}`);
+    sharedStoreDownUntil = Date.now() + STORE_RETRY_MS;
+    console.error(`Budget store failed, using the in-memory counter for ${STORE_RETRY_MS / 1000} s: ${error instanceof Error ? error.message : String(error)}`);
     return local;
   }
 }

@@ -140,6 +140,28 @@ describe("budget", () => {
     expect(await takeMany(3, day1)).toEqual([true, true, false]);
   });
 
+  it("skips a failing store for 30 seconds, then tries it again", async () => {
+    vi.stubEnv("SCANS_PER_DAY", "10");
+    vi.useFakeTimers();
+    vi.setSystemTime(day1);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    let calls = 0;
+    let down = true;
+    setBudgetStoreForTests({ incr: async (_key, by) => { calls++; if (down) throw new Error("store down"); return by; } });
+    expect(await takeMany(3, day1)).toEqual([true, true, true]);
+    expect(calls).toBe(1);
+    vi.setSystemTime(day1.getTime() + 29_000);
+    await takeScanBudget(day1);
+    expect(calls).toBe(1);
+    down = false;
+    vi.setSystemTime(day1.getTime() + 31_000);
+    await takeScanBudget(day1);
+    expect(calls).toBe(3);
+    // the in-memory counter kept every scan taken meanwhile
+    vi.stubEnv("SCANS_PER_DAY", "5");
+    expect(await takeScanBudget(day1)).toBe(false);
+  });
+
   it("still enforces the limit when a store silently loses counts", async () => {
     vi.stubEnv("SCANS_PER_DAY", "2");
     setBudgetStoreForTests({ incr: async (_key, by) => by });
