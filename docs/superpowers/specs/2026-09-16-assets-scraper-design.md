@@ -149,7 +149,7 @@ export type FoundIn =
 
 export interface AssetSource {
   url: string;            // absolute http(s) URL
-  proxy: string;          // signed same-origin path: /api/asset?u=...&e=...&s=...
+  proxy: string;          // signed same-origin path /api/asset?u=...&e=...&s=..., or "" past the signing cap (11.2)
   format: AssetFormat;
   width?: number;
   height?: number;
@@ -454,12 +454,12 @@ The palette module is a port of the validated lab code (v2 with every fix enable
 ### 11.2 Asset proxy
 
 - HMAC-SHA256 with `ASSET_URL_SECRET` over `v1\n<expiry>\n<url>`, truncated to 32 base64url characters, timing-safe comparison. Expiry is bucketed by hour, 6 to 7 hours of life, so CDN cache keys repeat. Development without the secret uses a random per-process key.
-- At most 800 signed URLs per scan.
+- At most 2,000 signed URLs per scan, one signer shared by the assets and the fonts. Assets sign first (`http:` sources first, then by score), font files after them: files of loaded faces, then Basic-Latin files of unloaded faces, then the rest. Past the cap a source or file keeps its `url` with `proxy: ""` and the scan emits a `truncated` warning.
 - `Sec-Fetch-Site` must be `same-origin` or `none`, with `Vary: Sec-Fetch-Site`.
 - `safeFetch` with `Referer` set to the page origin, 25 MB cap, 20 s timeout, 5 redirects. Content types allowed: `image/*`, `font/*`, `application/font-*`, `application/x-font-*`, and `application/octet-stream` after magic-byte sniffing.
 - Response headers: `content-security-policy: default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; sandbox`, `x-content-type-options: nosniff`, `cross-origin-resource-policy: same-origin`, `content-disposition` (attachment with the sanitized `dl` name, else inline), `cache-control: private, max-age=3600`, `vercel-cdn-cache-control: public, s-maxage=86400`.
 - Daily proxied bytes budget (`PROXY_BYTES_PER_DAY`), taken before bytes are served: a known `content-length` in full, a body of unknown length in blocks of at least 1 MiB (the first before the status, the next whenever a chunk passes what the body holds). A take refused before the status gives 429; a block refused mid-body errors the stream. The unused part of the last block goes back when the body ends, fails or is cancelled (through `waitUntil`), so bodies in flight overshoot a store without atomic increments by at most one block each.
-- The client uses the proxy only when direct access fails, and always for `http:` URLs.
+- The client uses the proxy only when direct access fails, and always for `http:` URLs. A `proxy` of `""` means direct fetch only: when that fetch fails, the client marks the asset or file unavailable.
 
 ### 11.3 Budgets and switches
 
@@ -603,7 +603,7 @@ All in `src/server/config/limits.ts`, env-overridable.
 | Blob bytes to client | 2 MB each, 16 MB total |
 | Inline SVG | 1 MB each, 12 MB total, 400 normalizations |
 | Assets per scan | 1,500 |
-| Signed URLs per scan | 800 |
+| Signed URLs per scan | 2,000 |
 | Verification and probes | 8 s, 16 concurrent, 150 declared probes |
 | Proxy response | 25 MB, 20 s |
 | NDJSON line | 256 KB |

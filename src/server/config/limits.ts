@@ -78,7 +78,7 @@ const defaults = {
 
   // Results
   maxAssets: 1_500,
-  maxSignedUrls: 800,
+  maxSignedUrls: 2_000,
   /**
    * Batching target for `assets` lines. It is not a hard cap: one asset larger than this on its own
    * (a blob image can reach `blobMaxBytes` before base64) is sent alone on its own line.

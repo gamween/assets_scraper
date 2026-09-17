@@ -8,7 +8,7 @@ import { parseFontBinary } from "./binary";
 import { MAX_DESCRIPTOR_CHARS, MAX_UNICODE_RANGE_CHARS, normalizeStretch, normalizeStyle, normalizeWeight } from "./css";
 import { MAX_INLINE_BYTES, MAX_INLINE_FONTS, MAX_URL_CHARS } from "./files";
 import { clearGoogleFontsCache } from "./google";
-import { buildFontFamilies, isConvertibleFont } from "./index";
+import { buildFontFamilies, isConvertibleFont, signFontFiles } from "./index";
 import { fakeGoogleFetch, fastestMs, growthFactor, LINEAR_GROWTH_BOUND } from "./testing";
 import { coversBasicLatin } from "./unicode";
 
@@ -115,9 +115,11 @@ function inputOf(parts: Parts): PostInput {
 async function build(parts: Parts) {
   const input = inputOf(parts);
   const { families } = await buildFontFamilies(input);
+  // As the engine does once the assets are signed
+  const capped = signFontFiles(families, input.signer);
   for (const family of families) FontFamily.parse(family);
   const byName = new Map(families.map((family) => [family.name, family]));
-  return { families, byName, fetch: input.fetch as ReturnType<typeof fakeGoogleFetch>, signer: input.signer as RecordingSigner };
+  return { families, byName, capped, fetch: input.fetch as ReturnType<typeof fakeGoogleFetch>, signer: input.signer as RecordingSigner };
 }
 
 /**
@@ -675,31 +677,42 @@ describe("buildFontFamilies", () => {
     expect(byName.get("Multi")!.faces[0].files.map((file) => [file.url, file.format])).toEqual([[`${base}multi.woff2`, "woff2"]]);
   });
 
-  it("stops signing at the signing cap without failing, loaded files first and Adobe Fonts files last", async () => {
-    const [declared, loadedFace, loadedFile] = ["a", "b", "c"].map((name) => `https://www.site.example/${name}.woff2`);
+  it("leaves signing to signFontFiles: every file comes out with an empty proxy", async () => {
+    const url = "https://www.site.example/a.woff2";
+    const input = inputOf({ fontFaces: [rule("Face", [url])], fonts: [captured(url)], fontStatuses: [loaded("Face")] });
+    const { families } = await buildFontFamilies(input);
+    expect(families[0].faces[0].files.map((file) => [file.url, file.proxy])).toEqual([[url, ""]]);
+    expect((input.signer as RecordingSigner).signed).toEqual([]);
+  });
+
+  it("signs files of loaded faces, then Basic-Latin files of unloaded faces, then the rest, and stops at the cap", async () => {
+    const [cyrillic, latin, loadedFace, otherFamily] = ["a", "b", "c", "d"].map((name) => `https://www.site.example/${name}.woff2`);
     const typekit = "https://use.typekit.net/af/1a2b3c/000000000000000000017701/27/l?fvd=n4&v=3";
     const parts: Parts = {
       fontFaces: [
-        rule("Kit", [typekit]),
-        rule("Face", [declared], { weight: "300" }),
+        rule("Face", [cyrillic], { weight: "300", unicodeRange: "U+0400-045F" }),
+        rule("Face", [latin], { weight: "500" }),
         rule("Face", [loadedFace], { weight: "400" }),
-        rule("Face", [loadedFile], { weight: "700" }),
+        rule("Kit", [typekit]),
+        rule("Other", [otherFamily], { unicodeRange: "U+0400-045F" }),
       ],
-      fonts: [captured(typekit, null), captured(loadedFile)],
+      fonts: [captured(typekit, null), captured(loadedFace)],
       fontStatuses: [loaded("Face", "400"), loaded("Kit")],
     };
-    const { byName, families, signer } = await build({ ...parts, signer: signerThatSigns(2) });
-    expect(families.map((family) => family.name)).toEqual(["Kit", "Face"]);
-    expect(signer.signed).toEqual([loadedFile, loadedFace]);
+    const { byName, capped, signer } = await build({ ...parts, signer: signerThatSigns(3) });
+    expect(capped).toBe(true);
+    expect(signer.signed).toEqual([loadedFace, typekit, latin]);
     expect(byName.get("Face")!.faces.map((face) => [face.weight, face.loaded, face.files[0].proxy])).toEqual([
       ["300", false, ""],
+      ["500", false, `signed:${latin}`],
       ["400", true, `signed:${loadedFace}`],
-      ["700", true, `signed:${loadedFile}`],
     ]);
-    expect(byName.get("Kit")!.faces[0].files[0].proxy).toBe("");
+    expect(byName.get("Other")!.faces[0].files[0].proxy).toBe("");
 
-    const all = await build({ ...parts, signer: signerThatSigns(4) });
-    expect(all.signer.signed).toEqual([loadedFile, loadedFace, declared, typekit]);
+    const all = await build({ ...parts, signer: signerThatSigns(5) });
+    expect(all.capped).toBe(false);
+    expect(all.signer.signed).toHaveLength(5);
+    expect(all.signer.signed.slice(3).sort()).toEqual([cyrillic, otherFamily].sort());
   });
 
   it("checks Google Fonts for the first 8 used families, a renamed font by its embedded name only", async () => {

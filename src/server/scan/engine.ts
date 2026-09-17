@@ -12,7 +12,7 @@ import { createSigner } from "@/server/security/sign";
 import { detectBlock, detectChallenge } from "./block";
 import { startCapture, type CaptureHandle } from "./capture";
 import { buildFallback, directAsset } from "./fallback";
-import { buildFontFamilies } from "./fonts";
+import { buildFontFamilies, signFontFiles } from "./fonts";
 import { COLLECTOR_SOURCE } from "./inpage/generated/collector";
 import { InPageTimeoutError, runInPage } from "./inpage/run";
 import { loadAndScroll, MAX_TITLE_CHARS, openPage, prepareForCollection, readPageFacts, type NavigationResult } from "./navigate";
@@ -356,11 +356,14 @@ async function runScan({ url, deps, cancel, emit }: ScanContext): Promise<void> 
     // assembleAssets reports the collector's drops in its own `hidden`; when it ran out of time, they are reported here.
     const assetsOut: AssetsOutput = assetsResult?.value ?? { assets: [], hidden: collector.noise, warnings: [] };
     const fontsOut: FontsOutput = fontsResult?.value ?? { families: [], hidden: {} };
+    // One signer and cap per scan (spec 11.2): assets sign inside assembleAssets, font files only after it, so the
+    // assets keep the priority whichever task finishes first.
+    const fontsCapped = signFontFiles(fontsOut.families, postInput.signer);
     step("process", "done");
 
     // Phase 11: results.
     emitResults(
-      { url, nav, context, collector, network, palette: browserStage.palette, assetsOut, fontsOut, pagePartial: browserStage.partial, processedPartly, diagnostics: snapshot(), startedAt },
+      { url, nav, context, collector, network, palette: browserStage.palette, assetsOut, fontsOut, fontsCapped, pagePartial: browserStage.partial, processedPartly, diagnostics: snapshot(), startedAt },
       emit,
     );
   } catch (error) {
@@ -396,6 +399,8 @@ interface ScanResults {
   palette: Palette | null;
   assetsOut: AssetsOutput;
   fontsOut: FontsOutput;
+  /** The signing cap left some font files without a proxy. */
+  fontsCapped: boolean;
   /** Page work stopped early (deadline, memory watchdog, collector failure). */
   pagePartial: boolean;
   /** Post-processing ran out of time before one of its tasks finished. */
@@ -408,6 +413,7 @@ interface ScanResults {
 function emitResults(results: ScanResults, emit: (event: ScanEvent) => void): void {
   const { url, nav, context, collector, network, assetsOut, fontsOut, pagePartial, diagnostics } = results;
   const warnings = new Set<WarningCode>(assetsOut.warnings);
+  if (results.fontsCapped) warnings.add("truncated");
   let assets: Asset[] = assetsOut.assets;
   if (assets.length > limits.maxAssets) {
     assets = assets.slice(0, limits.maxAssets);

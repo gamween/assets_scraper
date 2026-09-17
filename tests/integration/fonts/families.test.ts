@@ -3,7 +3,7 @@ import path from "node:path";
 import type { Browser } from "playwright-core";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { FontFamily, type FontFile } from "@/lib/contract";
-import { buildFontFamilies } from "@/server/scan/fonts";
+import { buildFontFamilies, signFontFiles } from "@/server/scan/fonts";
 import { clearGoogleFontsCache } from "@/server/scan/fonts/google";
 import { fakeGoogleFetch } from "@/server/scan/fonts/testing";
 import { parseUnicodeRange } from "@/server/scan/fonts/unicode";
@@ -59,6 +59,8 @@ async function build(pathname: string) {
     deadline: Date.now() + 30_000,
   };
   const output = await buildFontFamilies(input);
+  // As the engine does once the assets are signed
+  signFontFiles(output.families, signer);
   const families = output.families.map((family) => FontFamily.parse(family));
   const byName = new Map(families.map((family) => [family.name, family]));
   const files = families.flatMap((family) => family.faces.flatMap((face) => face.files));

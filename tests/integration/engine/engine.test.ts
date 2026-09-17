@@ -11,6 +11,7 @@ import { SafeFetchError } from "@/server/net/safe-fetch";
 import { createScanEngine, type ScanEngineDeps } from "@/server/scan/engine";
 import { buildFontFamilies } from "@/server/scan/fonts";
 import { assembleAssets } from "@/server/scan/post/assemble";
+import { createSigner } from "@/server/security/sign";
 import type { AssetsOutput, FontsOutput, PostInput } from "@/server/scan/types";
 import { serveFixture, type FixtureServer } from "../../fixtures/serve";
 import { createFakeFetch, createFakeSigner, isProcessAlive, startTestProxy, type TestProxy } from "./helpers";
@@ -697,6 +698,47 @@ describe("scan engine", () => {
     // Ended by the scan deadline, not by the network deadline.
     expect(Date.now() - started).toBeGreaterThanOrEqual(19_000);
     expect(Date.now() - started).toBeLessThan(25_000);
+  });
+
+  it("signs the assets before the font files within the shared signing cap, and warns when files stay unsigned", async () => {
+    const fontUrls = ["regular", "bold"].map((name) => `${fixture.origin}/fonts/${name}.woff2`);
+    const family = (): FontsOutput["families"][number] => ({
+      id: "brand",
+      name: "Brand Sans",
+      cssFamilies: ["Brand Sans"],
+      source: "self-hosted",
+      license: { kind: "unknown" },
+      convertible: false,
+      downloadable: true,
+      usedOnPage: true,
+      usage: 1,
+      faces: fontUrls.map((url, index) => ({ weight: String(400 + index * 300), style: "normal", loaded: true, files: [{ url, proxy: "", format: "woff2", coversLatin: true }] })),
+    });
+    const run = async (max: number) => {
+      const { deps } = testDeps({
+        createSigner: () => createSigner({ secret: "test-only-signing-secret-0123456789abcdef", max }),
+        // The fonts finish first; the assets still take the signing cap before them.
+        assembleAssets: async (input) => {
+          await new Promise((resolve) => setTimeout(resolve, 200));
+          return fakeAssets(input);
+        },
+        buildFontFamilies: async () => ({ families: [family()], hidden: {} }),
+      });
+      const events = await scan(deps, `${fixture.origin}/`);
+      const assets = events.flatMap((event) => (event.type === "assets" ? event.items : []));
+      const fonts = events.find((event) => event.type === "fonts");
+      if (fonts?.type !== "fonts") throw new Error("expected fonts");
+      return { events, assetProxy: assets[0]?.original?.proxy, fontProxies: fonts.families[0].faces.map((face) => face.files[0].proxy) };
+    };
+
+    const capped = await run(2);
+    expect(capped.assetProxy).toMatch(/^\/api\/asset\?/);
+    expect(capped.fontProxies.map((proxy) => proxy !== "")).toEqual([true, false]);
+    expect(capped.events).toContainEqual({ type: "warning", code: "truncated" });
+
+    const roomy = await run(3);
+    expect(roomy.fontProxies.every((proxy) => proxy.startsWith("/api/asset?"))).toBe(true);
+    expect(roomy.events).not.toContainEqual({ type: "warning", code: "truncated" });
   });
 
   it("keeps the network results when the collector throws or returns something else, and logs why", async () => {

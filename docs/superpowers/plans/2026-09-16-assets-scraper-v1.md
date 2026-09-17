@@ -896,7 +896,7 @@ export const limits = {
   svgMaxNormalizations: 400,
   collectorMaxElements: 80_000,
   maxAssets: 1_500,
-  maxSignedUrls: 800,
+  maxSignedUrls: 2_000,
   ndjsonLineBytes: 256_000,
   proxyMaxBytes: 25 * MB,
   proxyTimeoutMs: 20_000,
@@ -1870,7 +1870,7 @@ describe("detectBlock", () => {
   - a page whose script triggers a file download (`<a download>` click) does not write to disk and the scan completes;
   - `http://127.0.0.1:<victim>/` gives `error blocked-address` before launching Chrome;
   - the real (stub) collectors: `createScanEngine()` on the fixture yields `error internal` (not an unhandled rejection), proving failure handling.
-- [ ] **Step 2: Run, see failures** **Step 3: Implement** spec section 7.2 end to end: `AbortSignal.any` with the request signal and the deadline, preflight, `startEgressProxy`, `withBrowser` (emitting `step queue` from `onQueued`), `startCapture` before `openPage`, `detectBlock` on the navigation result, early `page` event (empty `brandLinks`, no `favicon`), `loadAndScroll`, `prepareForCollection`, `extractPalette` then `runInPage(page, COLLECTOR_SOURCE, "globalThis.__assetsScraper.collect(<options>)")`, `capture.settle`, close browser, post-processing (`assembleAssets` and `buildFontFamilies` in parallel with a shared signer from `createSigner({ max: limits.maxSignedUrls })`), final `page` event (collector `brandLinks`, `favicon` from the favicon asset's signed source), batching `assets` with `chunkByBytes`, `done` with stats and diagnostics (egress stats, phases, health, `version` from `VERCEL_GIT_COMMIT_SHA` or `dev`). Every thrown `ScanFailure` becomes an `error` event; any other error becomes `internal` with the diagnostics. The deadline path emits whatever results exist with `partial: true` and a `warning partial`. **Step 4: Run** (PASS) **Step 5: Commit** `feat(scan): add scan engine orchestration with deadlines and cancellation`
+- [ ] **Step 2: Run, see failures** **Step 3: Implement** spec section 7.2 end to end: `AbortSignal.any` with the request signal and the deadline, preflight, `startEgressProxy`, `withBrowser` (emitting `step queue` from `onQueued`), `startCapture` before `openPage`, `detectBlock` on the navigation result, early `page` event (empty `brandLinks`, no `favicon`), `loadAndScroll`, `prepareForCollection`, `extractPalette` then `runInPage(page, COLLECTOR_SOURCE, "globalThis.__assetsScraper.collect(<options>)")`, `capture.settle`, close browser, post-processing (`assembleAssets` and `buildFontFamilies` in parallel with a shared signer from `createSigner({ max: limits.maxSignedUrls })`; `assembleAssets` signs its sources, then the engine signs the font files with `signFontFiles` and adds a `truncated` warning when the cap left any unsigned), final `page` event (collector `brandLinks`, `favicon` from the favicon asset's signed source), batching `assets` with `chunkByBytes`, `done` with stats and diagnostics (egress stats, phases, health, `version` from `VERCEL_GIT_COMMIT_SHA` or `dev`). Every thrown `ScanFailure` becomes an `error` event; any other error becomes `internal` with the diagnostics. The deadline path emits whatever results exist with `partial: true` and a `warning partial`. **Step 4: Run** (PASS) **Step 5: Commit** `feat(scan): add scan engine orchestration with deadlines and cancellation`
 
 ### Task B8: Scan route
 
