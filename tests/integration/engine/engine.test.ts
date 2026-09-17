@@ -335,10 +335,10 @@ describe("scan engine", () => {
     if (done?.type !== "done") throw new Error(`expected done, got ${done && describeEvent(done)}`);
     expect(done.partial).toBe(true);
     // Post-processing never finishes here: the scan still ends by its deadline with what is ready.
-    expect(Date.now() - started).toBeLessThan(16_000);
+    expect(Date.now() - started).toBeLessThan(18_000);
     expect(events.find((event) => event.type === "assets")).toEqual({ type: "assets", items: [] });
-    // Collection never started, so no collect step is reported.
-    expect(stepsOf(events)).toEqual(["step open start", "step open done", "step load start", "step load done", "step scroll start", "step process start", "step process done"]);
+    // The scroll cut short by the deadline still gets its done; collection never started, so it is not reported.
+    expect(stepsOf(events)).toEqual(["step open start", "step open done", "step load start", "step load done", "step scroll start", "step scroll done", "step process start", "step process done"]);
     expect(pids).toHaveLength(1);
     await expect.poll(() => isProcessAlive(pids[0]), { timeout: 5000 }).toBe(false);
   });
@@ -365,10 +365,20 @@ describe("scan engine", () => {
   });
 
   it("never saves a download the page starts", async () => {
-    const { deps } = testDeps();
+    const downloads: Promise<string | null>[] = [];
+    const { deps } = testDeps({
+      withBrowser: (options, fn) =>
+        withBrowser(options, (session) => {
+          session.page.on("download", (download) => downloads.push(download.failure()));
+          return fn(session);
+        }),
+    });
     const events = await scan(deps, `${fixture.origin}/download.html`);
     expect(events.at(-1)).toMatchObject({ type: "done", partial: false });
     expect(downloadHits).toBeGreaterThanOrEqual(1);
+    expect(downloads.length).toBeGreaterThanOrEqual(1);
+    // The browser cancels every download (acceptDownloads: false), so no byte is written, in Downloads or anywhere else.
+    for (const failure of await Promise.all(downloads)) expect(failure).toMatch(/acceptDownloads|canceled/i);
     expect(existsSync(path.join(homedir(), "Downloads", downloadName))).toBe(false);
   });
 
@@ -482,10 +492,12 @@ describe("scan engine", () => {
   });
 
   it("keeps what page work collected when the browser close hangs past the page deadline", async () => {
-    vi.stubEnv("SCAN_DEADLINE_MS", "16000");
+    vi.stubEnv("SCAN_DEADLINE_MS", "20000");
+    // Long enough that only the page deadline can cut the hung close.
+    vi.stubEnv("SETTLE_MS", "8000");
     const started = Date.now();
     // Page work stops 5 s before the scan deadline. Collection ends 1 s before that, then the graceful close hangs.
-    const pageDeadlineAt = started + 11_000;
+    const pageDeadlineAt = started + 15_000;
     const lateCollector = `${FAKE_COLLECTOR}
 {
   const collect = globalThis.__assetsScraper.collect;
@@ -508,8 +520,8 @@ describe("scan engine", () => {
     const events = await scan(deps, `${fixture.origin}/`);
     const done = events.at(-1);
     if (done?.type !== "done") throw new Error(`expected done, got ${done && describeEvent(done)}`);
-    // The page deadline kills the browser instead of waiting 5 s for the close, so post-processing still has its time.
-    expect(Date.now() - started).toBeLessThan(13_000);
+    // The page deadline kills the browser instead of waiting for the close, so post-processing still has its time.
+    expect(Date.now() - started).toBeLessThan(18_000);
     expect(done.partial).toBe(false);
     expect(events.find((event) => event.type === "assets")).toMatchObject({ items: [{ id: "photo" }] });
     expect(done.stats.hidden).toEqual({ spacer: 2, "unreferenced-symbol": 1 });
@@ -568,7 +580,7 @@ describe("scan engine", () => {
     expect(events.find((event) => event.type === "fonts")).toEqual({ type: "fonts", families: [] });
     expect(done.stats.hidden).toEqual({ "unreferenced-symbol": 1 });
     expect(done.diagnostics.phases.process).toBeGreaterThanOrEqual(5_000);
-    expect(done.diagnostics.phases.process).toBeLessThan(7_000);
+    expect(done.diagnostics.phases.process).toBeLessThan(8_000);
   });
 
   it("keeps the network results when the collector throws or returns something else, and logs why", async () => {

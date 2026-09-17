@@ -261,8 +261,6 @@ async function runScan({ url, deps, cancel, emit }: ScanContext): Promise<void> 
     let { collector } = browserStage;
     const partial = browserStage.partial;
     collector ??= emptyCollectorOutput(nav, network);
-    // Steps stay in pairs: page work stopped before collection (during scroll, say) never started the collect step.
-    if (browserStage.collectStarted) step("collect", "done");
 
     // Phase 10: post-processing.
     step("process", "start");
@@ -375,13 +373,13 @@ interface BrowserStage {
   collector: RawCollectorOutput | undefined;
   network: CapturedNetwork;
   partial: boolean;
-  /** Whether `step collect start` went out. */
-  collectStarted: boolean;
 }
 
 /**
  * Spec 7.2 phases 2 to 9, inside one browser behind a per-scan egress proxy. When the deadline, the memory watchdog or
  * the collector cap stops the page work after navigation, the stage still returns what exists with `partial: true`.
+ * Every step it started gets its `done` once the browser is closed (`collect done` in the normal case, spec 7.2 phase
+ * 9), a step cut short included; when it throws, the step in progress stays open and the `error` event ends it.
  */
 async function runBrowserStage(input: ScanContext & {
   pre: PreflightResult;
@@ -395,11 +393,13 @@ async function runBrowserStage(input: ScanContext & {
   // Spec 7.2 phase 9: settling the body reads and closing the browser share `limits.settleMs`.
   const closeBy = new AbortController();
   let closeTimer: ReturnType<typeof setTimeout> | undefined;
-  /** Emits the step unless page work was stopped, and tells whether it did. */
-  const step = (id: StepId, state: "start" | "done"): boolean => {
-    if (signal.aborted) return false;
+  const openSteps = new Set<StepId>();
+  /** Emits the step unless page work was stopped: abandoned browser work can still report steps in the background. */
+  const step = (id: StepId, state: "start" | "done") => {
+    if (signal.aborted) return;
     emit({ type: "step", step: id, state });
-    return true;
+    if (state === "start") openSteps.add(id);
+    else openSteps.delete(id);
   };
 
   let capture: CaptureHandle | undefined;
@@ -408,7 +408,6 @@ async function runBrowserStage(input: ScanContext & {
   let collector: RawCollectorOutput | undefined;
   let network: CapturedNetwork | undefined;
   let partial = false;
-  let collectStarted = false;
   let queuedAt: number | undefined;
   let egress: EgressProxy | undefined;
 
@@ -474,7 +473,7 @@ async function runBrowserStage(input: ScanContext & {
           },
         });
 
-        collectStarted = step("collect", "start");
+        step("collect", "start");
         await timed("prepare", () => prepareForCollection(page, { signal }));
         const collectEnds = Date.now() + limits.collectMs;
         const noPalette = (reason: string, error?: unknown) => console.warn(`Scan ${diagnostics.scanId} has no palette (${reason})`, ...(error === undefined ? [] : [error]));
@@ -545,13 +544,19 @@ async function runBrowserStage(input: ScanContext & {
   if (!nav) throw new ScanFailure("timeout", "The page took too long to load");
   network ??= await (capture as CaptureHandle | undefined)?.settle(0) ?? { images: [], fonts: [], sheets: [], bodyTimeouts: 0, skippedBodies: 0 };
   diagnostics.bodyTimeouts = network.bodyTimeouts;
-  return { nav, palette, collector, network, partial, collectStarted };
+  for (const id of openSteps) emit({ type: "step", step: id, state: "done" });
+  return { nav, palette, collector, network, partial };
 }
 
 /**
  * The scan engine (spec 7.2) with injectable dependencies. `scan` streams events and always ends with `done` or
  * `error`, except when the request signal aborts or the consumer stops reading: then it stops at once, kills the
  * browser and ends without a terminal event.
+ *
+ * Steps: in a scan that ends with `done`, every `step start` has its `step done`, a step cut short by the deadline or
+ * the memory watchdog included (`done.partial` tells). A step that never started (collection, when the deadline hits
+ * during the scroll) is not reported. An `error` event, or a cancelled scan, can leave the step in progress without
+ * its `done`: the terminal event ends it.
  */
 export function createScanEngine(overrides: Partial<ScanEngineDeps> = {}): ScanBackend {
   const deps: ScanEngineDeps = { ...defaultDeps, ...overrides };
