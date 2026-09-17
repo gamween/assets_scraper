@@ -5,7 +5,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import chromium from "@sparticuz/chromium";
 import { describe, expect, it } from "vitest";
-import { browserEnv, chromiumArgs, parseMemAvailableMb, PIDFILE_ENV, userAgentFor, wrapperScript } from "./launch";
+import { browserEnv, chromiumArgs, isServerlessRuntime, parseMemAvailableMb, PIDFILE_ENV, userAgentFor, wrapperScript } from "./launch";
 
 describe("chromiumArgs", () => {
   it("drops the insecure serverless flags and adds the hardening flags", () => {
@@ -72,6 +72,25 @@ describe("browserEnv", () => {
       browserEnv({ PATH: "/bin", HOME: "/home/x", TZ: "UTC", FONTCONFIG_PATH: "/tmp/fonts", LD_LIBRARY_PATH: "/tmp/lib", ASSET_URL_SECRET: "s", UPSTASH_REDIS_REST_TOKEN: "t", LANG: "C" }),
     ).toEqual({ PATH: "/bin", HOME: "/home/x", TZ: "UTC", FONTCONFIG_PATH: "/tmp/fonts", LD_LIBRARY_PATH: "/tmp/lib" });
     expect(browserEnv({ PATH: "/bin" })).toEqual({ PATH: "/bin" });
+  });
+});
+
+describe("isServerlessRuntime", () => {
+  it("recognizes Vercel and AWS Lambda functions on Linux", () => {
+    expect(isServerlessRuntime({ VERCEL: "1", VERCEL_ENV: "production" }, "linux")).toBe(true);
+    expect(isServerlessRuntime({ VERCEL: "1", VERCEL_ENV: "preview" }, "linux")).toBe(true);
+    expect(isServerlessRuntime({ AWS_LAMBDA_FUNCTION_NAME: "scan" }, "linux")).toBe(true);
+  });
+
+  it("never takes a developer's machine for one, under vercel dev or with pulled Vercel variables", () => {
+    // `vercel dev` sets VERCEL=1 and VERCEL_ENV=development.
+    expect(isServerlessRuntime({ VERCEL: "1", VERCEL_ENV: "development" }, "linux")).toBe(false);
+    expect(isServerlessRuntime({ VERCEL: "1", VERCEL_ENV: "development" }, "darwin")).toBe(false);
+    expect(isServerlessRuntime({ VERCEL: "1" }, "linux")).toBe(false);
+    // The Linux build of @sparticuz/chromium cannot run on macOS, whatever the environment says.
+    expect(isServerlessRuntime({ VERCEL: "1", VERCEL_ENV: "production" }, "darwin")).toBe(false);
+    expect(isServerlessRuntime({ AWS_LAMBDA_FUNCTION_NAME: "scan" }, "darwin")).toBe(false);
+    expect(isServerlessRuntime({}, "linux")).toBe(false);
   });
 });
 

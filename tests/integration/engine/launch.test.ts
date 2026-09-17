@@ -1,11 +1,11 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { chmod, mkdir, mkdtemp, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Page } from "playwright-core";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { BusyError, PIDFILE_ENV, pidfileMarker, withBrowser, wrapperScript } from "@/server/browser/launch";
+import { browserStateDir, BusyError, PIDFILE_ENV, pidfileMarker, withBrowser, wrapperScript } from "@/server/browser/launch";
 import { serveFixture, type FixtureServer } from "../../fixtures/serve";
 import { delay, isProcessAlive, startTestProxy, type TestProxy } from "./helpers";
 
@@ -54,6 +54,21 @@ afterEach(() => {
 const open = () => ({ egressPort: proxy.port, signal: new AbortController().signal });
 const CHROME = process.env.CHROME_EXECUTABLE_PATH ?? (process.platform === "darwin" ? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" : "/usr/bin/google-chrome");
 const fetchClip = () => fetch("/clip.mp4").then(() => "loaded", () => "blocked");
+
+/**
+ * Puts a directory that cannot be removed where the pidfile goes: its read-only subdirectory holds an entry, so a
+ * recursive removal fails with EACCES (as a pidfile can in production with EACCES or EBUSY). Returns its cleanup.
+ */
+function blockPidfile(pidfile: string): () => void {
+  rmSync(pidfile, { recursive: true, force: true });
+  const locked = path.join(pidfile, "locked");
+  mkdirSync(path.join(locked, "entry"), { recursive: true });
+  chmodSync(locked, 0o500);
+  return () => {
+    if (existsSync(locked)) chmodSync(locked, 0o700);
+    rmSync(pidfile, { recursive: true, force: true });
+  };
+}
 
 describe("withBrowser", () => {
   it("gives a working page and closes the browser afterwards", async () => {
@@ -173,14 +188,20 @@ describe("withBrowser", () => {
       await page.goto(`${fixture.origin}/blank.html`);
       const popups: Page[] = [];
       context.on("page", (popup) => popups.push(popup));
-      // A page that opens a popup every 10 ms for a second.
-      await page.evaluate(() => {
-        let n = 0;
-        const timer = setInterval(() => void window.open(`/blank.html?${n}`, "_blank", n++ % 2 ? "noopener" : ""), 10);
-        setTimeout(() => clearInterval(timer), 1000);
-      });
-      await delay(1500);
-      expect(popups.length).toBeGreaterThan(5);
+      // A page that opens a popup every 10 ms for a second, and answers once it stopped.
+      const opened = await page.evaluate(
+        () =>
+          new Promise<number>((resolve) => {
+            let n = 0;
+            const timer = setInterval(() => void window.open(`/blank.html?${n}`, "_blank", n++ % 2 ? "noopener" : ""), 10);
+            setTimeout(() => {
+              clearInterval(timer);
+              resolve(n);
+            }, 1000);
+          }),
+      );
+      expect(opened).toBeGreaterThan(5);
+      await expect.poll(() => popups.length, { timeout: 5000 }).toBeGreaterThan(5);
       await expect.poll(() => popups.every((popup) => popup.isClosed()), { timeout: 5000 }).toBe(true);
       expect(context.pages()).toEqual([page]);
       expect(page.isClosed()).toBe(false);
@@ -232,7 +253,7 @@ describe("withBrowser", () => {
   it("kills a browser left behind by a Node process that died mid-scan before launching", async () => {
     const binary = CHROME;
     const deadOwner = spawnSync("true").pid;
-    const stateDir = path.join(tmpdir(), "assets-scraper");
+    const stateDir = browserStateDir();
     const scratch = await mkdtemp(path.join(tmpdir(), "stale-browser-"));
     await mkdir(stateDir, { recursive: true });
     const wrapper = path.join(scratch, "wrapper.sh");
@@ -257,7 +278,7 @@ describe("withBrowser", () => {
 
   it("never kills a browser it did not launch when a stale pidfile names its PID", async () => {
     const deadOwner = spawnSync("true").pid;
-    const stateDir = path.join(tmpdir(), "assets-scraper");
+    const stateDir = browserStateDir();
     const scratch = await mkdtemp(path.join(tmpdir(), "own-browser-"));
     await mkdir(stateDir, { recursive: true });
     const pidfile = path.join(stateDir, `chromium-${deadOwner}-0.pid`);
@@ -276,12 +297,15 @@ describe("withBrowser", () => {
     }
   });
 
-  it("never sweeps a shared local temp dir, even when the health gate fails", async () => {
+  it("never sweeps a shared local temp dir, even when the health gate fails under vercel dev", async () => {
     const scratch = await mkdtemp(path.join(tmpdir(), "health-gate-"));
     const profile = path.join(scratch, "playwright_chromiumdev_profile-in-use");
     await mkdir(profile);
     vi.stubEnv("TMPDIR", scratch);
     vi.stubEnv("MIN_TMP_FREE_MB", String(2 ** 40));
+    // What `vercel dev` adds to the environment of a local dev server.
+    vi.stubEnv("VERCEL", "1");
+    vi.stubEnv("VERCEL_ENV", "development");
     try {
       const fn = vi.fn();
       await expect(withBrowser(open(), fn)).rejects.toBeInstanceOf(BusyError);
@@ -293,30 +317,61 @@ describe("withBrowser", () => {
     }
   });
 
-  it("keeps the result and releases its slot when the cleanup after the browser fails", async () => {
+  it("refuses a state directory that is not a private directory of this user, and makes a loose one private", async () => {
+    const scratch = await mkdtemp(path.join(tmpdir(), "state-dir-"));
+    vi.stubEnv("TMPDIR", scratch);
+    // Refused or passed, the launch stops at the health gate.
+    vi.stubEnv("MIN_TMP_FREE_MB", String(2 ** 40));
+    try {
+      const elsewhere = path.join(scratch, "elsewhere");
+      await mkdir(elsewhere);
+      await symlink(elsewhere, browserStateDir());
+      const fn = vi.fn();
+      await expect(withBrowser(open(), fn)).rejects.toThrow(/is not a directory owned by this user/);
+      expect(fn).not.toHaveBeenCalled();
+
+      await rm(browserStateDir());
+      await mkdir(browserStateDir());
+      await chmod(browserStateDir(), 0o777);
+      await expect(withBrowser(open(), fn)).rejects.toBeInstanceOf(BusyError);
+      expect((await stat(browserStateDir())).mode & 0o777).toBe(0o700);
+      expect(fn).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+      await rm(scratch, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the result and releases its slot when the cleanup after the browser fails, and the next launch still runs", async () => {
     vi.stubEnv("QUEUE_WAIT_MS", "500");
-    const pidfile = path.join(tmpdir(), "assets-scraper", `chromium-${process.pid}-0.pid`);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const pidfile = path.join(browserStateDir(), `chromium-${process.pid}-0.pid`);
+    let unblock = () => {};
     try {
       const result = await withBrowser(open(), async ({ pid }) => {
         expect(readFileSync(pidfile, "utf8").trim()).toBe(String(pid));
-        // A pidfile that cannot be removed (EISDIR here, EACCES or EBUSY in production).
-        rmSync(pidfile);
-        mkdirSync(path.join(pidfile, "blocker"), { recursive: true });
+        unblock = blockPidfile(pidfile);
         return "collected";
       });
       expect(result).toBe("collected");
+      // The pidfile of the slot still cannot be removed: the stale-browser check and the launch only warn.
+      expect(await withBrowser(open(), async () => "next scan runs")).toBe("next scan runs");
+      expect(existsSync(path.join(pidfile, "locked"))).toBe(true);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("Could not remove the browser pidfile"), expect.anything());
     } finally {
-      rmSync(pidfile, { recursive: true, force: true });
+      warn.mockRestore();
+      unblock();
     }
-    expect(await withBrowser(open(), async () => "next scan runs")).toBe("next scan runs");
   });
 
   it("leaves no unhandled rejection and no busy slot when a launch aborted mid-way cannot clean up", async () => {
-    const pidfile = path.join(tmpdir(), "assets-scraper", `chromium-${process.pid}-0.pid`);
+    const pidfile = path.join(browserStateDir(), `chromium-${process.pid}-0.pid`);
     const unhandled = vi.fn();
     process.on("unhandledRejection", unhandled);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const controller = new AbortController();
     let pid = 0;
+    let unblock = () => {};
     try {
       const startProxy = async () => {
         // Once the wrapper has written the pidfile, the launch is under way: make the pidfile impossible to remove and
@@ -324,16 +379,15 @@ describe("withBrowser", () => {
         void (async () => {
           for (let tries = 0; tries < 2000 && !(existsSync(pidfile) && statSync(pidfile).isFile() && readFileSync(pidfile, "utf8").trim()); tries += 1) await delay(5);
           pid = Number(readFileSync(pidfile, "utf8"));
-          rmSync(pidfile);
-          mkdirSync(path.join(pidfile, "blocker"), { recursive: true });
+          unblock = blockPidfile(pidfile);
           controller.abort(new Error("cancelled during launch"));
         })();
         return proxy.port;
       };
       await expect(withBrowser({ egressPort: startProxy, signal: controller.signal }, () => new Promise<never>(() => {}))).rejects.toThrow("cancelled during launch");
-      // The late browser keeps the slot until it is shut down; the next call gets the slot after that, and clears the
-      // pidfile before its own launch.
-      const next = await withBrowser({ ...open(), onDequeued: () => rmSync(pidfile, { recursive: true, force: true }) }, async () => "next scan runs");
+      // The late browser keeps the slot until it is shut down; the next call gets the slot after that, and launches
+      // although the pidfile still cannot be removed.
+      const next = await withBrowser(open(), async () => "next scan runs");
       expect(next).toBe("next scan runs");
       expect(pid).toBeGreaterThan(1);
       await expect.poll(() => isProcessAlive(pid), { timeout: 5000 }).toBe(false);
@@ -341,7 +395,8 @@ describe("withBrowser", () => {
       expect(unhandled).not.toHaveBeenCalled();
     } finally {
       process.off("unhandledRejection", unhandled);
-      rmSync(pidfile, { recursive: true, force: true });
+      warn.mockRestore();
+      unblock();
     }
   });
 

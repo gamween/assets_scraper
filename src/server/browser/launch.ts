@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, mkdir, readdir, readFile, rename, rm, statfs, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readdir, readFile, rename, rm, statfs, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -73,7 +73,17 @@ export function userAgentFor(browserVersion: string): string {
   return `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`;
 }
 
-const isServerless = () => Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
+/**
+ * A serverless runtime (a Vercel or AWS Lambda function, both on Linux): the browser is `@sparticuz/chromium`, and the
+ * temp dir belongs to this instance alone, so launches may sweep it. `vercel dev` and the `.env.local` of `vercel env
+ * pull` set `VERCEL` too, with `VERCEL_ENV=development`: a developer's machine is never taken for one.
+ */
+export function isServerlessRuntime(env: Record<string, string | undefined> = process.env, platform: NodeJS.Platform = process.platform): boolean {
+  if (platform !== "linux") return false;
+  return Boolean(env.AWS_LAMBDA_FUNCTION_NAME) || (Boolean(env.VERCEL) && (env.VERCEL_ENV === "production" || env.VERCEL_ENV === "preview"));
+}
+
+const isServerless = () => isServerlessRuntime();
 
 function localExecutablePath(): string {
   if (process.env.CHROME_EXECUTABLE_PATH) return process.env.CHROME_EXECUTABLE_PATH;
@@ -82,9 +92,28 @@ function localExecutablePath(): string {
   return "/usr/bin/google-chrome";
 }
 
-const stateDir = () => path.join(tmpdir(), "assets-scraper");
+/**
+ * Holds the launch wrapper and the pidfiles. One per user: on a host where users share `/tmp`, another user's directory
+ * is never used (see `ensureStateDir`).
+ */
+export const browserStateDir = () => path.join(tmpdir(), typeof process.getuid === "function" ? `assets-scraper-${process.getuid()}` : "assets-scraper");
 /** One pidfile per Node process and semaphore slot, so a launch never kills a browser another scan is using. */
-const pidfilePath = (slot: number, owner = process.pid) => path.join(stateDir(), `chromium-${owner}-${slot}.pid`);
+const pidfilePath = (slot: number, owner = process.pid) => path.join(browserStateDir(), `chromium-${owner}-${slot}.pid`);
+
+/**
+ * Creates the state directory, or checks the one that exists: it holds a script the browser launch executes, so it must
+ * be a real directory (not a symlink) owned by this user, and nobody else may write to it. Another user's directory
+ * fails the launch; one of ours with loose permissions is made private.
+ */
+async function ensureStateDir(): Promise<string> {
+  const dir = browserStateDir();
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  const stats = await lstat(dir);
+  const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
+  if (!stats.isDirectory() || (uid !== undefined && stats.uid !== uid)) throw new Error(`The browser state directory ${dir} is not a directory owned by this user`);
+  if (uid !== undefined && (stats.mode & 0o077) !== 0) await chmod(dir, 0o700);
+  return dir;
+}
 
 interface Executable {
   binary: string;
@@ -109,8 +138,7 @@ async function resolveExecutable(): Promise<Executable> {
 
 /** Written on every launch (write then rename), so a cleaned `/tmp` or a half-written file never breaks a launch. */
 async function writeWrapper(binary: string): Promise<string> {
-  const dir = stateDir();
-  await mkdir(dir, { recursive: true, mode: 0o700 });
+  const dir = await ensureStateDir();
   const file = path.join(dir, `chromium-${createHash("sha1").update(binary).digest("hex").slice(0, 12)}.sh`);
   const temp = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}`;
   await writeFile(temp, wrapperScript(binary), { mode: 0o700 });
@@ -153,6 +181,20 @@ async function isOwnBrowser(pid: number, binary: string, pidfile: string): Promi
   }
 }
 
+/**
+ * Never throws: a pidfile that cannot be removed (EACCES, EBUSY) must not fail every later launch in its slot. It only
+ * costs a warning, and the stale-browser check tries again at the next launch.
+ */
+async function removePidfile(file: string): Promise<boolean> {
+  try {
+    await rm(file, { recursive: true, force: true });
+    return true;
+  } catch (error) {
+    console.warn(`Could not remove the browser pidfile ${file}`, error);
+    return false;
+  }
+}
+
 const readPid = async (file: string) => {
   const pid = Number((await readFile(file, "utf8").catch(() => "")).trim());
   return Number.isSafeInteger(pid) && pid > 1 ? pid : undefined;
@@ -163,16 +205,17 @@ const readPid = async (file: string) => {
  * slot, or in any slot of a Node process that no longer exists.
  */
 async function killStaleChromium(slot: number, binary: string): Promise<void> {
-  const files = await readdir(stateDir()).catch(() => [] as string[]);
+  const dir = browserStateDir();
+  const files = await readdir(dir).catch(() => [] as string[]);
   for (const name of files) {
     const match = /^chromium-(\d+)-(\d+)\.pid$/.exec(name);
     if (!match) continue;
     const owner = Number(match[1]);
     if (owner === process.pid ? Number(match[2]) !== slot : isAlive(owner)) continue;
-    const file = path.join(stateDir(), name);
+    const file = path.join(dir, name);
     const pid = await readPid(file);
     if (pid && (await isOwnBrowser(pid, binary, file))) killProcessTree(pid);
-    await rm(file, { force: true });
+    await removePidfile(file);
   }
 }
 
@@ -207,6 +250,7 @@ async function prepareLaunch(slot: number, binary: string): Promise<BrowserSessi
   // Sweeping deletes profile directories, so only when no other browser can be using one: on a serverless instance
   // with no other scan running. A local temp dir is shared with every other process of the user.
   const canSweep = () => isServerless() && busySlots.size === 1;
+  await ensureStateDir();
   await killStaleChromium(slot, binary);
   if (canSweep()) await sweepTmp();
   let health = await readHealth();
@@ -329,7 +373,7 @@ interface Launched {
 async function launch(slot: number, executable: Executable, egressPort: number): Promise<Launched> {
   const { chromium } = await import("playwright-core");
   const pidfile = pidfilePath(slot);
-  await rm(pidfile, { force: true });
+  const cleared = await removePidfile(pidfile);
   const browser = await chromium.launch({
     executablePath: await writeWrapper(executable.binary),
     args: [...chromiumArgs(executable.args), pidfileMarker(pidfile)],
@@ -338,7 +382,10 @@ async function launch(slot: number, executable: Executable, egressPort: number):
     proxy: { server: `http://127.0.0.1:${egressPort}` },
     env: { ...browserEnv(), [PIDFILE_ENV]: pidfile },
   });
-  return { browser, pid: await readPid(pidfile), pidfile, binary: executable.binary };
+  const pid = await readPid(pidfile);
+  // A pidfile that could not be removed can still hold the PID of an earlier launch, now maybe another process's.
+  const trusted = pid !== undefined && (cleared || (await isOwnBrowser(pid, executable.binary, pidfile)));
+  return { browser, pid: trusted ? pid : undefined, pidfile, binary: executable.binary };
 }
 
 const GRACEFUL_CLOSE_MS = 5_000;
@@ -354,7 +401,7 @@ async function shutdown({ browser, pid, pidfile, binary }: Launched, graceful: b
   // A close that worked waited for Chromium to exit, so a live PID now may be another process that reused it.
   if (pid && closed && isAlive(pid) && (await isOwnBrowser(pid, binary, pidfile))) killProcessTree(pid);
   if (!closed) await within(browser.close().catch(() => {}), 2_000);
-  await rm(pidfile, { force: true }).catch(() => {});
+  await removePidfile(pidfile);
   if (isServerless() && busySlots.size === 1) await sweepTmp();
 }
 
