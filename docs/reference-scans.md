@@ -6,8 +6,9 @@ Plan task 2.3, measurement pass. The 23 reference sites of the discovery lab, sc
 - Run: 2026-09-17, local production build (`pnpm build`, `pnpm start -p 3201`), Chrome 153, macOS Apple Silicon, warm cache
   except for the first site, one scan at a time.
 - Command: `OPS_TOKEN=... node scripts/scan-sites.mjs --base http://localhost:3201 --out <dir>`. Point `--out` outside
-  the repo; the default `scan-results/` is git ignored. The script exits 1 when a site ends without a scan result,
-  which includes the permanent block on `g2.com`.
+  the repo; the default `scan-results/` is git ignored. The script exits 1 when a site ends without a scan result. The
+  permanent block on `g2.com` is the one expected outcome of that kind, so it is allowed by default (`--expect-blocked`)
+  and a full sweep exits 0; `g2.com` failing any other way, or any other site failing, still exits 1.
 - Raw results (one JSON per site plus `summary.json` and `summary.md`) are kept outside git, in the scratchpad
   directory of the run. The script gained its `fallbackAssets` field after that run, so only `g2.com`, re-scanned with
   the committed version (same status, counts and diagnostics), carries the fallback asset list; the other 22 files
@@ -123,10 +124,12 @@ cap is a deliberate defence, but the result is silent loss on a site that declar
 
 ### R4: lazy content below the fold is missed (gymshark.com, 64 images against 100)
 
-Evidence: 60 of the lab's URLs are missing, almost all `cdn.shopify.com` product photos and `assets.gymshark.com`
-hero images, that is content in the carousels far down the page. The app records `img` on 72 candidates where the lab
-saw 105 `img.currentSrc`, and its scroll phase is 4088 ms against the lab's 6331 ms. The app also has 24 URLs the lab
-does not.
+Evidence, counted on the raster subset the heading compares (the app's 64 non SVG asset URLs against the lab's 100 non
+SVG `best` URLs): 63 of the lab's URLs are missing, 42 of them `cdn.shopify.com` product photos, 16
+`www.gymshark.com/_next/image` URLs and 4 `assets.gymshark.com` hero images, that is content in the carousels far down
+the page. The app records `img` on 72 candidates where the lab saw 105 `img.currentSrc`, and its scroll phase is
+4088 ms against the lab's 6331 ms. The app also has 27 raster URLs the lab does not. Over all formats, 129 lab URLs
+against 93 app URLs, the two figures are 64 and 28.
 
 Suspected cause: the scroll pass finishes before the product carousels load. Part of the delta is content drift, since
 the storefront changes daily, which is also why the app has extra URLs; the missing set being whole product rows
@@ -165,13 +168,36 @@ per weight, so the weight number is part of the name. Merging them would need a 
 which risks merging real families. The single family gaps on the other two sites are probably a page difference, not
 a rule difference.
 
-### R8: smaller count differences worth one look
+### R8: the CDN original is not adopted where the lab upgraded it (stripe.com, gymshark.com, coinbase.com, notion.com, porsche.com)
+
+Evidence: the lab's "CDN originals verified ok (bigger)" column, the baseline named in the header of this document,
+reports 45 verified originals on stripe.com, 81 on gymshark.com, 32 on notion.com, 9 on coinbase.com and 7 on
+porsche.com. The app keeps the page's transformed URL instead on 5 of the 22 unblocked sites: 26 of stripe.com's 56
+image assets stay on `images.stripeassets.com` with the Contentful query intact, 39 of gymshark.com's 64 stay on
+`www.gymshark.com/_next/image?url=...&w=...`, and the same shape accounts for 5 on coinbase.com (`images.ctfassets.net`
+with a query), 4 on notion.com and 1 on porsche.com. The repeat scans in run1b give the identical sets.
+
+This is not a stale baseline: two of the originals, re-fetched with the same `Accept` and range headers the app uses
+(`VERIFY_ACCEPT` and `bytes=0-262143` in `src/server/scan/post/verify.ts`), still answer 206 with an image body
+(stripe.com's `payments-electric-kettle.jpg`, 8979 bytes, and gymshark.com's `image__59_.png` on
+`images.ctfassets.net`). It is not a missing rule either: `src/server/scan/post/cdn.ts` carries both the `/_next/image`
+rule and the Contentful rule, and `cdn.test.ts` asserts that each returns the original for URLs of exactly this shape.
+
+Suspected cause: not identified, and this one needs a traced run rather than a guess. The verify budget is not the
+visible explanation: neither site emits a `verify-skipped` warning, and their whole `process` phase is 2299 ms
+(gymshark.com) and 1074 ms (stripe.com) against the 8000 ms `limits.verifyMs`. In `assemble.ts` `resolve` the original
+candidate is tried before the page's own captured bytes, and the fall back to those bytes returns without recording
+anything, so a candidate that is never produced and a candidate whose probe failed are indistinguishable from the
+outside. That missing signal is itself worth fixing before the cause can be found.
+
+### R9: smaller count differences worth one look
 
 Evidence, app against lab: binance.com 58 SVG against 45, with `unreferenced-symbol: 101` hidden; linear.app 148 SVG
 against 139, with `unreferenced-symbol: 337` hidden; porsche.com 40 images against 30 and 33 SVG against 35;
-squarespace.com 18 SVG against 22, with two `body-timeout` warnings and `verify-skipped`; uniswap.org 36 images
+squarespace.com 18 SVG against 22, with one `body-timeout` warning and one `verify-skipped` warning, and
+`bodyTimeouts: 2` in its diagnostics; uniswap.org 36 images
 against 39.
 
 Suspected cause: sprite symbol handling on the two sites with large hidden sprite counts (the app both keeps more
-symbols and hides more than the lab counted), and, for squarespace.com, two font or image bodies that timed out
-during capture, which also explains its lower SVG count.
+symbols and hides more than the lab counted), and, for squarespace.com, the two font or image bodies its diagnostics
+counted as timed out during capture, which also explains its lower SVG count.
