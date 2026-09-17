@@ -60,9 +60,9 @@ const COLLECTOR_LISTS = ["candidates", "svgs", "fontFaces", "fontStatuses", "fon
  * It cuts the title and the site name to one character over their caps (the engine cuts them in Node, see
  * `pageContextFor`), then fits the output in `budget` characters of JSON: over it, list items go until it fits, first
  * the candidates that repeat the URL of an earlier candidate (they only add a use of an asset that stays), then the
- * largest items, and `stats.truncated` is set. The collector fits its own output in the same budget and order
- * (`CollectorOptions.maxOutputChars`), so this is a safety net for a collector a main-world page replaced or broke:
- * without it, output over the budget would lose the whole collector result.
+ * largest items (the later one among equals), and `stats.truncated` is set. The collector fits its own output in the
+ * same budget and order (`CollectorOptions.maxOutputChars`), so this is a safety net for a collector a main-world page
+ * replaced or broke: without it, output over the budget would lose the whole collector result.
  *
  * Measured sizes count a comma per item, one too many for a list that ends up empty, so the loop keeps a character
  * of margin per list it touched and the result never goes over the budget.
@@ -89,7 +89,7 @@ export const FIT_COLLECTOR_OUTPUT = `(output, budget) => {
       items.push({ key, index, repeat, size: (JSON.stringify(item) ?? "null").length + 1 });
     }
   }
-  items.sort((a, b) => Number(b.repeat) - Number(a.repeat) || b.size - a.size);
+  items.sort((a, b) => Number(b.repeat) - Number(a.repeat) || b.size - a.size || b.index - a.index);
   const dropped = new Map();
   for (const item of items) {
     if (total + dropped.size <= budget) break;
