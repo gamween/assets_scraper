@@ -121,6 +121,20 @@ describe("gateScanRequest", () => {
     await expectFailure(await gateScanRequest(scanRequest({ url: "ftp://linear.app/" })), 400, "invalid-url");
   });
 
+  it("lets an exact test allowlist entry through on its own port, never in production", async () => {
+    vi.stubEnv("SCAN_TEST_ALLOW_HOSTS", "127.0.0.1:8787,[::1]:9000");
+    expect(await gateScanRequest(scanRequest({ url: "http://127.0.0.1:8787/fixture#top" }))).toEqual({ ok: true, url: "http://127.0.0.1:8787/fixture", host: "127.0.0.1", ops: false });
+    expect(await gateScanRequest(scanRequest({ url: " http://user:pass@[::1]:9000 " }))).toEqual({ ok: true, url: "http://[::1]:9000/", host: "[::1]", ops: false });
+    await expectFailure(await gateScanRequest(scanRequest({ url: "http://127.0.0.1:8788/" })), 422, "unsupported-port");
+    await expectFailure(await gateScanRequest(scanRequest({ url: "http://127.0.0.1/" })), 422, "blocked-address");
+    await expectFailure(await gateScanRequest(scanRequest({ url: "ftp://127.0.0.1:8787/" })), 400, "invalid-url");
+    vi.stubEnv("NODE_ENV", "production");
+    await expectFailure(await gateScanRequest(scanRequest({ url: "http://127.0.0.1:8787/" })), 422, "unsupported-port");
+    vi.stubEnv("NODE_ENV", "test");
+    vi.stubEnv("VERCEL", "1");
+    await expectFailure(await gateScanRequest(scanRequest({ url: "http://127.0.0.1:8787/" })), 422, "unsupported-port");
+  });
+
   it("lets a valid ops token skip BotID, budget and the Origin requirement", async () => {
     vi.stubEnv("OPS_TOKEN", OPS_TOKEN);
     vi.stubEnv("SCANS_PER_DAY", "1");

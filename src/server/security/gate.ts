@@ -1,7 +1,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { checkBotId } from "botid/server";
 import { ScanRequest, type ApiError, type ErrorCode } from "@/lib/contract";
-import { normalizeInputUrl } from "@/lib/url";
+import { normalizeInputUrl, type UrlInputResult } from "@/lib/url";
 import { isOwnHost, isTestAllowed, privateHostReason } from "@/server/net/ip";
 import { takeScanBudget } from "./budget";
 
@@ -70,6 +70,29 @@ async function parseScanRequest(request: Request): Promise<string | null> {
 const INVALID_URL = "Enter a web address, like linear.app";
 
 /**
+ * Tests only: `normalizeInputUrl` refuses every port but 80 and 443, which would keep an allowlisted test origin
+ * (`SCAN_TEST_ALLOW_HOSTS`, spec 11.1) out even though `safeFetch` and the egress proxy accept it. For an absolute
+ * http(s) URL on an allowlisted `host:port`, the URL is normalized without its port, then gets the port back. Null
+ * otherwise, including everywhere `isTestAllowed` is off (production, Vercel).
+ */
+function normalizeTestUrl(input: string): UrlInputResult | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(input.trim());
+  } catch {
+    return null;
+  }
+  const port = Number(parsed.port);
+  if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || !parsed.port || !isTestAllowed(parsed.hostname, port)) return null;
+  parsed.port = "";
+  const normalized = normalizeInputUrl(parsed.href);
+  if (!normalized.ok) return null;
+  const url = new URL(normalized.url);
+  url.port = String(port);
+  return { ok: true, url: url.href, host: normalized.host };
+}
+
+/**
  * Request gate for `POST /api/scan`, in the order of spec 7.1 (the WAF rule runs before the function): method, JSON
  * content type and same Origin, body, BotID, kill switch and access code, budget, then the URL policy. A valid
  * `x-ops-token` (OPS_TOKEN, at least 32 characters) skips BotID and the budget and may omit Origin.
@@ -102,7 +125,8 @@ export async function gateScanRequest(request: Request): Promise<GateResult> {
 
   if (!ops && !(await takeScanBudget())) return fail(429, "budget", "Daily scan limit reached.");
 
-  const normalized = normalizeInputUrl(input);
+  let normalized = normalizeInputUrl(input);
+  if (!normalized.ok && normalized.code === "unsupported-port") normalized = normalizeTestUrl(input) ?? normalized;
   if (!normalized.ok) {
     return normalized.code === "unsupported-port"
       ? fail(422, "unsupported-port", "Only ports 80 and 443 are supported.")
