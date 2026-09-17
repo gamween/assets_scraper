@@ -458,7 +458,7 @@ The palette module is a port of the validated lab code (v2 with every fix enable
 - `Sec-Fetch-Site` must be `same-origin` or `none`, with `Vary: Sec-Fetch-Site`.
 - `safeFetch` with `Referer` set to the page origin, 25 MB cap, 20 s timeout, 5 redirects. Content types allowed: `image/*`, `font/*`, `application/font-*`, `application/x-font-*`, and `application/octet-stream` after magic-byte sniffing.
 - Response headers: `content-security-policy: default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; sandbox`, `x-content-type-options: nosniff`, `cross-origin-resource-policy: same-origin`, `content-disposition` (attachment with the sanitized `dl` name, else inline), `cache-control: private, max-age=3600`, `vercel-cdn-cache-control: public, s-maxage=86400`.
-- Daily proxied bytes budget (`PROXY_BYTES_PER_DAY`), 429 beyond.
+- Daily proxied bytes budget (`PROXY_BYTES_PER_DAY`), taken before bytes are served: a known `content-length` in full, a body of unknown length in blocks of at least 1 MiB (the first before the status, the next whenever a chunk passes what the body holds). A take refused before the status gives 429; a block refused mid-body errors the stream. The unused part of the last block goes back when the body ends, fails or is cancelled (through `waitUntil`), so bodies in flight overshoot a store without atomic increments by at most one block each.
 - The client uses the proxy only when direct access fails, and always for `http:` URLs.
 
 ### 11.3 Budgets and switches
