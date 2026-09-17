@@ -1,0 +1,80 @@
+import { describe, expect, it } from "vitest";
+import { cleanBasename, createFilenamer, displayName, type NameInput } from "./naming";
+
+const name = (patch: Partial<NameInput>) => displayName({ kind: "image", role: "image", index: 12, siteName: "Linear", ...patch });
+
+describe("displayName", () => {
+  it("uses the first usable source", () => {
+    expect(name({ label: "Linear home", linkText: "Home", url: "https://linear.app/logo.svg" })).toBe("Linear home");
+    expect(name({ label: "  ", linkText: "Read the story", url: "https://linear.app/hero.png" })).toBe("Read the story");
+    expect(name({ url: "https://linear.app/static/hero-image.png" })).toBe("hero-image");
+    expect(name({ kind: "svg" })).toBe("svg 12");
+    expect(name({})).toBe("image 12");
+  });
+
+  it("names logos, favicons and social images after the site when nothing better exists", () => {
+    expect(name({ role: "site-logo", jsonLdLogo: true, url: "https://linear.app/x.png" })).toBe("Linear logo");
+    expect(name({ role: "site-logo", url: "https://linear.app/brand.svg" })).toBe("Linear logo");
+    expect(name({ role: "favicon", url: "https://linear.app/favicon.ico" })).toBe("Linear favicon");
+    expect(name({ role: "social", linkText: "x", url: "https://linear.app/og.png" })).toBe("Linear social image");
+    expect(name({ role: "site-logo", label: "Linear wordmark" })).toBe("Linear wordmark");
+    expect(name({ role: "logo", linkText: "Customer", url: "https://linear.app/c.svg" })).toBe("Customer");
+  });
+
+  it("collapses whitespace, strips control characters and caps long labels", () => {
+    expect(name({ label: "Acme\n\t  Corp\u0000" })).toBe("Acme Corp");
+    expect(name({ label: "https://cdn.example/a.png", url: "https://cdn.example/a.png" })).toBe("a");
+    const long = name({ label: "word ".repeat(40) });
+    expect(long.length).toBeLessThanOrEqual(80);
+    expect(long.endsWith(" ")).toBe(false);
+  });
+});
+
+describe("cleanBasename", () => {
+  it("removes extensions, build hashes and CDN size parameters", () => {
+    expect(cleanBasename("https://a.example/static/logo.a1b2c3d4.svg")).toBe("logo");
+    expect(cleanBasename("https://a.example/hero-3f9ab1c2e4.png")).toBe("hero");
+    expect(cleanBasename("https://a.example/assets/index-BzXk3a9Q.png")).toBe("index");
+    expect(cleanBasename("https://a.example/_next/image?url=%2Fimg%2Fteam%20photo.jpg&w=640&q=75")).toBe("team photo");
+    expect(cleanBasename("https://www.apple.com/v/home/images/hero_large_2x.jpg")).toBe("hero");
+    expect(cleanBasename("https://cdn.prod.website-files.com/a/b/customer-p-500.png")).toBe("customer");
+    expect(cleanBasename("https://a.example/deadline-2025.png")).toBe("deadline-2025");
+    expect(cleanBasename("https://a.example/")).toBeUndefined();
+    expect(cleanBasename("data:image/png;base64,AAAA")).toBeUndefined();
+  });
+});
+
+describe("createFilenamer", () => {
+  it("prefixes the site slug once and keeps the extension", () => {
+    const filename = createFilenamer("Linear");
+    expect(filename("Logo", "svg")).toBe("linear-logo.svg");
+    expect(filename("Linear logo", "svg")).toBe("linear-logo-2.svg");
+    expect(filename("Linear", "png")).toBe("linear.png");
+    expect(filename("Linearity chart", "png")).toBe("linear-linearity-chart.png");
+  });
+
+  it("caps names at 80 characters and resolves clashes", () => {
+    const filename = createFilenamer("Linear");
+    const long = "a".repeat(200);
+    const first = filename(long, "png");
+    const second = filename(long, "png");
+    expect(first.length).toBeLessThanOrEqual(80);
+    expect(second.length).toBeLessThanOrEqual(80);
+    expect(second).toMatch(/-2\.png$/);
+    expect(first).not.toBe(second);
+  });
+
+  it("never produces paths or control characters", () => {
+    const filename = createFilenamer("Evil");
+    const unsafe = filename("../evil/<name>", "svg");
+    expect(unsafe).toBe("evil-name.svg");
+    expect(filename("..", "png")).toBe("evil.png");
+    expect(filename("a/../../b\u0000c", "png")).toBe("evil-a-b-c.png");
+    expect(filename("Café Crème", "jpg")).toBe("evil-cafe-creme.jpg");
+    expect(filename("東京 タワー", "jpg")).toBe("evil-東京-タワー.jpg");
+  });
+
+  it("falls back to a generic slug when the site name has no letters", () => {
+    expect(createFilenamer("")("Logo", "svg")).toBe("site-logo.svg");
+  });
+});

@@ -1,0 +1,105 @@
+import type { AssetKind, AssetRole } from "@/lib/contract";
+import { originalCandidates } from "./cdn";
+
+/** Display names and filenames (spec 8.7). */
+
+const MAX_NAME = 80;
+const MAX_FILENAME = 80;
+
+export interface NameInput {
+  kind: AssetKind;
+  role: AssetRole;
+  index: number;              // position among assets of this kind, for the last-resort name
+  siteName: string;
+  /** The collector's label: aria-label (of the element or its link), `<title>`, alt, data-framer-name, title attribute. */
+  label?: string;
+  jsonLdLogo?: boolean;
+  linkText?: string;
+  url?: string;               // http(s) URL of the file, for the basename
+}
+
+/** Trimmed single-line text without control characters, capped at a word boundary, or undefined when unusable. */
+const usable = (text: string | undefined): string | undefined => {
+  if (!text) return undefined;
+  const clean = text.replace(/[\u0000-\u001F\u007F-\u009F]+/g, " ").replace(/\s+/g, " ").trim();
+  if (!/[\p{L}\p{N}]/u.test(clean) || /^[a-z][a-z0-9+.-]*:\/\//i.test(clean)) return undefined;
+  if (clean.length <= MAX_NAME) return clean;
+  const cut = clean.slice(0, MAX_NAME + 1);
+  const space = cut.lastIndexOf(" ");
+  return (space > MAX_NAME / 2 ? cut.slice(0, space) : clean.slice(0, MAX_NAME)).trim();
+};
+
+const HEX_HASH = /[.\-_](?=[0-9a-f]*\d)[0-9a-f]{8,}$/i;
+const BUNDLER_HASH = /[.\-_](?=[A-Za-z0-9_]*\d)(?=[A-Za-z0-9_]*[A-Z])(?=[A-Za-z0-9_]*[a-z])[A-Za-z0-9_]{8}$/;
+const SIZE_SUFFIX = /(?:_(?:xsmall|small|medium|large|xlarge|xxlarge)(?:_[23]x)?|@[23]x|_[23]x|-scaled)$/i;
+
+/** File name of an http(s) URL without extension, build hashes and size suffixes, after unwrapping CDN rewrites. */
+export function cleanBasename(url: string): string | undefined {
+  if (!/^https?:/i.test(url)) return undefined;
+  const target = originalCandidates(url)[0] ?? url;
+  let segment: string;
+  try {
+    segment = new URL(target).pathname.split("/").filter(Boolean).pop() ?? "";
+    segment = decodeURIComponent(segment);
+  } catch {
+    return undefined;
+  }
+  let base = segment.replace(/\.[a-z0-9]{1,5}$/i, "");
+  for (let i = 0; i < 2; i++) base = base.replace(HEX_HASH, "").replace(BUNDLER_HASH, "");
+  base = base.replace(SIZE_SUFFIX, "");
+  return usable(base);
+}
+
+const ROLE_DEFAULT: Partial<Record<AssetRole, string>> = {
+  "site-logo": "logo",
+  favicon: "favicon",
+  social: "social image",
+};
+
+export function displayName(input: NameInput): string {
+  const site = usable(input.siteName);
+  const roleDefault = site && ROLE_DEFAULT[input.role] ? `${site} ${ROLE_DEFAULT[input.role]}` : undefined;
+  return (
+    usable(input.label) ??
+    (input.jsonLdLogo && site ? `${site} logo` : undefined) ??
+    roleDefault ??
+    usable(input.linkText) ??
+    (input.url ? cleanBasename(input.url) : undefined) ??
+    `${input.kind === "svg" ? "svg" : "image"} ${input.index}`
+  );
+}
+
+/** Lowercase words joined by dashes. Latin accents are dropped; other scripts are kept. No dots, slashes or controls. */
+export function slugify(text: string): string {
+  return text
+    .normalize("NFKD")
+    .replace(/(\p{Script=Latin})\p{M}+/gu, "$1")
+    .normalize("NFC")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\p{M}]+/gu, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+/**
+ * Returns a function that turns display names into unique filenames for one scan: the name's slug, prefixed with the
+ * site slug unless it already starts with it, at most 80 characters with the extension, `-2`, `-3` on clashes.
+ */
+export function createFilenamer(siteName: string): (name: string, extension: string) => string {
+  const site = slugify(siteName) || "site";
+  const used = new Set<string>();
+  return (name, extension) => {
+    const slug = slugify(name);
+    const base = !slug || slug === site ? site : slug.startsWith(`${site}-`) ? slug : `${site}-${slug}`;
+    const ext = slugify(extension) || "bin";
+    for (let n = 1; ; n++) {
+      const suffix = n === 1 ? "" : `-${n}`;
+      const room = MAX_FILENAME - suffix.length - ext.length - 1;
+      const stem = [...base].slice(0, room).join("").replace(/-+$/, "");
+      const filename = `${stem}${suffix}.${ext}`;
+      if (!used.has(filename)) {
+        used.add(filename);
+        return filename;
+      }
+    }
+  };
+}
