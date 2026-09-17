@@ -241,7 +241,10 @@ export function pageWorkMs(deadlineMs: number): number {
  * When post-processing (spec 7.2 phase 10) must end. Network work gets up to `limits.verifyMs`, cut so that CPU work
  * still gets `limits.postGraceMs` before the scan deadline; a scan whose page work was stopped by its deadline gets no network
  * time. CPU work (tone, SVG and font parsing) may use the rest of the scan: only the scan deadline stops it, so a slow
- * instance still gives whole results while time is left. Nothing runs past the scan deadline.
+ * instance still gives whole results while time is left. Nothing runs past the scan deadline. The exception is reading
+ * captured stylesheet text (assets and fonts): it is synchronous per sheet, so the scan deadline's abort cannot stop it,
+ * and the engine drops a task that is still running then; it stops at the network deadline with `truncated`, leaving
+ * the grace time to the rest. URLs only such an unread sheet declares, `data:` URIs included, are then lost.
  */
 export function postProcessingWindow(input: { startedAt: number; now: number; deadlineMs: number; verifyMs: number }): { networkDeadline: number; endsAt: number } {
   const { startedAt, now, deadlineMs, verifyMs } = input;
