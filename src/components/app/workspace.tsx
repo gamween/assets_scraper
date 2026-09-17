@@ -1,6 +1,7 @@
 "use client";
 
 import { TopBar } from "@/components/app-shell/top-bar";
+import { DetailDialog } from "@/components/detail/detail-dialog";
 import { ResultsView } from "@/components/results/results-view";
 import { ScanStatus } from "@/components/scan/scan-status";
 import { SkeletonGrid } from "@/components/scan/skeleton-grid";
@@ -28,6 +29,7 @@ export function Workspace({ pendingHost }: { pendingHost: string | null }) {
         ) : null}
         {phase === "results" ? <ResultsView /> : null}
       </main>
+      <DetailDialog />
     </div>
   );
 }

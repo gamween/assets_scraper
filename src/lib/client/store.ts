@@ -245,6 +245,7 @@ export function createAppStore() {
 
     openDetail: (id) =>
       set((state) => {
+        if (!findAsset(state, id)) return {};
         const section = getSections(state).find((item) => item.kind === "assets" && item.items.some((asset) => asset.id === id));
         const expand = section?.collapsible && !state.expanded.includes(section.id);
         return { detailId: id, expanded: expand ? [...state.expanded, section.id] : state.expanded };
