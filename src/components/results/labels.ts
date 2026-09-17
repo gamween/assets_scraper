@@ -112,6 +112,7 @@ const FOUND_IN_LABELS: Record<FoundIn, string> = {
   "css-other": "CSS property",
   stylesheet: "Stylesheet",
   "icon-link": '<link rel="icon">',
+  "meta-icon": "Meta tag",
   manifest: "Web app manifest",
   "og-image": "og:image tag",
   "twitter-image": "twitter:image tag",

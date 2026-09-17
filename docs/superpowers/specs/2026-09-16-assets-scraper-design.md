@@ -144,7 +144,7 @@ export type AssetFormat = "svg" | "png" | "jpg" | "webp" | "avif" | "gif" | "ico
 export type FoundIn =
   | "img" | "picture" | "lazy-attribute" | "noscript" | "video-poster" | "svg-image" | "object-embed"
   | "css-background" | "css-mask" | "css-pseudo" | "css-other" | "stylesheet"
-  | "icon-link" | "manifest" | "og-image" | "twitter-image" | "json-ld"
+  | "icon-link" | "meta-icon" | "manifest" | "og-image" | "twitter-image" | "json-ld"
   | "inline-svg" | "sprite-symbol" | "network" | "shadow-dom" | "iframe" | "public-source";
 
 export interface AssetSource {
@@ -338,7 +338,7 @@ Walk every element in the document, in every open shadow root and in every reada
 - `<video poster>`, SVG `<image href>`, `<object data>`, `<embed src>`, `<iframe src=*.svg>`, `<input type=image>`.
 - Computed styles of every element and its `::before`/`::after`: `background-image`, `mask-image`, `-webkit-mask-image`, `border-image-source`, `list-style-image`, `-webkit-mask-box-image-source`, `content`. `image-set()` URLs share a group.
 - Stylesheets: CSSOM for readable sheets (including adopted and shadow sheets, recursing into grouping rules), captured network CSS parsed with css-tree for the rest. CSS custom properties that hold `url()` count. URLs that were never rendered are `declaredOnly` and must pass a probe (section 8.4).
-- Icons and meta: `link[rel~=icon|shortcut|apple-touch-icon|apple-touch-icon-precomposed|mask-icon|fluid-icon|image_src]`, web manifest icons (manifest fetched in Node), `og:image` variants, `twitter:image`, `msapplication-TileImage`, `itemprop=image`, JSON-LD `logo`. `/favicon.ico` is probed when no icon link exists.
+- Icons and meta: `link[rel~=icon|shortcut|apple-touch-icon|apple-touch-icon-precomposed|mask-icon|fluid-icon|image_src]`, web manifest icons (manifest fetched in Node), `og:image` variants, `twitter:image`, `itemprop=image`, JSON-LD `logo`. Meta icons (`msapplication-TileImage` and the `msapplication-square70x70logo`, `square150x150logo`, `wide310x150logo`, `square310x310logo` tiles) are found in `meta-icon`, labeled "Meta tag" in the UI. `/favicon.ico` is probed when no icon `<link>` exists: meta icons and manifest icons do not count.
 - Inline SVG: top-level `<svg>` elements. Sprite sheets (only definitions) are expanded into their referenced symbols. Unreferenced symbols are counted in `hidden` but not listed.
 - `blob:` URLs: network body first, then `fetch` inside the page, then canvas `toDataURL` for a still-loaded image.
 - `data:` URIs: decoded. SVG data URIs join the SVG kind.
@@ -374,7 +374,7 @@ Verification: `safeFetch` GET with `Range: bytes=0-262143`, `Accept: image/png,i
 - `logoScore` = logo word 3 + link to home 3 + header or nav 2 + site word 2 + top under 160 px and visible 1 + footer 1.
 - `site-logo`: score >= 6, or a JSON-LD logo.
 - `logo`: logo word, logo wall, or `alt` containing "logo".
-- `favicon`: icon links, manifest icons, `/favicon.ico`.
+- `favicon`: icon links, meta icons, manifest icons, `/favicon.ico`.
 - `social`: `og:image`, `twitter:image`.
 - `icon`: longest rendered side <= 48 CSS px, or intrinsic side <= 48 px when not rendered. Logo and favicon roles are exempt. This is the single small-icon rule.
 - `sprite-symbol` for expanded symbols, `illustration` for SVGs above the icon size, `image` otherwise.

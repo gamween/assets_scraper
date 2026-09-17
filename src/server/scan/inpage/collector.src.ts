@@ -695,7 +695,7 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
     const content = meta.getAttribute("content");
     if (/^og:image(?::url|:secure_url)?$|^image$|^thumbnail$/.test(key)) addMeta(meta, content, "og-image");
     else if (/^twitter:image(?::src)?$/.test(key)) addMeta(meta, content, "twitter-image");
-    else if (key === "msapplication-tileimage") addMeta(meta, content, "icon-link");
+    else if (/^msapplication-(?:tileimage|square70x70logo|square150x150logo|wide310x150logo|square310x310logo)$/.test(key)) addMeta(meta, content, "meta-icon");
   }
   // Microdata image as a link, the other metadata form of itemprop=image. Body links and images that carry it are
   // content, collected (or not) as such, never social images.

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { makeAsset, remoteSource } from "@/lib/client/testing";
-import { assetMeta, hiddenSummary, roleBadge, roleLabel, splitExtension } from "./labels";
+import { assetMeta, foundInLabel, hiddenSummary, roleBadge, roleLabel, splitExtension } from "./labels";
 
 describe("hiddenSummary", () => {
   it("names the reasons by count", () => {
@@ -34,6 +34,10 @@ describe("card labels", () => {
     const roles = ["site-logo", "logo", "favicon", "social", "icon", "illustration", "image", "sprite-symbol"] as const;
     expect(roles.map((role) => roleLabel({ role }))).toEqual(["Site logo", "Logo", "Favicon", "OG image", "Icon", "Illustration", "Image", "Sprite symbol"]);
     expect(roles.map((role) => roleBadge(makeAsset({ id: role, role })))).toEqual(["Logo", "Logo", "Favicon", "OG image", null, null, null, null]);
+  });
+
+  it("names where an asset was found, meta icons as a meta tag", () => {
+    expect(foundInLabel(["icon-link", "meta-icon"])).toBe('<link rel="icon">, Meta tag');
   });
 
   it("keeps the extension apart for middle truncation", () => {

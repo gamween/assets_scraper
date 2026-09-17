@@ -28,7 +28,7 @@ export type AssetFormat = z.infer<typeof AssetFormat>;
 export const FoundIn = z.enum([
   "img", "picture", "lazy-attribute", "noscript", "video-poster", "svg-image", "object-embed",
   "css-background", "css-mask", "css-pseudo", "css-other", "stylesheet",
-  "icon-link", "manifest", "og-image", "twitter-image", "json-ld",
+  "icon-link", "meta-icon", "manifest", "og-image", "twitter-image", "json-ld",
   "inline-svg", "sprite-symbol", "network", "shadow-dom", "iframe", "public-source",
 ]);
 export type FoundIn = z.infer<typeof FoundIn>;

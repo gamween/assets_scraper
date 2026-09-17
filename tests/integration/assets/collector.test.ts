@@ -29,7 +29,7 @@ beforeAll(async () => {
     },
     "/sources.html": (_req, res) => {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-      res.end(`<!doctype html><html><head><title>Sources</title><link itemprop="image" href="/assets/og.png"></head><body>
+      res.end(`<!doctype html><html><head><title>Sources</title><link itemprop="image" href="/assets/og.png"><meta name="msapplication-TileImage" content="/assets/touch.png"><meta name="msapplication-square150x150logo" content="/assets/logo.svg"></head><body>
         <div style="content: url(/assets/bg.png); width: 40px; height: 40px"></div>
         <a itemprop="image" href="/assets/hero.jpg">Product</a>
       </body></html>`);
@@ -216,7 +216,7 @@ describe("collector noise and edge cases", () => {
 });
 
 describe("collector sources", () => {
-  it("reads content: url() on an element and itemprop=image links", async () => {
+  it("reads content: url() on an element, itemprop=image links and msapplication meta icons", async () => {
     const { context, page } = await openPage(browser, `${server.origin}/sources.html`);
     const sources = await runCollector(page, collectorOptions(server.host, "Fixture"));
     await context.close();
@@ -224,6 +224,8 @@ describe("collector sources", () => {
     expect(found("bg.png")).toEqual(["css-other"]);
     expect(sources.candidates.find((c) => c.url === asset("bg.png"))).toMatchObject({ visible: true, rect: { width: 40, height: 40 } });
     expect(found("og.png")).toEqual(["og-image"]);
+    expect(found("touch.png")).toEqual(["meta-icon"]);
+    expect(found("logo.svg")).toEqual(["meta-icon"]);
     expect(found("hero.jpg")).toEqual([]);
   });
 });

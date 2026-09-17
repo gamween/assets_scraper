@@ -102,6 +102,18 @@ describe("assembleAssets hidden counts", () => {
     expect(hidden).toEqual({ "probe-failed": 1 });
   });
 
+  it("still probes /favicon.ico when the page only declares a meta icon", async () => {
+    const collector = collectorOutput({ candidates: [candidate(`${PAGE}tile.png`, 1, 1, { foundIn: "meta-icon" })] });
+    const { assets } = await run(collector, [captured(`${PAGE}tile.png`), captured(`${PAGE}favicon.ico`)]);
+    expect(assets.map((a) => [a.original?.url, a.role, a.foundIn])).toEqual(
+      expect.arrayContaining([
+        [`${PAGE}tile.png`, "favicon", ["meta-icon"]],
+        [`${PAGE}favicon.ico`, "favicon", ["icon-link"]],
+      ]),
+    );
+    expect(assets).toHaveLength(2);
+  });
+
   it("counts a declared /favicon.ico link that fails its probe", async () => {
     const collector = collectorOutput({ candidates: [candidate(`${PAGE}favicon.ico`, 1, 1, { foundIn: "icon-link" })] });
     const { assets, hidden } = await run(collector);

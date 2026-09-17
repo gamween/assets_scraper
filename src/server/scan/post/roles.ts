@@ -43,7 +43,7 @@ const longestSide = (size?: { width?: number; height?: number }) => Math.max(siz
 export function assignRole(input: RoleInput): AssetRole {
   const found = new Set(input.foundIn);
   if (input.logoScore >= 6 || found.has("json-ld")) return "site-logo";
-  if (found.has("icon-link") || found.has("manifest")) return "favicon";
+  if (found.has("icon-link") || found.has("meta-icon") || found.has("manifest")) return "favicon";
   if (found.has("og-image") || found.has("twitter-image")) return "social";
   if (input.logoWord || input.logoWall || /logo/i.test(input.label ?? "")) return "logo";
   if (input.spriteSymbol) return "sprite-symbol";
