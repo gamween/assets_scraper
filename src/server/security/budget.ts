@@ -3,7 +3,10 @@ import { getCache } from "@vercel/functions";
 import { limits } from "@/server/config/limits";
 
 export interface BudgetStore {
-  /** Adds `by` to the counter at `key` (created with a TTL) and returns the new total. */
+  /**
+   * Adds `by` to the counter at `key` (created with a TTL) and returns the new total. A `by` of 0 only reads the total
+   * and writes nothing, so a probe can never write back a stale total over a concurrent increment.
+   */
   incr(key: string, by: number, ttlSeconds: number): Promise<number>;
 }
 
@@ -22,6 +25,7 @@ export class MemoryBudgetStore implements BudgetStore {
   async incr(key: string, by: number, ttlSeconds: number): Promise<number> {
     const now = Date.now();
     for (const [name, counter] of this.counters) if (counter.expiresAt <= now) this.counters.delete(name);
+    if (by === 0) return this.counters.get(key)?.total ?? 0;
     const counter = this.counters.get(key) ?? { total: 0, expiresAt: now + ttlSeconds * 1000 };
     counter.total += by;
     this.counters.set(key, counter);
@@ -29,7 +33,7 @@ export class MemoryBudgetStore implements BudgetStore {
   }
 }
 
-/** Shared counters in Upstash Redis: atomic INCRBY and the TTL in one pipeline. */
+/** Shared counters in Upstash Redis: atomic INCRBY and the TTL in one pipeline, a plain GET for a zero probe. */
 export class UpstashBudgetStore implements BudgetStore {
   private readonly redis: Redis;
 
@@ -44,22 +48,23 @@ export class UpstashBudgetStore implements BudgetStore {
   }
 
   async incr(key: string, by: number, ttlSeconds: number): Promise<number> {
+    if (by === 0) return Number(await this.redis.get<number>(key)) || 0;
     const [total] = await this.redis.pipeline().incrby(key, by).expire(key, ttlSeconds).exec<[number, number]>();
     return total;
   }
 }
 
 /**
- * Shared counters in the Vercel Runtime Cache. It has no atomic increment, so concurrent scans on several instances
- * can undercount, and it reports errors as misses; the in-memory shadow counter in `incr` keeps each instance within
- * the limit anyway.
+ * Shared counters in the Vercel Runtime Cache. It has no atomic increment (get, then set), so concurrent increments on
+ * several instances can undercount, and it reports errors as misses; the in-memory shadow counter in `incr` keeps each
+ * instance within the limit anyway. A zero probe, which every proxied request starts with, only reads.
  */
 export class RuntimeCacheBudgetStore implements BudgetStore {
   async incr(key: string, by: number, ttlSeconds: number): Promise<number> {
     const cache = getCache({ namespace: "budget", keyHashFunction: (value) => value });
     const current = Number(await cache.get(key));
     const total = (Number.isFinite(current) ? current : 0) + by;
-    await cache.set(key, total, { ttl: ttlSeconds });
+    if (by !== 0) await cache.set(key, total, { ttl: ttlSeconds });
     return total;
   }
 }

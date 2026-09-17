@@ -8,6 +8,10 @@ const upstash = vi.hoisted(() => {
     constructor(readonly config: Record<string, unknown>) {
       calls.push({ config, commands: this.commands });
     }
+    async get(key: string) {
+      this.commands.push(["get", key]);
+      return totals.get(key) ?? null;
+    }
     pipeline() {
       const queued: [string, ...unknown[]][] = [];
       const pipe = {
@@ -31,11 +35,22 @@ const upstash = vi.hoisted(() => {
 
 const runtimeCache = vi.hoisted(() => {
   const entries = new Map<string, { value: unknown; ttl?: number }>();
+  /** Delay of each get and set: a get reads when called and answers late, a set writes late. */
+  const latency = { ms: 0 };
+  const settle = () => new Promise((resolve) => setTimeout(resolve, latency.ms));
   return {
     entries,
+    latency,
     getCache: vi.fn(() => ({
-      get: async (key: string) => entries.get(key)?.value ?? null,
-      set: async (key: string, value: unknown, options?: { ttl?: number }) => { entries.set(key, { value, ttl: options?.ttl }); },
+      get: async (key: string) => {
+        const value = entries.get(key)?.value ?? null;
+        await settle();
+        return value;
+      },
+      set: async (key: string, value: unknown, options?: { ttl?: number }) => {
+        await settle();
+        entries.set(key, { value, ttl: options?.ttl });
+      },
       delete: async (key: string) => { entries.delete(key); },
       expireTag: async () => {},
     })),
@@ -186,6 +201,7 @@ describe("budget stores", () => {
     upstash.calls.length = 0;
     upstash.totals.clear();
     runtimeCache.entries.clear();
+    runtimeCache.latency.ms = 0;
   });
 
   it("selects Upstash, then the Vercel Runtime Cache, then memory", () => {
@@ -218,6 +234,26 @@ describe("budget stores", () => {
     expect(await store.incr("proxy:d:2026-09-16", 100, 172_800)).toBe(100);
     expect(await store.incr("proxy:d:2026-09-16", 50, 172_800)).toBe(150);
     expect(runtimeCache.entries.get("proxy:d:2026-09-16")).toEqual({ value: 150, ttl: 172_800 });
+  });
+
+  it("reads a zero probe from Upstash with GET, without INCRBY or EXPIRE", async () => {
+    const store = new UpstashBudgetStore("https://example.upstash.io", "token");
+    expect(await store.incr("proxy:d:2026-09-16", 0, 172_800)).toBe(0);
+    upstash.totals.set("proxy:d:2026-09-16", 42);
+    expect(await store.incr("proxy:d:2026-09-16", 0, 172_800)).toBe(42);
+    expect(upstash.calls[0].commands).toEqual([["get", "proxy:d:2026-09-16"], ["get", "proxy:d:2026-09-16"]]);
+  });
+
+  it("never writes a zero probe to the Vercel Runtime Cache, so it cannot overwrite a concurrent take", async () => {
+    const store = new RuntimeCacheBudgetStore();
+    runtimeCache.entries.set("proxy:d:2026-09-16", { value: 100, ttl: 172_800 });
+    runtimeCache.latency.ms = 20;
+    // the probe reads 100 before the take lands; writing that total back afterwards would erase the take
+    const [taken, probed] = await Promise.all([store.incr("proxy:d:2026-09-16", 20_000_000, 172_800), store.incr("proxy:d:2026-09-16", 0, 172_800)]);
+    expect([taken, probed]).toEqual([20_000_100, 100]);
+    expect(runtimeCache.entries.get("proxy:d:2026-09-16")).toEqual({ value: 20_000_100, ttl: 172_800 });
+    expect(await store.incr("proxy:d:2026-09-17", 0, 172_800)).toBe(0);
+    expect(runtimeCache.entries.has("proxy:d:2026-09-17")).toBe(false);
   });
 
   it("uses the selected store through the public helpers", async () => {
