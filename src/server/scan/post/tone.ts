@@ -5,8 +5,9 @@ import { formatFromContentType, sniffFormat } from "./format";
 
 /**
  * Preview tone (spec 8.8): decides the background of a tile. Rasters are reduced to 32 px, SVGs rendered at 64 px.
- * At least 98 percent opaque pixels is `opaque`; otherwise the alpha-weighted mean luminance (Rec. 709) of the visible
- * pixels gives `light` above 0.7, `dark` below 0.3 and `mixed` in between.
+ * At least 98 percent opaque coverage is `opaque` (measured as mean alpha, so the soft edge that downscaling adds to a
+ * fully covered image does not count as transparency); otherwise the alpha-weighted mean luminance (Rec. 709) of the
+ * visible pixels gives `light` above 0.7, `dark` below 0.3 and `mixed` in between.
  */
 
 const RASTER_SIZE = 32;
@@ -21,21 +22,18 @@ async function toneOf(image: ReturnType<typeof sharp>, size: number): Promise<To
     .toBuffer({ resolveWithObject: true });
   const channels = info.channels;
   let pixels = 0;
-  let opaque = 0;
   let alphaSum = 0;
   let luminanceSum = 0;
   for (let i = 0; i + channels - 1 < data.length; i += channels) {
     pixels++;
     const alpha = data[i + channels - 1] / 255;
-    if (alpha >= 254 / 255) opaque++;
     if (alpha === 0) continue;
     const luminance = channels >= 4 ? (0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2]) / 255 : data[i] / 255;
     alphaSum += alpha;
     luminanceSum += alpha * luminance;
   }
-  if (!pixels) return "unknown";
-  if (opaque / pixels >= 0.98) return "opaque";
-  if (alphaSum === 0) return "unknown";
+  if (!pixels || alphaSum === 0) return "unknown";
+  if (alphaSum / pixels >= 0.98) return "opaque";
   const mean = luminanceSum / alphaSum;
   return mean > 0.7 ? "light" : mean < 0.3 ? "dark" : "mixed";
 }
@@ -48,7 +46,11 @@ const isSvg = (buffer: Buffer, contentType: string) =>
 
 export async function toneFromSvg(markup: string): Promise<Tone> {
   try {
-    return await toneOf(sharp(Buffer.from(markup), { limitInputPixels: MAX_INPUT_PIXELS, failOn: "error" }), SVG_SIZE);
+    const input = Buffer.from(markup);
+    // Render close to the preview size instead of rendering the declared size and downscaling it.
+    const { width, height } = await sharp(input, { limitInputPixels: false }).metadata();
+    const density = width && height ? Math.min(Math.max((72 * SVG_SIZE) / Math.max(width, height), 1), 10_000) : 72;
+    return await toneOf(sharp(input, { density, limitInputPixels: MAX_INPUT_PIXELS, failOn: "error" }), SVG_SIZE);
   } catch {
     return "unknown";
   }

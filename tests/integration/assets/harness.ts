@@ -144,6 +144,7 @@ export async function serveAssetsFixture(routes: Record<string, http.RequestList
   const server = await serveFixture(routes);
   const allowed = new Set((process.env.SCAN_TEST_ALLOW_HOSTS ?? "").split(",").filter(Boolean));
   allowed.add(server.host);
+  allowed.add(`localhost:${server.port}`);
   process.env.SCAN_TEST_ALLOW_HOSTS = [...allowed].join(",");
   return server;
 }

@@ -100,12 +100,15 @@ describe("collector on the fixture page", () => {
     const small = candidates("photo-small.png");
     const large = candidates("photo-large.png");
     expect(large).toHaveLength(1);
-    expect(large[0]).toMatchObject({ foundIn: "img", descriptor: { w: 1600 }, label: "Photo" });
-    expect(small.some((c) => c.group === large[0].group && c.naturalWidth! > 0 && c.visible)).toBe(true);
+    expect(large[0]).toMatchObject({ foundIn: "img", descriptor: { w: 1600 }, label: "Photo", visible: false });
+    expect(large[0].rect).toBeUndefined();
+    expect(small.some((c) => c.group === large[0].group && c.naturalWidth! > 0 && c.visible && c.rect?.width === 200)).toBe(true);
+    // the <picture> fallback src is not what that element shows
+    expect(small.find((c) => c.group !== large[0].group && c.foundIn === "img")).toMatchObject({ visible: false });
     expect(candidates("hero.jpg")).toEqual([
       expect.objectContaining({ foundIn: "picture", media: "(min-width: 800px)", type: "image/jpeg", descriptor: { w: 1200 }, naturalWidth: 1440 }),
     ]);
-    expect(candidates("lazy.jpg")).toEqual([expect.objectContaining({ foundIn: "lazy-attribute", label: "lazy" })]);
+    expect(candidates("lazy.jpg")).toEqual([expect.objectContaining({ foundIn: "lazy-attribute", label: "lazy", visible: false })]);
     expect(candidates("noscript.jpg")).toEqual([expect.objectContaining({ foundIn: "noscript", visible: false })]);
     expect(candidates("poster.jpg")[0]).toMatchObject({ foundIn: "video-poster", visible: true });
     expect(candidates("bg.png").map((c) => c.foundIn)).toContain("css-background");

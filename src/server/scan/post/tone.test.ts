@@ -20,6 +20,14 @@ describe("toneFromBytes", () => {
     expect(await toneFromBytes(await png((x) => (x < 16 ? [128, 128, 128, 255] : [0, 0, 0, 0])), "image/png")).toBe("mixed");
   });
 
+  it("stays opaque when downscaling blurs the edges", async () => {
+    const data = Buffer.alloc(1000 * 300 * 4, 255);
+    const wide = await sharp(data, { raw: { width: 1000, height: 300, channels: 4 } }).png().toBuffer();
+    expect(await toneFromBytes(wide, "image/png")).toBe("opaque");
+    expect(await toneFromSvg('<svg xmlns="http://www.w3.org/2000/svg" width="120" height="32" style="color: rgb(0, 0, 238)"><path fill="currentColor" d="M0 0h120v32H0z"/></svg>')).toBe("opaque");
+    expect(await toneFromSvg('<svg xmlns="http://www.w3.org/2000/svg" width="20000" height="10000"><rect width="20000" height="10000" fill="#fff"/></svg>')).toBe("opaque");
+  });
+
   it("does not decode JPEG", async () => {
     const notReallyJpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]);
     expect(await toneFromBytes(notReallyJpeg, "image/jpeg")).toBe("opaque");

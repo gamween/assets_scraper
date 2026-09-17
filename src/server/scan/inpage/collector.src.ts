@@ -428,8 +428,12 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
     naturalHeight?: number;
   }
 
-  /** Records a candidate found on an element. Shadow roots and iframes override `foundIn` (spec 8.1). */
-  const addFromElement = (el: Element, rawUrl: string | null | undefined, foundIn: FoundIn, patch: CandidatePatch, visibleOverride?: boolean) => {
+  /**
+   * Records a candidate found on an element. Shadow roots and iframes override `foundIn` (spec 8.1). `shown` is false
+   * for URLs the element does not display (srcset alternates, lazy attributes, noscript): they keep the element's
+   * context and label but not its visibility or rectangle.
+   */
+  const addFromElement = (el: Element, rawUrl: string | null | undefined, foundIn: FoundIn, patch: CandidatePatch, shown = true) => {
     const url = abs(rawUrl, el.baseURI);
     if (!url) return;
     const index = indexOf.get(el) ?? elements.length;
@@ -445,8 +449,7 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
       }
       return;
     }
-    const detached = visibleOverride === false;
-    const info = detached ? undefined : elementInfo(el);
+    const info = elementInfo(el);
     candidates.set(key, {
       url,
       group: patch.group,
@@ -456,12 +459,12 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
       ...(patch.type ? { type: patch.type } : {}),
       ...(patch.sizes ? { sizes: patch.sizes } : {}),
       order: index,
-      visible: info?.visible ?? false,
-      ...(info?.rect ? { rect: info.rect } : {}),
+      visible: shown && info.visible,
+      ...(shown && info.rect ? { rect: info.rect } : {}),
       ...(patch.naturalWidth ? { naturalWidth: patch.naturalWidth, naturalHeight: patch.naturalHeight } : {}),
-      ...(info?.label ? { label: info.label } : {}),
-      ...(info?.linkText ? { linkText: info.linkText } : {}),
-      context: info?.context ?? { ...noContext(), shadowRoot: !!root?.shadow, iframe: !!root?.iframe },
+      ...(info.label ? { label: info.label } : {}),
+      ...(info.linkText ? { linkText: info.linkText } : {}),
+      context: info.context,
       declaredOnly: false,
     });
   };
@@ -514,24 +517,26 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
               ),
             )
           : [];
-        if (tag === "img" && img.currentSrc) {
+        const current = tag === "img" ? img.currentSrc : abs(el.getAttribute("src"), el.baseURI);
+        const isCurrent = (url: string | null | undefined) => !!current && abs(url, el.baseURI) === current;
+        if (tag === "img" && current) {
           const natural = { naturalWidth: img.naturalWidth || undefined, naturalHeight: img.naturalHeight || undefined };
           // A current source picked from a <source> keeps that source's media, so art direction survives merging.
-          const chosen = sources.find((source) => source.url === img.currentSrc);
-          if (chosen) addFromElement(el, img.currentSrc, "picture", { ...chosen.patch, ...natural });
-          else addFromElement(el, img.currentSrc, "img", { group, ...natural });
+          const chosen = sources.find((source) => source.url === current);
+          if (chosen) addFromElement(el, current, "picture", { ...chosen.patch, ...natural });
+          else addFromElement(el, current, "img", { group, ...natural });
         }
-        addFromElement(el, el.getAttribute("src"), "img", { group });
-        for (const c of parseSrcset(el.getAttribute("srcset"))) addFromElement(el, c.url, "img", { group, descriptor: c.w ? { w: c.w } : { x: c.x } });
+        addFromElement(el, el.getAttribute("src"), "img", { group }, isCurrent(el.getAttribute("src")));
+        for (const c of parseSrcset(el.getAttribute("srcset"))) addFromElement(el, c.url, "img", { group, descriptor: c.w ? { w: c.w } : { x: c.x } }, isCurrent(c.url));
         for (const attribute of el.attributes) {
           if (!LAZY_ATTR.test(attribute.name) || !attribute.value || /^\s*[{[]/.test(attribute.value)) continue;
           if (/set/i.test(attribute.name) || /\s\d+[wx]\s*(?:,|$)/.test(attribute.value)) {
-            for (const c of parseSrcset(attribute.value)) addFromElement(el, c.url, "lazy-attribute", { group, descriptor: c.w ? { w: c.w } : { x: c.x } });
+            for (const c of parseSrcset(attribute.value)) addFromElement(el, c.url, "lazy-attribute", { group, descriptor: c.w ? { w: c.w } : { x: c.x } }, false);
           } else {
-            addFromElement(el, attribute.value, "lazy-attribute", { group });
+            addFromElement(el, attribute.value, "lazy-attribute", { group }, false);
           }
         }
-        for (const source of sources) addFromElement(el, source.url, "picture", source.patch);
+        for (const source of sources) addFromElement(el, source.url, "picture", source.patch, source.url === current);
       } else if (isHtml && tag === "video") {
         addFromElement(el, el.getAttribute("poster") ?? el.getAttribute("data-poster"), "video-poster", { group: newGroup() });
       } else if (!isHtml && tag === "image") {
@@ -553,7 +558,7 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
       } else if (!/^(?:script|style|link|meta|source|picture)$/.test(tag)) {
         for (const attribute of el.attributes) {
           if (LAZY_BACKGROUND_ATTR.test(attribute.name) && attribute.value && !/^\s*[{[]/.test(attribute.value)) {
-            addFromElement(el, extractCssUrls(attribute.value)[0] ?? attribute.value, "lazy-attribute", { group: newGroup() });
+            addFromElement(el, extractCssUrls(attribute.value)[0] ?? attribute.value, "lazy-attribute", { group: newGroup() }, false);
           }
         }
       }
