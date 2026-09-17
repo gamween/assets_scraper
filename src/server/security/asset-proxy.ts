@@ -3,7 +3,7 @@ import { HttpError } from "@/server/errors";
 import { safeFetch, SafeFetchError, type SafeFetchErrorCode } from "@/server/net/safe-fetch";
 import { isConvertibleFont, parseFontBinary } from "@/server/scan/fonts/index";
 import type { FontBinaryMeta, SafeResponse } from "@/server/scan/types";
-import { takeProxyBytes } from "./budget";
+import { countProxyBytes, takeProxyBytes } from "./budget";
 import { verifyAssetParams } from "./sign";
 
 export interface AssetProxyOptions {
@@ -213,7 +213,7 @@ export async function handleAssetRequest(request: Request, options: AssetProxyOp
     const account = () => {
       if (accounted) return;
       accounted = true;
-      takeProxyBytes(served).catch(() => {});
+      countProxyBytes(served).catch(() => {});
     };
     const body = new ReadableStream<Uint8Array>(
       {

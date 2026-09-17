@@ -46,6 +46,7 @@ vi.mock("@upstash/redis", () => ({ Redis: upstash.Redis }));
 vi.mock("@vercel/functions", () => ({ getCache: runtimeCache.getCache }));
 
 import {
+  countProxyBytes,
   getBudgetStore,
   MemoryBudgetStore,
   RuntimeCacheBudgetStore,
@@ -93,14 +94,24 @@ describe("budget", () => {
     expect(await takeScanBudget(new Date("2026-10-01T00:00:00Z"))).toBe(true);
   });
 
-  it("sums proxied bytes per day", async () => {
+  it("sums proxied bytes per day without counting a refused take", async () => {
     vi.stubEnv("PROXY_BYTES_PER_DAY", "1000");
     expect(await takeProxyBytes(400, day1)).toBe(true);
-    expect(await takeProxyBytes(600, day1)).toBe(true);
     expect(await takeProxyBytes(0, day1)).toBe(true);
+    expect(await takeProxyBytes(700, day1)).toBe(false);
+    expect(await takeProxyBytes(600, day1)).toBe(true);
     expect(await takeProxyBytes(1, day1)).toBe(false);
     expect(await takeProxyBytes(0, day1)).toBe(false);
     expect(await takeProxyBytes(900, day2)).toBe(true);
+  });
+
+  it("counts bytes already served even past the limit", async () => {
+    vi.stubEnv("PROXY_BYTES_PER_DAY", "1000");
+    await countProxyBytes(900, day1);
+    expect(await takeProxyBytes(100, day1)).toBe(true);
+    await countProxyBytes(50, day1);
+    expect(await takeProxyBytes(0, day1)).toBe(false);
+    expect(await takeProxyBytes(0, day2)).toBe(true);
   });
 
   it("uses the documented keys and lifetimes", async () => {
@@ -109,10 +120,16 @@ describe("budget", () => {
     setBudgetStoreForTests(recording);
     await takeScanBudget(day1);
     await takeProxyBytes(123, day1);
+    await countProxyBytes(45, day1);
+    vi.stubEnv("PROXY_BYTES_PER_DAY", "1000");
+    expect(await takeProxyBytes(2000, day1)).toBe(false);
     expect(seen).toEqual([
       ["scan:d:2026-09-16", 1, 2 * 86_400],
       ["scan:m:2026-09", 1, 40 * 86_400],
       ["proxy:d:2026-09-16", 123, 2 * 86_400],
+      ["proxy:d:2026-09-16", 45, 2 * 86_400],
+      ["proxy:d:2026-09-16", 2000, 2 * 86_400],
+      ["proxy:d:2026-09-16", -2000, 2 * 86_400],
     ]);
   });
 

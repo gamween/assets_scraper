@@ -199,6 +199,9 @@ describe("handleAssetRequest", () => {
 
   it("answers 429 once the daily proxied bytes are spent", async () => {
     vi.stubEnv("PROXY_BYTES_PER_DAY", String(png.length + 10));
+    // refused requests are not counted: 4 KB and a converted font do not fit, the PNG still does
+    expect(await errorOf(await handleAssetRequest(proxied("/declared-big")))).toMatchObject({ status: 429, code: "budget" });
+    expect(await errorOf(await handleAssetRequest(proxied("/assets/__inter.woff2", "&fmt=ttf")))).toMatchObject({ status: 429, code: "budget" });
     expect((await handleAssetRequest(proxied("/sized.png"))).status).toBe(200);
     expect(await errorOf(await handleAssetRequest(proxied("/sized.png")))).toMatchObject({ status: 429 });
 

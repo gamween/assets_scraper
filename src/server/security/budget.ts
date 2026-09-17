@@ -109,8 +109,23 @@ export async function takeScanBudget(now: Date = new Date()): Promise<boolean> {
   return (await incr(`scan:m:${iso.slice(0, 7)}`, 1, SCAN_MONTH_TTL)) <= limits.scansPerMonth;
 }
 
-/** Adds proxied bytes to today's total and tells whether it is still within `PROXY_BYTES_PER_DAY`. */
+const proxyKey = (now: Date) => `proxy:d:${now.toISOString().slice(0, 10)}`;
+const byteCount = (bytes: number) => (Number.isFinite(bytes) && bytes > 0 ? Math.ceil(bytes) : 0);
+
+/**
+ * Takes bytes about to be served from today's `PROXY_BYTES_PER_DAY`. A take that would go past the limit is refused
+ * and handed back, so bytes never served do not spend the budget (two concurrent takes near the limit can both be
+ * refused). Taking 0 bytes asks whether any budget is left.
+ */
 export async function takeProxyBytes(bytes: number, now: Date = new Date()): Promise<boolean> {
-  const amount = Number.isFinite(bytes) && bytes > 0 ? Math.ceil(bytes) : 0;
-  return (await incr(`proxy:d:${now.toISOString().slice(0, 10)}`, amount, PROXY_DAY_TTL)) <= limits.proxyBytesPerDay;
+  const amount = byteCount(bytes);
+  const total = await incr(proxyKey(now), amount, PROXY_DAY_TTL);
+  if (amount > 0 ? total <= limits.proxyBytesPerDay : total < limits.proxyBytesPerDay) return true;
+  if (amount > 0) await incr(proxyKey(now), -amount, PROXY_DAY_TTL);
+  return false;
+}
+
+/** Counts bytes already served (a body of unknown length, counted once it ends), even past the limit. */
+export async function countProxyBytes(bytes: number, now: Date = new Date()): Promise<void> {
+  await incr(proxyKey(now), byteCount(bytes), PROXY_DAY_TTL);
 }
