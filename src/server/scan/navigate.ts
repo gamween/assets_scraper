@@ -1,5 +1,8 @@
 import type { Page } from "playwright-core";
-import { NotImplementedError } from "@/server/errors";
+import { limits } from "@/server/config/limits";
+import { ScanFailure } from "@/server/errors";
+import { JSON_ESCAPE_FACTOR, runInPage } from "./inpage/run";
+import { cutText } from "./preflight";
 
 export interface NavigationResult {
   status: number;
@@ -7,20 +10,205 @@ export interface NavigationResult {
   title: string;
   headers: Record<string, string>;
   elementCount: number;
+}
+
+export interface PageFacts {
+  title: string;
+  elementCount: number;
+  /** The start of the document as markup: tags with their attributes, and the text of scripts and styles. */
   htmlSample: string;
 }
 
-export function openPage(page: Page, url: string, options: { signal: AbortSignal }): Promise<NavigationResult>;
-export async function openPage(): Promise<NavigationResult> {
-  throw new NotImplementedError("B: openPage");
+/** Enough markup for block detection (spec 8.9). */
+const HTML_SAMPLE_CHARS = 200_000;
+/** Longest page title kept, in the early `page` event and the final one. */
+export const MAX_TITLE_CHARS = 2_048;
+/** Cap for the small reads after navigation (title, element count, markup sample). */
+const READ_MS = 3_000;
+const MAX_SCROLL_STEPS = 40;
+const BACK_TO_TOP_WAIT_MS = 300;
+/** Scrolling back is instant on a healthy page; a page stuck in a script should not cost more than this. */
+const BACK_TO_TOP_MS = 1_000;
+
+// In-page snippets are strings, not functions: bundlers can rewrite a function body with helpers that do not exist
+// in the page (critic R13).
+/**
+ * Title, element count and the first `maxChars` of markup, built tag by tag: the cost follows the sample, not the page
+ * (a page of 100k elements never gets serialized whole). Text is read with `substringData`, so a huge inline script
+ * costs no more than the sample either.
+ */
+const pageFacts = (maxChars: number) => `(() => {
+  const all = document.getElementsByTagName("*");
+  const max = ${maxChars};
+  let html = "";
+  const add = (text) => { if (html.length < max) html += text.slice(0, max - html.length); };
+  for (let i = 0; i < all.length && html.length < max; i += 1) {
+    const element = all[i];
+    let tag = "<" + element.localName;
+    for (let j = 0; j < element.attributes.length; j += 1) tag += " " + element.attributes[j].name + '="' + element.attributes[j].value.slice(0, max) + '"';
+    add(tag + ">");
+    if (!/^(script|style|noscript|title)$/.test(element.localName)) continue;
+    for (let node = element.firstChild; node && html.length < max; node = node.nextSibling) if (node.nodeType === 3) add(node.substringData(0, max - html.length));
+  }
+  return { title: String(document.title).slice(0, ${MAX_TITLE_CHARS + 1}), elementCount: all.length, htmlSample: html };
+})()`;
+const EAGER_IMAGES = `(() => { for (const img of document.querySelectorAll('img[loading="lazy"]')) img.loading = "eager"; })()`;
+const SCROLL_STEP = `(() => {
+  const el = document.scrollingElement || document.documentElement;
+  const before = el.scrollTop;
+  el.scrollTo({ top: before + Math.round(innerHeight * 0.85), behavior: "instant" });
+  return el.scrollTop <= before || el.scrollTop + innerHeight >= el.scrollHeight - 4;
+})()`;
+const BACK_TO_TOP = `(() => { (document.scrollingElement || document.documentElement).scrollTo({ top: 0, behavior: "instant" }); })()`;
+const FINISH_ANIMATIONS_AND_FONTS = `(async () => {
+  try {
+    for (const animation of document.getAnimations()) {
+      try {
+        const timing = animation.effect && animation.effect.getComputedTiming();
+        if (timing && timing.iterations !== Infinity && timing.endTime !== Infinity) animation.finish();
+      } catch {}
+    }
+  } catch {}
+  try { await document.fonts.ready; } catch {}
+  return true;
+})()`;
+
+/** Resolves with the result, or with `fallback` on error or after `ms`. Rejects only when the signal aborts. */
+function capped<T>(promise: Promise<T>, ms: number, fallback: T, signal?: AbortSignal): Promise<T> {
+  promise.catch(() => {});
+  if (signal?.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    const done = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+    };
+    const onAbort = () => {
+      done();
+      reject(signal?.reason);
+    };
+    const timer = setTimeout(() => {
+      done();
+      resolve(fallback);
+    }, Math.max(0, ms));
+    signal?.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        done();
+        resolve(value);
+      },
+      () => {
+        done();
+        resolve(fallback);
+      },
+    );
+  });
 }
 
-export function loadAndScroll(page: Page, options: { signal: AbortSignal; onStep: (step: "load" | "scroll", state: "start" | "done") => void }): Promise<void>;
-export async function loadAndScroll(): Promise<void> {
-  throw new NotImplementedError("B: loadAndScroll");
+/** Settles like `promise`, or rejects with the abort reason as soon as the signal aborts. */
+function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  promise.catch(() => {});
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+  });
 }
 
-export function prepareForCollection(page: Page): Promise<void>;
-export async function prepareForCollection(): Promise<void> {
-  throw new NotImplementedError("B: prepareForCollection");
+const sleep = (ms: number, signal: AbortSignal) => capped(new Promise<void>(() => {}), ms, undefined, signal);
+
+function navigationFailure(error: unknown, signal: AbortSignal): unknown {
+  if (signal.aborted) return signal.reason;
+  const message = error instanceof Error ? error.message : String(error);
+  if (error instanceof Error && error.name === "TimeoutError") return new ScanFailure("timeout", "The page took too long to load");
+  if (/ERR_NAME_NOT_RESOLVED/.test(message)) return new ScanFailure("dns", "The host could not be resolved");
+  return new ScanFailure("connect", `The page could not be reached (${/net::ERR_[A-Z_]+/.exec(message)?.[0] ?? "navigation failed"})`);
+}
+
+const isPageFacts = (value: unknown): value is PageFacts => {
+  const facts = value as Partial<PageFacts> | null;
+  return typeof facts?.title === "string" && Number.isSafeInteger(facts.elementCount) && typeof facts.htmlSample === "string";
+};
+
+/**
+ * Reads the page's title, element count and a markup sample of at most `sampleChars` (spec 8.9) in an isolated world,
+ * so a page cannot patch the DOM API it uses. Null when the page does not answer within its cap. Rejects only when the
+ * signal aborts.
+ */
+export async function readPageFacts(page: Page, options: { signal: AbortSignal; sampleChars?: number }): Promise<PageFacts | null> {
+  const { signal } = options;
+  const sampleChars = options.sampleChars ?? HTML_SAMPLE_CHARS;
+  try {
+    // The sample and the title in JSON, every character escaped at worst, plus the element count and the keys. A page
+    // over this cap would give no facts, and so no markup rules: the cap must hold for any sample.
+    const maxResultChars = JSON_ESCAPE_FACTOR * (sampleChars + MAX_TITLE_CHARS + 1) + 1_024;
+    const { value } = await runInPage<unknown>(page, "", pageFacts(sampleChars), { timeoutMs: READ_MS, signal, maxResultChars });
+    return isPageFacts(value) ? { ...value, title: cutText(value.title, MAX_TITLE_CHARS).trim() } : null;
+  } catch {
+    if (signal.aborted) throw signal.reason;
+    return null;
+  }
+}
+
+/**
+ * Spec 7.2 phase 4: navigate until `domcontentloaded`, then read what the early block rules and the early `page` event
+ * need. The element count and the markup only mean something once the page has loaded (see `detectBlock`).
+ */
+export async function openPage(page: Page, url: string, options: { signal: AbortSignal }): Promise<NavigationResult> {
+  const { signal } = options;
+  signal.throwIfAborted();
+  let response: Awaited<ReturnType<Page["goto"]>>;
+  try {
+    response = await untilAborted(page.goto(url, { waitUntil: "domcontentloaded", timeout: limits.gotoMs }), signal);
+  } catch (error) {
+    throw navigationFailure(error, signal);
+  }
+  const facts = await readPageFacts(page, { signal, sampleChars: 0 });
+  return {
+    status: response?.status() ?? 0,
+    finalUrl: page.url(),
+    title: facts?.title ?? "",
+    headers: response?.headers() ?? {},
+    elementCount: facts?.elementCount ?? 0,
+  };
+}
+
+/**
+ * Spec 7.2 phases 5 and 6: wait for `load` and network idle, run `onLoaded` (block detection), make lazy images eager,
+ * scroll the page by 0.85 of the viewport every `scrollStepMs` until the bottom, wait for idle, go back to the top.
+ * Every wait has its cap, so a page stuck in a script only costs time; the signal rejects at once, and so does a
+ * rejection of `onLoaded`.
+ */
+export async function loadAndScroll(
+  page: Page,
+  options: { signal: AbortSignal; onStep: (step: "load" | "scroll", state: "start" | "done") => void; onLoaded?: () => Promise<void> },
+): Promise<void> {
+  const { signal, onStep } = options;
+  signal.throwIfAborted();
+
+  onStep("load", "start");
+  await capped(page.waitForLoadState("load", { timeout: limits.loadMs }), limits.loadMs, undefined, signal);
+  await capped(page.waitForLoadState("networkidle", { timeout: limits.networkIdleMs }), limits.networkIdleMs, undefined, signal);
+  onStep("load", "done");
+  await options.onLoaded?.();
+  signal.throwIfAborted();
+
+  onStep("scroll", "start");
+  const deadline = Date.now() + limits.scrollMs;
+  const left = () => deadline - Date.now();
+  await capped(page.evaluate(EAGER_IMAGES), left(), undefined, signal);
+  for (let step = 0; step < MAX_SCROLL_STEPS && left() > 0; step += 1) {
+    const atBottom = await capped(page.evaluate(SCROLL_STEP) as Promise<boolean>, left(), true, signal);
+    await sleep(Math.min(limits.scrollStepMs, Math.max(0, left())), signal);
+    if (atBottom) break;
+  }
+  await capped(page.waitForLoadState("networkidle", { timeout: limits.scrollIdleMs }), limits.scrollIdleMs, undefined, signal);
+  await capped(page.evaluate(BACK_TO_TOP), BACK_TO_TOP_MS, undefined, signal);
+  await sleep(BACK_TO_TOP_WAIT_MS, signal);
+  onStep("scroll", "done");
+}
+
+/** Spec 7.2 phase 7: finish finite animations (entrance animations would be captured mid-way) and wait for web fonts. */
+export async function prepareForCollection(page: Page, options: { signal?: AbortSignal } = {}): Promise<void> {
+  await capped(page.evaluate(FINISH_ANIMATIONS_AND_FONTS), limits.animationsMs, undefined, options.signal);
 }
