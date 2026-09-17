@@ -29,8 +29,6 @@ const SVG_NS = "http://www.w3.org/2000/svg";
 const XLINK_NS = "http://www.w3.org/1999/xlink";
 const MAX_SAME_MARKUP_NORMALIZATIONS = 3;
 const MAX_STYLED_SVG_ELEMENTS = 4_000;
-const MAX_TEXT_NODES = 20_000;
-const BLOB_FETCH_MS = 3_000;
 /** `page.baseUrl` and `manifestUrl` longer than this are left out, so they cannot push the lists out of the budget. */
 const MAX_PAGE_URL_CHARS = 8_192;
 
@@ -740,12 +738,12 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
   {
     let textNodes = 0;
     for (const { root } of roots) {
-      if (textNodes >= MAX_TEXT_NODES || outOfTime()) break;
+      if (textNodes >= options.maxTextNodes || outOfTime()) break;
       const start = (root as Document).body ?? root;
       const owner = (root as Document).createTreeWalker ? (root as Document) : root.ownerDocument;
       if (!start || !owner) continue;
       const walker = owner.createTreeWalker(start, NodeFilter.SHOW_TEXT);
-      for (let node = walker.nextNode(); node && textNodes < MAX_TEXT_NODES; node = walker.nextNode()) {
+      for (let node = walker.nextNode(); node && textNodes < options.maxTextNodes; node = walker.nextNode()) {
         const text = node.nodeValue?.trim();
         const parent = node.parentElement;
         if (!text || !parent || /^(?:script|style|noscript|template)$/.test(parent.localName)) continue;
@@ -1119,7 +1117,7 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
       }
       let entry: { mime: string; bytes: Uint8Array } | null = null;
       try {
-        const response = await fetch(url, { signal: AbortSignal.timeout(BLOB_FETCH_MS) });
+        const response = await fetch(url, { signal: AbortSignal.timeout(options.blobFetchMs) });
         const blob = await response.blob();
         if (blob.size <= options.maxBlobBytes) entry = { mime: blob.type || "application/octet-stream", bytes: new Uint8Array(await blob.arrayBuffer()) };
       } catch {

@@ -23,8 +23,6 @@ const ELEMENT_SOURCES = new Set<FoundIn>([
   "img", "picture", "lazy-attribute", "noscript", "video-poster", "svg-image", "object-embed",
   "css-background", "css-mask", "css-pseudo", "css-other", "shadow-dom", "iframe",
 ]);
-const MANIFEST_MS = 3_000;
-const MANIFEST_MAX_BYTES = 512_000;
 
 interface UrlRecord extends VariantMember, SizeHints {
   scheme: "http" | "data" | "blob";
@@ -316,8 +314,8 @@ async function buildRecords(input: PostInput, baseUrl: string, limiter: Limiter,
       try {
         const response = await input.fetch(manifestUrl, {
           headers: { accept: "application/manifest+json,application/json;q=0.9,*/*;q=0.5", "user-agent": BROWSER_USER_AGENT, referer: pageUrl },
-          timeoutMs: Math.max(1, Math.min(MANIFEST_MS, deadline - Date.now())),
-          maxBytes: MANIFEST_MAX_BYTES,
+          timeoutMs: Math.max(1, Math.min(limits.manifestMs, deadline - Date.now())),
+          maxBytes: limits.manifestMaxBytes,
           signal,
         });
         if (response.status < 200 || response.status > 299) {

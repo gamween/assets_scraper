@@ -79,6 +79,10 @@ const defaults = {
   svgTotalBytes: 12 * MB,
   svgMaxNormalizations: 400,
   spriteFetchMs: 4_000,
+  /** Fetch of one `blob:` image in the page. */
+  blobFetchMs: 3_000,
+  /** Text nodes the collector reads for font usage (spec 9). */
+  collectorMaxTextNodes: 20_000,
   maxBrandLinks: 6,
   /**
    * JSON characters of the whole collector output. Node holds the result several times while Playwright and the engine
@@ -105,6 +109,9 @@ const defaults = {
   googleFontsMs: 2_000,
   googleFontsMaxFamilies: 8,
   paletteFetchMs: 600,
+  /** Web app manifest icons read by the assets step (spec 8.1). */
+  manifestMs: 3_000,
+  manifestMaxBytes: 512_000,
   wikidataMs: 3_000,
   faviconServiceMs: 3_000,
 

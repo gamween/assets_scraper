@@ -595,6 +595,8 @@ async function runBrowserStage(input: ScanContext & {
           maxSvgBytes: limits.svgMaxBytes,
           maxSvgTotalBytes: limits.svgTotalBytes,
           spriteFetchMs: limits.spriteFetchMs,
+          blobFetchMs: limits.blobFetchMs,
+          maxTextNodes: limits.collectorMaxTextNodes,
           maxBrandLinks: limits.maxBrandLinks,
           maxBlobBytes: limits.blobMaxBytes,
           maxBlobTotalBytes: limits.blobTotalBytes,

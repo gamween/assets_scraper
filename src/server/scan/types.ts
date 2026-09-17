@@ -83,6 +83,8 @@ export interface CollectorOptions {
   maxSvgBytes: number;
   maxSvgTotalBytes: number;
   spriteFetchMs: number;                    // external sprite fetch (spec 8.6)
+  blobFetchMs: number;                      // fetch of one `blob:` image (limits.blobFetchMs)
+  maxTextNodes: number;                     // text nodes read for font usage (limits.collectorMaxTextNodes)
   maxBrandLinks: number;                    // spec 8.1
   maxBlobBytes: number;                     // bytes of one `blob:` image before base64 (spec 7.4, limits.blobMaxBytes)
   maxBlobTotalBytes: number;                // all `blobs` together before base64 (spec 7.4, limits.blobTotalBytes)

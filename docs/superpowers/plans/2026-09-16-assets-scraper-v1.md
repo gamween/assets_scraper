@@ -897,6 +897,10 @@ export const limits = {
   svgMaxNormalizations: 400,
   collectorMaxElements: 80_000,
   spriteFetchMs: 4_000,
+  blobFetchMs: 3_000,
+  collectorMaxTextNodes: 20_000,
+  manifestMs: 3_000,
+  manifestMaxBytes: 512_000,
   maxBrandLinks: 6,
   collectorMaxOutputChars: 32_000_000, // JSON characters of the collector output, lists cut to fit
   fontParseMaxBytes: 5 * MB,
@@ -1015,6 +1019,8 @@ export interface CollectorOptions {
   maxSvgBytes: number;
   maxSvgTotalBytes: number;
   spriteFetchMs: number;                    // external sprite fetch (spec 8.6)
+  blobFetchMs: number;                      // limits.blobFetchMs
+  maxTextNodes: number;                     // limits.collectorMaxTextNodes
   maxBrandLinks: number;                    // spec 8.1
   maxBlobBytes: number;                     // limits.blobMaxBytes
   maxBlobTotalBytes: number;                // limits.blobTotalBytes
