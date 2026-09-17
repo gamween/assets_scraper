@@ -5,7 +5,7 @@ import type { Tone } from "@/lib/contract";
 import { timeoutAfter } from "@/server/async";
 import { limits } from "@/server/config/limits";
 import { parseFontBinary } from "./fonts";
-import { toneFromBytes } from "./post/tone";
+import { createToneBudget } from "./post/tone";
 import type { CapturedFont, CapturedImage, CapturedNetwork, CapturedSheet, FontBinaryMeta } from "./types";
 
 export interface CaptureHandle {
@@ -19,7 +19,8 @@ export interface CaptureOptions {
   bodyReadMs?: number;
   /** Most URLs recorded, images, fonts and stylesheets together; `MAX_RECORDS` by default. */
   maxRecords?: number;
-  toneFromBytes?: (buffer: Buffer, contentType: string) => Promise<Tone>;
+  /** Replaces the tone renderer, for tests. Capture still applies the tone caps around it. */
+  toneFromBytes?: (buffer: Buffer, contentType: string, signal: AbortSignal) => Promise<Tone>;
   parseFontBinary?: (buffer: Buffer) => FontBinaryMeta | null;
 }
 
@@ -36,8 +37,6 @@ const ENCODED_EXPANSION = 4;
 const FONT_TYPE = /font|woff|opentype|truetype|sfnt/i;
 const FONT_EXTENSION = /\.(woff2?|ttf|otf|eot)(?:[?#]|$)/i;
 const SVG = (url: string, contentType: string) => /image\/svg/i.test(contentType) || /\.svgz?(?:[?#]|$)/i.test(url);
-
-const isJpeg = (body: Buffer) => body[0] === 0xff && body[1] === 0xd8 && body[2] === 0xff;
 
 class BodyTimeout extends Error {}
 
@@ -64,7 +63,6 @@ class BodyTimeout extends Error {}
  * the price is that a response that never ends holds its slot until the browser closes.
  */
 export function startCapture(page: Page, options: CaptureOptions): CaptureHandle {
-  const tone = options.toneFromBytes ?? toneFromBytes;
   const parseFont = options.parseFontBinary ?? parseFontBinary;
   const readMs = options.bodyReadMs ?? limits.bodyReadMs;
   const maxRecords = options.maxRecords ?? MAX_RECORDS;
@@ -78,9 +76,6 @@ export function startCapture(page: Page, options: CaptureOptions): CaptureHandle
   let reserved = 0;
   let bytesRead = 0;
   let blobBytes = 0;
-  let tonedRasters = 0;
-  let tonedSvgs = 0;
-  let toneMs = 0;
   let parsedFonts = 0;
   let fontParseMs = 0;
   let bodyTimeouts = 0;
@@ -88,6 +83,11 @@ export function startCapture(page: Page, options: CaptureOptions): CaptureHandle
   let stopped = false;
 
   const isStopped = () => stopped || options.signal.aborted;
+
+  // Tone runs within this stage's caps (spec 8.8) and stops once settle has returned the records: a render that ends
+  // later is never read, so none starts, and the ones still waiting for a render slot give up.
+  const toneDone = new AbortController();
+  const toneBudget = createToneBudget({ signal: AbortSignal.any([toneDone.signal, options.signal]), tone: options.toneFromBytes });
 
   /**
    * Runs `read` once a body slot is free and its reservation fits in the total cap (see above). A body declared over
@@ -193,22 +193,6 @@ export function startCapture(page: Page, options: CaptureOptions): CaptureHandle
     return body;
   };
 
-  const toneOf = async (body: Buffer, contentType: string, svg: boolean): Promise<Tone> => {
-    if (body.length > limits.toneMaxBytes || toneMs >= limits.toneBudgetMs) return "unknown";
-    // A JPEG is opaque without decoding (spec 8.8), so it uses none of the raster budget.
-    if (svg ? tonedSvgs >= limits.toneMaxSvgs : !isJpeg(body) && tonedRasters >= limits.toneMaxRasters) return "unknown";
-    if (svg) tonedSvgs += 1;
-    else if (!isJpeg(body)) tonedRasters += 1;
-    const started = performance.now();
-    try {
-      return await tone(body, contentType);
-    } catch {
-      return "unknown";
-    } finally {
-      toneMs += performance.now() - started;
-    }
-  };
-
   const captureImage = async (record: CapturedImage, body: Buffer) => {
     record.bytes = body.length;
     record.sha1 = createHash("sha1").update(body).digest("hex");
@@ -222,7 +206,8 @@ export function startCapture(page: Page, options: CaptureOptions): CaptureHandle
         // Not a format sharp reads (ico, broken bytes): no dimensions.
       }
     }
-    record.tone = await toneOf(body, record.contentType, svg);
+    // The budget gives an SVG over the markup cap no tone either.
+    record.tone = await toneBudget.raster(body, record.contentType);
     if (svg && body.length <= limits.svgMaxBytes) record.svgText = body.toString("utf8");
     if (record.url.startsWith("blob:") && body.length <= limits.blobMaxBytes && blobBytes + body.length <= limits.blobTotalBytes) {
       blobBytes += body.length;
@@ -294,6 +279,7 @@ export function startCapture(page: Page, options: CaptureOptions): CaptureHandle
         next();
       }
       if (jobs.size) await timeoutAfter(Promise.allSettled([...jobs]), timeoutMs, () => new BodyTimeout()).catch(() => {});
+      toneDone.abort();
       return {
         images: [...images.values()].map((record) => ({ ...record })),
         fonts: [...fonts.values()].map((record) => ({ ...record })),

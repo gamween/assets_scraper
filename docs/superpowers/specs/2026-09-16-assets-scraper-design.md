@@ -403,8 +403,9 @@ Tone decides the preview background of a tile.
 
 - JPEG: `opaque` without decoding.
 - Other rasters with captured bytes up to 3 MB: `sharp` resize to fit 32x32, read RGBA. A mean alpha of at least 0.98 gives `opaque` (a mean, not a count of opaque pixels, so the soft edge of a downscaled full image or a uniform 99 percent alpha is not transparency). Otherwise mean luminance of non-transparent pixels (alpha-weighted, Rec. 709): above 0.7 gives `light` (show on dark), below 0.3 gives `dark` (show on light), else `mixed` (checkerboard).
-- SVG: render the normalized markup with `sharp` at 64 px, same thresholds.
-- No bytes, errors, or over the caps: `unknown`, shown on the checkerboard. The caps (`toneMaxRasters` 300, `toneMaxSvgs` 400, `toneBudgetMs` 3 s, `toneMaxBytes` 3 MB) apply per stage: network capture and post-processing each get their own.
+- SVG up to `svgMaxBytes` (1 MB, the markup cap): render the normalized markup with `sharp` at 64 px, same thresholds.
+- No bytes, errors, or over the caps: `unknown`, shown on the checkerboard. The caps (`toneMaxRasters` 300, `toneMaxSvgs` 400, `toneBudgetMs` 3 s, `toneMaxBytes` 3 MB) apply per stage: network capture and post-processing each get their own. The time budget runs while a stage has renders waiting or in flight; once it is spent, or capture has settled, no render of that stage starts.
+- At most 2 `sharp` renders run at once in the process, whatever the stage or scan. They run on the libuv thread pool that DNS lookups and fs calls share, and a librsvg render cannot be stopped, so a render keeps its slot until it really ends, even after its stage gave up on it.
 
 ### 8.9 Block detection and fallback
 
