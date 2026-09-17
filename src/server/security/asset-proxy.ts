@@ -125,13 +125,15 @@ async function peek(stream: ReadableStream<Uint8Array>): Promise<{ head: Uint8Ar
   return { head: Buffer.concat(chunks), rest: reader };
 }
 
-/** `fmt=ttf`: the whole font, licence-checked, WOFF2 decompressed to its sfnt (TrueType or CFF outlines). */
+/**
+ * `fmt=ttf`: an open-licence WOFF2, buffered whole, decompressed to the sfnt it wraps. That is `font/ttf` for TrueType
+ * outlines and `font/otf` for CFF outlines (`OTTO`), which cannot become TrueType without re-drawing the glyphs, so
+ * callers name the file from the content type. Other sources get 415: TTF and OTF files are served as they are
+ * without `fmt`.
+ */
 async function convertFont(upstream: SafeResponse, signal: AbortSignal, headers: Record<string, string>): Promise<Response> {
   const source = await upstream.buffer();
-  const sourceType = sniffContentType(source);
-  if (sourceType !== "font/woff2" && sourceType !== "font/ttf" && sourceType !== "font/otf") {
-    return errorResponse(415, "not-convertible", "Only WOFF2, TTF and OTF fonts can be served as TTF.");
-  }
+  if (sniffContentType(source) !== "font/woff2") return errorResponse(415, "not-convertible", "Only WOFF2 fonts can be converted.");
   let meta: FontBinaryMeta | null = null;
   try {
     meta = parseFontBinary(source);
@@ -139,24 +141,23 @@ async function convertFont(upstream: SafeResponse, signal: AbortSignal, headers:
   if (!(await isConvertibleFont(meta, { fetch: safeFetch, signal }))) {
     return errorResponse(403, "license", "This font's licence does not allow conversion.");
   }
-  let output: Buffer = source;
-  if (sourceType === "font/woff2") {
-    try {
-      const { decompress } = await import("wawoff2");
-      output = Buffer.from(await decompress(source));
-    } catch {
-      return errorResponse(415, "not-convertible", "The font could not be converted.");
-    }
+  let output: Buffer;
+  try {
+    const { decompress } = await import("wawoff2");
+    output = Buffer.from(await decompress(source));
+  } catch {
+    return errorResponse(415, "not-convertible", "The font could not be converted.");
   }
+  const contentType = sniffContentType(output);
+  if (contentType !== "font/ttf" && contentType !== "font/otf") return errorResponse(415, "not-convertible", "The font could not be converted.");
   if (!(await takeProxyBytes(output.length))) return errorResponse(429, "budget", "Daily download limit reached.");
-  const contentType = sniffContentType(output) === "font/otf" ? "font/otf" : "font/ttf";
   return new Response(new Uint8Array(output), { headers: { ...headers, "content-type": contentType, "content-length": String(output.length) } });
 }
 
 /**
  * Signed byte proxy behind `GET /api/asset` (spec 11.2): same-origin callers only, HMAC-checked URL, SSRF-safe fetch
  * with size and time caps, image and font types only (untyped bytes by magic number), sandboxed and not sniffable,
- * cached on the CDN, and counted against the daily proxied bytes budget. `fmt=ttf` converts an open-licence WOFF2.
+ * cached on the CDN, and counted against the daily proxied bytes budget. `fmt=ttf` decompresses an open-licence WOFF2.
  */
 export async function handleAssetRequest(request: Request, options: AssetProxyOptions = {}): Promise<Response> {
   const maxBytes = options.maxBytes ?? limits.proxyMaxBytes;

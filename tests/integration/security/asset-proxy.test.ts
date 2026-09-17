@@ -182,7 +182,7 @@ describe("handleAssetRequest", () => {
     expect(dots.headers.get("content-disposition")).toBe("attachment; filename*=UTF-8''download");
   });
 
-  it("converts an open-licence WOFF2 to TTF or OTF and refuses other fonts", async () => {
+  it("decompresses an open-licence WOFF2 to its sfnt, labelled by outline format, and refuses other sources", async () => {
     const ttf = await handleAssetRequest(proxied("/assets/__inter.woff2", "&fmt=ttf&dl=inter.ttf"));
     expect(ttf.status).toBe(200);
     expect(ttf.headers.get("content-type")).toBe("font/ttf");
@@ -199,7 +199,10 @@ describe("handleAssetRequest", () => {
     fonts.isConvertibleFont.mockResolvedValue(false);
     expect(await errorOf(await handleAssetRequest(proxied("/assets/__inter.woff2", "&fmt=ttf")))).toMatchObject({ status: 403 });
     fonts.isConvertibleFont.mockResolvedValue(true);
-    expect(await errorOf(await handleAssetRequest(proxied("/assets/bg.png", "&fmt=ttf")))).toMatchObject({ status: 415 });
+    for (const source of ["/assets/bg.png", "/magic/ttf", "/magic/otf", "/magic/woff"]) {
+      expect(await errorOf(await handleAssetRequest(proxied(source, "&fmt=ttf"))), source).toMatchObject({ status: 415, code: "not-convertible" });
+    }
+    expect(fonts.isConvertibleFont).toHaveBeenCalledTimes(3);
     expect(await errorOf(await handleAssetRequest(proxied("/assets/__inter.woff2", "&fmt=ttf"), { maxBytes: 1024 }))).toMatchObject({ status: 413 });
   });
 
