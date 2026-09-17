@@ -1,10 +1,10 @@
 import { limits } from "@/server/config/limits";
 import { HttpError } from "@/server/errors";
 import { safeFetch, SafeFetchError, type SafeFetchErrorCode } from "@/server/net/safe-fetch";
-import { isConvertibleFont, parseFontBinary } from "@/server/scan/fonts/index";
-import type { FontBinaryMeta, SafeResponse } from "@/server/scan/types";
+import type { SafeResponse } from "@/server/scan/types";
 import { countProxyBytes, takeProxyBytes } from "./budget";
 import { contentDisposition } from "./download-name";
+import { convertWoff2, takeConversionSlot, WOFF2_MAX_SOURCE_BYTES } from "./font-convert";
 import { verifyAssetParams } from "./sign";
 import { SNIFF_BYTES, sniffContentType } from "./sniff";
 
@@ -29,13 +29,6 @@ const RESPONSE_HEADERS = {
 const MEDIA_TYPE = /^[a-z0-9][a-z0-9.+-]*\/[a-z0-9][a-z0-9.+-]*$/;
 const UNTYPED = new Set(["", "application/octet-stream", "binary/octet-stream"]);
 const WOFF2_SIGNATURE_BYTES = 4;
-/**
- * `fmt=ttf` buffers the source and decompresses it on the main thread into a WebAssembly heap that never shrinks, so
- * sources are capped well below the proxy cap (web fonts are rarely over a few MB) and at most this many conversions,
- * download included, run at once per instance.
- */
-const CONVERT_MAX_BYTES = 10 * 1024 * 1024;
-const CONVERT_SLOTS = 2;
 const FETCH_STATUS: Record<SafeFetchErrorCode, number> = {
   "invalid-url": 403, "blocked-address": 403, "own-host": 403, "unsupported-port": 403,
   dns: 502, connect: 502, "too-many-redirects": 502, aborted: 502, timeout: 504, "too-large": 413,
@@ -51,46 +44,6 @@ export type AssetProxyErrorCode =
 
 function errorResponse(status: number, code: AssetProxyErrorCode, message: string, headers: Record<string, string> = {}): Response {
   return Response.json({ error: { code, message } }, { status, headers: { ...SAFETY_HEADERS, "cache-control": "no-store", ...headers } });
-}
-
-let conversions = 0;
-const conversionQueue: (() => void)[] = [];
-
-/**
- * Takes one of the `CONVERT_SLOTS` conversion slots, waiting in order for a free one. Resolves with the slot's
- * idempotent release, or null when `signal` aborts first.
- */
-function takeConversionSlot(signal: AbortSignal): Promise<(() => void) | null> {
-  let released = false;
-  const release = () => {
-    if (released) return;
-    released = true;
-    const next = conversionQueue.shift();
-    if (next) next();
-    else conversions -= 1;
-  };
-  return new Promise((resolve) => {
-    if (conversions < CONVERT_SLOTS) {
-      conversions += 1;
-      resolve(release);
-      return;
-    }
-    if (signal.aborted) {
-      resolve(null);
-      return;
-    }
-    const grant = () => {
-      signal.removeEventListener("abort", giveUp);
-      resolve(release);
-    };
-    const giveUp = () => {
-      const index = conversionQueue.indexOf(grant);
-      if (index !== -1) conversionQueue.splice(index, 1);
-      resolve(null);
-    };
-    conversionQueue.push(grant);
-    signal.addEventListener("abort", giveUp, { once: true });
-  });
 }
 
 /** The upstream response, or the error response for a status outside 2xx. */
@@ -138,11 +91,10 @@ async function readAll(reader: ReadableStreamDefaultReader<Uint8Array>, head: Ui
 }
 
 /**
- * `fmt=ttf`: an open-licence WOFF2 of at most `CONVERT_MAX_BYTES`, buffered whole, decompressed to the sfnt it wraps.
- * That is `font/ttf` for TrueType outlines and `font/otf` for CFF outlines (`OTTO`), which cannot become TrueType
- * without re-drawing the glyphs, so callers name the file from the content type. Other sources get 415 from their first
- * bytes, before the rest is downloaded: TTF and OTF files are served as they are without `fmt`. The whole exchange,
- * waiting for a conversion slot included, stays within `timeoutMs`; no free slot in time gives 503.
+ * `fmt=ttf`: an open-licence WOFF2 of at most `WOFF2_MAX_SOURCE_BYTES`, buffered whole, served as the sfnt it wraps
+ * (`convertWoff2`), so callers name the file from the content type. Other sources get 415 from their first bytes,
+ * before the rest is downloaded: TTF and OTF files are served as they are without `fmt`. The whole exchange, waiting
+ * for a conversion slot included, stays within `timeoutMs`; no free slot in time gives 503.
  */
 async function convertFont(
   url: string,
@@ -157,7 +109,7 @@ async function convertFont(
   try {
     const remainingMs = timeoutMs - (Date.now() - started);
     if (remainingMs <= 0) return busy();
-    const upstream = await fetchAsset(url, signal, Math.min(maxBytes, CONVERT_MAX_BYTES), remainingMs);
+    const upstream = await fetchAsset(url, signal, Math.min(maxBytes, WOFF2_MAX_SOURCE_BYTES), remainingMs);
     if (upstream instanceof Response) return upstream;
     return await decompressFont(upstream, signal, dl);
   } finally {
@@ -172,28 +124,19 @@ async function decompressFont(upstream: SafeResponse, signal: AbortSignal, dl: s
     return errorResponse(415, "not-convertible", "Only WOFF2 fonts can be converted.");
   }
   const source = await readAll(rest, head);
-  let meta: FontBinaryMeta | null = null;
-  try {
-    meta = parseFontBinary(source);
-  } catch {}
-  if (!(await isConvertibleFont(meta, { fetch: safeFetch, signal }))) {
-    return errorResponse(403, "license", "This font's licence does not allow conversion.");
+  const converted = await convertWoff2(source, signal);
+  if (!converted.ok) {
+    return converted.reason === "license"
+      ? errorResponse(403, "license", "This font's licence does not allow conversion.")
+      : errorResponse(415, "not-convertible", "The font could not be converted.");
   }
-  let output: Buffer;
-  try {
-    const { decompress } = await import("wawoff2");
-    output = Buffer.from(await decompress(source));
-  } catch {
-    return errorResponse(415, "not-convertible", "The font could not be converted.");
-  }
-  const contentType = sniffContentType(output);
-  if (contentType !== "font/ttf" && contentType !== "font/otf") return errorResponse(415, "not-convertible", "The font could not be converted.");
-  if (!(await takeProxyBytes(output.length))) return errorResponse(429, "budget", "Daily download limit reached.");
-  return new Response(new Uint8Array(output), {
+  const { bytes, contentType } = converted;
+  if (!(await takeProxyBytes(bytes.length))) return errorResponse(429, "budget", "Daily download limit reached.");
+  return new Response(new Uint8Array(bytes), {
     headers: {
       ...RESPONSE_HEADERS,
       "content-type": contentType,
-      "content-length": String(output.length),
+      "content-length": String(bytes.length),
       "content-disposition": contentDisposition(dl, contentType),
     },
   });
