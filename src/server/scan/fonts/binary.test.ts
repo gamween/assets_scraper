@@ -1,8 +1,14 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { brotliDecompressSync, deflateSync } from "node:zlib";
-import { describe, expect, it } from "vitest";
+import * as fontkit from "fontkit";
+import { describe, expect, it, vi } from "vitest";
 import { parseFontBinary, sniffFontFormat, withinDecompressionLimits } from "./binary";
+
+vi.mock("fontkit", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("fontkit")>();
+  return { ...actual, create: vi.fn(actual.create) };
+});
 
 const asset = (name: string) => readFileSync(path.join(process.cwd(), "tests/fixtures/site/assets", name));
 const MIB = 1024 * 1024;
@@ -152,16 +158,20 @@ describe("decompression limits", () => {
     expect(parseFontBinary(woff)).toEqual({ ...parseFontBinary(asset("ss3.woff2")), format: "woff" });
   });
 
-  it("rejects a WOFF2 decompression bomb without decoding it", () => {
+  it("rejects a WOFF2 decompression bomb without handing it to fontkit", () => {
     // fontkit alone allocates 256 MiB and spends about half a second decoding either file
     const bombs = [woff2Declaring(2 ** 28, BROTLI_256_MIB_OF_ZEROS), woff2Declaring(2 ** 28, BROTLI_256_MIB_OF_ZEROS, 1_000)];
+    const create = vi.mocked(fontkit.create);
     for (const bomb of bombs) {
       expect(bomb.length).toBeLessThan(300);
-      const started = performance.now();
+      create.mockClear();
       expect(parseFontBinary(bomb)).toBeNull();
-      expect(performance.now() - started).toBeLessThan(100);
+      expect(create).not.toHaveBeenCalled();
       expect(withinDecompressionLimits(bomb)).toBe(false);
     }
+    create.mockClear();
+    expect(parseFontBinary(asset("ss3.woff2"))).not.toBeNull();
+    expect(create).toHaveBeenCalledOnce();
   });
 
   it("allows 16 times the file size, at least 16 KiB and at most 32 MiB", () => {

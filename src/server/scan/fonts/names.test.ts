@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { binaryFamilyName, cleanCssFamily, GENERIC_FAMILIES, isMangledCssFamily, resolveFamilyName, splitFamilies, type NameMeta } from "./names";
+import { growthFactor } from "./testing";
 
 /** discovery-lab/lib/fonts.mjs `resolveFamilyName`, verbatim apart from types: the reference implementation. */
 function labResolveFamilyName(meta: NameMeta | null, cssFamily: string | null) {
@@ -91,16 +92,20 @@ describe("resolveFamilyName", () => {
     }
   });
 
-  it("stays linear on hostile names", () => {
-    const spaces = " ".repeat(200_000);
-    const started = performance.now();
-    expect(resolveFamilyName({ nameId1: `Inter${spaces}Bold` }, null).name).toBe("Inter");
-    // 48 characters at most, as in the lab
-    expect(resolveFamilyName({ nameId1: `Inter${spaces}x` }, null).name).toBe("(unknown)");
-    expect(resolveFamilyName({ nameId1: `${"a ".repeat(100_000)}x`, postscriptName: "-".repeat(100_000) }, `${"__a_".repeat(50_000)}`).name).toBe("__a_".repeat(50_000));
-    expect(resolveFamilyName(null, `Brand${spaces}x`).name).toBe(`Brand${spaces}x`);
-    expect(resolveFamilyName(null, `Brand${spaces}Placeholder`).name).toBe("Brand");
-    expect(performance.now() - started).toBeLessThan(2_000);
+  it("stays linear on hostile names", async () => {
+    const hostile = (size: number) => {
+      const spaces = " ".repeat(size);
+      return [
+        resolveFamilyName({ nameId1: `Inter${spaces}Bold` }, null).name,
+        resolveFamilyName({ nameId1: `Inter${spaces}x` }, null).name,
+        resolveFamilyName({ nameId1: `${"a ".repeat(size / 2)}x`, postscriptName: "-".repeat(size / 2) }, "__a_".repeat(size / 4)).name,
+        resolveFamilyName(null, `Brand${spaces}x`).name,
+        resolveFamilyName(null, `Brand${spaces}Placeholder`).name,
+      ];
+    };
+    // 48 characters at most for a binary name, as in the lab
+    expect(hostile(200_000)).toEqual(["Inter", "(unknown)", "__a_".repeat(50_000), `Brand${" ".repeat(200_000)}x`, "Brand"]);
+    expect(await growthFactor(hostile, 40_000)).toBeLessThan(8);
   });
 
   it("keeps the CSS name and reports an unrelated embedded name", () => {
