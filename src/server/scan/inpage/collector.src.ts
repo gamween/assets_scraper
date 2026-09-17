@@ -34,7 +34,11 @@ const BLOB_FETCH_MS = 3_000;
 const LAZY_ATTR =
   /^data-(?:lazy-?)?(?:src|srcset|original|original-set|hi-?res(?:-src)?|full(?:-src)?|large(?:-src)?|zoom(?:-src)?|fallback(?:-src)?|bg|background|background-image|image|img|echo|flickity-lazyload|lazy|srcset-lazy|pin-media|retina|2x)$/i;
 const LAZY_BACKGROUND_ATTR = /^data-(?:bg|background|background-image|bg-src|lazy-background|image-src)$/i;
-const BRAND_LINK = /(?:^|[^a-z])(?:brand(?:ing|book|s)?|press(?:kit|room)?|media[- _]?kit|newsroom|logos?|guidelines)(?![a-z])/i;
+/**
+ * Spec 8.1 brand link words. A word must start the path segment or the text, so /wordpress, /express and /impressum do
+ * not match, but it may run on (/brandassets, /logopack, /presse). /logout, /logon and /pressure are left out.
+ */
+const BRAND_LINK = /(?:^|[^a-z])(?:brand|press(?!ure)|media[- _]?kit|newsroom|logo(?!ut|n(?![a-z]))|guidelines)/i;
 const LOGO_WORD = /logo|brand|wordmark|logotype/;
 
 const STYLE_PROPS = [

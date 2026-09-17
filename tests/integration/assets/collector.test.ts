@@ -23,7 +23,8 @@ beforeAll(async () => {
         <svg width="16" height="16"><use href="#used"/></svg>
         <svg width="120" height="30"><text x="0" y="20" style="font-family: '__Inter_d65c78'">Brand</text></svg>
         <svg width="120" height="30"><text x="0" y="20" style="font-family: serif">Plain</text></svg>
-        <a href="/logout">Log out</a> <a href="/wordpress-tips">Tips</a> <a href="/brand-assets">Assets</a> <a href="/brand-assets#top">Assets again</a>
+        <a href="/logout">Log out</a> <a href="/wordpress-tips">Tips</a> <a href="/impressum">Impressum</a> <a href="/express">Express shipping</a>
+        <a href="/brand-assets">Assets</a> <a href="/brand-assets#top">Assets again</a> <a href="/brandassets">Downloads</a> <a href="/logopack">Pack</a>
       </body></html>`);
     },
     "/labels.html": (_req, res) => {
@@ -198,7 +199,11 @@ describe("collector noise and edge cases", () => {
     expect(edge.svgs.filter((s) => s.source === "sprite-symbol").map((s) => s.label)).toEqual(["used"]);
     expect(edge.svgs.find((s) => s.markup.includes("<text"))).toMatchObject({ hasLiveText: true });
     expect(edge.svgs.find((s) => s.markup.includes("Plain"))).toMatchObject({ hasLiveText: false });
-    expect(edge.brandLinks).toEqual([{ href: `${server.origin}/brand-assets`, text: "Assets" }]);
+    expect(edge.brandLinks).toEqual([
+      { href: `${server.origin}/brand-assets`, text: "Assets" },
+      { href: `${server.origin}/brandassets`, text: "Downloads" },
+      { href: `${server.origin}/logopack`, text: "Pack" },
+    ]);
     expect(edge.manifestUrl).toBe(`${server.origin}/site.webmanifest`);
   });
 });
