@@ -9,6 +9,16 @@ import type { SafeFetch, Signer } from "./types";
 const PUBLIC_SOURCE_USER_AGENT = "AssetsScraper/1.0 (+https://github.com/gamween/assets_scraper)";
 const FAVICON_SERVICE_MS = 3_000;
 const FAVICON_MAX_BYTES = 1024 * 1024;
+/**
+ * The fallback travels in a single `error` line (spec 14: 256 KB). Each asset carries its URL four times (display and
+ * original, each with the signed proxy path), about 10 KB at the longest URL kept, so 20 assets stay well under.
+ */
+const MAX_FALLBACK_ASSETS = 20;
+const MAX_FALLBACK_URL_CHARS = 2_048;
+/** Per source, so that one crowded head (dozens of icon links) leaves room for the others. */
+const MAX_HEAD_ICONS = 8;
+const MAX_SOCIAL_IMAGES = 4;
+const MAX_JSON_LD_LOGOS = 4;
 const ROLE_WEIGHT: Partial<Record<AssetRole, number>> = { "site-logo": 1000, favicon: 300, social: 200, image: 100 };
 
 const EXTENSION_FORMAT: Record<string, AssetFormat> = {
@@ -168,9 +178,10 @@ async function wikidataLogo(host: string, fetch: SafeFetch, signal: AbortSignal)
 
 /**
  * Assets from sources that do not depend on the blocked page (spec 8.9): the preflight page head, Google's favicon
- * service and the Wikidata logo. Never throws: every source that fails is left out.
+ * service and the Wikidata logo. At most `MAX_FALLBACK_ASSETS`, with URLs of at most `MAX_FALLBACK_URL_CHARS`. Never
+ * throws: every source that fails is left out.
  */
-export async function buildFallback(input: { host: string; pageUrl: string; head: PageHead | null; fetch: SafeFetch; signer: Signer; signal: AbortSignal }): Promise<Asset[]> {
+export async function buildFallback(input: { host: string; head: PageHead | null; fetch: SafeFetch; signer: Signer; signal: AbortSignal }): Promise<Asset[]> {
   const { host, head, fetch, signer, signal } = input;
   const site = head?.siteName ?? capitalize(hostLabel(host));
   const quietly = <T>(task: () => Promise<T>) => task().catch(() => null);
@@ -178,22 +189,28 @@ export async function buildFallback(input: { host: string; pageUrl: string; head
 
   const drafts: Draft[] = [];
   const add = (url: string, role: AssetRole, type?: string) => {
+    if (url.length > MAX_FALLBACK_URL_CHARS) return false;
     try {
       drafts.push({ url, role, foundIn: "public-source", name: "", basename: "", format: formatOf(url, type) });
+      return true;
     } catch {
-      // Unparsable URL.
+      return false; // Unparsable URL.
     }
   };
+  const addSome = (items: { url: string; type?: string }[], role: AssetRole, max: number) => {
+    let added = 0;
+    for (const item of items) if (added < max && add(item.url, role, item.type)) added += 1;
+  };
   if (logo) drafts.push(logo);
-  for (const url of head?.jsonLdLogos ?? []) add(url, "site-logo");
-  for (const icon of head?.icons ?? []) add(icon.href, "favicon", icon.type);
+  addSome((head?.jsonLdLogos ?? []).map((url) => ({ url })), "site-logo", MAX_JSON_LD_LOGOS);
+  addSome((head?.icons ?? []).map((icon) => ({ url: icon.href, type: icon.type })), "favicon", MAX_HEAD_ICONS);
   if (favicon) drafts.push(favicon);
-  for (const url of head?.ogImages ?? []) add(url, "social");
+  addSome((head?.ogImages ?? []).map((url) => ({ url })), "social", MAX_SOCIAL_IMAGES);
 
   const label: Record<string, string> = { "site-logo": "logo", favicon: "favicon", social: "social image" };
   for (const draft of drafts) {
     draft.name = `${site} ${label[draft.role] ?? "image"}`;
     draft.basename = label[draft.role] ?? "image";
   }
-  return toAssets(drafts, host, signer);
+  return toAssets(drafts, host, signer).slice(0, MAX_FALLBACK_ASSETS);
 }

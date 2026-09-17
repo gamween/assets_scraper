@@ -187,7 +187,7 @@ describe("buildFallback", () => {
     const html = await readFile(path.join(import.meta.dirname, "../../fixtures/site/index.html"), "utf8");
     const head = parseHead(html, "https://www.example.com/");
     const signer = createFakeSigner();
-    const assets = await buildFallback({ host: "www.example.com", pageUrl: "https://www.example.com/", head, fetch: spy, signer, signal: signal() });
+    const assets = await buildFallback({ host: "www.example.com", head, fetch: spy, signer, signal: signal() });
 
     for (const asset of assets) {
       expect(() => Asset.parse(asset)).not.toThrow();
@@ -218,19 +218,50 @@ describe("buildFallback", () => {
     expect(query).toContain('"example.com"');
   });
 
+  it("keeps the fallback small enough for one NDJSON line, with every source represented", async () => {
+    const icon = await png();
+    const longPath = (i: number, size: number) => `/icons/${i}-${"a".repeat(size)}.png`;
+    const html = `<html><head>
+      ${Array.from({ length: 200 }, (_, i) => `<link rel="icon" href="${longPath(i, i % 2 ? 3000 : 1500)}">`).join("")}
+      ${Array.from({ length: 30 }, (_, i) => `<meta property="og:image" content="${longPath(1000 + i, 1500)}">`).join("")}
+      <script type="application/ld+json">${JSON.stringify({ "@graph": Array.from({ length: 30 }, (_, i) => ({ logo: `https://www.example.com${longPath(2000 + i, 1500)}` })) })}</script>
+      </head></html>`;
+    const publicFetch = createFakeFetch({
+      routes: {
+        "https://www.google.com/s2/favicons": () => new Response(new Uint8Array(icon), { headers: { "content-type": "image/png" } }),
+        "https://query.wikidata.org/sparql": () =>
+          Response.json({ results: { bindings: [{ logo: { value: "http://commons.wikimedia.org/wiki/Special:FilePath/Example.svg" }, site: { value: "https://www.example.com/" } }] } }),
+      },
+    });
+    // Signed proxy paths as long as the real signer's: the URL in base64url plus the expiry and the signature.
+    const signer = { sign: (url: string) => `/api/asset?u=${Buffer.from(url).toString("base64url")}&e=1790000000&s=${"s".repeat(32)}`, count: 0 };
+    const assets = await buildFallback({ host: "www.example.com", head: parseHead(html, "https://www.example.com/"), fetch: publicFetch, signer, signal: signal() });
+
+    expect(assets.length).toBeLessThanOrEqual(20);
+    for (const asset of assets) expect(asset.original?.url.length).toBeLessThanOrEqual(2048);
+    const line = JSON.stringify({ type: "error", code: "blocked", message: "The site blocked the scan", fallback: assets });
+    expect(Buffer.byteLength(line)).toBeLessThan(256_000);
+    const urls = assets.map((asset) => asset.original?.url ?? "");
+    expect(urls[0]).toBe("https://commons.wikimedia.org/wiki/Special:FilePath/Example.svg");
+    expect(urls).toContain("https://www.google.com/s2/favicons?domain=www.example.com&sz=256");
+    expect(assets.filter((asset) => asset.role === "site-logo").length).toBeGreaterThan(1);
+    expect(assets.filter((asset) => asset.role === "favicon").length).toBeGreaterThan(1);
+    expect(assets.filter((asset) => asset.role === "social").length).toBeGreaterThan(0);
+  });
+
   it("never throws: network failures give only what the head had", async () => {
     const broken: SafeFetch = async () => {
       throw new SafeFetchError("connect", "down");
     };
-    expect(await buildFallback({ host: "example.com", pageUrl: "https://example.com/", head: null, fetch: broken, signer: createFakeSigner(), signal: signal() })).toEqual([]);
+    expect(await buildFallback({ host: "example.com", head: null, fetch: broken, signer: createFakeSigner(), signal: signal() })).toEqual([]);
 
     const notFound = createFakeFetch({ routes: { "https://": () => new Response("nope", { status: 404 }) } });
     const head = parseHead('<link rel="icon" href="/favicon.ico">', "https://example.com/");
-    const assets = await buildFallback({ host: "example.com", pageUrl: "https://example.com/", head, fetch: notFound, signer: createFakeSigner(), signal: signal() });
+    const assets = await buildFallback({ host: "example.com", head, fetch: notFound, signer: createFakeSigner(), signal: signal() });
     expect(assets.map((asset) => [asset.role, asset.format, asset.original?.url])).toEqual([["favicon", "ico", "https://example.com/favicon.ico"]]);
 
     const refusing = { sign: () => { throw new Error("sign limit"); }, count: 800 };
-    expect(await buildFallback({ host: "example.com", pageUrl: "https://example.com/", head, fetch: broken, signer: refusing, signal: signal() })).toEqual([]);
+    expect(await buildFallback({ host: "example.com", head, fetch: broken, signer: refusing, signal: signal() })).toEqual([]);
   });
 });
 

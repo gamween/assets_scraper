@@ -350,7 +350,7 @@ async function runScan({ url, deps, cancel, emit }: ScanContext): Promise<void> 
     if (error instanceof BlockedPage) {
       diagnostics.blockReason = error.reason;
       const lookups = AbortSignal.any([cancel, AbortSignal.timeout(Math.max(0, scanEnds - Date.now()))]);
-      const fallback = await buildFallback({ host: new URL(url).hostname, pageUrl: url, head: pre?.head ?? null, fetch: deps.fetch, signer: getSigner(), signal: lookups }).catch(() => []);
+      const fallback = await buildFallback({ host: new URL(url).hostname, head: pre?.head ?? null, fetch: deps.fetch, signer: getSigner(), signal: lookups }).catch(() => []);
       if (cancel.aborted) return;
       emit({ type: "error", code: "blocked", message: "The site blocked the scan", fallback, diagnostics: snapshot() });
     } else if (error instanceof ScanFailure) {
