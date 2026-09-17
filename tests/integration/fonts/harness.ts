@@ -11,12 +11,11 @@ export function launchChrome(): Promise<Browser> {
 
 /**
  * A minimal stand-in for the font part of the in-page collector (Track C): `@font-face` rules from the CSSOM,
- * `document.fonts` statuses and visible text usage. Plain JavaScript in a string, so no transform helper leaks into
- * the page.
+ * `document.fonts` statuses and visible text usage. Families are passed as Chrome gives them, so `buildFontFamilies`
+ * decodes them. Plain JavaScript in a string, so no transform helper leaks into the page.
  */
 const FONT_COLLECTOR = String.raw`(async () => {
   await document.fonts.ready;
-  const unquote = (value) => value.trim().replace(/^(["'])(.*)\1$/, "$2");
   const fontFaces = [];
   const unreadableSheets = [];
   const walkRules = (rules, baseUrl) => {
@@ -24,7 +23,7 @@ const FONT_COLLECTOR = String.raw`(async () => {
       if (rule instanceof CSSFontFaceRule) {
         const style = rule.style;
         fontFaces.push({
-          family: unquote(style.getPropertyValue("font-family")),
+          family: style.getPropertyValue("font-family"),
           src: style.getPropertyValue("src"),
           weight: style.getPropertyValue("font-weight"),
           style: style.getPropertyValue("font-style"),
@@ -50,7 +49,7 @@ const FONT_COLLECTOR = String.raw`(async () => {
     walkRules(rules, sheet.href || document.baseURI);
   };
   for (const sheet of document.styleSheets) walkSheet(sheet);
-  const fontStatuses = [...document.fonts].map((face) => ({ family: unquote(face.family), weight: face.weight, style: face.style, stretch: face.stretch, status: face.status }));
+  const fontStatuses = [...document.fonts].map((face) => ({ family: face.family, weight: face.weight, style: face.style, stretch: face.stretch, status: face.status }));
   const usage = new Map();
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
   for (let node = walker.nextNode(); node; node = walker.nextNode()) {

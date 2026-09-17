@@ -203,6 +203,53 @@ describe("buildFontFamilies", () => {
     expect(ambiguous.families).toEqual([]);
   });
 
+  it("matches registered families of 256 characters at most, even ones that would resolve to the binary name", async () => {
+    // Wix-style families are machine-generated, so they resolve to the binary name whatever their length
+    const wix = (length: number) => `wf_${"0".repeat(length - 3)}`;
+    const { families } = await build({ fonts: [captured("https://cdn.site.example/f/inter.woff2")], fontStatuses: [loaded(wix(256)), loaded(wix(257))] });
+    expect(families).toHaveLength(1);
+    expect(families[0]).toMatchObject({ name: "Inter", cssFamilies: [wix(256)] });
+  });
+
+  it("decodes families from the CSSOM and document.fonts as the browser reads them", async () => {
+    const declared = "https://www.site.example/quote.woff2";
+    const unreadable = "https://www.site.example/unreadable.woff2";
+    // `font-family:"a\"b"`: the CSSOM gives `"a\"b"`, which collectors may pass without its quotes, and document.fonts
+    // gives `a"b`. Read apart, `a"b` was a family without a rule, which took the unreadable capture.
+    for (const family of [`"a\\"b"`, `a\\"b`]) {
+      const { families } = await build({ fontFaces: [rule(family, [declared])], fonts: [captured(unreadable, null)], fontStatuses: [loaded(`a"b`)] });
+      expect(families).toHaveLength(1);
+      expect(families[0]).toMatchObject({ name: `a"b`, cssFamilies: [`a"b`], usedOnPage: true, faces: [{ loaded: true, files: [{ url: declared }] }] });
+    }
+    // Captured stylesheets give families decoded, and a face made with the FontFace constructor gives a CSS string
+    const { byName } = await build({
+      sheets: [{ url: `${PAGE}a.css`, status: 200, cssText: `@font-face{font-family:"\\"q\\"";src:url(q.woff2)}` }],
+      fonts: [captured(unreadable, null)],
+      fontStatuses: [loaded(`"My \\"Font\\""`)],
+    });
+    expect([...byName.keys()].sort()).toEqual([`"q"`, `My "Font"`]);
+  });
+
+  it("skips collector entries of other types, which a page can return through the main-world collector", async () => {
+    const url = "https://www.site.example/ok.woff2";
+    const junk = (entries: unknown[]) => entries as never[];
+    const usage = (stack: unknown, chars: unknown) => ({ stack, weight: "400", style: "normal", chars });
+    const { families } = await build({
+      fontFaces: junk([
+        null,
+        7,
+        { ...rule("Bad", [url]), family: 5 },
+        { ...rule("Bad", [url]), src: "url(bad.woff2)" },
+        { ...rule("Bad", [url]), weight: 700 },
+        rule("Ok", junk([null, { url: 5 }, { url, format: 7 }])),
+      ]),
+      fontStatuses: junk([null, { ...loaded("Ok"), family: ["Ok"] }, { ...loaded("Ok"), weight: 400 }, loaded("Ok")]),
+      fontUsage: junk([null, usage(5, 3), usage("Ok", "7"), usage("Ok", 1e300), usage("Ok", 4)]),
+    });
+    expect(families).toHaveLength(1);
+    expect(families[0]).toMatchObject({ name: "Ok", usedOnPage: true, usage: 1, faces: [{ loaded: true, files: [{ url, format: "woff2" }] }] });
+  });
+
   it("merges CSS families that resolve to one name, keeps their faces apart and attributes Wix-style stacks", async () => {
     const { families } = await build({
       fontFaces: [rule("Inter", ["https://cdn.site.example/inter.woff2"]), rule("Inter Medium", ["https://cdn.site.example/inter-medium.woff2"])],
@@ -379,7 +426,7 @@ describe("buildFontFamilies", () => {
     const results = [];
     for (const input of long) results.push(await buildFontFamilies(input));
     expect(results.map(({ families }) => families.length)).toEqual([128, 128, 10_000]);
-    // A family longer than any font name is not matched
+    // Registered families past the length cap are not matched
     expect(results[0].families.flatMap((family) => family.cssFamilies)).toEqual([]);
 
     const run = (batch: PostInput[]) => async () => {

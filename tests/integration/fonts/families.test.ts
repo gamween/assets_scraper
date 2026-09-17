@@ -14,10 +14,15 @@ import { fakeSigner, launchChrome, scanPageFonts } from "./harness";
 const SITE = path.join(import.meta.dirname, "../../fixtures/site");
 const ss3 = readFileSync(path.join(SITE, "assets/ss3.woff2"));
 
-// The fixture page plus a used `@font-face` whose only source is a data: URI of ss3.woff2.
+// The fixture page plus used `@font-face` rules whose only source is a data: URI of ss3.woff2, one of them for a family
+// whose name needs CSS escapes.
+const ss3Uri = `data:font/woff2;base64,${ss3.toString("base64")}`;
 const inlinePage = readFileSync(path.join(SITE, "index.html"), "utf8")
-  .replace("</head>", `<style>@font-face{font-family:"Inline Face";src:url(data:font/woff2;base64,${ss3.toString("base64")}) format("woff2")}</style></head>`)
-  .replace("</main>", `<p style="font-family:'Inline Face'">Inline text</p></main>`);
+  .replace(
+    "</head>",
+    `<style>@font-face{font-family:"Inline Face";src:url(${ss3Uri}) format("woff2")}@font-face{font-family:"Quote \\"Face\\"";src:url(${ss3Uri})}</style></head>`,
+  )
+  .replace("</main>", `<p style="font-family:'Inline Face'">Inline text</p><p style='font-family:"Quote \\"Face\\""'>Quote text</p></main>`);
 
 let server: FixtureServer;
 let browser: Browser;
@@ -159,5 +164,8 @@ describe("buildFontFamilies on the fixture site", () => {
 
     expect(signer.signed.some((url) => url.startsWith("data:"))).toBe(false);
     expect([...signer.signed].sort()).toEqual(files.filter((file) => file.url).map((file) => file.url).sort());
+
+    // The CSSOM gives this family as `"Quote \"Face\""` and document.fonts as `Quote "Face"`: both read as one family
+    expect(byName.get(`Quote "Face"`)).toMatchObject({ cssFamilies: [`Quote "Face"`], source: "data-uri", usedOnPage: true, faces: [{ loaded: true }] });
   });
 });
