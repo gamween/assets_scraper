@@ -29,6 +29,19 @@ const onPage = <T>(pathname: string, fn: (page: Page, pid?: number) => Promise<T
     return fn(page, pid);
   });
 
+/**
+ * A CDP session whose target is gone. Its page lives in a context of its own: the scan context closes every page other
+ * than the scan page as it opens.
+ */
+async function createDeadSession(page: Page): Promise<CDPSession> {
+  const browser = page.context().browser();
+  if (!browser) throw new Error("expected a browser");
+  const context = await browser.newContext();
+  const session = await context.newCDPSession(await context.newPage());
+  await context.close();
+  return session;
+}
+
 describe("runInPage", () => {
   it("runs bundled code in an isolated world that page patches cannot reach", async () => {
     await onPage("/hostile.html", async (page) => {
@@ -72,9 +85,7 @@ describe("runInPage", () => {
 
   it("falls back to the main world when the isolated world cannot be created", async () => {
     await onPage("/", async (page) => {
-      const closedPage = await page.context().newPage();
-      const deadSession = await page.context().newCDPSession(closedPage);
-      await closedPage.close();
+      const deadSession = await createDeadSession(page);
       const result = await runInPage(page, "globalThis.__main = 41", "document.title + ' ' + (globalThis.__main + 1)", { timeoutMs: 2000, createSession: async () => deadSession });
       expect(result).toEqual({ value: "Fixture Co 42", world: "main" });
       expect(await page.evaluate(() => (globalThis as { __main?: number }).__main)).toBe(41);
@@ -90,9 +101,7 @@ describe("runInPage", () => {
       await page.evaluate(() => {
         JSON.stringify = () => "y".repeat(10_000);
       });
-      const closedPage = await page.context().newPage();
-      const deadSession = await page.context().newCDPSession(closedPage);
-      await closedPage.close();
+      const deadSession = await createDeadSession(page);
       const main = runInPage(page, "", "({ ok: true })", { timeoutMs: 2000, maxResultChars: 1000, createSession: async () => deadSession });
       await expect(main).rejects.toBeInstanceOf(InPageResultTooLargeError);
     });

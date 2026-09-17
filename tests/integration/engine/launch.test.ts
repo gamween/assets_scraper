@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import type { Page } from "playwright-core";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { BusyError, PIDFILE_ENV, pidfileMarker, withBrowser, wrapperScript } from "@/server/browser/launch";
 import { serveFixture, type FixtureServer } from "../../fixtures/serve";
@@ -156,7 +157,7 @@ describe("withBrowser", () => {
     expect(hits.video).toBe(0);
   });
 
-  it("blocks media in popups and in cross-site iframes", async () => {
+  it("blocks media in cross-site iframes", async () => {
     await withBrowser(open(), async ({ context, page }) => {
       await page.goto(`${fixture.origin}/frames.html`);
       const frame = page.frames().find((candidate) => candidate.url().startsWith(`http://localhost:${fixture.port}/`));
@@ -164,10 +165,26 @@ describe("withBrowser", () => {
       // Only a frame in its own process has its own CDP target, which the page's blocklist does not cover.
       await expect(context.newCDPSession(frame).then((cdp) => cdp.detach())).resolves.toBeUndefined();
       await expect.poll(() => frame.evaluate(fetchClip), { timeout: 5000 }).toBe("blocked");
+    });
+  });
 
-      const [popup] = await Promise.all([context.waitForEvent("page"), page.evaluate(() => void window.open("/blank.html"))]);
-      await popup.waitForLoadState();
-      await expect.poll(() => popup.evaluate(fetchClip), { timeout: 5000 }).toBe("blocked");
+  it("closes every popup as it opens, noopener ones included", async () => {
+    await withBrowser(open(), async ({ context, page }) => {
+      await page.goto(`${fixture.origin}/blank.html`);
+      const popups: Page[] = [];
+      context.on("page", (popup) => popups.push(popup));
+      // A page that opens a popup every 10 ms for a second.
+      await page.evaluate(() => {
+        let n = 0;
+        const timer = setInterval(() => void window.open(`/blank.html?${n}`, "_blank", n++ % 2 ? "noopener" : ""), 10);
+        setTimeout(() => clearInterval(timer), 1000);
+      });
+      await delay(1500);
+      expect(popups.length).toBeGreaterThan(5);
+      await expect.poll(() => popups.every((popup) => popup.isClosed()), { timeout: 5000 }).toBe(true);
+      expect(context.pages()).toEqual([page]);
+      expect(page.isClosed()).toBe(false);
+      expect(await page.evaluate(() => document.title)).toBe("Blank");
     });
   });
 

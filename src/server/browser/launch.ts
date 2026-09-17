@@ -368,31 +368,26 @@ async function blockMedia(context: BrowserContext, target: Page | Frame): Promis
 }
 
 /**
- * The blocklist of a CDP session covers its own target only. Frames in the process of their page share its target;
- * popups and out-of-process (cross-site) iframes get their own session as they appear. Those start a few milliseconds
- * after the target, so a request sent in that window can still go out.
+ * Media blocking and popups for the scan page. The blocklist of a CDP session covers its own target only: frames in the
+ * process of their page share its target, and out-of-process (cross-site) iframes get their own session as they
+ * appear. Those start a few milliseconds after the target, so a request sent in that window can still go out.
+ *
+ * Every other page of the context is a popup (the scan only ever opens `page`), and it is closed as soon as it opens:
+ * a scan never needs one, and a page that opens them in a loop would fill a single-process browser.
  */
-async function blockMediaEverywhere(context: BrowserContext, page: Page): Promise<void> {
+async function guardPages(context: BrowserContext, page: Page): Promise<void> {
+  context.on("page", (popup) => {
+    if (popup !== page) void popup.close().catch(() => {});
+  });
   const frames = new WeakMap<Frame, Promise<CDPSession | undefined>>();
-  const onFrame = (frame: Frame) => {
+  page.on("framenavigated", (frame) => {
     if (!frame.parentFrame()) return;
     // A cross-site navigation moves a frame to a new target: attach again, then drop the session it had.
     const previous = frames.get(frame);
     const next = blockMedia(context, frame).catch(() => undefined); // Throws for a frame in its page's process.
     frames.set(frame, next);
     void next.then(() => previous).then((cdp) => cdp?.detach()).catch(() => {});
-  };
-  const pages = new WeakSet<Page>();
-  const watch = (target: Page) => {
-    if (pages.has(target)) return false;
-    pages.add(target);
-    target.on("framenavigated", onFrame);
-    return true;
-  };
-  context.on("page", (popup) => {
-    if (watch(popup)) void blockMedia(context, popup).catch(() => {});
   });
-  watch(page);
   await blockMedia(context, page);
 }
 
@@ -457,7 +452,7 @@ export async function withBrowser<T>(options: WithBrowserOptions, fn: (session: 
         ignoreHTTPSErrors: true,
       });
       const page = await context.newPage();
-      await blockMediaEverywhere(context, page);
+      await guardPages(context, page);
       return { context, page };
     };
     const { context, page } = await untilAborted(setup(), signal);
