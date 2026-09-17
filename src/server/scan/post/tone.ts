@@ -1,5 +1,6 @@
 import sharp from "sharp";
 import type { Tone } from "@/lib/contract";
+import { untilAborted } from "@/server/async";
 import { limits } from "@/server/config/limits";
 import { formatFromContentType, sniffFormat } from "./format";
 
@@ -13,8 +14,58 @@ import { formatFromContentType, sniffFormat } from "./format";
 const RASTER_SIZE = 32;
 const SVG_SIZE = 64;
 const MAX_INPUT_PIXELS = 8192 * 8192;
-/** Renders in flight at once. sharp runs them on the libuv thread pool, which has 4 threads by default. */
-const CONCURRENCY = 4;
+/**
+ * sharp calls in flight at once across the process, capture and post-processing and every scan together. sharp runs
+ * them on the libuv thread pool (4 threads by default), which DNS lookups (`dns.lookup` in `safeFetch` and the egress
+ * proxy) and fs calls share. Neither sharp nor a timeout can stop a librsvg render, and a page chooses how slow its SVGs
+ * are, so a render keeps its slot until it really ends, even once its budget gave up on it: the other threads stay free.
+ */
+const RENDER_CONCURRENCY = 2;
+
+let renders = 0;
+let rendersStarted = 0;
+const waiting: (() => void)[] = [];
+
+/** sharp calls in flight, and started since the process began. For tests. */
+export const toneRenderStats = () => ({ active: renders, started: rendersStarted });
+
+/** Waits for a render slot. Resolves false, without a slot, when `signal` aborts first. */
+function acquireRender(signal?: AbortSignal): Promise<boolean> {
+  if (signal?.aborted) return Promise.resolve(false);
+  if (renders < RENDER_CONCURRENCY) {
+    renders++;
+    return Promise.resolve(true);
+  }
+  return new Promise((resolve) => {
+    const onAbort = () => {
+      const index = waiting.indexOf(start);
+      if (index >= 0) waiting.splice(index, 1);
+      resolve(false);
+    };
+    const start = () => {
+      signal?.removeEventListener("abort", onAbort);
+      renders++;
+      resolve(true);
+    };
+    waiting.push(start);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+/** Runs `work` in a render slot, or gives `unknown` without running it when `signal` aborts first. */
+async function rendered(work: () => Promise<Tone>, signal?: AbortSignal): Promise<Tone> {
+  if (!(await acquireRender(signal))) return "unknown";
+  try {
+    if (signal?.aborted) return "unknown";
+    rendersStarted++;
+    return await work();
+  } catch {
+    return "unknown";
+  } finally {
+    renders--;
+    waiting.shift()?.();
+  }
+}
 
 async function toneOf(image: ReturnType<typeof sharp>, size: number): Promise<Tone> {
   const { data, info } = await image
@@ -46,31 +97,27 @@ const isJpeg = (buffer: Buffer, contentType: string) =>
 const isSvg = (buffer: Buffer, contentType: string) =>
   formatFromContentType(contentType, "") === "svg" || sniffFormat(buffer.subarray(0, 1024)) === "svg";
 
-export async function toneFromSvg(markup: string): Promise<Tone> {
-  try {
+/** Tone of SVG markup. `signal` only matters while the render waits for a slot: once started, a render runs to its end. */
+export function toneFromSvg(markup: string, signal?: AbortSignal): Promise<Tone> {
+  return rendered(async () => {
     const input = Buffer.from(markup);
     // Render close to the preview size instead of rendering the declared size and downscaling it.
     const { width, height } = await sharp(input, { limitInputPixels: false }).metadata();
     const density = width && height ? Math.min(Math.max((72 * SVG_SIZE) / Math.max(width, height), 1), 10_000) : 72;
-    return await toneOf(sharp(input, { density, limitInputPixels: MAX_INPUT_PIXELS, failOn: "error" }), SVG_SIZE);
-  } catch {
-    return "unknown";
-  }
+    return toneOf(sharp(input, { density, limitInputPixels: MAX_INPUT_PIXELS, failOn: "error" }), SVG_SIZE);
+  }, signal);
 }
 
-async function toneFromRaster(buffer: Buffer): Promise<Tone> {
-  try {
-    return await toneOf(sharp(buffer, { limitInputPixels: MAX_INPUT_PIXELS, failOn: "error", animated: false }), RASTER_SIZE);
-  } catch {
-    return "unknown";
-  }
+function toneFromRaster(buffer: Buffer, signal?: AbortSignal): Promise<Tone> {
+  return rendered(() => toneOf(sharp(buffer, { limitInputPixels: MAX_INPUT_PIXELS, failOn: "error", animated: false }), RASTER_SIZE), signal);
 }
 
-export async function toneFromBytes(buffer: Buffer, contentType: string): Promise<Tone> {
+/** Tone of image bytes, like `toneFromSvg` for `signal`. JPEG needs no render and is always `opaque`. */
+export async function toneFromBytes(buffer: Buffer, contentType: string, signal?: AbortSignal): Promise<Tone> {
   if (!buffer.length) return "unknown";
   if (isJpeg(buffer, contentType)) return "opaque";
-  if (isSvg(buffer, contentType)) return toneFromSvg(buffer.toString("utf8"));
-  return toneFromRaster(buffer);
+  if (isSvg(buffer, contentType)) return toneFromSvg(buffer.toString("utf8"), signal);
+  return toneFromRaster(buffer, signal);
 }
 
 export interface ToneBudget {
@@ -79,72 +126,78 @@ export interface ToneBudget {
 }
 
 /**
- * Tone with the scan caps (spec 8.8): at most `maxRasters` rasters and `maxSvgs` SVGs, `maxBytes` per input, and
- * `budgetMs` of tone work in total, then `unknown`.
+ * Tone with the scan caps (spec 8.8): at most `maxRasters` rasters and `maxSvgs` SVGs, `maxBytes` per input (and
+ * `maxSvgBytes` per SVG, whose markup is never kept past that), and `budgetMs` of tone work in total, then `unknown`.
  *
- * Renders run a few at a time, in call order, so a caller that asks in relevance order tones the most relevant
- * assets first. The clock only runs while renders are in flight, so the time spent before the first render (fetches,
- * verification) never counts. Once the budget is spent, renders in flight resolve `unknown` and queued ones never start.
- * JPEG needs no render and is always `opaque`.
+ * Renders take process-wide slots in call order, so a caller that asks in relevance order tones the most relevant
+ * assets first. The clock runs while this budget has renders waiting for a slot or in flight, so the time spent before
+ * the first one (fetches, verification) never counts. Once the budget is spent or `signal` aborts, every render of this
+ * budget resolves `unknown` and those still waiting for a slot never start. JPEG needs no render and is always `opaque`.
+ * `tone` replaces the renderer, for tests.
  */
 export function createToneBudget(
-  options: { maxRasters?: number; maxSvgs?: number; maxBytes?: number; budgetMs?: number } = {},
+  options: {
+    maxRasters?: number;
+    maxSvgs?: number;
+    maxBytes?: number;
+    maxSvgBytes?: number;
+    budgetMs?: number;
+    signal?: AbortSignal;
+    tone?: (buffer: Buffer, contentType: string, signal: AbortSignal) => Promise<Tone>;
+  } = {},
 ): ToneBudget {
   const maxRasters = options.maxRasters ?? limits.toneMaxRasters;
   const maxSvgs = options.maxSvgs ?? limits.toneMaxSvgs;
   const maxBytes = options.maxBytes ?? limits.toneMaxBytes;
+  const maxSvgBytes = Math.min(maxBytes, options.maxSvgBytes ?? limits.svgMaxBytes);
   const budgetMs = options.budgetMs ?? limits.toneBudgetMs;
+  const tone = options.tone ?? toneFromBytes;
   let rasters = 0;
   let svgs = 0;
 
-  const queue: (() => void)[] = [];
+  const spentBudget = new AbortController();
+  const signal = options.signal ? AbortSignal.any([spentBudget.signal, options.signal]) : spentBudget.signal;
   let active = 0;
   let spentMs = 0;
   let busySince = 0;
-  const spent = () => spentMs + (active > 0 ? performance.now() - busySince : 0);
-  const pump = () => {
-    while (active < CONCURRENCY && queue.length) queue.shift()!();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  const run = async (buffer: Buffer, contentType: string): Promise<Tone> => {
+    if (signal.aborted || spentMs >= budgetMs) return "unknown";
+    if (active++ === 0) {
+      busySince = performance.now();
+      timer = setTimeout(() => spentBudget.abort(), budgetMs - spentMs);
+    }
+    try {
+      // A render that outlives the budget keeps running and keeps its slot; its result is ignored.
+      return await untilAborted(tone(buffer, contentType, signal), signal);
+    } catch {
+      return "unknown";
+    } finally {
+      if (--active === 0) {
+        clearTimeout(timer);
+        spentMs += performance.now() - busySince;
+      }
+    }
   };
 
-  const run = (render: () => Promise<Tone>) =>
-    new Promise<Tone>((resolve) => {
-      queue.push(() => {
-        const remaining = budgetMs - spent();
-        if (remaining <= 0) {
-          resolve("unknown");
-          return;
-        }
-        if (active++ === 0) busySince = performance.now();
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        const timeout = new Promise<Tone>((settle) => {
-          timer = setTimeout(() => settle("unknown"), remaining);
-        });
-        // A render that outlives the budget is left to finish on its own; its result is ignored.
-        void Promise.race([render().catch((): Tone => "unknown"), timeout]).then((tone) => {
-          clearTimeout(timer);
-          if (--active === 0) spentMs += performance.now() - busySince;
-          resolve(tone);
-          pump();
-        });
-      });
-      pump();
-    });
-
-  const svg = async (markup: string): Promise<Tone> => {
-    if (svgs >= maxSvgs || Buffer.byteLength(markup) > maxBytes) return "unknown";
+  const svg = (buffer: Buffer): Promise<Tone> | Tone => {
+    if (svgs >= maxSvgs || buffer.length > maxSvgBytes) return "unknown";
     svgs++;
-    return run(() => toneFromSvg(markup));
+    return run(buffer, "image/svg+xml");
   };
 
   return {
-    svg,
+    async svg(markup) {
+      return Buffer.byteLength(markup) > maxSvgBytes ? "unknown" : svg(Buffer.from(markup));
+    },
     async raster(buffer, contentType) {
       if (!buffer.length || buffer.length > maxBytes) return "unknown";
       if (isJpeg(buffer, contentType)) return "opaque";
-      if (isSvg(buffer, contentType)) return svg(buffer.toString("utf8"));
+      if (isSvg(buffer, contentType)) return svg(buffer);
       if (rasters >= maxRasters) return "unknown";
       rasters++;
-      return run(() => toneFromRaster(buffer));
+      return run(buffer, contentType);
     },
   };
 }
