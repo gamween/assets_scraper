@@ -16,6 +16,7 @@ let bigPng: Buffer;
 let webp: Buffer;
 let gif: Buffer;
 const requests: http.IncomingHttpHeaders[] = [];
+const rangeResetRequests: http.IncomingHttpHeaders[] = [];
 
 beforeAll(async () => {
   bigPng = await noise(1000, 900).png({ compressionLevel: 0 }).toBuffer();
@@ -48,6 +49,18 @@ beforeAll(async () => {
       res.writeHead(200, { "content-type": "application/octet-stream" });
       res.end(Buffer.from("PK\u0003\u0004 not an image"));
     },
+    // A CDN edge that resets the response mid-body whenever the request carries a range, and serves the file otherwise.
+    "/range-resets.png": (req, res) => {
+      rangeResetRequests.push(req.headers);
+      if (req.headers.range) {
+        res.writeHead(206, { "content-type": "image/png", "content-range": `bytes 0-262143/${900_000}` });
+        res.write(bigPng.subarray(0, 1024));
+        res.socket?.destroy();
+        return;
+      }
+      res.writeHead(200, { "content-type": "image/png", "content-length": String(bigPng.length) });
+      res.end(bigPng);
+    },
     "/partial.gif": (_req, res) => {
       res.writeHead(206, { "content-type": "image/gif", "content-range": `bytes 0-1023/${gif.length}` });
       res.end(gif.subarray(0, 1024));
@@ -68,6 +81,14 @@ describe("verifyUrl", () => {
     expect(headers.referer).toBe(`${server.origin}/`);
     expect(headers["user-agent"]).toMatch(/Chrome\/\d+/);
     expect(headers["user-agent"]).not.toMatch(/Headless/);
+  });
+
+  it("retries without the range when the ranged request is reset mid-body", async () => {
+    rangeResetRequests.length = 0;
+    const result = await verifyUrl(`${server.origin}/range-resets.png`, options());
+    expect(result).toMatchObject({ ok: true, format: "png", width: 1000, height: 900 });
+    // Two requests: the ranged one that was reset, then the same URL without a range.
+    expect(rangeResetRequests.map((headers) => headers.range)).toEqual(["bytes=0-262143", undefined]);
   });
 
   it("stops reading a response that ignores the range", async () => {

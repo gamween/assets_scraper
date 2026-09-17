@@ -107,14 +107,17 @@ export async function imageDimensions(body: Buffer, format: AssetFormat, complet
   return size && size.width > 0 && size.height > 0 ? size : {};
 }
 
-export async function verifyUrl(url: string, options: VerifyOptions): Promise<VerifyResult> {
+/** A request that never produced a response. Kept apart from a refusal, which is an answer and is not retried. */
+const TRANSPORT_FAILURE = Symbol("transport-failure");
+
+async function attempt(url: string, options: VerifyOptions, ranged: boolean): Promise<VerifyResult | typeof TRANSPORT_FAILURE> {
   const remaining = options.deadline - Date.now();
   if (options.signal.aborted || remaining <= 0) return SKIPPED;
   try {
     const response = await options.fetch(url, {
       method: "GET",
       headers: {
-        range: `bytes=0-${VERIFY_RANGE_BYTES - 1}`,
+        ...(ranged ? { range: `bytes=0-${VERIFY_RANGE_BYTES - 1}` } : {}),
         accept: VERIFY_ACCEPT,
         "user-agent": BROWSER_USER_AGENT,
         referer: options.pageUrl,
@@ -147,8 +150,24 @@ export async function verifyUrl(url: string, options: VerifyOptions): Promise<Ve
       ...(complete ? { body } : {}),
     };
   } catch {
-    return options.signal.aborted || Date.now() >= options.deadline ? SKIPPED : { ok: false, reason: "network" };
+    return options.signal.aborted || Date.now() >= options.deadline ? SKIPPED : TRANSPORT_FAILURE;
   }
+}
+
+/**
+ * Reads enough of `url` to say whether it is an image, and how big (spec 8.4).
+ *
+ * The request asks for a range, so a large file costs a prefix instead of the whole body. Some HTTP/2 CDN edges answer
+ * a ranged request by resetting the stream mid-body (NGHTTP2_INTERNAL_ERROR), which used to end the check: the caller
+ * saw a network failure and kept the transformed URL the page served, on hosts whose original was perfectly reachable.
+ * A transport failure on the ranged request is therefore retried once without the range. It costs one extra request,
+ * only on a URL that already failed, and `readPrefix` still stops reading at the same prefix.
+ */
+export async function verifyUrl(url: string, options: VerifyOptions): Promise<VerifyResult> {
+  const ranged = await attempt(url, options, true);
+  if (ranged !== TRANSPORT_FAILURE) return ranged;
+  const plain = await attempt(url, options, false);
+  return plain === TRANSPORT_FAILURE ? { ok: false, reason: "network" } : plain;
 }
 
 export interface Limiter {
