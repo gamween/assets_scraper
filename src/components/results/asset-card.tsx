@@ -162,7 +162,7 @@ export const AssetCard = memo(function AssetCard({ asset }: { asset: Asset }) {
         }}
       />
 
-      {selected ? <span aria-hidden="true" className="pointer-events-none absolute inset-0 z-20 rounded-lg ring-2 ring-accent ring-inset" /> : null}
+      {selected ? <span aria-hidden="true" className="pointer-events-none absolute inset-0 z-20 rounded-lg border-2 border-accent" /> : null}
     </article>
   );
 });

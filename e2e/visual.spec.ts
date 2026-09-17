@@ -105,18 +105,21 @@ for (const viewport of VIEWPORTS) {
 
 /**
  * Spec 12.6 "Flat surfaces": the float shadow only on the selection bar, dialog and toasts, and no other shadow
- * anywhere (focus rings aside, and nothing has focus here).
+ * anywhere (focus rings aside, and nothing shows one here). Tailwind pads `box-shadow` with transparent layers, which
+ * are left out before comparing.
  */
 async function strayShadows(page: Page): Promise<string[]> {
   return page.evaluate(() => {
+    const layers = (value: string) =>
+      value === "none" ? [] : value.split(/,(?![^(]*\))/).map((layer) => layer.trim()).filter((layer) => !layer.startsWith("rgba(0, 0, 0, 0)"));
     const probe = document.createElement("div");
     probe.style.boxShadow = "var(--shadow-float)";
     document.body.append(probe);
-    const float = getComputedStyle(probe).boxShadow;
+    const float = layers(getComputedStyle(probe).boxShadow).join(", ");
     probe.remove();
     return [...document.querySelectorAll("body *")].flatMap((element) => {
-      const shadow = getComputedStyle(element).boxShadow;
-      if (shadow === "none") return [];
+      const shadow = layers(getComputedStyle(element).boxShadow).join(", ");
+      if (!shadow) return [];
       if (shadow === float && element.closest('[role="dialog"], [aria-label="Selection"], [data-testid="toast"]')) return [];
       return [`${element.tagName.toLowerCase()} ${String(element.getAttribute("class")).slice(0, 100)}: ${shadow}`];
     });
@@ -132,14 +135,19 @@ test("surfaces stay flat outside the selection bar, dialog and toasts", async ({
 
   await card.locator("[data-card-main]").click({ modifiers: ["ControlOrMeta"] });
   await expect(page.getByRole("region", { name: "Selection" })).toBeVisible();
+  await page.getByRole("tab", { name: /^Fonts/ }).click();
+  const fontRow = page.getByTestId("font-row").first();
+  await fontRow.getByRole("checkbox").click();
+  await expect(fontRow).toHaveAttribute("data-selected", "true");
   await page.getByRole("button", { name: "Copy link" }).click();
   await expect(page.getByTestId("toast")).toBeVisible();
   expect(await strayShadows(page)).toEqual([]);
 
   await page.keyboard.press("Escape");
+  await page.getByRole("tab", { name: /^All/ }).click();
   await page.getByTestId("asset-card").nth(1).locator("[data-card-main]").click();
-  await expect(page.getByRole("dialog")).toBeVisible();
-  await page.getByRole("dialog").getByRole("button", { name: "Next" }).hover();
+  await expect(page.getByTestId("detail-well")).toBeVisible();
+  await page.getByRole("button", { name: "Next", exact: true }).hover();
   expect(await strayShadows(page)).toEqual([]);
 });
 

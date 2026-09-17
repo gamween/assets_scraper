@@ -92,7 +92,7 @@ export const FontRow = memo(function FontRow({ font }: { font: FontFamily }) {
       data-selected={selected || undefined}
       className={cn(
         "group/font relative overflow-hidden rounded-lg border bg-surface transition-colors duration-100",
-        selected ? "border-accent ring-1 ring-accent ring-inset" : "border-border hover:border-border-strong",
+        selected ? "border-accent" : "border-border hover:border-border-strong",
       )}
     >
       <div className="grid gap-x-8 gap-y-4 px-5 pt-5 pb-4 lg:grid-cols-[minmax(0,1fr)_360px]">
@@ -190,6 +190,9 @@ export const FontRow = memo(function FontRow({ font }: { font: FontFamily }) {
           </Button>
         ) : null}
       </div>
+
+      {/* A second accent line inside the border marks the selection (a border, not a shadow: spec 12.6 flat surfaces). */}
+      {selected ? <span aria-hidden="true" className="pointer-events-none absolute inset-0 rounded-lg border border-accent" /> : null}
     </article>
   );
 });
