@@ -336,15 +336,19 @@ describe("startCapture", () => {
           prototype.body = async function (this: Response) {
             inFlight += 1;
             maxInFlight = Math.max(maxInFlight, inFlight);
+            console.log(`DIAG start ${performance.now().toFixed(1)} ${this.url()} inFlight=${inFlight}`);
             try {
               return await body.call(this);
             } finally {
               inFlight -= 1;
+              console.log(`DIAG end ${performance.now().toFixed(1)} ${this.url()}`);
             }
           };
           restore = () => (prototype.body = body);
         });
         const capture = startCapture(page, { signal: new AbortController().signal, toneFromBytes: async () => "unknown" });
+        page.on("response", (r) => console.log(`DIAG resp ${performance.now().toFixed(1)} ${r.url()}`));
+        page.on("requestfinished", (r) => console.log(`DIAG fin ${performance.now().toFixed(1)} ${r.url()}`));
         await page.goto(`${fixture.origin}/many.html`, { waitUntil: "load" });
         return capture.settle(5000);
       });
@@ -410,16 +414,20 @@ describe("startCapture", () => {
           prototype.body = async function (this: Response) {
             inFlight += 1;
             maxInFlight = Math.max(maxInFlight, inFlight);
+            console.log(`DIAG start ${performance.now().toFixed(1)} ${this.url()} inFlight=${inFlight}`);
             try {
               return await body.call(this);
             } finally {
               inFlight -= 1;
+              console.log(`DIAG end ${performance.now().toFixed(1)} ${this.url()}`);
               finished += 1;
             }
           };
           restore = () => (prototype.body = body);
         });
         const capture = startCapture(page, { signal: new AbortController().signal, toneFromBytes: async () => "unknown" });
+        page.on("response", (r) => console.log(`DIAG resp ${performance.now().toFixed(1)} ${r.url()}`));
+        page.on("requestfinished", (r) => console.log(`DIAG fin ${performance.now().toFixed(1)} ${r.url()}`));
         await page.goto(`${fixture.origin}/many-gzip.html`, { waitUntil: "load" });
         // Reads still queued when capture settles never start: wait for all of them first.
         await expect.poll(() => finished, { timeout: 10_000 }).toBe(8);

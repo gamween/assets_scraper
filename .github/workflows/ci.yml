@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [full, order-proxy, split-proxy, capture-only, order-engine]
+        variant: [cmdline, orphan, inflight]
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -24,25 +24,13 @@ jobs:
         with: { node-version: "${{ env.NODE_VERSION }}", cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm build:inpage
-      - name: sampler
-        run: |
-          nproc; free -m; cat /proc/cpuinfo | grep "model name" | head -1
-          nohup bash -c 'while true; do echo "== $(date +%T)"; ps -eo pid,ppid,pcpu,etimes,args --sort=-pcpu | head -8 | cut -c1-200; sleep 3; done' > ps.log 2>&1 &
       - name: run
         continue-on-error: true
         run: |
           C=tests/integration/engine/capture.test.ts
           L=tests/integration/engine/launch.test.ts
-          E=tests/integration/engine/engine.test.ts
-          AP=tests/integration/security/asset-proxy.test.ts
-          EP=tests/integration/security/egress-proxy.test.ts
           case "${{ matrix.variant }}" in
-            full) npx vitest run --project integration ;;
-            order-proxy) ORDER=$AP,$EP,$C,$L npx vitest run -c vitest.order.config.ts $AP $EP $C $L ;;
-            split-proxy) npx vitest run --project integration $AP $EP; echo "== after proxy tests"; ps -eo pid,ppid,pcpu,etimes,args --sort=-pcpu | head -15 | cut -c1-200; npx vitest run --project integration $C $L ;;
-            capture-only) for i in 1 2 3; do npx vitest run --project integration $C $L; done ;;
-            order-engine) ORDER=$E,$C,$L npx vitest run -c vitest.order.config.ts $E $C $L ;;
+            cmdline) ls -la /usr/bin/google-chrome /etc/alternatives/google-chrome; head -60 /opt/google/chrome/google-chrome; for i in 1 2 3; do node diag/cmdline.mjs; done ;;
+            orphan) for i in $(seq 1 12); do npx vitest run --project integration $L -t "kills a browser left behind" 2>&1 | grep -E "Tests  |✓|×"; done ;;
+            inflight) for i in $(seq 1 8); do echo "=== iteration $i"; npx vitest run --project integration $C -t "reads in flight|reserves the per-body cap" 2>&1 | grep -E "Tests  |✓|×|DIAG|expected"; done ;;
           esac
-      - name: ps log
-        if: always()
-        run: cat ps.log | tail -400
