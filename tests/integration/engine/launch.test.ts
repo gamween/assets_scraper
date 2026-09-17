@@ -1,9 +1,9 @@
 import { spawn, spawnSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { BusyError, PIDFILE_ENV, withBrowser, wrapperScript } from "@/server/browser/launch";
+import { BusyError, PIDFILE_ENV, pidfileMarker, withBrowser, wrapperScript } from "@/server/browser/launch";
 import { serveFixture, type FixtureServer } from "../../fixtures/serve";
 import { delay, isProcessAlive, startTestProxy, type TestProxy } from "./helpers";
 
@@ -32,8 +32,12 @@ beforeAll(async () => {
       res.writeHead(200, { "content-type": "video/mp4" });
       res.end("not a video");
     },
+    "/frames.html": (_req, res) => {
+      res.writeHead(200, { "content-type": "text/html" });
+      res.end(`<!doctype html><title>Frames</title><iframe src="http://localhost:${fixture.port}/blank.html"></iframe>`);
+    },
   });
-  proxy = await startTestProxy({ allow: [fixture.host] });
+  proxy = await startTestProxy({ allow: [fixture.host, `localhost:${fixture.port}`] });
 });
 
 afterAll(async () => {
@@ -46,6 +50,8 @@ afterEach(() => {
 });
 
 const open = () => ({ egressPort: proxy.port, signal: new AbortController().signal });
+const CHROME = process.env.CHROME_EXECUTABLE_PATH ?? (process.platform === "darwin" ? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" : "/usr/bin/google-chrome");
+const fetchClip = () => fetch("/clip.mp4").then(() => "loaded", () => "blocked");
 
 describe("withBrowser", () => {
   it("gives a working page and closes the browser afterwards", async () => {
@@ -65,10 +71,11 @@ describe("withBrowser", () => {
 
   it("runs concurrent calls one at a time", async () => {
     const onQueued = vi.fn();
+    const onDequeued = vi.fn();
     let running = 0;
     let maxRunning = 0;
     const run = () =>
-      withBrowser({ ...open(), onQueued }, async (session) => {
+      withBrowser({ ...open(), onQueued, onDequeued }, async (session) => {
         running += 1;
         maxRunning = Math.max(maxRunning, running);
         await delay(300);
@@ -80,6 +87,7 @@ describe("withBrowser", () => {
     expect(onQueued).toHaveBeenCalledTimes(1);
     expect(Math.min(...queueTimes)).toBe(0);
     expect(Math.max(...queueTimes)).toBeGreaterThan(0);
+    expect(onDequeued.mock.calls).toEqual([[Math.max(...queueTimes)]]);
   });
 
   it("rejects queued calls with BusyError after the queue wait", async () => {
@@ -111,10 +119,25 @@ describe("withBrowser", () => {
       const [download] = await Promise.all([page.waitForEvent("download"), page.click("#dl")]);
       await expect(download.path()).rejects.toThrow(/acceptDownloads/);
 
-      expect(await page.evaluate(() => fetch("/clip.mp4").then(() => "loaded", () => "blocked"))).toBe("blocked");
+      expect(await page.evaluate(fetchClip)).toBe("blocked");
     });
     expect(hits.sw).toBe(0);
     expect(hits.video).toBe(0);
+  });
+
+  it("blocks media in popups and in cross-site iframes", async () => {
+    await withBrowser(open(), async ({ context, page }) => {
+      await page.goto(`${fixture.origin}/frames.html`);
+      const frame = page.frames().find((candidate) => candidate.url().startsWith(`http://localhost:${fixture.port}/`));
+      if (!frame) throw new Error("expected the cross-site iframe");
+      // Only a frame in its own process has its own CDP target, which the page's blocklist does not cover.
+      await expect(context.newCDPSession(frame).then((cdp) => cdp.detach())).resolves.toBeUndefined();
+      await expect.poll(() => frame.evaluate(fetchClip), { timeout: 5000 }).toBe("blocked");
+
+      const [popup] = await Promise.all([context.waitForEvent("page"), page.evaluate(() => void window.open("/blank.html"))]);
+      await popup.waitForLoadState();
+      await expect.poll(() => popup.evaluate(fetchClip), { timeout: 5000 }).toBe("blocked");
+    });
   });
 
   it("kills the browser and rejects when the signal aborts while fn runs", async () => {
@@ -135,7 +158,7 @@ describe("withBrowser", () => {
   });
 
   it("kills a browser left behind by a Node process that died mid-scan before launching", async () => {
-    const binary = process.env.CHROME_EXECUTABLE_PATH ?? (process.platform === "darwin" ? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" : "/usr/bin/google-chrome");
+    const binary = CHROME;
     const deadOwner = spawnSync("true").pid;
     const stateDir = path.join(tmpdir(), "assets-scraper");
     const scratch = await mkdtemp(path.join(tmpdir(), "stale-browser-"));
@@ -144,7 +167,7 @@ describe("withBrowser", () => {
     const pidfile = path.join(stateDir, `chromium-${deadOwner}-0.pid`);
     await writeFile(wrapper, wrapperScript(binary));
     await chmod(wrapper, 0o755);
-    const orphan = spawn(wrapper, ["--headless", "--no-sandbox", "--no-first-run", `--user-data-dir=${path.join(scratch, "profile")}`, "about:blank"], {
+    const orphan = spawn(wrapper, ["--headless", "--no-sandbox", "--no-first-run", `--user-data-dir=${path.join(scratch, "profile")}`, pidfileMarker(pidfile), "about:blank"], {
       detached: true,
       stdio: "ignore",
       env: { PATH: process.env.PATH, HOME: process.env.HOME, [PIDFILE_ENV]: pidfile } as unknown as NodeJS.ProcessEnv,
@@ -157,6 +180,44 @@ describe("withBrowser", () => {
       if (orphan.pid && isProcessAlive(orphan.pid)) process.kill(-orphan.pid, "SIGKILL");
       await rm(scratch, { recursive: true, force: true });
       await rm(pidfile, { force: true });
+    }
+  });
+
+  it("never kills a browser it did not launch when a stale pidfile names its PID", async () => {
+    const deadOwner = spawnSync("true").pid;
+    const stateDir = path.join(tmpdir(), "assets-scraper");
+    const scratch = await mkdtemp(path.join(tmpdir(), "own-browser-"));
+    await mkdir(stateDir, { recursive: true });
+    const pidfile = path.join(stateDir, `chromium-${deadOwner}-0.pid`);
+    // The developer's own Chrome, whose PID happens to be in a pidfile left by a dead dev server.
+    const personal = spawn(CHROME, ["--headless", "--no-sandbox", "--no-first-run", `--user-data-dir=${path.join(scratch, "profile")}`, "about:blank"], { detached: true, stdio: "ignore" });
+    try {
+      await expect.poll(() => isProcessAlive(personal.pid ?? 0), { timeout: 10_000 }).toBe(true);
+      await writeFile(pidfile, String(personal.pid));
+      await withBrowser(open(), async () => {});
+      expect(spawnSync("cat", [pidfile]).status).not.toBe(0);
+      expect(isProcessAlive(personal.pid ?? 0)).toBe(true);
+    } finally {
+      if (personal.pid && isProcessAlive(personal.pid)) process.kill(-personal.pid, "SIGKILL");
+      await rm(scratch, { recursive: true, force: true });
+      await rm(pidfile, { force: true });
+    }
+  });
+
+  it("never sweeps a shared local temp dir, even when the health gate fails", async () => {
+    const scratch = await mkdtemp(path.join(tmpdir(), "health-gate-"));
+    const profile = path.join(scratch, "playwright_chromiumdev_profile-in-use");
+    await mkdir(profile);
+    vi.stubEnv("TMPDIR", scratch);
+    vi.stubEnv("MIN_TMP_FREE_MB", String(2 ** 40));
+    try {
+      const fn = vi.fn();
+      await expect(withBrowser(open(), fn)).rejects.toBeInstanceOf(BusyError);
+      expect(fn).not.toHaveBeenCalled();
+      await expect(stat(profile).then((entry) => entry.isDirectory())).resolves.toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+      await rm(scratch, { recursive: true, force: true });
     }
   });
 

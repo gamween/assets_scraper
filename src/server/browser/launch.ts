@@ -4,7 +4,7 @@ import { chmod, mkdir, readdir, readFile, rename, rm, statfs, writeFile } from "
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import type { Browser, BrowserContext, Page } from "playwright-core";
+import type { Browser, BrowserContext, CDPSession, Frame, Page } from "playwright-core";
 import { limits } from "@/server/config/limits";
 
 export class BusyError extends Error {
@@ -38,6 +38,11 @@ const MEDIA_URL_PATTERNS = ["*.mp4", "*.mp4?*", "*.webm", "*.webm?*", "*.m3u8", 
 const STALE_TMP_ENTRY = /^(core\.|playwright_chromiumdev_profile-|playwright-artifacts-)/;
 
 export const PIDFILE_ENV = "ASSETS_SCRAPER_PIDFILE";
+/**
+ * Chromium ignores switches it does not know. This one names the pidfile of the launch on the browser's command line,
+ * so a stale pidfile can only ever kill the browser it was written for (see `isOwnBrowser`).
+ */
+export const pidfileMarker = (pidfile: string) => `--assets-scraper-pidfile=${pidfile}`;
 
 export function chromiumArgs(baseArgs: string[]): string[] {
   const kept = baseArgs.filter((arg) => !INSECURE_FLAGS.includes(arg.split("=")[0]));
@@ -133,13 +138,16 @@ function isAlive(pid: number): boolean {
   }
 }
 
-/** Guards against PID reuse: only kill a process whose command line runs the browser binary. */
-async function runsBinary(pid: number, binary: string): Promise<boolean> {
+/**
+ * Guards against PID reuse: only kill a process whose command line runs the browser binary with the marker of this
+ * pidfile. Locally the binary is the developer's own Google Chrome, which a reused PID must never kill.
+ */
+async function isOwnBrowser(pid: number, binary: string, pidfile: string): Promise<boolean> {
   try {
     const command = process.platform === "linux"
       ? (await readFile(`/proc/${pid}/cmdline`, "utf8")).replaceAll("\0", " ")
-      : (await promisify(execFile)("ps", ["-o", "command=", "-p", String(pid)])).stdout;
-    return command.includes(binary);
+      : (await promisify(execFile)("ps", ["-ww", "-o", "command=", "-p", String(pid)])).stdout;
+    return command.includes(binary) && command.includes(pidfileMarker(pidfile));
   } catch {
     return false;
   }
@@ -163,7 +171,7 @@ async function killStaleChromium(slot: number, binary: string): Promise<void> {
     if (owner === process.pid ? Number(match[2]) !== slot : isAlive(owner)) continue;
     const file = path.join(stateDir(), name);
     const pid = await readPid(file);
-    if (pid && (await runsBinary(pid, binary))) killProcessTree(pid);
+    if (pid && (await isOwnBrowser(pid, binary, file))) killProcessTree(pid);
     await rm(file, { force: true });
   }
 }
@@ -196,14 +204,15 @@ const isHealthy = ({ tmpFreeMb, memAvailableMb }: BrowserSession["health"]) =>
 
 /** Spec 7.3: kill stale browsers, sweep `/tmp`, check free space and memory, retry once after a sweep, else busy. */
 async function prepareLaunch(slot: number, binary: string): Promise<BrowserSession["health"]> {
-  // Sweeping deletes profile directories, so only when no other browser of this process can be using one.
-  const canSweep = isServerless() && busySlots.size === 1;
+  // Sweeping deletes profile directories, so only when no other browser can be using one: on a serverless instance
+  // with no other scan running. A local temp dir is shared with every other process of the user.
+  const canSweep = () => isServerless() && busySlots.size === 1;
   await killStaleChromium(slot, binary);
-  if (canSweep) await sweepTmp();
+  if (canSweep()) await sweepTmp();
   let health = await readHealth();
   if (isHealthy(health)) return health;
   await killStaleChromium(slot, binary);
-  if (busySlots.size === 1) await sweepTmp();
+  if (canSweep()) await sweepTmp();
   health = await readHealth();
   if (!isHealthy(health)) throw new BusyError(`Not enough resources to start a browser (tmp ${health.tmpFreeMb ?? "?"} MB, memory ${health.memAvailableMb ?? "?"} MB)`);
   return health;
@@ -312,7 +321,7 @@ async function launch(slot: number, executable: Executable, egressPort: number):
   await rm(pidfile, { force: true });
   const browser = await chromium.launch({
     executablePath: await writeWrapper(executable.binary),
-    args: chromiumArgs(executable.args),
+    args: [...chromiumArgs(executable.args), pidfileMarker(pidfile)],
     headless: true,
     timeout: limits.launchMs,
     proxy: { server: `http://127.0.0.1:${egressPort}` },
@@ -330,14 +339,61 @@ async function shutdown({ browser, pid, pidfile }: Launched, graceful: boolean):
   if (isServerless() && busySlots.size === 1) await sweepTmp();
 }
 
+/** Blocks media URLs (spec 7.3) in one CDP target: a page, or a frame that runs in its own process. */
+async function blockMedia(context: BrowserContext, target: Page | Frame): Promise<CDPSession> {
+  const cdp = await context.newCDPSession(target);
+  // Small buffers: this session only blocks URLs, Playwright's own session keeps the bodies.
+  await cdp.send("Network.enable", { maxTotalBufferSize: 1024, maxResourceBufferSize: 1024 });
+  await cdp.send("Network.setBlockedURLs", { urls: MEDIA_URL_PATTERNS });
+  return cdp;
+}
+
+/**
+ * The blocklist of a CDP session covers its own target only. Frames in the process of their page share its target;
+ * popups and out-of-process (cross-site) iframes get their own session as they appear. Those start a few milliseconds
+ * after the target, so a request sent in that window can still go out.
+ */
+async function blockMediaEverywhere(context: BrowserContext, page: Page): Promise<void> {
+  const frames = new WeakMap<Frame, Promise<CDPSession | undefined>>();
+  const onFrame = (frame: Frame) => {
+    if (!frame.parentFrame()) return;
+    // A cross-site navigation moves a frame to a new target: attach again, then drop the session it had.
+    const previous = frames.get(frame);
+    const next = blockMedia(context, frame).catch(() => undefined); // Throws for a frame in its page's process.
+    frames.set(frame, next);
+    void next.then(() => previous).then((cdp) => cdp?.detach()).catch(() => {});
+  };
+  const pages = new WeakSet<Page>();
+  const watch = (target: Page) => {
+    if (pages.has(target)) return false;
+    pages.add(target);
+    target.on("framenavigated", onFrame);
+    return true;
+  };
+  context.on("page", (popup) => {
+    if (watch(popup)) void blockMedia(context, popup).catch(() => {});
+  });
+  watch(page);
+  await blockMedia(context, page);
+}
+
 let launchedBefore = false;
+
+export interface WithBrowserOptions {
+  egressPort: number;
+  signal: AbortSignal;
+  /** Called at once when every slot is busy and the call starts waiting. */
+  onQueued?: () => void;
+  /** Called when a call that waited gets its slot, before the health gate and the launch. */
+  onDequeued?: (queueMs: number) => void;
+}
 
 /**
  * Runs `fn` with a fresh hardened browser behind the egress proxy (spec 7.3). One browser per call, never reused,
  * at most `limits.maxConcurrentScans` at a time; queued calls wait `limits.queueWaitMs`, then get `BusyError`.
  * Aborting the signal kills the browser and rejects with the abort reason.
  */
-export async function withBrowser<T>(options: { egressPort: number; signal: AbortSignal; onQueued?: () => void }, fn: (session: BrowserSession) => Promise<T>): Promise<T> {
+export async function withBrowser<T>(options: WithBrowserOptions, fn: (session: BrowserSession) => Promise<T>): Promise<T> {
   const { signal } = options;
   signal.throwIfAborted();
   const { slot, queueMs } = await acquireSlot(signal, options.onQueued);
@@ -345,6 +401,7 @@ export async function withBrowser<T>(options: { egressPort: number; signal: Abor
   let launched: Launched | undefined;
   let succeeded = false;
   try {
+    if (queueMs > 0) options.onDequeued?.(queueMs);
     signal.throwIfAborted();
     const executable = await resolveExecutable();
     const health = await prepareLaunch(slot, executable.binary);
@@ -371,10 +428,7 @@ export async function withBrowser<T>(options: { egressPort: number; signal: Abor
         ignoreHTTPSErrors: true,
       });
       const page = await context.newPage();
-      const cdp = await context.newCDPSession(page);
-      // Small buffers: this session only blocks URLs, Playwright's own session keeps the bodies.
-      await cdp.send("Network.enable", { maxTotalBufferSize: 1024, maxResourceBufferSize: 1024 });
-      await cdp.send("Network.setBlockedURLs", { urls: MEDIA_URL_PATTERNS });
+      await blockMediaEverywhere(context, page);
       return { context, page };
     };
     const { context, page } = await untilAborted(setup(), signal);
