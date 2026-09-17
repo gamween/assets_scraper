@@ -27,14 +27,15 @@ jobs:
       - name: run
         continue-on-error: true
         run: |
+          set +e
           C=tests/integration/engine/capture.test.ts
           L=tests/integration/engine/launch.test.ts
           for s in 1 2 3 4 5 6; do (while :; do :; done) & done
           case "${{ matrix.variant }}" in
-            orphan-orig) F=$L; T="^withBrowser ORIG kills a browser left behind" ;;
-            orphan-fixed) F=$L; T="^withBrowser kills a browser left behind" ;;
+            orphan-orig) F=$L; T="ORIG kills a browser left behind" ;;
+            orphan-fixed) F=$L; T="(?<!ORIG )kills a browser left behind" ;;
             capture-orig) F=$C; T="ORIG (keeps the bytes|reserves the per-body)" ;;
-            capture-fixed) F=$C; T="^startCapture (keeps the bytes of the reads in flight|reserves the per-body cap)" ;;
+            capture-fixed) F=$C; T="(?<!ORIG )(keeps the bytes of the reads in flight|reserves the per-body cap)" ;;
           esac
-          for i in $(seq 1 20); do DIAG_LAUNCH=1 npx vitest run --project integration $F -t "$T" 2>&1 | grep -E "DIAG stale|× |✓ .*(kills|keeps|reserves)|expected"; done
+          for i in $(seq 1 20); do DIAG_LAUNCH=1 npx vitest run --project integration $F -t "$T" 2>&1 | grep -E "DIAG stale|× |✓ .*(kills|keeps|reserves)|expected|Tests  "; done
           kill $(jobs -p) || true
