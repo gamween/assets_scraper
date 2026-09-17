@@ -73,8 +73,9 @@ all), sanity.io's second `site-logo` is an 850x559 merch photo, techcrunch.com's
   techcrunch.com (images, R9).
 - Every CDN original candidate the app produces is now adopted: `diagnostics.originals` reads `attempted` equal to
   `adopted` and zero `failed`, `noise` and `skipped` on all 22 unblocked sites (stripe.com 55 of 55, gymshark.com 48 of
-  48, notion.com 32 of 32, coinbase.com 9 of 9). Counted against the lab's own verified-bigger list
-  (`cdn-verify.json`), the app carries 24 of 24 in run2, against 20 of 24 in run1.
+  48, notion.com 32 of 32, coinbase.com 9 of 9). Counted against the 431 originals the lab probed and got an image
+  back for, across the 15 reference sites that have any (`originalCheck.okType` in `out-final/<host>/result.json`),
+  the app carries 366 in run2 against 316 in run1.
 - The palette lab covers 11 of the reference sites: its twelfth result file, `www.spotify.com`, is lab only and was
   never scanned here. The top brand colour matches on all 11. The full brand list is identical on 7 of them
   (apple.com, linear.app, notion.com, webflow.com, and empty on allbirds.com, framer.com and vercel.com, as in the
@@ -182,15 +183,18 @@ instead, and the pink and red one rank lower than in run1. So the app agrees wit
 colours and disagrees on the rest, and which colour fills the tail depends on what the rotating hero was showing.
 Treat any single-run claim about stripe.com's tail as noise.
 
-Explained, with one exception. The palette runs on a live page, and chain.link, coinbase.com and stripe.com all rotate
-hero content, so the signals are not the lab's. run2 adds a fourth: uniswap.org returned the lab's five brand colours
-in the lab's order in run1 and the same five reordered in run2 (`#00c3a0` and `#2abdff` swap ends), which is the same
-instability with nothing lost. Tuning the extractor against any single scan of a rotating page would be fitting to
-noise.
+Explained. The palette runs on a live page, and chain.link, coinbase.com and stripe.com all rotate hero content, so
+the signals are not the lab's. run2 adds a fourth: uniswap.org returned the lab's five brand colours in the lab's
+order in run1 and the same five reordered in run2 (`#00c3a0` and `#2abdff` swap ends), which is the same instability
+with nothing lost. Tuning the extractor against any single scan of a rotating page would be fitting to noise.
 
-The exception is chain.link: `#fbbd11` is a real brand colour, it is missing in both runs, and
-`reports/palette-verify.md` already noted that the site has no background role although 88 percent of the viewport is
-blue. That one is a genuine extraction gap and needs the palette ablation harness, not a reference scan.
+chain.link is the same drift, not a defect. An earlier version of this document singled it out: `#fbbd11` is a real
+brand colour and both runs recorded above miss it, which read as an extraction gap. A third scan on a fresh
+production build returned `#0847f7 #6d94f9 #001a62 #fbbd11`, so the colour is found in 1 of 3 runs. That is the
+run-to-run instability the stripe.com paragraph above warns about, on a site whose hero rotates, and two runs were
+never a large enough sample to call it a code defect. `reports/palette-verify.md` separately notes that the site has
+no background role although 88 percent of the viewport is blue; that observation stands on its own and belongs to the
+palette ablation harness.
 
 ### R6: neutral order on allbirds.com
 
@@ -235,13 +239,17 @@ composition, as above. No change made.
 
 ### R8: the CDN original is not adopted on part of the candidates (stripe.com, gymshark.com, coinbase.com, notion.com)
 
-Evidence: the lab's "CDN originals verified ok (bigger)" column, the baseline named in the header of this document,
-lists the originals the lab probed and found bigger than the page's URL. Counting how many of those the app's run1
-result actually carries: allbirds.com 26 of 26, framer.com 93 of 94, ilovechickpea.ca 40 of 40, ripple.com 12 of 12,
-squarespace.com 11 of 11, vercel.com 2 of 2, sanity.io 46 of 48, notion.com 28 of 32, stripe.com 28 of 45,
-coinbase.com 4 of 9, gymshark.com 4 of 81. Adoption therefore runs and succeeds on the majority of candidates,
-including on the same hosts and in the same runs as the losses. The open question is a per URL one: what separates the
-candidates it upgrades from the ones it leaves transformed.
+Evidence: the first number of the lab's "CDN originals verified ok (bigger)" column, the baseline named in the header
+of this document, counts the originals the lab probed and got an image back for (`originalCheck.okType` in
+`out-final/<host>/result.json`). Counting how many of those the app's run1 result actually carries: allbirds.com 26 of
+26, framer.com 93 of 94, ilovechickpea.ca 40 of 40, ripple.com 12 of 12, squarespace.com 11 of 11, vercel.com 2 of 2,
+sanity.io 65 of 69, notion.com 28 of 32, stripe.com 28 of 45, coinbase.com 4 of 9, gymshark.com 4 of 81. On every
+site but sanity.io the parenthesised subset is the same set, which is why an earlier version of this document could
+quote 46 of 48 for sanity.io alone without the mismatch showing.
+
+Adoption therefore runs and succeeds on the majority of candidates, including on the same hosts and in the same runs
+as the losses. The open question is a per URL one: what separates the candidates it upgrades from the ones it leaves
+transformed.
 
 Where it does not: 26 of stripe.com's 56 image assets stay on `images.stripeassets.com` with the Contentful query
 intact, 39 of gymshark.com's 64 stay on `www.gymshark.com/_next/image?url=...&w=...`, 5 on coinbase.com stay on
@@ -294,9 +302,13 @@ attempts while five candidates were being tried and dropped.
 
 Result in run2, on every unblocked site: `attempted` equals `adopted`, and `failed`, `noise` and `skipped` are zero.
 stripe.com 55 of 55 (26 stuck image assets in run1, 0 in run2), gymshark.com 48 of 48 (39 stuck, now 2 that carry a
-version query and are not transforms), notion.com 32 of 32, coinbase.com 9 of 9. Against the lab's own
-verified-bigger list in `cdn-verify.json`, the app carries 24 of 24 originals in run2 against 20 of 24 in run1, and
-coinbase.com goes from 4 of 8 to 8 of 8.
+version query and are not transforms), notion.com 32 of 32, coinbase.com 9 of 9. Counted the way the evidence above
+is counted, the app carries 366 of the lab's 431 probed originals in run2 against 316 in run1, and coinbase.com goes
+from 4 of 9 to 9 of 9. `cdn-verify.json` cannot settle this on its own: of its strictly larger rows, the 22 that
+belong to a reference site are carried in both runs.
+
+These `originals` figures were read before the counter set changed. `attempted` is now a count of probes only, and an
+original the page served itself lands in a separate `captured` bucket, so a re-run splits the same work differently.
 
 One detail from run1 that was wrong and is worth keeping recorded: of stripe.com's 30 clean image URLs, 29 were on
 `images.stripeassets.com` and one on `assets.stripeassets.com`, a host no rule covers, so that one was clean because
