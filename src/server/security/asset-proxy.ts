@@ -107,7 +107,8 @@ async function readCounted(reader: ReadableStreamDefaultReader<Uint8Array>, head
  * conversion then runs only once the most woff2 can return (`WOFF2_MAX_OUTPUT_BYTES`) is reserved, and the part not
  * served is handed back, so the work is never done for an output the budget then refuses.
  *
- * The whole exchange, waiting for a conversion slot included, stays within `timeoutMs`; no free slot in time gives 503.
+ * The whole exchange, waiting for a conversion slot and the licence check included, stays within `timeoutMs` (504 past
+ * it), so a slot is never held longer; no free slot in time gives 503.
  */
 async function convertFont(
   url: string,
@@ -117,7 +118,8 @@ async function convertFont(
 ): Promise<Response> {
   const busy = () => errorResponse(503, "busy", "Too many fonts are being converted. Try again in a moment.", { "retry-after": "5" });
   const started = Date.now();
-  const release = await takeConversionSlot(AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]));
+  const deadline = AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]);
+  const release = await takeConversionSlot(deadline);
   if (!release) return busy();
   try {
     const remainingMs = timeoutMs - (Date.now() - started);
@@ -135,7 +137,7 @@ async function convertFont(
     if (!settle) return errorResponse(429, "budget", "Daily download limit reached.");
     let served = 0;
     try {
-      const converted = await convertWoff2(source, signal);
+      const converted = await convertWoff2(source, deadline);
       if (!converted.ok) {
         return converted.reason === "license"
           ? errorResponse(403, "license", "This font's licence does not allow conversion.")
@@ -255,6 +257,9 @@ export async function handleAssetRequest(request: Request, options: AssetProxyOp
   } catch (error) {
     if (error instanceof HttpError) return errorResponse(error.status, error.code as AssetProxyErrorCode, error.message);
     if (error instanceof SafeFetchError) return errorResponse(FETCH_STATUS[error.code], error.code, "The asset could not be fetched.");
+    // the conversion deadline (`convertFont`), or the caller leaving during a conversion
+    if (request.signal.aborted) return errorResponse(FETCH_STATUS.aborted, "aborted", "The request was aborted.");
+    if (error instanceof DOMException && error.name === "TimeoutError") return errorResponse(FETCH_STATUS.timeout, "timeout", "The font could not be converted in time.");
     console.error(`Asset proxy failed: ${error instanceof Error ? error.message : String(error)}`);
     return errorResponse(500, "internal", "Something went wrong.");
   }

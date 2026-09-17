@@ -126,6 +126,21 @@ describe("convertWoff2", () => {
     expect(huge.ok ? huge.bytes.length : 0).toBeLessThanOrEqual(WOFF2_MAX_OUTPUT_BYTES);
   });
 
+  it("gives up on a licence check once the signal aborts, even one that ignores it or turns it into a refusal", async () => {
+    fonts.isConvertibleFont.mockImplementation(() => new Promise(() => {}));
+    const start = performance.now();
+    await expect(convertWoff2(inter, AbortSignal.timeout(100))).rejects.toMatchObject({ name: "TimeoutError" });
+    expect(performance.now() - start).toBeLessThan(2_000);
+    expect(fonts.isConvertibleFont.mock.calls[0][1].signal.aborted).toBe(true);
+
+    // a check that catches the abort and answers false did not refuse the licence: the deadline passed
+    fonts.isConvertibleFont.mockImplementation((_meta, { signal }) => new Promise((resolve) => signal.addEventListener("abort", () => resolve(false))));
+    await expect(convertWoff2(inter, AbortSignal.timeout(100))).rejects.toMatchObject({ name: "TimeoutError" });
+    const aborted = new AbortController();
+    aborted.abort();
+    await expect(convertWoff2(inter, aborted.signal)).rejects.toMatchObject({ name: "AbortError" });
+  });
+
   it("refuses a font whose licence does not allow conversion, and bytes that are not WOFF2", async () => {
     fonts.isConvertibleFont.mockResolvedValue(false);
     expect(await convertWoff2(inter, new AbortController().signal)).toEqual({ ok: false, reason: "license" });

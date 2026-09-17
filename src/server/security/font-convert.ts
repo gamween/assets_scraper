@@ -87,9 +87,11 @@ export type Woff2Conversion =
  * `font/otf` for CFF outlines (`OTTO`), which cannot become TrueType without re-drawing the glyphs. woff2 runs first: it
  * validates the table directory and refuses implausible sizes in native code, so the licence is then read from a plain
  * sfnt, fontkit never decodes an untrusted brotli stream in JavaScript (sized from table lengths the file declares), and
- * bytes woff2 refuses never cost a Google Fonts check.
+ * bytes woff2 refuses never cost a Google Fonts check. The licence check gets `signal` and is abandoned as soon as it
+ * aborts, even when it ignores the signal or answers the abort with a refusal: the call then rejects with `signal.reason`.
  */
 export async function convertWoff2(source: Buffer, signal: AbortSignal): Promise<Woff2Conversion> {
+  signal.throwIfAborted();
   const output = await decompressWoff2(source);
   const contentType = output && sniffContentType(output);
   if (!output || (contentType !== "font/ttf" && contentType !== "font/otf")) return { ok: false, reason: "not-convertible" };
@@ -97,6 +99,17 @@ export async function convertWoff2(source: Buffer, signal: AbortSignal): Promise
   try {
     meta = parseFontBinary(output);
   } catch {}
-  if (!(await isConvertibleFont(meta, { fetch: safeFetch, signal }))) return { ok: false, reason: "license" };
-  return { ok: true, bytes: output, contentType };
+  const convertible = await untilAborted(isConvertibleFont(meta, { fetch: safeFetch, signal }), signal);
+  signal.throwIfAborted();
+  return convertible ? { ok: true, bytes: output, contentType } : { ok: false, reason: "license" };
+}
+
+/** `promise`, or a rejection with `signal.reason` as soon as `signal` aborts, whichever comes first. */
+function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) abort();
+    promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+  });
 }

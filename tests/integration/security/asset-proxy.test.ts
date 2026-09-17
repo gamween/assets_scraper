@@ -305,6 +305,17 @@ describe("handleAssetRequest", () => {
     expect((await handleAssetRequest(proxied("/assets/__inter.woff2", "&fmt=ttf"))).status).toBe(200);
   });
 
+  it("frees conversion slots when the licence check outlasts the proxy timeout", async () => {
+    fonts.isConvertibleFont.mockImplementation(() => new Promise(() => {}));
+    const start = performance.now();
+    // both slots are held by checks that never answer
+    const stuck = await Promise.all([0, 1].map(() => handleAssetRequest(proxied("/assets/__inter.woff2", "&fmt=ttf"), { timeoutMs: 1_000 })));
+    for (const response of stuck) expect(await errorOf(response)).toMatchObject({ status: 504, code: "timeout" });
+    expect(performance.now() - start).toBeLessThan(5_000);
+    fonts.isConvertibleFont.mockResolvedValue(true);
+    expect((await handleAssetRequest(proxied("/assets/__inter.woff2", "&fmt=ttf"), { timeoutMs: 1_000 })).status).toBe(200);
+  });
+
   it("answers 429 once the daily proxied bytes are spent", async () => {
     vi.stubEnv("PROXY_BYTES_PER_DAY", String(png.length + 10));
     // a refused take is not counted: 4 KB do not fit, the PNG still does
