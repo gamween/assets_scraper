@@ -250,6 +250,26 @@ describe("buildFontFamilies", () => {
     expect(families[0]).toMatchObject({ name: "Ok", usedOnPage: true, usage: 1, faces: [{ loaded: true, files: [{ url, format: "woff2" }] }] });
   });
 
+  it("gives a registered family to a file without a rule only when it resolves to no other name", async () => {
+    // A Wix-style family resolves to any binary name: both files took it, and the last one all of its usage
+    const wix = "wf_1a2b3c4d5e6f7a8b9c";
+    const files = [captured("https://cdn.site.example/f/inter.woff2"), captured("https://cdn.site.example/f/jbm.woff2", jbmMeta)];
+    const usage = [{ stack: `${wix}, sans-serif`, weight: "400", style: "normal", chars: 100 }];
+    const { families } = await build({ fonts: files, fontStatuses: [loaded(wix)], fontUsage: usage });
+    expect(families.map((family) => [family.name, family.cssFamilies, family.usage])).toEqual([
+      ["Inter", [], 0],
+      ["JetBrains Mono", [], 0],
+    ]);
+    // Files that share a name still take it, and one that resolves to a single name keeps its usage
+    const shared = await build({ fonts: [files[0], captured("https://cdn.site.example/f/inter-bold.woff2")], fontStatuses: [loaded(wix)], fontUsage: usage });
+    expect(shared.families.map((family) => [family.name, family.cssFamilies, family.usage])).toEqual([["Inter", [wix], 1]]);
+    const renamed = await build({ fonts: files, fontStatuses: [loaded(wix), loaded("MyInter")], fontUsage: [{ ...usage[0], stack: "MyInter" }] });
+    expect(renamed.families.map((family) => [family.name, family.cssFamilies, family.usage])).toEqual([
+      ["Inter", ["MyInter"], 1],
+      ["JetBrains Mono", [], 0],
+    ]);
+  });
+
   it("merges CSS families that resolve to one name, keeps their faces apart and attributes Wix-style stacks", async () => {
     const { families } = await build({
       fontFaces: [rule("Inter", ["https://cdn.site.example/inter.woff2"]), rule("Inter Medium", ["https://cdn.site.example/inter-medium.woff2"])],

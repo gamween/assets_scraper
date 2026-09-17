@@ -215,10 +215,11 @@ function addUndeclared(groups: Map<string, Group>, key: string, cssFamilies: str
  * font budget. A face is loaded when a file of it was captured or `document.fonts` says so. Captured files that no rule
  * declares (fonts added with the `FontFace` API, or declared in a stylesheet that was not captured) are grouped by
  * binary name, and take as CSS families the loaded `document.fonts` families without a rule that resolve to that name
- * (`MyInter` for Inter), checking at most `MAX_UNDECLARED_NAMES` names against `MAX_REGISTERED_FAMILIES` families of
- * `MAX_MATCHED_FAMILY_LENGTH` characters at most. Such files without a binary name (unreadable bodies) take the one
- * registered family left, and are dropped when there is not exactly one. Also returns the lowercase family names that
- * have a loaded face, for usage.
+ * and to no other (`MyInter` for Inter), checking at most `MAX_UNDECLARED_NAMES` names against `MAX_REGISTERED_FAMILIES`
+ * families of `MAX_MATCHED_FAMILY_LENGTH` characters at most. A machine-generated family (Wix `wf_...`) resolves to any
+ * name, so it only names the file of a page with one name. Such files without a binary name (unreadable bodies) take the
+ * one registered family left, and are dropped when there is not exactly one. Also returns the lowercase family names
+ * that have a loaded face, for usage.
  */
 function groupFiles(
   input: PostInput,
@@ -295,7 +296,7 @@ function groupFiles(
   const checkedFamilies = matched.slice(0, MAX_REGISTERED_FAMILIES);
   const aliasesByName = new Map<string, string[]>();
   let allChecked = matched.length <= MAX_REGISTERED_FAMILIES;
-  const named = new Set<string>();
+  const undeclared: { file: FileRecord; name: string }[] = [];
   const unnamed: FileRecord[] = [];
   for (const [url, font] of captured) {
     if (declared.has(url)) continue;
@@ -305,22 +306,31 @@ function groupFiles(
       unnamed.push(file);
       continue;
     }
-    let aliases = aliasesByName.get(name);
-    if (!aliases) {
+    if (!aliasesByName.has(name)) {
       // `resolveFamilyName` reads a binary only through its family name, so files that share a name share aliases
       const check = aliasesByName.size < MAX_UNDECLARED_NAMES;
       const lower = name.toLowerCase();
-      aliases = check ? checkedFamilies.filter((family) => resolveFamilyNameOf(name, family).name.toLowerCase() === lower) : [];
+      aliasesByName.set(name, check ? checkedFamilies.filter((family) => resolveFamilyNameOf(name, family).name.toLowerCase() === lower) : []);
       allChecked &&= check;
-      aliasesByName.set(name, aliases);
     }
-    for (const family of aliases) named.add(family);
+    undeclared.push({ file, name });
+  }
+  // The groups (lowercase names) each family resolves to
+  const claims = new Map<string, Set<string>>();
+  for (const [name, aliases] of aliasesByName) {
+    for (const family of aliases) {
+      const groupNames = claims.get(family) ?? new Set<string>();
+      claims.set(family, groupNames.add(name.toLowerCase()));
+    }
+  }
+  for (const { file, name } of undeclared) {
+    const aliases = aliasesByName.get(name)!.filter((family) => claims.get(family)!.size === 1);
     loadedFamilies.add(name.toLowerCase());
     addUndeclared(groups, `bin:${name.toLowerCase()}`, aliases, file);
   }
   // Past either cap, a family could belong to a name that was not checked, so none is known to be left over. A family
-  // too long to be matched is left over.
-  const unclaimed = allChecked ? registered.filter((family) => !named.has(family)) : [];
+  // too long to be matched is left over, and one that resolves to several names is not.
+  const unclaimed = allChecked ? registered.filter((family) => !claims.has(family)) : [];
   if (unclaimed.length === 1) for (const file of unnamed) addUndeclared(groups, `registered:${unclaimed[0].toLowerCase()}`, unclaimed, file);
   return { groups, loadedFamilies };
 }
