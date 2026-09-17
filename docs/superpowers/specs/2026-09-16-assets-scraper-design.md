@@ -602,6 +602,8 @@ All in `src/server/config/limits.ts`, env-overridable.
 | Body read | 15 MB each, 8 s each, 24 concurrent, 250 MB total |
 | Blob bytes to client | 2 MB each, 16 MB total |
 | Inline SVG | 1 MB each, 12 MB total, 400 normalizations |
+| Collector output | 32,000,000 JSON characters; over it, repeated candidate URLs go first, then the largest items (12 MB of SVG plus 16 MB of blobs no longer always fits whole) |
+| Font metadata parsing | 5 MB each, 1,500 ms and 40 files per scan (past them a font is hashed without metadata) |
 | Assets per scan | 1,500 |
 | Signed URLs per scan | 2,000 |
 | Verification and probes | 8 s, 16 concurrent, 150 declared probes |

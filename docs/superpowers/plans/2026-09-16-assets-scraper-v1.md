@@ -896,6 +896,12 @@ export const limits = {
   svgTotalBytes: 12 * MB,
   svgMaxNormalizations: 400,
   collectorMaxElements: 80_000,
+  spriteFetchMs: 4_000,
+  maxBrandLinks: 6,
+  collectorMaxOutputChars: 32_000_000, // JSON characters of the collector output, lists cut to fit
+  fontParseMaxBytes: 5 * MB,
+  fontParseBudgetMs: 1_500,
+  fontParseMaxFiles: 40,
   maxAssets: 1_500,
   maxSignedUrls: 2_000,
   ndjsonLineBytes: 256_000,
@@ -1008,6 +1014,13 @@ export interface CollectorOptions {
   maxSvgNormalizations: number;
   maxSvgBytes: number;
   maxSvgTotalBytes: number;
+  spriteFetchMs: number;                    // external sprite fetch (spec 8.6)
+  maxBrandLinks: number;                    // spec 8.1
+  maxBlobBytes: number;                     // limits.blobMaxBytes
+  maxBlobTotalBytes: number;                // limits.blobTotalBytes
+  maxOutputChars: number;                   // JSON characters of the whole output; lists are cut to fit (limits.collectorMaxOutputChars)
+  maxTitleChars: number;                    // page.title is cut to one character over this before fitting
+  maxSiteNameChars: number;                 // same for page.siteName
 }
 
 export interface RawCollectorOutput {
