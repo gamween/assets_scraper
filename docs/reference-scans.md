@@ -5,9 +5,13 @@ Plan task 2.3, measurement pass. The 23 reference sites of the discovery lab, sc
 
 - Run: 2026-09-17, local production build (`pnpm build`, `pnpm start -p 3201`), Chrome 153, macOS Apple Silicon, warm cache
   except for the first site, one scan at a time.
-- Command: `OPS_TOKEN=... node scripts/scan-sites.mjs --base http://localhost:3201 --out <dir>`.
+- Command: `OPS_TOKEN=... node scripts/scan-sites.mjs --base http://localhost:3201 --out <dir>`. Point `--out` outside
+  the repo; the default `scan-results/` is git ignored. The script exits 1 when a site ends without a scan result,
+  which includes the permanent block on `g2.com`.
 - Raw results (one JSON per site plus `summary.json` and `summary.md`) are kept outside git, in the scratchpad
-  directory of the run.
+  directory of the run. The script gained its `fallbackAssets` field after that run, so only `g2.com`, re-scanned with
+  the committed version (same status, counts and diagnostics), carries the fallback asset list; the other 22 files
+  predate the field.
 - Baselines: `discovery-lab/table.md` and `discovery-lab/out-final/<host>/result.json` for assets and fonts,
   `palette-lab/results/*.json` and `reports/palette-verify.md` for palettes.
 - Counting note: the lab's asset numbers are already merged (its `variants` field), so lab and app numbers are
@@ -45,21 +49,33 @@ Plan task 2.3, measurement pass. The 23 reference sites of the discovery lab, sc
 `Fonts` is `done.stats.fonts` (declared families). `Hidden` is the sum of `done.stats.hidden`.
 `Palette top brand` is `palette.brand[0]`; `none` means the palette has neutrals only, which is also what the lab
 produced for allbirds.com, framer.com and vercel.com.
+`Site logo` records that a site logo was found, not that the right one is ranked first, and this run does not measure
+logo precision. framer.com is the clearest case: it returns two `site-logo` assets and the top one (score 1049.6) is a
+16x24 css-background SVG named `On`, a customer logo, ahead of the json-ld `Framer logo` (999.5). The discovery lab
+picks the same two sources in the same order (`computed:background-image`, then `meta:jsonld:logo`), so this is not a
+regression. Same class elsewhere: coinbase.com marks the X, LinkedIn, Instagram and TikTok icons as `site-logo` (5 in
+all), sanity.io's second `site-logo` is an 850x559 merch photo, techcrunch.com's fourth is an ad vendor privacy icon.
 
 ## What matches the lab
 
 - Every unblocked site finishes: 22 of 23 `done`, none `partial`, no `internal` error, slowest 13.8 s against the 60 s
   production target, `collector: "isolated"` everywhere except `g2.com` (`"none"`).
-- A site logo is found on all 22 unblocked sites.
+- A site logo is found on all 22 unblocked sites (found, not necessarily ranked first: see the note under the table).
 - `g2.com` behaves as in the lab: `blocked` with `blockReason: "challenge-markup"`, HTTP 403, and one fallback asset
   on the error event.
 - Asset counts are within five of the lab on 15 of 22 sites, and exact on allbirds.com (33/29), chain.link
   (88 SVG), framer.com (168 SVG), gatsbyjs.com (11/11), medium.com (2/16), notion.com (44/37), vercel.com (44/30),
   webflow.com (69 SVG) and ilovechickpea.ca (3/41).
-- Palettes match the palette lab on 11 of the 12 sites it covers. Brand lists are identical on apple.com, linear.app,
-  notion.com, uniswap.org, webflow.com, and empty on allbirds.com, framer.com and vercel.com, as in the lab.
-- linear.app is better than the lab: the background neutral is `#08090a` where the lab gave `#101112`, which is exactly
-  the fix `reports/palette-verify.md` asked for (it moves the site from 4/5 to 5/5).
+- The palette lab covers 11 of the reference sites: its twelfth result file, `www.spotify.com`, is lab only and was
+  never scanned here. The top brand colour matches on all 11. The full brand list is identical on 8 of them
+  (apple.com, linear.app, notion.com, uniswap.org, webflow.com, and empty on allbirds.com, framer.com and vercel.com,
+  as in the lab) and differs on 3 (chain.link, coinbase.com and stripe.com, see R5). The neutral ramp is identical on
+  6 and differs on 5: allbirds.com (R6), chain.link (R5), linear.app (an improvement, below), plus framer.com and
+  vercel.com, whose brand lists are empty in both.
+- linear.app and stripe.com are better than the lab, and both land a fix `reports/palette-verify.md` asked for:
+  linear.app's background neutral is `#08090a` where the lab gave `#101112` (it moves the site from 4/5 to 5/5), and
+  stripe.com returns the ribbon orange `#fe8f2c` where the lab had the stand-in `#ff6118` (the report names that
+  orange `#fe8f2e`).
 
 ## Regressions
 
@@ -91,7 +107,10 @@ Suspected cause: the same `variantKey` gap as R1 for CDN paths that carry the si
 (`/<width>x<height><flags>.<ext>`). Part of the gap may be intended: apple.com art-directs with `media`, and spec 8.3
 keeps `media` sources separate, so the fix has to separate real art direction from pure size variants.
 
-### R3: declared CSS URLs stop at the probe cap (xrpl.org, 101 SVG and 99 images against 192 and 160)
+### R3: declared CSS URLs stop at the probe cap (xrpl.org, 101 SVG and 99 images against 204 and 160)
+
+The SVG baseline is the lab's 192 SVG files plus its 12 unique inline SVG, as in the counting note above, so the SVG
+loss is 103, not 91.
 
 Evidence: 175 of the 352 URLs the lab kept are missing from the app result, almost all of them `https://xrpl.org/img/...`
 files declared in stylesheets, plus a handful of CSS data-URI icons. The app keeps exactly 151 `declaredOnly` assets,
@@ -118,8 +137,8 @@ points at the scroll budget rather than at a discovery bug.
 Evidence: chain.link gives `#0847f7 #6d94f9 #001a62` and drops the lab's fourth brand colour `#fbbd11`, the yellow of
 the site. Its neutrals also differ: `#0e1119 #a6aebc #eff6ff #ffffff` against the lab's `#f5f7fa #0e1119 #ffffff
 #d8dce2`. coinbase.com adds a sixth colour, `#27ad75`, that the lab did not have. stripe.com keeps five of six lab
-colours and swaps the orange `#ff6118` for `#fe8f2c`, which `reports/palette-verify.md` already called a stand-in for
-the ribbon orange, so that one is not a loss.
+colours and replaces `#ff6118`, which `reports/palette-verify.md` called a stand-in, with `#fe8f2c`, the ribbon orange
+the report asked for (it names it `#fe8f2e`), so that one is an improvement, not a loss.
 
 Suspected cause: the palette runs on a live page, and chain.link and coinbase.com both rotate hero content, so the
 signals are not identical to the lab's. Worth a second look at chain.link only: `#fbbd11` is a real brand colour and

@@ -13,6 +13,9 @@ build/
 # generated
 src/server/scan/inpage/generated/
 
+# reference scans (scripts/scan-sites.mjs default output)
+scan-results/
+
 # testing
 coverage/
 test-results/

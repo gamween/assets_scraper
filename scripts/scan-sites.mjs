@@ -2,8 +2,11 @@
 //   OPS_TOKEN=... node scripts/scan-sites.mjs --base http://localhost:3201 --out ../reference-scans/run1
 //   OPS_TOKEN=... node scripts/scan-sites.mjs --sites stripe.com,linear.app
 // The ops token skips the bot check and the rate limit (spec 11.1), so the scans are not throttled.
+// Keep --out outside the repo; the default scan-results/ is git ignored. Exits 1 when a site ends without a scan
+// result, which includes the permanent block on g2.com.
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 /** The 23 reference sites of the discovery lab, in the order of its table. */
 const SITES = [
@@ -14,18 +17,20 @@ const SITES = [
 ];
 
 const DEFAULTS = { base: "http://localhost:3000", out: "scan-results", timeout: 180_000, retries: 1 };
+const FLAGS = new Set(["--base", "--out", "--sites", "--timeout", "--retries"]);
 
-function parseArgs(argv) {
+export function parseArgs(argv) {
   const options = { ...DEFAULTS, sites: SITES };
   for (let i = 0; i < argv.length; i += 1) {
     const [flag, inline] = argv[i].split(/=(.*)/s);
+    if (!FLAGS.has(flag)) throw new Error(`Unknown option ${flag}`);
     const value = inline ?? argv[++i];
+    if (value === undefined) throw new Error(`Missing value for ${flag}`);
     if (flag === "--base") options.base = value.replace(/\/+$/, "");
     else if (flag === "--out") options.out = value;
     else if (flag === "--sites") options.sites = value.split(",").map((site) => site.trim()).filter(Boolean);
     else if (flag === "--timeout") options.timeout = Number(value);
-    else if (flag === "--retries") options.retries = Number(value);
-    else throw new Error(`Unknown option ${flag}`);
+    else options.retries = Number(value);
   }
   if (!Number.isFinite(options.timeout) || options.timeout <= 0) throw new Error("--timeout must be a positive number of milliseconds");
   if (!Number.isFinite(options.retries) || options.retries < 0) throw new Error("--retries must be zero or more");
@@ -111,7 +116,7 @@ async function scanSite(site, options) {
 const sum = (record) => Object.values(record ?? {}).reduce((total, count) => total + count, 0);
 
 /** One row of the summary table, plus everything the comparison with the lab needs. */
-function summarize(result) {
+export function summarize(result) {
   const done = result.done;
   const page = result.pages.at(-1) ?? null;
   const logos = result.assets.filter((asset) => asset.role === "site-logo");
@@ -192,13 +197,14 @@ function table(rows) {
   return [line(COLUMNS.map(([name]) => name)), `|${widths.map((width) => "-".repeat(width + 2)).join("|")}|`, ...body.map(line)].join("\n");
 }
 
-/** A scan that never reached the page is worth one more try; a real scan result is not. */
-const shouldRetry = (summary) => summary.status === "transport" || ["busy", "internal", "dns", "connect"].includes(summary.error?.code);
+/** A scan that never reached the page, or whose stream died early, is worth one more try; a real scan result is not. */
+export const shouldRetry = (summary) => ["transport", "truncated"].includes(summary.status) || ["busy", "internal", "dns", "connect"].includes(summary.error?.code);
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   if (!process.env.OPS_TOKEN) console.warn("OPS_TOKEN is not set: scans go through the bot check, the rate limit and the daily budget.");
   await mkdir(options.out, { recursive: true });
+  const startedAt = new Date().toISOString();
   const rows = [];
   for (const site of options.sites) {
     let result = await scanSite(site, options);
@@ -213,11 +219,15 @@ async function main() {
     console.log(`${site.padEnd(18)} ${summary.status.padEnd(9)} ${String(summary.durationMs ?? summary.wallMs).padStart(6)} ms  svg ${summary.counts.svg}  img ${summary.counts.images}  fonts ${summary.counts.fonts}  logo ${summary.siteLogo ? "yes" : "no"}  ${summary.error?.code ?? ""}`);
   }
   const rendered = table(rows);
-  await writeFile(path.join(options.out, "summary.json"), `${JSON.stringify({ base: options.base, startedAt: new Date().toISOString(), rows }, null, 2)}\n`);
+  await writeFile(path.join(options.out, "summary.json"), `${JSON.stringify({ base: options.base, startedAt, finishedAt: new Date().toISOString(), rows }, null, 2)}\n`);
   await writeFile(path.join(options.out, "summary.md"), `${rendered}\n`);
   console.log(`\n${rendered}\n\nWrote ${rows.length} results to ${path.resolve(options.out)}`);
   const failures = rows.filter((row) => !["done", "partial"].includes(row.status));
-  if (failures.length) console.log(`Sites without a scan result: ${failures.map((row) => `${row.site} (${row.error?.code ?? row.status})`).join(", ")}`);
+  if (failures.length) {
+    console.log(`Sites without a scan result: ${failures.map((row) => `${row.site} (${row.error?.code ?? row.status})`).join(", ")}`);
+    process.exitCode = 1;
+  }
 }
 
-await main();
+// Imported by the tests, run as a script otherwise.
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await main();
