@@ -30,6 +30,13 @@ describe("svgColors", () => {
     expect(svgColors(`<path fill="#f00c"/><path fill="#00ff0080"/>`)).toEqual([["#ff0000", 500], ["#00ff00", 500]]);
   });
 
+  it("stays linear on hostile icons", () => {
+    const icons = [`<svg>${"fill:rgb(".repeat(57_000)}</svg>`, `<svg><path/>fill:${" ".repeat(500_000)}</svg>`];
+    const started = performance.now();
+    for (const svg of icons) expect(svgColors(svg)).toEqual(svg.includes("<path") ? [["#000000", 1000]] : []);
+    expect(performance.now() - started).toBeLessThan(500);
+  });
+
   it("treats shapes without any color as black", () => {
     expect(svgColors(`<svg><path d="M0 0h1v1z"/></svg>`)).toEqual([["#000000", 1000]]);
     expect(svgColors(`<svg><path fill="currentColor"/></svg>`)).toEqual([["#000000", 1000]]);

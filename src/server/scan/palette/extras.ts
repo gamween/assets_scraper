@@ -81,11 +81,12 @@ export const normHex = (value: unknown): string | null => {
 
 /**
  * Colors declared in an SVG icon (fill, stroke and stop-color, as attributes or CSS), as [hex, weight] with weights
- * summing to 1000. Shapes without any color default to black.
+ * summing to 1000. Shapes without any color default to black. Every repetition in the pattern is bounded: with open
+ * ones, a 512 KB icon of unterminated `rgb(` or of blank space after `fill:` blocked Node for seconds to minutes.
  */
 export function svgColors(svg: string): [string, number][] {
   const counts = new Map<string, number>();
-  for (const match of svg.matchAll(/(?:fill|stroke|stop-color)\s*[:=]\s*["']?\s*(#[0-9a-f]{3,8}\b|rgba?\([^)]*\)|white|black)/gi)) {
+  for (const match of svg.matchAll(/(?:fill|stroke|stop-color)\s{0,16}[:=]\s{0,16}["']?\s{0,16}(#[0-9a-f]{3,8}\b|rgba?\([^)]{0,64}\)|white|black)/gi)) {
     const value = match[1].toLowerCase();
     let hex: string | null = null;
     if (value === "white") hex = "#ffffff";
