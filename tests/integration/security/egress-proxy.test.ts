@@ -74,6 +74,31 @@ function rawExchange(port: number, request: string, idleMs = 1_500): Promise<str
   });
 }
 
+/** Sends raw bytes to the proxy and reports whether it closed the connection before `waitMs`, with what it answered. */
+function rawReply(port: number, request: string, waitMs = 5_000): Promise<{ data: string; closed: boolean }> {
+  return new Promise((resolve) => {
+    const socket = net.connect(port, "127.0.0.1", () => socket.write(request));
+    let data = "";
+    const timer = setTimeout(() => { socket.destroy(); resolve({ data, closed: false }); }, waitMs);
+    socket.on("data", (chunk) => { data += chunk.toString("latin1"); });
+    socket.on("close", () => { clearTimeout(timer); resolve({ data, closed: true }); });
+    socket.on("error", () => {});
+  });
+}
+
+/** An upstream that answers each request with the raw reply named by its path and keeps the connection open. */
+async function listenRawUpstream(replies: Record<string, string>): Promise<net.Server> {
+  const server = net.createServer((socket) => {
+    socket.on("error", () => {});
+    socket.once("data", (chunk) => {
+      const path = chunk.toString("latin1").split(" ")[1] ?? "";
+      socket.write(Buffer.from(replies[path] ?? "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n", "latin1"));
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return server;
+}
+
 /** Opens a CONNECT tunnel and resolves once the proxy answered, keeping the socket open. */
 function openTunnel(port: number, target: string): Promise<{ status: string; socket: net.Socket }> {
   return new Promise((resolve) => {
@@ -260,6 +285,37 @@ describe("egress proxy guard", () => {
     expect(big === "closed" || big.body.length < 512 * 1024).toBe(true);
     expect(proxy.stats().bytes).toBeGreaterThan(64 * 1024);
     expect((await openTunnel(proxy.port, allowed.host)).status).toMatch(/^HTTP\/1\.1 403 /);
+  });
+
+  it("relays odd upstream status lines without crashing or hanging", async () => {
+    const upstream = await listenRawUpstream({
+      "/zero": "HTTP/1.1 000 Odd\r\nContent-Length: 2\r\n\r\nhi",
+      "/low": "HTTP/1.1 099 Odd\r\nContent-Length: 2\r\n\r\nhi",
+      "/high": "HTTP/1.1 999 Odd\r\nContent-Length: 2\r\n\r\nhi",
+      "/reason": "HTTP/1.1 200 O\x7fK\r\nContent-Length: 2\r\n\r\nhi",
+      "/switch": "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n",
+    });
+    const host = `127.0.0.1:${(upstream.address() as net.AddressInfo).port}`;
+    process.env.SCAN_TEST_ALLOW_HOSTS = `${allowed.host},${host}`;
+    try {
+      proxy = await startEgressProxy();
+      const request = (path: string) => `GET http://${host}${path} HTTP/1.1\r\nHost: ${host}\r\nConnection: close\r\n\r\n`;
+      for (const path of ["/zero", "/low", "/high"]) {
+        const reply = await rawReply(proxy.port, request(path));
+        expect(reply.data, path).toMatch(/^HTTP\/1\.1 502 Bad Gateway\r\n/);
+        expect(reply.closed, path).toBe(true);
+      }
+      // the upstream reason phrase is never relayed, so a byte Node refuses to write cannot reach writeHead
+      const reason = await rawReply(proxy.port, request("/reason"));
+      expect(reason.data).toMatch(/^HTTP\/1\.1 200 OK\r\n/);
+      expect(reason.data.endsWith("\r\n\r\nhi")).toBe(true);
+      // Node's client drops a 101 without an error event: the proxy must still end the request
+      expect(await rawReply(proxy.port, request("/switch"))).toEqual({ data: "", closed: true });
+      expect(await getVia(proxy.port, `${allowed.origin}/control.html`)).toMatchObject({ status: 200 });
+    } finally {
+      process.env.SCAN_TEST_ALLOW_HOSTS = allowed.host;
+      upstream.close();
+    }
   });
 
   it("closes open tunnels on close", async () => {

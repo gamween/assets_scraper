@@ -103,28 +103,55 @@ export async function startEgressProxy(options: { maxBytes?: number; maxSockets?
           res.destroy();
           return;
         }
-        const upstream = http.request({
-          host: address,
-          port,
-          method: req.method,
-          path: `${url.pathname}${url.search}`,
-          headers: [...endToEndHeaders(req.rawHeaders, ["host"]), "Host", url.host],
-          setHost: false,
-          agent: false,
-          timeout: UPSTREAM_IDLE_MS,
-        });
+        let upstream: http.ClientRequest;
+        try {
+          upstream = http.request({
+            host: address,
+            port,
+            method: req.method,
+            path: `${url.pathname}${url.search}`,
+            headers: [...endToEndHeaders(req.rawHeaders, ["host"]), "Host", url.host],
+            setHost: false,
+            agent: false,
+            timeout: UPSTREAM_IDLE_MS,
+          });
+        } catch {
+          release();
+          res.destroy();
+          return;
+        }
         upstream.on("socket", (socket) => {
           track(socket);
           socket.on("data", (chunk: Buffer) => count(chunk.length));
         });
         upstream.on("response", (response) => {
-          res.writeHead(response.statusCode ?? 502, response.statusMessage, endToEndHeaders(response.rawHeaders));
+          // Node's client parser accepts statuses from 0 to 999 and any reason phrase, but `writeHead` throws on a
+          // status below 100 and on a reason phrase or header it refuses, and a throw here would be uncaught. So the
+          // reason phrase is never relayed, a status that is not a final HTTP status becomes 502, and anything else
+          // `writeHead` refuses drops the connection.
+          const status = response.statusCode ?? 0;
+          try {
+            if (status < 200 || status > 599) {
+              response.destroy();
+              res.writeHead(502, { "content-length": "0" }).end();
+              return;
+            }
+            res.writeHead(status, endToEndHeaders(response.rawHeaders));
+          } catch {
+            upstream.destroy();
+            res.destroy();
+            return;
+          }
           response.pipe(res);
           response.on("error", () => res.destroy());
         });
         upstream.on("timeout", () => upstream.destroy());
         upstream.on("error", () => res.destroy());
-        upstream.on("close", release);
+        upstream.on("close", () => {
+          release();
+          // Node's client closes without an 'error' event in some cases (a 101 reply it has no upgrade handler for)
+          if (!res.headersSent) res.destroy();
+        });
         req.on("data", (chunk: Buffer) => count(chunk.length));
         res.on("close", () => upstream.destroy());
         req.pipe(upstream);
