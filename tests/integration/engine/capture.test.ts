@@ -155,6 +155,25 @@ afterEach(async () => {
   await endHeld();
 });
 
+/**
+ * Chrome reports these image responses only once their bodies are in, so a read takes a few milliseconds and two reads
+ * overlap only when their responses happen to land together. A read that starts alone waits (up to a second) until
+ * another one runs beside it, so what keeps reads apart in the tests below is the body cap, not timing.
+ */
+function overlapGate() {
+  let open = false;
+  let release = () => {};
+  const opened = new Promise<void>((resolve) => (release = resolve));
+  return {
+    started(inFlight: number) {
+      if (inFlight < 2) return;
+      open = true;
+      release();
+    },
+    wait: () => (open ? undefined : Promise.race([opened, delay(1000)])),
+  };
+}
+
 const onBrowser = <T>(fn: (page: Page) => Promise<T>) => withBrowser({ egressPort: proxy.port, signal: new AbortController().signal }, ({ page }) => fn(page));
 const sha1 = (buffer: Buffer) => createHash("sha1").update(buffer).digest("hex");
 const failing = () => {
@@ -327,6 +346,7 @@ describe("startCapture", () => {
     let restore = () => {};
     let inFlight = 0;
     let maxInFlight = 0;
+    const gate = overlapGate();
     try {
       const network = await onBrowser(async (page) => {
         // Registered before the capture listener, so reads made by the capture go through the counter.
@@ -336,7 +356,9 @@ describe("startCapture", () => {
           prototype.body = async function (this: Response) {
             inFlight += 1;
             maxInFlight = Math.max(maxInFlight, inFlight);
+            gate.started(inFlight);
             try {
+              await gate.wait();
               return await body.call(this);
             } finally {
               inFlight -= 1;
@@ -401,6 +423,7 @@ describe("startCapture", () => {
     let restore = () => {};
     let inFlight = 0;
     let maxInFlight = 0;
+    const gate = overlapGate();
     let finished = 0;
     try {
       const network = await onBrowser(async (page) => {
@@ -410,7 +433,9 @@ describe("startCapture", () => {
           prototype.body = async function (this: Response) {
             inFlight += 1;
             maxInFlight = Math.max(maxInFlight, inFlight);
+            gate.started(inFlight);
             try {
+              await gate.wait();
               return await body.call(this);
             } finally {
               inFlight -= 1;
