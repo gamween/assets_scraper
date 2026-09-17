@@ -214,12 +214,12 @@ describe("buildFontFamilies", () => {
   it("decodes families from the CSSOM and document.fonts as the browser reads them", async () => {
     const declared = "https://www.site.example/quote.woff2";
     const unreadable = "https://www.site.example/unreadable.woff2";
-    // `font-family:"a\"b"`: the CSSOM gives `"a\"b"`, which collectors may pass without its quotes, and document.fonts
-    // gives `a"b`. Read apart, `a"b` was a family without a rule, which took the unreadable capture.
-    for (const family of [`"a\\"b"`, `a\\"b`]) {
-      const { families } = await build({ fontFaces: [rule(family, [declared])], fonts: [captured(unreadable, null)], fontStatuses: [loaded(`a"b`)] });
+    // `font-family:"a\"b "`: the CSSOM gives `"a\"b "`, which collectors may pass without its quotes, and document.fonts
+    // gives `a"b `. Read apart, `a"b ` was a family without a rule, which took the unreadable capture.
+    for (const family of [`"a\\"b "`, `a\\"b `]) {
+      const { families } = await build({ fontFaces: [rule(family, [declared])], fonts: [captured(unreadable, null)], fontStatuses: [loaded(`a"b `)] });
       expect(families).toHaveLength(1);
-      expect(families[0]).toMatchObject({ name: `a"b`, cssFamilies: [`a"b`], usedOnPage: true, faces: [{ loaded: true, files: [{ url: declared }] }] });
+      expect(families[0]).toMatchObject({ name: `a"b `, cssFamilies: [`a"b `], usedOnPage: true, faces: [{ loaded: true, files: [{ url: declared }] }] });
     }
     // Captured stylesheets give families decoded, and a face made with the FontFace constructor gives a CSS string
     const { byName } = await build({

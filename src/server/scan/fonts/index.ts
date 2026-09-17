@@ -110,8 +110,7 @@ const decodeCssString = (content: string) => string.decode(`"${content}"`);
  */
 function ruleFamily(rule: RawFontFaceRule): string {
   if (rule.origin === "network") return rule.family;
-  const value = rule.family.trim();
-  return decodeCssString(QUOTED.test(value) ? value.slice(1, -1) : value);
+  return decodeCssString(QUOTED.test(rule.family) ? rule.family.slice(1, -1) : rule.family);
 }
 
 /**
