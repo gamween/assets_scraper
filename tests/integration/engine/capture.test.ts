@@ -63,6 +63,16 @@ const gzipped = (contentType: string, text: string) => (_req: http.IncomingMessa
   res.writeHead(200, { "content-type": contentType, "content-encoding": "gzip", "content-length": String(body.length) });
   res.end(body);
 };
+/** Bodies of `/font/<name>.woff2`: a hostile page controls the bytes (and the number) of the font files it requests. */
+const MiB = 1024 * 1024;
+const fontBodies = new Map<string, Buffer>([["big", randomBytes(5 * MiB + 1)], ...Array.from({ length: 50 }, (_, i): [string, Buffer] => [String(i), randomBytes(1_024)])]);
+/** Requests `/font/<name>.woff2` for each name, one after the other, and reads each body in the page. */
+const fetchFonts = (page: Page, names: string[]) =>
+  page.evaluate(async (list) => {
+    for (const name of list) await fetch(`/font/${name}.woff2`).then((response) => response.arrayBuffer());
+  }, names);
+const fontNames = (count: number) => Array.from({ length: count }, (_, i) => String(i));
+
 /** Base64 of random bytes: gzip saves only about a quarter of it. */
 const bigSvg = `<svg xmlns="http://www.w3.org/2000/svg"><!-- ${randomBytes(90_000).toString("base64")} --></svg>`;
 const smallSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>';
@@ -71,6 +81,19 @@ beforeAll(async () => {
   fixture = await serveFixture({
     ...slowImages,
     ...slowGzipImages,
+    ...Object.fromEntries(
+      [...fontBodies].map(([name, body]): [string, http.RequestListener] => [
+        `/font/${name}.woff2`,
+        (_req, res) => {
+          res.writeHead(200, { "content-type": "font/woff2", "content-length": String(body.length) });
+          res.end(body);
+        },
+      ]),
+    ),
+    "/fonts.html": (_req, res) => {
+      res.writeHead(200, { "content-type": "text/html" });
+      res.end("<!doctype html><title>Fonts</title>");
+    },
     "/gzip/big.svg": gzipped("image/svg+xml", bigSvg),
     "/gzip/small.svg": gzipped("image/svg+xml", smallSvg),
     "/gzip.html": (_req, res) => {
@@ -211,6 +234,73 @@ describe("startCapture", () => {
     expect(network.images.find((image) => image.url.endsWith("/photo-small.png"))?.tone).toBe("light");
     expect(network.images.find((image) => image.url.endsWith("/hero.jpg"))?.tone).toBe("opaque");
     expect(network.fonts.find((font) => font.url.endsWith("/__inter.woff2"))?.meta).toEqual({ format: "woff2", familyName: "bytes 48432" });
+  });
+
+  it("never parses a font file over 5 MiB", async () => {
+    const parsed: number[] = [];
+    const network = await onBrowser(async (page) => {
+      const capture = startCapture(page, {
+        signal: new AbortController().signal,
+        parseFontBinary: (buffer) => {
+          parsed.push(buffer.length);
+          return { format: "woff2" };
+        },
+      });
+      await page.goto(`${fixture.origin}/fonts.html`, { waitUntil: "load" });
+      await fetchFonts(page, ["big", "0"]);
+      return capture.settle(10_000);
+    });
+    expect(parsed).toEqual([1_024]);
+    const big = network.fonts.find((font) => font.url.endsWith("/font/big.woff2"));
+    expect(big).toMatchObject({ bytes: 5 * MiB + 1, sha1: sha1(fontBodies.get("big") as Buffer), meta: null });
+    expect(network.fonts.find((font) => font.url.endsWith("/font/0.woff2"))?.meta).toEqual({ format: "woff2" });
+  });
+
+  it("parses at most 40 font files", async () => {
+    let parsed = 0;
+    const network = await onBrowser(async (page) => {
+      const capture = startCapture(page, {
+        signal: new AbortController().signal,
+        parseFontBinary: () => {
+          parsed += 1;
+          return { format: "woff2" };
+        },
+      });
+      await page.goto(`${fixture.origin}/fonts.html`, { waitUntil: "load" });
+      await fetchFonts(page, fontNames(50));
+      return capture.settle(10_000);
+    });
+    const fonts = network.fonts.filter((font) => /\/font\/\d+\.woff2$/.test(font.url));
+    expect(fonts).toHaveLength(50);
+    // Every file is still read and hashed; past the cap it has no metadata.
+    expect(fonts.filter((font) => font.sha1)).toHaveLength(50);
+    expect(parsed).toBe(40);
+    expect(fonts.filter((font) => font.meta)).toHaveLength(40);
+  });
+
+  it("stops parsing font files once parsing took 1.5 s", async () => {
+    let parsed = 0;
+    const network = await onBrowser(async (page) => {
+      const capture = startCapture(page, {
+        signal: new AbortController().signal,
+        // A slow parse blocks the event loop, like fontkit on a large font.
+        parseFontBinary: () => {
+          const started = performance.now();
+          while (performance.now() - started < 100);
+          parsed += 1;
+          return { format: "woff2" };
+        },
+      });
+      await page.goto(`${fixture.origin}/fonts.html`, { waitUntil: "load" });
+      await fetchFonts(page, fontNames(30));
+      return capture.settle(10_000);
+    });
+    const fonts = network.fonts.filter((font) => /\/font\/\d+\.woff2$/.test(font.url));
+    expect(fonts.filter((font) => font.sha1)).toHaveLength(30);
+    // 15 parses of at least 100 ms use the budget; on a busy machine each parse can take longer and use it sooner.
+    expect(parsed).toBeGreaterThanOrEqual(10);
+    expect(parsed).toBeLessThanOrEqual(15);
+    expect(fonts.filter((font) => font.meta)).toHaveLength(parsed);
   });
 
   it("tones SVGs with their own budget and JPEGs for free", async () => {

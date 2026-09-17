@@ -32,6 +32,14 @@ const MAX_RECORDS = 4_000;
  * capture reads (SVG, CSS) decode to 4 to 10 times their compressed size, so it would almost always be over the cap.
  */
 const ENCODED_EXPANSION = 4;
+/**
+ * Font parsing budgets. Parsing is synchronous on the event loop (a 5 MB WOFF2 takes about 200 ms), and any response
+ * whose URL ends in a font extension counts as a font, so a page controls how many there are and how large. Past a cap
+ * a font is still hashed, but has no metadata.
+ */
+const FONT_PARSE_MAX_BYTES = 5 * 1024 * 1024;
+const FONT_PARSE_BUDGET_MS = 1_500;
+const FONT_PARSE_MAX_FILES = 40;
 const FONT_TYPE = /font|woff|opentype|truetype|sfnt/i;
 const FONT_EXTENSION = /\.(woff2?|ttf|otf|eot)(?:[?#]|$)/i;
 const SVG = (url: string, contentType: string) => /image\/svg/i.test(contentType) || /\.svgz?(?:[?#]|$)/i.test(url);
@@ -58,8 +66,8 @@ const timeoutAfter = <T>(promise: Promise<T>, ms: number): Promise<T> =>
 /**
  * Network capture (spec 7.4), attached before navigation. Images, fonts and stylesheets are recorded once per URL, up
  * to `maxRecords` URLs (responses past that count as skipped bodies); 3xx responses are skipped. Bodies are read with
- * caps (size, time, concurrency, total bytes), then hashed, measured, toned or parsed and dropped. Only SVG text, CSS
- * text and `blob:` bytes are kept.
+ * caps (size, time, concurrency, total bytes), then hashed, measured, toned or parsed within budgets and dropped. Only
+ * SVG text, CSS text and `blob:` bytes are kept.
  *
  * Playwright hands over a body only whole, so the total cap works by reservation: a read starts only when its declared
  * length, or the per-body cap when no length is declared, still fits next to the bytes already read and the reads in
@@ -95,6 +103,8 @@ export function startCapture(page: Page, options: CaptureOptions): CaptureHandle
   let tonedRasters = 0;
   let tonedSvgs = 0;
   let toneMs = 0;
+  let parsedFonts = 0;
+  let fontParseMs = 0;
   let bodyTimeouts = 0;
   let skippedBodies = 0;
   let stopped = false;
@@ -239,10 +249,15 @@ export function startCapture(page: Page, options: CaptureOptions): CaptureHandle
   const captureFont = (record: CapturedFont, body: Buffer) => {
     record.bytes = body.length;
     record.sha1 = createHash("sha1").update(body).digest("hex");
+    if (body.length > FONT_PARSE_MAX_BYTES || parsedFonts >= FONT_PARSE_MAX_FILES || fontParseMs >= FONT_PARSE_BUDGET_MS) return;
+    parsedFonts += 1;
+    const started = performance.now();
     try {
       record.meta = parseFont(body);
     } catch {
       record.meta = null;
+    } finally {
+      fontParseMs += performance.now() - started;
     }
   };
 
