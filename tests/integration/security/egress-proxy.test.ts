@@ -3,7 +3,7 @@ import http from "node:http";
 import net from "node:net";
 import { Worker } from "node:worker_threads";
 import { chromium, type Browser } from "playwright-core";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { serveFixture, type FixtureServer } from "../../fixtures/serve";
 
 /** Fixed answers for chosen names, names whose lookup never answers; every other name goes to the real resolver. */
@@ -171,6 +171,15 @@ async function listenBlackhole(): Promise<{ host: string; port: number; close():
   return null;
 }
 
+/** Chrome with the flags of the scan, through the proxy on `proxyPort` when there is one. */
+const launchChrome = (proxyPort?: number) =>
+  chromium.launch({
+    executablePath: CHROME,
+    headless: true,
+    args: ["--force-webrtc-ip-handling-policy=disable_non_proxied_udp"],
+    ...(proxyPort !== undefined && { proxy: { server: `http://127.0.0.1:${proxyPort}` } }),
+  });
+
 /** Resolves with the milliseconds until `socket` closes, or "open" when it is still open after `waitMs`. */
 function closesWithin(socket: net.Socket, waitMs: number): Promise<number | "open"> {
   const start = performance.now();
@@ -232,12 +241,13 @@ describe("egress proxy with Chrome", () => {
   beforeAll(async () => {
     proxy = await startEgressProxy();
     attackHtml = attackPage(proxy.port);
-    browser = await chromium.launch({
-      executablePath: CHROME,
-      headless: true,
-      args: ["--force-webrtc-ip-handling-policy=disable_non_proxied_udp"],
-      proxy: { server: `http://127.0.0.1:${proxy.port}` },
-    });
+    browser = await launchChrome(proxy.port);
+  });
+
+  beforeEach(() => {
+    victimRequests.length = 0;
+    victimConnections = 0;
+    canaryHits.length = 0;
   });
 
   afterAll(async () => {
@@ -277,6 +287,28 @@ describe("egress proxy with Chrome", () => {
     expect(victimRequests).toEqual([]);
     expect(victimConnections).toBe(0);
     await context.close();
+  });
+
+  it("reaches the victim through the same vectors without the proxy, so the zero victim hits above come from the proxy", async () => {
+    // A vector Chrome dropped on its own (a WebSocket, a beacon, an EventSource) would pass the proxied test untested.
+    const direct = await launchChrome();
+    try {
+      const context = await direct.newContext({ serviceWorkers: "block", acceptDownloads: false });
+      const page = await context.newPage();
+      await page.goto(`${allowed.origin}/attack.html`, { waitUntil: "domcontentloaded" });
+      // Not required here: 0.0.0.0 (some Chrome versions refuse it), nip.io (needs public DNS) and https (the victim
+      // answers no TLS handshake, so no request is logged). The [::1] canary never reaches the IPv4-only fixture server.
+      const ipv6 = (victim.address() as net.AddressInfo).family === "IPv6";
+      const vectors = [
+        "GET /img", "GET /localhost", "GET /decimal", "GET /redirected", "GET /css", "GET /script.js", "GET /fetch", "POST /beacon",
+        "UPGRADE /ws", "GET /sse", "GET /nav", ...(ipv6 ? ["GET /mapped", "GET /iframe", "UPGRADE /ws6"] : []),
+      ];
+      await expect.poll(() => victimRequests, { timeout: 15_000 }).toEqual(expect.arrayContaining(vectors));
+      expect(canaryHits).toContain("/canary-localhost");
+      await context.close();
+    } finally {
+      await direct.close();
+    }
   });
 });
 
