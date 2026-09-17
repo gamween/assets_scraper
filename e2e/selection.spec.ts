@@ -101,6 +101,32 @@ test.describe("selection and ZIP", () => {
     await expect(failures.getByRole("listitem")).toHaveText([photo.name]);
   });
 
+  test("zipping shows progress in the button and Cancel stops it", async ({ page }) => {
+    await openResults(page);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    // Hold the photo so the ZIP stays in progress; routes added later take precedence.
+    await page.route(photo.original!.url, async (route) => {
+      await held;
+      await route.fulfill({ status: 404, body: "" }).catch(() => {});
+    });
+    await cardOf(page, siteLogo.id).hover();
+    await cardOf(page, siteLogo.id).getByRole("checkbox").click();
+    await cardOf(page, photo.id).locator("[data-card-main]").click();
+
+    let downloaded = false;
+    page.on("download", () => {
+      downloaded = true;
+    });
+    await selectionBar(page).getByRole("button", { name: "Download ZIP" }).click();
+    await expect(selectionBar(page).getByRole("button", { name: /^Zipping \d of 2$/ })).toBeVisible();
+    await selectionBar(page).getByRole("button", { name: "Cancel" }).click();
+    await expect(selectionBar(page).getByRole("button", { name: "Download ZIP" })).toBeEnabled();
+    release();
+    await page.waitForTimeout(300);
+    expect(downloaded).toBe(false);
+  });
+
   test("Download all zips the current tab without collapsed small icons", async ({ page }) => {
     await openResults(page);
     await page.getByRole("tab", { name: /^SVG/ }).click();
