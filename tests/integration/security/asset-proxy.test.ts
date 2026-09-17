@@ -33,7 +33,10 @@ const MAGIC: Record<string, [string, Buffer]> = {
   ttf: ["font/ttf", Buffer.concat([Buffer.from([0, 1, 0, 0]), Buffer.alloc(16)])],
   otf: ["font/otf", Buffer.concat([Buffer.from("OTTO"), Buffer.alloc(16)])],
   svg: ["image/svg+xml", Buffer.from('\uFEFF<?xml version="1.0"?>\n<!-- logo -->\n<!DOCTYPE svg>\n<svg xmlns="http://www.w3.org/2000/svg"></svg>')],
+  "svg-comments": ["image/svg+xml", Buffer.from(`${"<!---->".repeat(80)}<svg xmlns="http://www.w3.org/2000/svg"></svg>`)],
 };
+/** Untyped text that made the former SVG pattern backtrack for seconds (exponential in the comment count). */
+const COMMENTS = `${"<!---->".repeat(24)}<html></html>`;
 
 let upstream: FixtureServer;
 let victim: FixtureServer;
@@ -44,13 +47,14 @@ beforeAll(async () => {
   const routes: Parameters<typeof serveFixture>[0] = {
     "/page.html": (_q, s) => { s.writeHead(200, { "content-type": "text/html; charset=utf-8" }); s.end("<!doctype html><script>alert(1)</script>"); },
     "/octet-text": (_q, s) => { s.writeHead(200, { "content-type": "application/octet-stream" }); s.end("<html><body>not an image</body></html>"); },
+    "/octet-comments": (_q, s) => { s.writeHead(200, { "content-type": "application/octet-stream" }); s.end(COMMENTS); },
     "/no-type": (_q, s) => { s.writeHead(200); s.end(png); },
     "/declared-big": (_q, s) => { s.writeHead(200, { "content-type": "image/png", "content-length": String(4096) }); s.end(Buffer.alloc(4096)); },
     "/chunked-big": (_q, s) => { s.writeHead(200, { "content-type": "image/png" }); s.write(png); s.end(Buffer.alloc(4096)); },
     "/chunked-late": (_q, s) => {
       s.writeHead(200, { "content-type": "image/png" });
-      s.write(Buffer.concat([png.subarray(0, 8), Buffer.alloc(1016)]));
-      setTimeout(() => s.end(Buffer.alloc(4096)), 100);
+      s.write(Buffer.concat([png.subarray(0, 8), Buffer.alloc(4088)]));
+      setTimeout(() => s.end(Buffer.alloc(8192)), 100);
     },
     "/missing.png": (_q, s) => { s.writeHead(404, { "content-type": "image/png" }); s.end(); },
     "/redirect-private": (_q, s) => { s.writeHead(302, { location: `${victim.origin}/secret.png` }); s.end(); },
@@ -134,6 +138,14 @@ describe("handleAssetRequest", () => {
     expect(await errorOf(await handleAssetRequest(proxied("/octet-text")))).toMatchObject({ status: 415 });
   });
 
+  it("sniffs comment-heavy untyped text in linear time, streamed or buffered for fmt=ttf", async () => {
+    for (const extra of ["", "&fmt=ttf"]) {
+      const start = performance.now();
+      expect(await errorOf(await handleAssetRequest(proxied("/octet-comments", extra)))).toMatchObject({ status: 415 });
+      expect(performance.now() - start, extra).toBeLessThan(1_000);
+    }
+  });
+
   it("serves octet-stream and untyped bytes by their magic bytes", async () => {
     const response = await handleAssetRequest(proxied("/no-type"));
     expect(response.headers.get("content-type")).toBe("image/png");
@@ -150,7 +162,7 @@ describe("handleAssetRequest", () => {
     expect(await errorOf(await handleAssetRequest(proxied("/declared-big"), { maxBytes: 1024 }))).toMatchObject({ status: 413 });
     expect(await errorOf(await handleAssetRequest(proxied("/chunked-big"), { maxBytes: 1024 }))).toMatchObject({ status: 413 });
     // past the sniffed head the status is already sent, so the body errors instead
-    const late = await handleAssetRequest(proxied("/chunked-late"), { maxBytes: 2048 });
+    const late = await handleAssetRequest(proxied("/chunked-late"), { maxBytes: 8192 });
     expect(late.status).toBe(200);
     await expect(late.arrayBuffer()).rejects.toThrow();
   });
