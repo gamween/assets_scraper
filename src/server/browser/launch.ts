@@ -211,10 +211,13 @@ async function killStaleChromium(slot: number, binary: string): Promise<void> {
     const match = /^chromium-(\d+)-(\d+)\.pid$/.exec(name);
     if (!match) continue;
     const owner = Number(match[1]);
+    if (process.env.DIAG_LAUNCH) console.log(`DIAG seen ${performance.now().toFixed(1)} name=${name} self=${process.pid} slot=${slot} ownerAlive=${isAlive(owner)}`);
     if (owner === process.pid ? Number(match[2]) !== slot : isAlive(owner)) continue;
     const file = path.join(dir, name);
     const pid = await readPid(file);
-    if (pid && (await isOwnBrowser(pid, binary, file))) killProcessTree(pid);
+    const own = pid ? await isOwnBrowser(pid, binary, file) : false;
+    if (process.env.DIAG_LAUNCH) { let cmd = ""; try { cmd = (await readFile(`/proc/${pid}/cmdline`, "utf8")).replaceAll("\0", " "); } catch (e) { cmd = String(e); } console.log(`DIAG stale ${performance.now().toFixed(1)} name=${name} pid=${pid} own=${own} binary=${binary} cmd=${cmd.slice(0, 120)}`); }
+    if (pid && own) killProcessTree(pid);
     await removePidfile(file);
   }
 }

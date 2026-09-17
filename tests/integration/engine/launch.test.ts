@@ -267,7 +267,11 @@ describe("withBrowser", () => {
     });
     try {
       await expect.poll(() => isProcessAlive(orphan.pid ?? 0) && spawnSync("cat", [pidfile]).stdout.toString().trim(), { timeout: 10_000 }).toBe(String(orphan.pid));
+      console.log(`DIAG orphan ready ${performance.now().toFixed(1)} pid=${orphan.pid} deadOwner=${deadOwner}`);
       await withBrowser(open(), async () => {});
+      console.log(`DIAG after withBrowser ${performance.now().toFixed(1)} state=${spawnSync("cat", [`/proc/${orphan.pid}/stat`]).stdout.toString().slice(0, 60)}`);
+      await new Promise((r) => setTimeout(r, 1000));
+      console.log(`DIAG +1s state=${spawnSync("cat", [`/proc/${orphan.pid}/stat`]).stdout.toString().slice(0, 60)} cmd=${spawnSync("cat", [`/proc/${orphan.pid}/cmdline`]).stdout.toString().replaceAll("\0", " ").slice(0, 120)}`);
       await expect.poll(() => isProcessAlive(orphan.pid ?? 0), { timeout: 5000 }).toBe(false);
     } finally {
       if (orphan.pid && isProcessAlive(orphan.pid)) process.kill(-orphan.pid, "SIGKILL");

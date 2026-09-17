@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [cmdline, orphan, inflight]
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -29,8 +29,4 @@ jobs:
         run: |
           C=tests/integration/engine/capture.test.ts
           L=tests/integration/engine/launch.test.ts
-          case "${{ matrix.variant }}" in
-            cmdline) ls -la /usr/bin/google-chrome /etc/alternatives/google-chrome; head -60 /opt/google/chrome/google-chrome; for i in 1 2 3; do node diag/cmdline.mjs; done ;;
-            orphan) for i in $(seq 1 12); do npx vitest run --project integration $L -t "kills a browser left behind" 2>&1 | grep -E "Tests  |✓|×"; done ;;
-            inflight) for i in $(seq 1 8); do echo "=== iteration $i"; npx vitest run --project integration $C -t "reads in flight|reserves the per-body cap" 2>&1 | grep -E "Tests  |✓|×|DIAG|expected"; done ;;
-          esac
+          for i in $(seq 1 14); do echo "=== iteration $i"; DIAG_LAUNCH=1 npx vitest run --project integration $C $L 2>&1 | grep -E "DIAG|× |Tests  |kills a browser left behind"; done
