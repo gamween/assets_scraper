@@ -134,8 +134,13 @@ export const AssetCard = memo(function AssetCard({ asset }: { asset: Asset }) {
         className="absolute inset-0 z-0 outline-none"
         onClick={(event) => activateItem(key, event, () => appStore.getState().openDetail(asset.id))}
         onKeyDown={(event) => {
-          if (event.metaKey || event.ctrlKey || event.altKey) return;
-          if (event.key === " ") {
+          // While the detail view is open its own key handler acts, even if focus is still on this card.
+          if (event.metaKey || event.ctrlKey || event.altKey || appStore.getState().detailId) return;
+          if (event.key === "Enter") {
+            // Spec 12.5: Enter opens the detail view even while a selection is active (a click would toggle).
+            event.preventDefault();
+            appStore.getState().openDetail(asset.id);
+          } else if (event.key === " ") {
             event.preventDefault();
             appStore.getState().toggle(key);
           } else if (event.key === "d" || event.key === "D") {

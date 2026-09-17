@@ -61,7 +61,7 @@ export const LICENCE_LABELS: Record<FontFamily["license"]["kind"], string> = {
   unknown: "Licence unknown",
 };
 
-export const googleFontsUrl = (family: string) => `https://fonts.google.com/specimen/${family.trim().replace(/\s+/g, "+")}`;
+export const googleFontsUrl = (family: string) => `https://fonts.google.com/specimen/${encodeURIComponent(family.trim()).replace(/%20/g, "+")}`;
 export const adobeFontsUrl = (family: string) => `https://fonts.adobe.com/search?query=${encodeURIComponent(family)}`;
 
 async function saveFiles(files: { name: string; load: () => Promise<Blob> }[], zipName: string) {

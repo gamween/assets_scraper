@@ -248,6 +248,49 @@ export function DetailDialog() {
     if (phase === "results" || phase === "error") syncDetailToLocation(detailId);
   }, [detailId, phase]);
 
+  // Keys work as soon as the dialog opens, even before focus has moved into it.
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      // Base UI handles arrow keys inside the popup and stops them there, so this listens in the capture phase.
+      if (event.metaKey || event.ctrlKey || event.altKey || event.isComposing) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("input, textarea, select, [contenteditable=true], [role=radiogroup]")) return;
+      const state = appStore.getState();
+      const current = findAsset(state, state.detailId);
+      if (!current) return;
+      switch (event.key) {
+        case "ArrowLeft":
+          event.preventDefault();
+          state.previousDetail();
+          break;
+        case "ArrowRight":
+          event.preventDefault();
+          state.nextDetail();
+          break;
+        case "d":
+        case "D":
+          event.preventDefault();
+          downloadAsset(current);
+          break;
+        case "c":
+        case "C":
+          if (current.kind === "svg" && !window.getSelection()?.toString()) {
+            event.preventDefault();
+            copySvgCode(current);
+          }
+          break;
+        case "o":
+        case "O":
+          event.preventDefault();
+          openSource(current);
+          break;
+      }
+    };
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => document.removeEventListener("keydown", onKeyDown, true);
+  }, [open]);
+
   return (
     <DialogPrimitive.Root open={open} onOpenChange={(next) => (next ? undefined : appStore.getState().closeDetail())}>
       <DialogPrimitive.Portal>
@@ -256,39 +299,6 @@ export function DetailDialog() {
           ref={popupRef}
           initialFocus={popupRef}
           finalFocus={() => (shown ? (document.querySelector<HTMLElement>(`[data-asset-id="${CSS.escape(shown.id)}"] [data-card-main]`) ?? true) : true)}
-          onKeyDown={(event) => {
-            if (event.metaKey || event.ctrlKey || event.altKey || !shown) return;
-            const target = event.target as HTMLElement;
-            if (target.closest("input, textarea, select, [contenteditable=true]")) return;
-            const state = appStore.getState();
-            switch (event.key) {
-              case "ArrowLeft":
-                event.preventDefault();
-                state.previousDetail();
-                break;
-              case "ArrowRight":
-                event.preventDefault();
-                state.nextDetail();
-                break;
-              case "d":
-              case "D":
-                event.preventDefault();
-                downloadAsset(shown);
-                break;
-              case "c":
-              case "C":
-                if (shown.kind === "svg" && !window.getSelection()?.toString()) {
-                  event.preventDefault();
-                  copySvgCode(shown);
-                }
-                break;
-              case "o":
-              case "O":
-                event.preventDefault();
-                openSource(shown);
-                break;
-            }
-          }}
           className={cn(
             "fixed inset-0 z-50 flex flex-col overflow-hidden bg-surface text-text outline-none",
             "md:inset-auto md:top-1/2 md:left-1/2 md:h-[min(calc(100dvh-96px),880px)] md:w-[min(1120px,calc(100vw-48px))] md:-translate-x-1/2 md:-translate-y-1/2 md:rounded-xl md:border md:border-border md:shadow-float",

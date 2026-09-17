@@ -63,6 +63,19 @@ test.describe("selection and ZIP", () => {
     await expect(selectionBar(page).getByTestId("selection-count")).toContainText(`${visible + fontsOf(linear).length} selected`);
   });
 
+  test("on a focused card Space toggles selection and Enter opens the detail view", async ({ page }) => {
+    await openResults(page);
+    const main = cardOf(page, photo.id).locator("[data-card-main]");
+    await main.focus();
+    await page.keyboard.press("Space");
+    await expect(cardOf(page, photo.id)).toHaveAttribute("data-selected", "true");
+    await page.keyboard.press("Enter");
+    await expect(page.getByRole("dialog").getByRole("heading", { level: 2 })).toHaveText(photo.name);
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(cardOf(page, photo.id)).toHaveAttribute("data-selected", "true");
+  });
+
   test("the bar shows the count and size, and the ZIP holds exactly the selection", async ({ page }) => {
     await openResults(page);
     await cardOf(page, siteLogo.id).hover();
