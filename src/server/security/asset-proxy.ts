@@ -164,8 +164,10 @@ export async function handleAssetRequest(request: Request, options: AssetProxyOp
       return errorResponse(415, "unsupported-type", "Only images and fonts can be downloaded.");
     }
 
-    const { head, rest } = await peek(upstream.stream(), SNIFF_BYTES);
-    const contentType = UNTYPED.has(declared) ? sniffContentType(head) : declared;
+    // Only untyped bodies wait for their first bytes; a declared image or font type streams from the first chunk.
+    const untyped = UNTYPED.has(declared);
+    const { head, rest } = untyped ? await peek(upstream.stream(), SNIFF_BYTES) : { head: new Uint8Array(0), rest: upstream.stream().getReader() };
+    const contentType = untyped ? sniffContentType(head) : declared;
     if (!contentType) {
       await rest.cancel().catch(() => {});
       return errorResponse(415, "unsupported-type", "Only images and fonts can be downloaded.");

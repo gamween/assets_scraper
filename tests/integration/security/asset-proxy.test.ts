@@ -52,7 +52,10 @@ beforeAll(async () => {
     "/no-type": (_q, s) => { s.writeHead(200); s.end(png); },
     "/declared-big": (_q, s) => { s.writeHead(200, { "content-type": "image/png", "content-length": String(4096) }); s.end(Buffer.alloc(4096)); },
     "/chunked-big": (_q, s) => { s.writeHead(200, { "content-type": "image/png" }); s.write(png); s.end(Buffer.alloc(4096)); },
+    "/chunked-big-untyped": (_q, s) => { s.writeHead(200, { "content-type": "application/octet-stream" }); s.write(png); s.end(Buffer.alloc(4096)); },
     "/counted.png": (q, s) => { hits.set(q.url ?? "", (hits.get(q.url ?? "") ?? 0) + 1); s.writeHead(200, { "content-type": "image/png" }); s.end(png); },
+    // a typed image that sends its first bytes, then nothing for a long time
+    "/png-slow": (_q, s) => { s.writeHead(200, { "content-type": "image/png" }); s.write(png.subarray(0, 64)); },
     "/chunked-late": (_q, s) => {
       s.writeHead(200, { "content-type": "image/png" });
       s.write(Buffer.concat([png.subarray(0, 8), Buffer.alloc(4088)]));
@@ -138,6 +141,18 @@ describe("handleAssetRequest", () => {
     expect(hits.get("/counted.png")).toBe(1);
   });
 
+  it("sends the headers of a typed asset without waiting for a sniffing prefix", async () => {
+    const start = performance.now();
+    const response = await handleAssetRequest(proxied("/png-slow"), { timeoutMs: 10_000 });
+    expect(performance.now() - start).toBeLessThan(5_000);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("image/png");
+    const reader = response.body!.getReader();
+    const first = await reader.read();
+    expect(Buffer.from(first.value!)).toEqual(png.subarray(0, 64));
+    await reader.cancel();
+  });
+
   it("refuses cross-site, same-site and header-less requests", async () => {
     expect(await errorOf(await handleAssetRequest(proxied("/assets/logo.svg", "", "cross-site")))).toMatchObject({ status: 403 });
     const sameSite = await handleAssetRequest(proxied("/assets/logo.svg", "", "same-site"));
@@ -182,11 +197,14 @@ describe("handleAssetRequest", () => {
 
   it("answers 413 above the size cap", async () => {
     expect(await errorOf(await handleAssetRequest(proxied("/declared-big"), { maxBytes: 1024 }))).toMatchObject({ status: 413 });
-    expect(await errorOf(await handleAssetRequest(proxied("/chunked-big"), { maxBytes: 1024 }))).toMatchObject({ status: 413 });
-    // past the sniffed head the status is already sent, so the body errors instead
-    const late = await handleAssetRequest(proxied("/chunked-late"), { maxBytes: 8192 });
-    expect(late.status).toBe(200);
-    await expect(late.arrayBuffer()).rejects.toThrow();
+    // an untyped body is sniffed first, so a cap crossed within the sniffed prefix still gets a status
+    expect(await errorOf(await handleAssetRequest(proxied("/chunked-big-untyped"), { maxBytes: 1024 }))).toMatchObject({ status: 413 });
+    // a typed body of unknown length streams at once, so the status is already sent and the body errors instead
+    for (const [path, maxBytes] of [["/chunked-big", 1024], ["/chunked-late", 8192]] as const) {
+      const streamed = await handleAssetRequest(proxied(path), { maxBytes });
+      expect(streamed.status, path).toBe(200);
+      await expect(streamed.arrayBuffer(), path).rejects.toThrow();
+    }
   });
 
   it("sanitizes the download name", async () => {
