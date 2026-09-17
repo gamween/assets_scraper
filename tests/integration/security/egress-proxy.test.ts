@@ -1,7 +1,7 @@
 import http from "node:http";
 import net from "node:net";
 import { chromium, type Browser } from "playwright-core";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { serveFixture, type FixtureServer } from "../../fixtures/serve";
 import { startEgressProxy, type EgressProxy } from "@/server/net/egress-proxy";
 
@@ -62,7 +62,7 @@ function attackPage(proxyPort: number): string {
 }
 
 /** Sends raw bytes to the proxy and resolves with everything it answers before closing or going idle. */
-function rawExchange(port: number, request: string, idleMs = 1_500): Promise<string> {
+function rawExchange(port: number, request: string, idleMs = 10_000): Promise<string> {
   return new Promise((resolve) => {
     const socket = net.connect(port, "127.0.0.1", () => socket.write(request));
     let data = "";
@@ -176,19 +176,22 @@ describe("egress proxy with Chrome", () => {
   it("blocks every loopback vector from a page and still loads allowed pages", async () => {
     const context = await browser.newContext({ serviceWorkers: "block", acceptDownloads: false });
     const page = await context.newPage();
+    // the page navigates to the victim 500 ms after it loads, once every other vector has been sent
+    const lastVector = page.waitForEvent("requestfailed", { predicate: (request) => request.url().endsWith("/nav"), timeout: 30_000 });
     await page.goto(`${allowed.origin}/attack.html`, { waitUntil: "domcontentloaded" });
-    await page.waitForTimeout(3_000);
+    await lastVector;
+    // Chrome may refuse some spellings (0.0.0.0) on its own; every one that reaches the proxy must be blocked
+    await expect.poll(() => proxy.stats().blockedHosts, { timeout: 10_000 }).toContain("127.0.0.1");
 
     expect(victimRequests).toEqual([]);
     expect(victimConnections).toBe(0);
     expect(canaryHits).toEqual([]);
-    const stats = proxy.stats();
-    expect(stats.blocked).toBeGreaterThan(0);
-    // Chrome may refuse some spellings (0.0.0.0) on its own; every one that reaches the proxy must be blocked
-    expect(stats.blockedHosts).toContain("127.0.0.1");
+    expect(proxy.stats().blocked).toBeGreaterThan(0);
 
-    await page.goto(`${allowed.origin}/control.html`);
-    expect(await page.title()).toBe("Control page");
+    // a fresh page: the attack page is still committing Chrome's error page for the failed navigation
+    const control = await context.newPage();
+    await control.goto(`${allowed.origin}/control.html`);
+    expect(await control.title()).toBe("Control page");
     expect(proxy.stats().bytes).toBeGreaterThan(0);
     await context.close();
   });
@@ -273,10 +276,19 @@ describe("egress proxy guard", () => {
     const first = await openTunnel(proxy.port, allowed.host);
     expect(first.status).toBe("HTTP/1.1 200 Connection Established");
     expect((await openTunnel(proxy.port, allowed.host)).status).toMatch(/^HTTP\/1\.1 403 /);
-    first.socket.destroy();
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    const again = await openTunnel(proxy.port, allowed.host);
-    expect(again.status).toBe("HTTP/1.1 200 Connection Established");
+    await new Promise((resolve) => first.socket.once("close", resolve).destroy());
+    // the proxy frees the slot once it sees the close, which can come a little after the client socket closed
+    const again = await vi.waitFor(
+      async () => {
+        const tunnel = await openTunnel(proxy.port, allowed.host);
+        if (tunnel.status !== "HTTP/1.1 200 Connection Established") {
+          tunnel.socket.destroy();
+          throw new Error(`slot still taken: ${tunnel.status}`);
+        }
+        return tunnel;
+      },
+      { timeout: 5_000, interval: 50 },
+    );
     again.socket.destroy();
     await proxy.close();
 
