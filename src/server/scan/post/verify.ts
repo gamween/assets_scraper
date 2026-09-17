@@ -1,5 +1,6 @@
 import sharp from "sharp";
 import type { AssetFormat } from "@/lib/contract";
+import { SafeFetchError, type SafeFetchErrorCode } from "@/server/net/safe-fetch";
 import type { SafeFetch } from "../types";
 import { formatFromContentType, sniffFormat } from "./format";
 
@@ -109,8 +110,19 @@ export async function imageDimensions(body: Buffer, format: AssetFormat, complet
 
 /** A request that never produced a response. Kept apart from a refusal, which is an answer and is not retried. */
 const TRANSPORT_FAILURE = Symbol("transport-failure");
+/** A transport failure the `Range` header cannot have caused, so asking again without it would only cost a request. */
+const DEAD_URL = Symbol("dead-url");
+type Failure = typeof TRANSPORT_FAILURE | typeof DEAD_URL;
 
-async function attempt(url: string, options: VerifyOptions, ranged: boolean): Promise<VerifyResult | typeof TRANSPORT_FAILURE> {
+/**
+ * `safeFetch` codes that say nothing about the request headers: a name that does not resolve, an address the SSRF
+ * rules refuse, a scheme or port that is never fetched, and a body already declared over the cap, which an un-ranged
+ * request would only make bigger. A reset or a refused connection is not here: undici reports both as `connect`, and
+ * the mid-body reset this retry exists for is one of them.
+ */
+const DEAD_URL_CODES = new Set<SafeFetchErrorCode>(["dns", "blocked-address", "own-host", "unsupported-port", "invalid-url", "too-large"]);
+
+async function attempt(url: string, options: VerifyOptions, ranged: boolean): Promise<VerifyResult | Failure> {
   const remaining = options.deadline - Date.now();
   if (options.signal.aborted || remaining <= 0) return SKIPPED;
   try {
@@ -149,8 +161,9 @@ async function attempt(url: string, options: VerifyOptions, ranged: boolean): Pr
       complete,
       ...(complete ? { body } : {}),
     };
-  } catch {
-    return options.signal.aborted || Date.now() >= options.deadline ? SKIPPED : TRANSPORT_FAILURE;
+  } catch (error) {
+    if (options.signal.aborted || Date.now() >= options.deadline) return SKIPPED;
+    return error instanceof SafeFetchError && DEAD_URL_CODES.has(error.code) ? DEAD_URL : TRANSPORT_FAILURE;
   }
 }
 
@@ -162,12 +175,17 @@ async function attempt(url: string, options: VerifyOptions, ranged: boolean): Pr
  * saw a network failure and kept the transformed URL the page served, on hosts whose original was perfectly reachable.
  * A transport failure on the ranged request is therefore retried once without the range. It costs one extra request,
  * only on a URL that already failed, and `readPrefix` still stops reading at the same prefix.
+ *
+ * A failure the header cannot have caused is not retried, so a URL whose host no longer resolves costs one request
+ * instead of two. That is only the `DEAD_URL_CODES` set: the reset this retry exists for reaches us as `connect`,
+ * the same code as a refused connection, so those cannot be told apart and are still retried.
  */
 export async function verifyUrl(url: string, options: VerifyOptions): Promise<VerifyResult> {
   const ranged = await attempt(url, options, true);
+  if (ranged === DEAD_URL) return { ok: false, reason: "network" };
   if (ranged !== TRANSPORT_FAILURE) return ranged;
   const plain = await attempt(url, options, false);
-  return plain === TRANSPORT_FAILURE ? { ok: false, reason: "network" } : plain;
+  return plain === TRANSPORT_FAILURE || plain === DEAD_URL ? { ok: false, reason: "network" } : plain;
 }
 
 export interface Limiter {

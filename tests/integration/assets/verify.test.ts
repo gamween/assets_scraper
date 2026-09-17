@@ -2,6 +2,7 @@ import type http from "node:http";
 import sharp from "sharp";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { FixtureServer } from "../../fixtures/serve";
+import type { SafeFetch } from "@/server/scan/types";
 import { runVerifications, verifyUrl } from "@/server/scan/post/verify";
 import { serveAssetsFixture, testFetch } from "./harness";
 
@@ -89,6 +90,17 @@ describe("verifyUrl", () => {
     expect(result).toMatchObject({ ok: true, format: "png", width: 1000, height: 900 });
     // Two requests: the ranged one that was reset, then the same URL without a range.
     expect(rangeResetRequests.map((headers) => headers.range)).toEqual(["bytes=0-262143", undefined]);
+  });
+
+  it("does not retry a failure the range cannot have caused", async () => {
+    let calls = 0;
+    const counting: SafeFetch = (target, init) => {
+      calls += 1;
+      return testFetch(target, init);
+    };
+    // A host that does not resolve answers nothing, ranged or not, so it costs one request instead of two.
+    expect(await verifyUrl("https://example.invalid/logo.png", { ...options(), fetch: counting })).toMatchObject({ ok: false, reason: "network" });
+    expect(calls).toBe(1);
   });
 
   it("stops reading a response that ignores the range", async () => {
