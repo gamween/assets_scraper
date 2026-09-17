@@ -102,13 +102,36 @@ describe("buildZip", () => {
     expect(text(byName.get("linear-logo.svg")!)).toBe("<svg>logo</svg>");
     expect(text(byName.get("linear-hero-2.png")!)).toBe("OTHER");
     expect(text(byName.get("inter-variable-100-900.ttf")!)).toBe("TTF-REGULAR");
-    // Inline data-URI fonts come from their own bytes. They get no TTF: the proxy cannot fetch them and the app CSP
-    // blocks the WebAssembly the in-browser converter needs.
+    // Inline data-URI fonts come from their own bytes. They get no TTF: the conversion runs on the server through the
+    // proxy, and they have no proxy path.
     expect(Buffer.from(byName.get("brand-serif-400.woff2")!)).toEqual(interWoff2);
 
     expect(failed).toEqual([{ name: "Broken image", path: "linear.app-assets/images/linear-broken.png" }]);
     expect(progress.at(-1)).toEqual([10, 10]);
     expect(fetchMock.mock.calls.some((call) => String(call[0]).startsWith("https://static.linear.app/fonts/Berkeley") && String(call[0]).includes("fmt"))).toBe(false);
+  });
+
+  it("loads files past the signing cap (proxy \"\") directly only, with no TTF, and lists them as failed when that fails", async () => {
+    const cappedHero = makeAsset({ id: "capped", name: "Capped image", filename: "linear-capped.png", original: remoteSource("https://cdn.test/hero.png", { proxy: "" }) });
+    const cappedBroken = makeAsset({ id: "gone", name: "Gone image", filename: "linear-gone.png", original: remoteSource("https://cdn.test/gone.png", { proxy: "" }) });
+    const cappedFont = makeFont({ ...inter, id: "capped-inter", faces: [{ weight: "100 900", style: "normal", loaded: true, files: [{ ...interRegular, proxy: "" }] }] });
+    const fetchMock = mockFetch();
+    const { response, result } = buildZip(
+      [
+        { type: "asset", asset: cappedHero },
+        { type: "asset", asset: cappedBroken },
+        { type: "font", font: cappedFont },
+      ],
+      "linear.app",
+    );
+    const entries = readZip(new Uint8Array(await response.arrayBuffer()));
+    expect(entries.map((entry) => [entry.name, text(entry.data)])).toEqual([
+      ["linear.app-assets/images/linear-capped.png", "HERO"],
+      ["linear.app-assets/fonts/Inter Variable/inter-variable-100-900.woff2", "WOFF2-REGULAR"],
+    ]);
+    expect((await result).failed).toEqual([{ name: "Gone image", path: "linear.app-assets/images/linear-gone.png" }]);
+    expect(fetchMock.mock.calls.map((call) => call[0])).not.toContain("");
+    expect(fetchMock.mock.calls.every((call) => String(call[0]).startsWith("https://"))).toBe(true);
   });
 
   it("stops fetching when aborted", async () => {

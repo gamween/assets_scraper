@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { Browser, BrowserContext, CDPSession, Frame, Page } from "playwright-core";
+import { orAfter, timeoutAfter, untilAborted } from "@/server/async";
 import { limits } from "@/server/config/limits";
 
 export class BusyError extends Error {
@@ -317,52 +318,6 @@ function acquireSlot(signal: AbortSignal, onQueued?: () => void): Promise<{ slot
   });
 }
 
-/** Rejects with the abort reason as soon as the signal aborts. A later rejection of `promise` is ignored. */
-function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
-  promise.catch(() => {});
-  if (signal.aborted) return Promise.reject(signal.reason);
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = () => reject(signal.reason);
-    signal.addEventListener("abort", onAbort, { once: true });
-    promise.then(
-      (value) => {
-        signal.removeEventListener("abort", onAbort);
-        resolve(value);
-      },
-      (error: unknown) => {
-        signal.removeEventListener("abort", onAbort);
-        reject(error);
-      },
-    );
-  });
-}
-
-/** Resolves with the result, or with undefined once `ms` have passed or the signal aborts. */
-const within = <T>(promise: Promise<T>, ms: number, signal?: AbortSignal): Promise<T | undefined> =>
-  new Promise((resolve, reject) => {
-    if (signal?.aborted) return resolve(undefined);
-    const stop = () => {
-      clearTimeout(timer);
-      signal?.removeEventListener("abort", giveUp);
-    };
-    const giveUp = () => {
-      stop();
-      resolve(undefined);
-    };
-    const timer = setTimeout(giveUp, ms);
-    signal?.addEventListener("abort", giveUp, { once: true });
-    promise.then(
-      (value) => {
-        stop();
-        resolve(value);
-      },
-      (error: unknown) => {
-        stop();
-        reject(error);
-      },
-    );
-  });
-
 interface Launched {
   browser: Browser;
   pid?: number;
@@ -388,19 +343,17 @@ async function launch(slot: number, executable: Executable, egressPort: number):
   return { browser, pid: trusted ? pid : undefined, pidfile, binary: executable.binary };
 }
 
-const GRACEFUL_CLOSE_MS = 5_000;
-
 /**
  * Graceful close when the scan ended normally, SIGKILL otherwise or when close hangs (critic R6). A graceful close stops
  * waiting as soon as `signal` aborts too, so a hung close never holds a scan past its deadline. Never rejects: a
  * cleanup step that fails (a pidfile that cannot be removed) is left to the stale-browser check of the next launch.
  */
 async function shutdown({ browser, pid, pidfile, binary }: Launched, graceful: boolean, signal: AbortSignal): Promise<void> {
-  const closed = graceful && (await within(browser.close().then(() => true, () => false), GRACEFUL_CLOSE_MS, signal));
+  const closed = graceful && (await orAfter(browser.close().then(() => true, () => false), limits.gracefulCloseMs, undefined, signal));
   if (pid && !closed) killProcessTree(pid);
   // A close that worked waited for Chromium to exit, so a live PID now may be another process that reused it.
   if (pid && closed && isAlive(pid) && (await isOwnBrowser(pid, binary, pidfile))) killProcessTree(pid);
-  if (!closed) await within(browser.close().catch(() => {}), 2_000);
+  if (!closed) await orAfter(browser.close().catch(() => {}), limits.killedCloseMs, undefined);
   await removePidfile(pidfile);
   if (isServerless() && busySlots.size === 1) await sweepTmp();
 }
@@ -502,7 +455,9 @@ export async function withBrowser<T>(options: WithBrowserOptions, fn: (session: 
       await guardPages(context, page);
       return { context, page };
     };
-    const { context, page } = await untilAborted(setup(), signal);
+    // Without its own bound, a hang in context or page setup would wait out the page deadline and read as a slow page.
+    const settingUp = timeoutAfter(setup(), limits.browserSetupMs, () => new Error(`Browser context setup took more than ${limits.browserSetupMs} ms`));
+    const { context, page } = await untilAborted(settingUp, signal);
     const result = await untilAborted(fn({ browser, context, page, cold, queueMs, launchMs, health, pid: launched.pid }), signal);
     succeeded = true;
     return result;

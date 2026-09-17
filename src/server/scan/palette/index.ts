@@ -1,5 +1,6 @@
 import type { Page } from "playwright-core";
 import type { Palette } from "@/lib/contract";
+import { untilAborted } from "@/server/async";
 import { limits } from "@/server/config/limits";
 import { PALETTE_SOURCE } from "../inpage/generated/palette";
 import type { SafeFetch } from "../types";
@@ -17,6 +18,12 @@ const OVERLAY_BUDGET_MS = 300;
 const RESTORE_WAIT_MS = 500;
 /** Kept for `buildPalette`, which is synchronous and bounded (about 100 ms on adversarial signals on a laptop). */
 const BUILD_RESERVE_MS = 250;
+/**
+ * Collection time the screenshot leaves for the icon colors and the return. `page.screenshot` waits for a frame, and a
+ * page that cannot render one (a render-blocking stylesheet that never loads) holds it to its timeout: with the whole
+ * remaining budget as that timeout, the budget ran out with it and the DOM signals already read were lost.
+ */
+const SCREENSHOT_RESERVE_MS = 500;
 /** Largest in-page result in JSON characters. The in-page caps keep real results well under 1 MB. */
 const MAX_RESULT_CHARS = 2_000_000;
 
@@ -142,7 +149,7 @@ async function collectOnPage(
   budget.throwIfAborted();
 
   const [pixels, extras] = await Promise.all([
-    screenshot(page, budget, remainingMs()),
+    screenshot(page, budget, remainingMs() - SCREENSHOT_RESERVE_MS),
     fetchPaletteExtras(signals, { fetch, signal: budget, budgetMs: Math.min(limits.paletteFetchMs, remainingMs()) }),
   ]);
   for (const [hex, weight] of await iconColors(extras.icon, run)) signals.samples.push(["icon", hex, weight, 1]);
@@ -156,6 +163,7 @@ async function collectOnPage(
 /** Viewport PNG while overlays are hidden, or null (the palette then uses DOM signals only). */
 async function screenshot(page: Page, budget: AbortSignal, timeoutMs: number): Promise<Pixels | null> {
   budget.throwIfAborted();
+  if (timeoutMs <= 0) return null;
   try {
     return decodePng(await page.screenshot({ type: "png", timeout: timeoutMs }));
   } catch {
@@ -187,14 +195,4 @@ async function restoreOverlays(scopePromise: Promise<PaletteScope>): Promise<voi
   );
   await Promise.race([restored, waited]);
   clearTimeout(timer);
-}
-
-/** Settles like `promise`, or rejects as soon as `signal` aborts. */
-function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = () => reject(signal.reason);
-    if (signal.aborted) onAbort();
-    signal.addEventListener("abort", onAbort, { once: true });
-    promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
-  });
 }

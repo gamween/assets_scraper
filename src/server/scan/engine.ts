@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type { Page } from "playwright-core";
-import type { Asset, Diagnostics, PageInfo, Palette, ScanEvent, StepId, WarningCode } from "@/lib/contract";
+import { type Asset, type Diagnostics, HiddenReason, type PageInfo, type Palette, type ScanEvent, type StepId, type WarningCode } from "@/lib/contract";
 import { chunkByBytes } from "@/lib/ndjson";
 import { BusyError, readMemAvailableMb, withBrowser } from "@/server/browser/launch";
+import { orAfter, untilAborted } from "@/server/async";
 import { limits } from "@/server/config/limits";
 import { ScanFailure } from "@/server/errors";
 import { type EgressProxy, startEgressProxy } from "@/server/net/egress-proxy";
@@ -11,7 +12,7 @@ import { createSigner } from "@/server/security/sign";
 import { detectBlock, detectChallenge } from "./block";
 import { startCapture, type CaptureHandle } from "./capture";
 import { buildFallback, directAsset } from "./fallback";
-import { buildFontFamilies } from "./fonts";
+import { buildFontFamilies, signFontFiles } from "./fonts";
 import { COLLECTOR_SOURCE } from "./inpage/generated/collector";
 import { InPageTimeoutError, runInPage } from "./inpage/run";
 import { loadAndScroll, MAX_TITLE_CHARS, openPage, prepareForCollection, readPageFacts, type NavigationResult } from "./navigate";
@@ -48,38 +49,8 @@ const defaultDeps: ScanEngineDeps = {
   readMemAvailableMb: process.platform === "linux" ? readMemAvailableMb : undefined,
 };
 
-/** Palette signals take about 200 ms (spec 10); this is its share of the 15 s collection cap. */
-const PALETTE_BUDGET_MS = 3_000;
-/** The engine's own stop for the palette phase: extractPalette's signal aborts then, in case it overruns its budget. */
-const PALETTE_CAP_MS = PALETTE_BUDGET_MS + 1_000;
-/**
- * After the abort, how long extractPalette gets to put the page back (it hides overlays while it reads colors) before
- * the engine stops waiting and the collector runs.
- */
-const PALETTE_STOP_MS = 1_000;
-/**
- * CPU time post-processing gets at least, after its network deadline. Page work stops this long before the scan
- * deadline, so that what it gathered still turns into results by the deadline.
- */
-const POST_GRACE_MS = 5_000;
-/** How long a cancelled scan waits for its cleanup (browser kill, proxy close) before the stream ends anyway. */
-const CANCEL_CLEANUP_MS = 10_000;
 const WATCHDOG_INTERVAL_MS = 500;
-/**
- * How long a scan waits for its egress proxy to stop. It stops after page work, when the page deadline may have passed
- * already, so a close that hangs must not hold the scan past its own deadline.
- */
-const EGRESS_CLOSE_MS = 1_000;
-const MB = 1024 * 1024;
 
-/**
- * Characters of JSON the collector output is fitted in (see FIT_COLLECTOR_OUTPUT). Node holds the result several times
- * while Playwright and the engine parse it, so this bounds the memory a page can make the scan use. It holds the blob
- * bytes at their cap as base64 (which JSON never escapes), inline SVG markup at its cap with every character escaped
- * the way ordinary markup can be (quotes, backslashes and line breaks take 2 characters), and room for candidates, font
- * rules and links.
- */
-const collectorBudgetChars = () => Math.ceil((limits.blobTotalBytes * 4) / 3) + 2 * limits.svgTotalBytes + 8 * MB;
 /** The fitted output can differ from the budget by a few characters (see FIT_COLLECTOR_OUTPUT). */
 const COLLECTOR_RESULT_SLACK_CHARS = 1_024;
 const COLLECTOR_LISTS = ["candidates", "svgs", "fontFaces", "fontStatuses", "fontUsage", "unreadableSheets", "blobs", "brandLinks"] as const;
@@ -89,8 +60,13 @@ const COLLECTOR_LISTS = ["candidates", "svgs", "fontFaces", "fontStatuses", "fon
  * It cuts the title and the site name to one character over their caps (the engine cuts them in Node, see
  * `pageContextFor`), then fits the output in `budget` characters of JSON: over it, list items go until it fits, first
  * the candidates that repeat the URL of an earlier candidate (they only add a use of an asset that stays), then the
- * largest items, and `stats.truncated` is set. The collector caps SVG and blob bytes, but not candidates: a page that
- * uses a large data: URI on hundreds of elements would otherwise lose the whole collector output.
+ * largest items (the later one among equals), and `stats.truncated` is set. The collector fits its own output in the
+ * same budget and order (`CollectorOptions.maxOutputChars`), so this is a safety net for a collector a main-world page
+ * replaced or broke: without it, output over the budget would lose the whole collector result.
+ *
+ * It never stringifies the whole output, which could pass V8's maximum string length and throw: it sums the size of
+ * each list item and of the rest, and an item that cannot be stringified (too long, or a cycle) counts as over the
+ * budget, so it goes.
  *
  * Measured sizes count a comma per item, one too many for a list that ends up empty, so the loop keeps a character
  * of margin per list it touched and the result never goes over the budget.
@@ -102,22 +78,35 @@ export const FIT_COLLECTOR_OUTPUT = `(output, budget) => {
     if (typeof page.title === "string") page.title = page.title.slice(0, ${MAX_TITLE_CHARS + 1});
     if (typeof page.siteName === "string") page.siteName = page.siteName.slice(0, ${MAX_SITE_NAME_CHARS + 1});
   }
-  let total = JSON.stringify(output).length;
-  if (total <= budget) return output;
+  const sizeOf = (value) => {
+    try {
+      return (JSON.stringify(value) ?? "null").length;
+    } catch {
+      return budget + 1;
+    }
+  };
+  const shell = { ...output };
   const items = [];
   const urls = new Set();
+  let total = 0;
   for (const key of ${JSON.stringify(COLLECTOR_LISTS)}) {
     const list = output[key];
     if (!Array.isArray(list)) continue;
+    shell[key] = [];
+    if (list.length > 0) total -= 1;
     for (let index = 0; index < list.length; index += 1) {
       const item = list[index];
       const url = key === "candidates" && item && typeof item.url === "string" ? item.url : undefined;
       const repeat = url !== undefined && urls.has(url);
       if (url !== undefined) urls.add(url);
-      items.push({ key, index, repeat, size: (JSON.stringify(item) ?? "null").length + 1 });
+      const size = sizeOf(item) + 1;
+      items.push({ key, index, repeat, size });
+      total += size;
     }
   }
-  items.sort((a, b) => Number(b.repeat) - Number(a.repeat) || b.size - a.size);
+  total += sizeOf(shell);
+  if (total <= budget) return output;
+  items.sort((a, b) => Number(b.repeat) - Number(a.repeat) || b.size - a.size || b.index - a.index);
   const dropped = new Map();
   for (const item of items) {
     if (total + dropped.size <= budget) break;
@@ -151,17 +140,6 @@ class BlockedPage extends Error {
   }
 }
 
-/** Settles like `promise`, or rejects with the abort reason as soon as the signal aborts. */
-function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
-  promise.catch(() => {});
-  if (signal.aborted) return Promise.reject(signal.reason);
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = () => reject(signal.reason);
-    signal.addEventListener("abort", onAbort, { once: true });
-    promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
-  });
-}
-
 /** Reads the collector output of a scan whose collector never answered: the network capture still gives assets. */
 function emptyCollectorOutput(nav: NavigationResult, network: CapturedNetwork): RawCollectorOutput {
   return {
@@ -192,6 +170,20 @@ function isCollectorOutput(value: unknown): value is RawCollectorOutput {
     typeof stats.truncated === "boolean" &&
     COLLECTOR_LISTS.every((key) => Array.isArray(value[key]))
   );
+}
+
+/**
+ * The collector's drop counts as they seed `stats.hidden`: known hidden reasons with whole non-negative counts. A
+ * main-world page can replace the collector and return any keys and numbers in `noise`.
+ */
+export function safeNoise(noise: unknown): RawCollectorOutput["noise"] {
+  const kept: RawCollectorOutput["noise"] = {};
+  if (!isRecord(noise)) return kept;
+  for (const reason of HiddenReason.options) {
+    const count = Object.hasOwn(noise, reason) ? noise[reason] : undefined;
+    if (Number.isSafeInteger(count) && (count as number) >= 0) kept[reason] = count as number;
+  }
+  return kept;
 }
 
 /** Longest brand link text sent to the client, which shows it on a chip. */
@@ -248,31 +240,30 @@ function mergeCounts(...sources: Partial<Record<string, number>>[]): Record<stri
   return total;
 }
 
-/** Resolves like `promise`, or with `fallback` once `ms` have passed. */
-function orAfter<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const late = new Promise<T>((resolve) => (timer = setTimeout(() => resolve(fallback), ms)));
-  return Promise.race([promise, late]).finally(() => clearTimeout(timer));
-}
+/** When the engine aborts extractPalette's signal: always past the palette's own budget, which stops it first. */
+export const paletteCap = (): number => limits.paletteBudgetMs + limits.paletteOverrunMs;
 
 /**
- * How long page work (preflight and browser, spec 7.2 phases 1 to 9) may run: the scan deadline minus POST_GRACE_MS,
+ * How long page work (preflight and browser, spec 7.2 phases 1 to 9) may run: the scan deadline minus `limits.postGraceMs`,
  * so that at the deadline the scan has already emitted what is ready (spec 7.2).
  */
 export function pageWorkMs(deadlineMs: number): number {
-  return Math.max(0, deadlineMs - POST_GRACE_MS);
+  return Math.max(0, deadlineMs - limits.postGraceMs);
 }
 
 /**
  * When post-processing (spec 7.2 phase 10) must end. Network work gets up to `limits.verifyMs`, cut so that CPU work
- * still gets POST_GRACE_MS before the scan deadline; a scan whose page work was stopped by its deadline gets no network
+ * still gets `limits.postGraceMs` before the scan deadline; a scan whose page work was stopped by its deadline gets no network
  * time. CPU work (tone, SVG and font parsing) may use the rest of the scan: only the scan deadline stops it, so a slow
- * instance still gives whole results while time is left. Nothing runs past the scan deadline.
+ * instance still gives whole results while time is left. Nothing runs past the scan deadline. The exception is reading
+ * captured stylesheet text (assets and fonts): it is synchronous per sheet, so the scan deadline's abort cannot stop it,
+ * and the engine drops a task that is still running then; it stops at the network deadline with `truncated`, leaving
+ * the grace time to the rest. URLs only such an unread sheet declares, `data:` URIs included, are then lost.
  */
 export function postProcessingWindow(input: { startedAt: number; now: number; deadlineMs: number; verifyMs: number }): { networkDeadline: number; endsAt: number } {
   const { startedAt, now, deadlineMs, verifyMs } = input;
   const scanEnds = startedAt + deadlineMs;
-  const networkDeadline = Math.max(now, Math.min(now + verifyMs, scanEnds - POST_GRACE_MS));
+  const networkDeadline = Math.max(now, Math.min(now + verifyMs, scanEnds - limits.postGraceMs));
   return { networkDeadline, endsAt: scanEnds };
 }
 
@@ -325,7 +316,8 @@ async function runScan({ url, deps, cancel, emit }: ScanContext): Promise<void> 
     queueMs: 0,
     egress: { bytes: 0, blocked: 0 },
     bodyTimeouts: 0,
-    collector: "isolated",
+    // Set by the collector when it starts in a world (see onWorld below).
+    collector: "none",
     version: process.env.VERCEL_GIT_COMMIT_SHA ?? "dev",
   };
   const deadlineMs = limits.scanDeadlineMs;
@@ -395,11 +387,14 @@ async function runScan({ url, deps, cancel, emit }: ScanContext): Promise<void> 
     // assembleAssets reports the collector's drops in its own `hidden`; when it ran out of time, they are reported here.
     const assetsOut: AssetsOutput = assetsResult?.value ?? { assets: [], hidden: collector.noise, warnings: [] };
     const fontsOut: FontsOutput = fontsResult?.value ?? { families: [], hidden: {} };
+    // One signer and cap per scan (spec 11.2): assets sign inside assembleAssets, font files only after it, so the
+    // assets keep the priority whichever task finishes first.
+    const fontsCapped = signFontFiles(fontsOut.families, postInput.signer);
     step("process", "done");
 
     // Phase 11: results.
     emitResults(
-      { url, nav, context, collector, network, palette: browserStage.palette, assetsOut, fontsOut, pagePartial: browserStage.partial, processedPartly, diagnostics: snapshot(), startedAt },
+      { url, nav, context, collector, network, palette: browserStage.palette, assetsOut, fontsOut, fontsCapped, pagePartial: browserStage.partial, processedPartly, diagnostics: snapshot(), startedAt },
       emit,
     );
   } catch (error) {
@@ -435,6 +430,8 @@ interface ScanResults {
   palette: Palette | null;
   assetsOut: AssetsOutput;
   fontsOut: FontsOutput;
+  /** The signing cap left some font files without a proxy. */
+  fontsCapped: boolean;
   /** Page work stopped early (deadline, memory watchdog, collector failure). */
   pagePartial: boolean;
   /** Post-processing ran out of time before one of its tasks finished. */
@@ -447,6 +444,7 @@ interface ScanResults {
 function emitResults(results: ScanResults, emit: (event: ScanEvent) => void): void {
   const { url, nav, context, collector, network, assetsOut, fontsOut, pagePartial, diagnostics } = results;
   const warnings = new Set<WarningCode>(assetsOut.warnings);
+  if (results.fontsCapped) warnings.add("truncated");
   let assets: Asset[] = assetsOut.assets;
   if (assets.length > limits.maxAssets) {
     assets = assets.slice(0, limits.maxAssets);
@@ -612,13 +610,14 @@ async function runBrowserStage(input: ScanContext & {
         const collectEnds = Date.now() + limits.collectMs;
         const noPalette = (reason: string, error?: unknown) => console.warn(`Scan ${diagnostics.scanId} has no palette (${reason})`, ...(error === undefined ? [] : [error]));
         const stopped = Symbol("palette stopped");
+        const paletteCapMs = paletteCap();
         const extraction = deps
-          .extractPalette(page, { fetch: deps.fetch, signal: AbortSignal.any([signal, AbortSignal.timeout(PALETTE_CAP_MS)]), timeBudgetMs: PALETTE_BUDGET_MS, onNull: noPalette })
+          .extractPalette(page, { fetch: deps.fetch, signal: AbortSignal.any([signal, AbortSignal.timeout(paletteCapMs)]), timeBudgetMs: limits.paletteBudgetMs, onNull: noPalette })
           .catch((error: unknown) => {
             noPalette("error", error);
             return null;
           });
-        const extracted = await timed("palette", () => untilAborted(orAfter<Palette | null | typeof stopped>(extraction, PALETTE_CAP_MS + PALETTE_STOP_MS, stopped), signal));
+        const extracted = await timed("palette", () => untilAborted(orAfter(extraction, paletteCapMs + limits.paletteStopMs, stopped), signal));
         signal.throwIfAborted();
         if (extracted === stopped) noPalette("timeout");
         palette = extracted === stopped ? null : extracted;
@@ -633,11 +632,17 @@ async function runBrowserStage(input: ScanContext & {
           maxSvgBytes: limits.svgMaxBytes,
           maxSvgTotalBytes: limits.svgTotalBytes,
           spriteFetchMs: limits.spriteFetchMs,
+          blobFetchMs: limits.blobFetchMs,
+          maxTextNodes: limits.collectorMaxTextNodes,
           maxBrandLinks: limits.maxBrandLinks,
           maxBlobBytes: limits.blobMaxBytes,
           maxBlobTotalBytes: limits.blobTotalBytes,
+          maxOutputChars: limits.collectorMaxOutputChars,
+          maxTitleChars: MAX_TITLE_CHARS,
+          maxSiteNameChars: MAX_SITE_NAME_CHARS,
         };
-        const budget = collectorBudgetChars();
+        // The collector cuts its own lists to this budget; FIT_COLLECTOR_OUTPUT fits again in case it did not.
+        const budget = limits.collectorMaxOutputChars;
         const expression = `(${FIT_COLLECTOR_OUTPUT})(await globalThis.__assetsScraper.collect(${JSON.stringify(options)}), ${budget})`;
         let world: "isolated" | "main" | undefined;
         try {
@@ -652,7 +657,7 @@ async function runBrowserStage(input: ScanContext & {
           );
           signal.throwIfAborted();
           if (!isCollectorOutput(result.value)) throw new Error("The collector returned something other than collector output");
-          collector = result.value;
+          collector = { ...result.value, noise: safeNoise(result.value.noise) };
         } catch (error) {
           if (signal.aborted) throw error;
           // Spec 7.3: the collector ran out of time, broke, or lost its page (a crash, an out-of-memory kill, a page
@@ -683,7 +688,7 @@ async function runBrowserStage(input: ScanContext & {
       const stats = proxy.stats();
       diagnostics.egress = { bytes: stats.bytes, blocked: stats.blocked };
       // Not awaited past its cap: a close that hangs finishes in the background.
-      await orAfter((async () => proxy.close())().catch(() => {}), EGRESS_CLOSE_MS, undefined);
+      await orAfter((async () => proxy.close())().catch(() => {}), limits.egressCloseMs, undefined);
     }
   }
 
@@ -723,9 +728,7 @@ export function createScanEngine(overrides: Partial<ScanEngineDeps> = {}): ScanB
               })
               .finally(() => queue.close()));
           const cleanup = async () => {
-            let timer: ReturnType<typeof setTimeout> | undefined;
-            await Promise.race([running, new Promise<void>((resolve) => (timer = setTimeout(resolve, CANCEL_CLEANUP_MS)))]);
-            clearTimeout(timer);
+            await orAfter(running ?? Promise.resolve(), limits.cancelCleanupMs, undefined);
             return { value: undefined, done: true } as const;
           };
           return {

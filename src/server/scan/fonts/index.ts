@@ -394,26 +394,34 @@ function countUsage(usage: RawFontUsage[], loadedFamilies: Set<string>, byCssFam
   return total;
 }
 
-/** Signs each remote URL once, in the order asked. Past the per-scan signing cap, files keep their URL with an empty `proxy`. */
-function createProxySigner(signer: Signer) {
+/**
+ * Signs the remote font files of a scan, in place (spec 11.2). The engine calls it once the assets are signed, since the
+ * per-scan signing cap is shared: files of loaded faces first, then Basic-Latin files of faces that did not load, then
+ * the rest, each tier in family order (most used first) and Basic-Latin files first within the loaded faces. Past the
+ * cap a remote file keeps its URL with an empty `proxy`, unless the signer already signed that URL. Returns true when the
+ * cap left a file unsigned.
+ */
+export function signFontFiles(families: FontFamily[], signer: Signer): boolean {
+  const rank = (face: FontFaceInfo, file: FontFile) => (face.loaded ? 0 : 2) + (file.coversLatin ? 0 : 1);
+  const files = families.flatMap((family) => family.faces.flatMap((face) => face.files.filter((file) => file.url).map((file) => ({ file, rank: rank(face, file) }))));
   const proxies = new Map<string, string>();
   let capped = false;
-  return (url: string): string => {
-    if (!url) return "";
-    let proxy = proxies.get(url);
-    if (proxy !== undefined) return proxy;
-    proxy = "";
-    if (!capped) {
+  for (const { file } of files.sort((a, b) => a.rank - b.rank)) {
+    let proxy = proxies.get(file.url);
+    if (proxy === undefined) {
+      // Past the cap the signer still returns the paths of URLs it signed before (an asset's, or an earlier file's)
       try {
-        proxy = signer.sign(url);
+        proxy = signer.sign(file.url);
       } catch (error) {
         if (!(error instanceof SignLimitError)) throw error;
+        proxy = "";
         capped = true;
       }
+      proxies.set(file.url, proxy);
     }
-    proxies.set(url, proxy);
-    return proxy;
-  };
+    file.proxy = proxy;
+  }
+  return capped;
 }
 
 const slug = (name: string) =>
@@ -424,13 +432,13 @@ const slug = (name: string) =>
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-|-$/g, "");
 
-function toFaceInfo(face: FaceRecord, proxyFor: (url: string) => string | undefined): FontFaceInfo {
+function toFaceInfo(face: FaceRecord): FontFaceInfo {
   const info: FontFaceInfo = { weight: face.weight, style: face.style, loaded: face.loaded, files: [] };
   if (face.stretch) info.stretch = face.stretch;
   const subfamily = face.files.find((entry) => entry.file.meta?.subfamilyName)?.file.meta?.subfamilyName;
   if (subfamily) info.subfamily = subfamily;
   info.files = face.files.map(({ file, unicodeRange, coversLatin }) => {
-    const out: FontFile = { url: file.url, proxy: proxyFor(file.url) ?? "", format: file.format, coversLatin };
+    const out: FontFile = { url: file.url, proxy: "", format: file.format, coversLatin };
     if (file.bytes !== undefined) out.bytes = file.bytes;
     if (unicodeRange) out.unicodeRange = unicodeRange;
     if (file.inline) out.inline = file.inline;
@@ -445,11 +453,9 @@ function toFaceInfo(face: FaceRecord, proxyFor: (url: string) => string | undefi
  * stages, carry their source (Adobe Fonts when any of their files is), licence, usage share and Google Fonts match
  * (checked for the first `limits.googleFontsMaxFamilies` used families, by display name, or only by the name in the
  * binary when it names another font), and are sorted by usage, then used before unused.
- * Remote files get a signed proxy URL, since the per-scan signing cap is shared with the assets: files that loaded
- * first, then the other files of loaded faces, then declared files, then Adobe Fonts files, which are not downloadable
- * (spec 9) but still give their font row its specimen (spec 12.3). Past that cap a remote file has an empty `proxy`, as
- * assets do. `data:` URI files carry their bytes in `inline`, with empty `url` and `proxy`, within the bounds of
- * `files.ts`.
+ * Files come out with an empty `proxy`: the engine signs remote files with `signFontFiles` after the assets, since the
+ * per-scan signing cap is shared. `data:` URI files carry their bytes in `inline`, with empty `url` and `proxy`, within
+ * the bounds of `files.ts`.
  */
 export async function buildFontFamilies(input: PostInput): Promise<FontsOutput> {
   const captured = new Map<string, CapturedFont>();
@@ -506,12 +512,6 @@ export async function buildFontFamilies(input: PostInput): Promise<FontsOutput> 
       ? await matchGoogleFamilies(names, { fetch: input.fetch, signal: input.signal, timeoutMs: remainingMs, maxNames: names.length })
       : new Map<string, string>();
 
-  // Signed in the order above, since the signing cap is per scan
-  const signed = createProxySigner(input.signer);
-  const rank = (face: FaceRecord, entry: FaceFile) => (entry.file.source === "adobe-fonts" ? 3 : 0) + (entry.loaded ? 0 : face.loaded ? 1 : 2);
-  const signable = summaries.flatMap((summary) => summary.faces.flatMap((face) => face.files.map((entry) => ({ url: entry.file.url, rank: rank(face, entry) }))));
-  const proxies = new Map(signable.sort((a, b) => a.rank - b.rank).map(({ url }) => [url, signed(url)]));
-  const proxyFor = (url: string) => proxies.get(url);
   const ids = new Set<string>();
   const suffixes = new Map<string, number>();
   const output = summaries.map((summary): FontFamily => {
@@ -532,7 +532,7 @@ export async function buildFontFamilies(input: PostInput): Promise<FontsOutput> 
       downloadable: summary.source !== "adobe-fonts",
       usedOnPage: summary.usedOnPage,
       usage: summary.usage,
-      faces: summary.faces.map((face) => toFaceInfo(face, proxyFor)),
+      faces: summary.faces.map(toFaceInfo),
     };
     if (summary.host) result.sourceHost = summary.host;
     if (googleFamily) result.googleFamily = googleFamily;

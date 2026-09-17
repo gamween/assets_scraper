@@ -7,8 +7,8 @@ import type { AssetsOutput, CapturedImage, CandidateContext, PostInput, RawCandi
 import { originalCandidates, variantKey } from "./cdn";
 import { extensionFor, formatFromContentType, formatFromUrl, sniffFormat } from "./format";
 import { createFilenamer, displayName } from "./naming";
-import { noiseReason, svgNoiseReason } from "./noise";
-import { decodeDataUri, extractStylesheetUrls } from "./parse";
+import { noiseReason, svgNoiseReason, TINY_DATA_URI_BYTES } from "./noise";
+import { decodeDataUri, forEachStylesheetUrl } from "./parse";
 import { assignRole, isSpriteSheet, logoScore, relevanceScore } from "./roles";
 import { createToneBudget } from "./tone";
 import { groupVariants, pickBest, sizeScore, type SizeHints, type VariantMember } from "./variants";
@@ -23,8 +23,6 @@ const ELEMENT_SOURCES = new Set<FoundIn>([
   "img", "picture", "lazy-attribute", "noscript", "video-poster", "svg-image", "object-embed",
   "css-background", "css-mask", "css-pseudo", "css-other", "shadow-dom", "iframe",
 ]);
-const MANIFEST_MS = 3_000;
-const MANIFEST_MAX_BYTES = 512_000;
 
 interface UrlRecord extends VariantMember, SizeHints {
   scheme: "http" | "data" | "blob";
@@ -72,6 +70,9 @@ interface Draft {
   inlineRasterBytes: number;  // raster bytes sent to the client as base64
 }
 
+/** Inline raster headers read at once. */
+const METADATA_CONCURRENCY = 2;
+
 const sha1 = (value: string | Buffer) => createHash("sha1").update(value).digest("hex");
 const area = (size?: { width?: number; height?: number }) => (size?.width ?? 0) * (size?.height ?? 0);
 const defined = <T extends object>(value: T): T =>
@@ -118,7 +119,7 @@ export async function assembleAssets(input: PostInput): Promise<AssetsOutput> {
   const limiter = createLimiter({ concurrency: limits.verifyConcurrency, deadline: verifyDeadline, signal: input.signal });
 
   try {
-    const records = await buildRecords(input, baseUrl, limiter, verifyDeadline);
+    const records = await buildRecords(input, baseUrl, limiter, verifyDeadline, warnings);
     const kept = [...records.values()].filter((record) => {
       const reason = recordNoise(record);
       if (reason) hide(reason);
@@ -207,7 +208,7 @@ export async function assembleAssets(input: PostInput): Promise<AssetsOutput> {
 }
 
 /** Candidates, URLs of captured stylesheets, manifest icons, /favicon.ico and network-only images, by URL. */
-async function buildRecords(input: PostInput, baseUrl: string, limiter: Limiter, deadline: number): Promise<Map<string, UrlRecord>> {
+async function buildRecords(input: PostInput, baseUrl: string, limiter: Limiter, deadline: number, warnings: Set<WarningCode>): Promise<Map<string, UrlRecord>> {
   const { collector, network, page } = input;
   const pageUrl = page.finalUrl;
   const records = new Map<string, UrlRecord>();
@@ -290,23 +291,56 @@ async function buildRecords(input: PostInput, baseUrl: string, limiter: Limiter,
 
   for (const candidate of collector.candidates) add(candidate);
 
+  // Captured bodies, by URL. An empty body (a response Chrome abandoned, or a broken 200) is no capture: the URL is
+  // checked like one the network did not load.
+  const captured = new Map<string, CapturedImage>();
+  const ok = (status: number) => status >= 200 && status < 300;
+  for (const image of network.images) {
+    if (image.bytes === 0) continue;
+    const existing = captured.get(image.url);
+    if (!existing || (!ok(existing.status) && ok(image.status))) captured.set(image.url, image);
+  }
+
   // Captured stylesheet text (spec 8.1). The CSSOM walk already declared every URL of the sheets it could read, so this
   // adds what it could not reach: cross-origin sheets, their @import children, sheets whose response URL differs from
   // their href after a redirect, and sheets no longer in the document. The URLs of one image-set() declaration share a group.
+  // A page controls how many URLs its sheets declare, and each one costs a record, while only `maxDeclaredProbes` of
+  // those the network did not load are ever checked: past `maxStylesheetUrls` such URLs, or at the deadline, the rest
+  // are left out with `truncated`. URLs the network loaded are always read.
   const parsedSheets = new Set<string>();
+  let declaredUrls = 0;
+  let visits = 0;
   for (const sheet of network.sheets) {
     if (sheet.status < 200 || sheet.status >= 400 || parsedSheets.has(sheet.url) || !/url\(|image-set\(/i.test(sheet.cssText)) continue;
+    // Reading a sheet is synchronous: let timers run between sheets
+    await new Promise((resolve) => setImmediate(resolve));
+    if (Date.now() >= deadline) {
+      warnings.add("truncated");
+      break;
+    }
     parsedSheets.add(sheet.url);
     const setGroups = new Map<number, number>();
-    for (const item of extractStylesheetUrls(sheet.cssText, sheet.url)) {
-      if (records.get(item.url)?.foundIn.includes("stylesheet")) continue;
+    forEachStylesheetUrl(sheet.cssText, sheet.url, (item) => {
+      if (++visits % 1024 === 0 && Date.now() >= deadline) {
+        warnings.add("truncated");
+        return "stop";
+      }
+      const record = records.get(item.url);
+      if (record?.foundIn.includes("stylesheet")) return;
+      if (!record && !ok(captured.get(item.url)?.status ?? 0)) {
+        if (declaredUrls >= limits.maxStylesheetUrls) {
+          warnings.add("truncated");
+          return;
+        }
+        declaredUrls++;
+      }
       let group = item.imageSet ? setGroups.get(item.declaration) : undefined;
       if (group === undefined) {
         group = nextGroup++;
         if (item.imageSet) setGroups.set(item.declaration, group);
       }
       add(synthetic(item.url, "stylesheet", { group }));
-    }
+    });
   }
 
   // Web manifest icons, fetched in Node
@@ -316,8 +350,8 @@ async function buildRecords(input: PostInput, baseUrl: string, limiter: Limiter,
       try {
         const response = await input.fetch(manifestUrl, {
           headers: { accept: "application/manifest+json,application/json;q=0.9,*/*;q=0.5", "user-agent": BROWSER_USER_AGENT, referer: pageUrl },
-          timeoutMs: Math.max(1, Math.min(MANIFEST_MS, deadline - Date.now())),
-          maxBytes: MANIFEST_MAX_BYTES,
+          timeoutMs: Math.max(1, Math.min(limits.manifestMs, deadline - Date.now())),
+          maxBytes: limits.manifestMaxBytes,
           signal,
         });
         if (response.status < 200 || response.status > 299) {
@@ -357,59 +391,60 @@ async function buildRecords(input: PostInput, baseUrl: string, limiter: Limiter,
     }
   }
 
-  // Captured bodies, and images only seen on the network
-  const captured = new Map<string, CapturedImage>();
-  for (const image of network.images) {
-    const existing = captured.get(image.url);
-    const ok = (status: number) => status >= 200 && status < 300;
-    if (!existing || (!ok(existing.status) && ok(image.status))) captured.set(image.url, image);
-  }
+  // Images only seen on the network
   for (const image of captured.values()) {
-    if (!records.has(image.url) && image.status >= 200 && image.status < 300 && !/^data:/i.test(image.url)) add(synthetic(image.url, "network"));
+    if (!records.has(image.url) && ok(image.status) && !/^data:/i.test(image.url)) add(synthetic(image.url, "network"));
   }
   const blobs = new Map(collector.blobs.map((blob) => [blob.url, blob]));
 
-  await Promise.all(
-    [...records.values()].map(async (record) => {
-      if (record.scheme === "http") {
-        const capture = captured.get(record.url);
-        if (capture) {
-          record.capture = capture;
-          record.contentType = capture.contentType;
-          record.bytes = capture.bytes;
-          record.sha1 = capture.sha1;
-          record.width = capture.width;
-          record.height = capture.height;
-          record.server = capture.server;
-        }
-        record.key = variantKey(record.url, { pageUrl, server: record.server });
-      } else if (record.scheme === "data") {
-        const decoded = decodeDataUri(record.url);
-        if (decoded) {
-          record.inline = decoded;
-          record.contentType = decoded.mime;
-          record.bytes = decoded.buffer.length;
-          record.sha1 = sha1(decoded.buffer);
-        }
-      } else {
-        // blob: bytes, network body first (spec 8.1). They travel inline and are never merged with other URLs by content.
-        const blob = blobs.get(record.url);
-        const capture = captured.get(record.url);
-        if (capture?.blobBase64) record.inline = { mime: capture.contentType, buffer: Buffer.from(capture.blobBase64, "base64") };
-        else if (blob) record.inline = { mime: blob.mime, buffer: Buffer.from(blob.base64, "base64") };
-        if (record.inline) {
-          record.contentType = record.inline.mime;
-          record.bytes = record.inline.buffer.length;
-        }
+  const measure: UrlRecord[] = [];
+  for (const record of records.values()) {
+    if (record.scheme === "http") {
+      const capture = captured.get(record.url);
+      if (capture) {
+        record.capture = capture;
+        record.contentType = capture.contentType;
+        record.bytes = capture.bytes;
+        record.sha1 = capture.sha1;
+        record.width = capture.width;
+        record.height = capture.height;
+        record.server = capture.server;
       }
-      record.kind = formatOf(record) === "svg" ? "svg" : "raster";
-      if (record.inline && record.kind === "raster") {
-        const meta = await sharp(record.inline.buffer, { failOn: "none", limitInputPixels: false }).metadata().catch(() => null);
-        record.width = meta?.width;
-        record.height = meta?.height;
+      record.key = variantKey(record.url, { pageUrl, server: record.server });
+    } else if (record.scheme === "data") {
+      const decoded = decodeDataUri(record.url);
+      if (decoded) {
+        record.inline = decoded;
+        record.contentType = decoded.mime;
+        record.bytes = decoded.buffer.length;
+        record.sha1 = sha1(decoded.buffer);
       }
-    }),
-  );
+    } else {
+      // blob: bytes, network body first (spec 8.1). They travel inline and are never merged with other URLs by content.
+      const blob = blobs.get(record.url);
+      const capture = captured.get(record.url);
+      if (capture?.blobBase64) record.inline = { mime: capture.contentType, buffer: Buffer.from(capture.blobBase64, "base64") };
+      else if (blob) record.inline = { mime: blob.mime, buffer: Buffer.from(blob.base64, "base64") };
+      if (record.inline) {
+        record.contentType = record.inline.mime;
+        record.bytes = record.inline.buffer.length;
+      }
+    }
+    record.kind = formatOf(record) === "svg" ? "svg" : "raster";
+    // A raster data URI under 1 KB is noise whatever its size (spec 8.2), so it is never decoded
+    if (record.inline && record.kind === "raster" && !(record.scheme === "data" && record.inline.buffer.length < TINY_DATA_URI_BYTES)) measure.push(record);
+  }
+  // Image headers are read on the libuv thread pool, which DNS lookups for the probes share: a few at a time
+  let next = 0;
+  const worker = async () => {
+    while (next < measure.length) {
+      const record = measure[next++];
+      const meta = await sharp(record.inline!.buffer, { failOn: "none", limitInputPixels: false }).metadata().catch(() => null);
+      record.width = meta?.width;
+      record.height = meta?.height;
+    }
+  };
+  await Promise.all(Array.from({ length: METADATA_CONCURRENCY }, worker));
   return records;
 }
 

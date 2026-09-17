@@ -76,7 +76,6 @@ describe("withBrowser", () => {
     const state = await withBrowser(open(), async (session) => {
       pid = session.pid ?? 0;
       expect(isProcessAlive(pid)).toBe(true);
-      expect(session.cold).toBe(true);
       expect(session.launchMs).toBeGreaterThan(0);
       await session.page.goto("about:blank");
       return session.page.evaluate(() => document.readyState);
@@ -84,6 +83,15 @@ describe("withBrowser", () => {
     expect(state).toBe("complete");
     expect(pid).toBeGreaterThan(1);
     await expect.poll(() => isProcessAlive(pid), { timeout: 5000 }).toBe(false);
+  });
+
+  it("reports only the first launch of an instance as cold", async () => {
+    // A fresh copy of the module, so the result does not depend on the launches of the tests before this one.
+    vi.resetModules();
+    const fresh = await import("@/server/browser/launch");
+    const first = await fresh.withBrowser(open(), async ({ cold }) => cold);
+    const second = await fresh.withBrowser(open(), async ({ cold }) => cold);
+    expect([first, second]).toEqual([true, false]);
   });
 
   it("runs concurrent calls one at a time", async () => {
@@ -150,8 +158,7 @@ describe("withBrowser", () => {
   });
 
   it("uses the hardened context behind the egress proxy", async () => {
-    await withBrowser(open(), async ({ browser, page, cold }) => {
-      expect(cold).toBe(false);
+    await withBrowser(open(), async ({ browser, page }) => {
       await page.goto(`${fixture.origin}/blank.html`);
       expect(proxy.requests).toContain(`${fixture.origin}/blank.html`);
 
@@ -223,6 +230,22 @@ describe("withBrowser", () => {
     expect(Date.now() - started).toBeLessThan(5000);
     await expect.poll(() => isProcessAlive(pid), { timeout: 5000 }).toBe(false);
 
+    expect(await withBrowser(open(), async () => "next scan runs")).toBe("next scan runs");
+  });
+
+  it("rejects without running fn when context setup outlasts its budget, kills the browser and frees the slot", async () => {
+    // No context, page and CDP guards come up in 1 ms: setup always outlasts this budget, as a hung setup does.
+    vi.stubEnv("BROWSER_SETUP_MS", "1");
+    const pidfile = path.join(browserStateDir(), `chromium-${process.pid}-0.pid`);
+    const ran = vi.fn();
+    const started = Date.now();
+    await expect(withBrowser(open(), ran)).rejects.toThrow("Browser context setup took more than 1 ms");
+    expect(ran).not.toHaveBeenCalled();
+    expect(Date.now() - started).toBeLessThan(15_000);
+    const running = () => spawnSync("pgrep", ["-f", pidfileMarker(pidfile)]).stdout.toString().trim();
+    await expect.poll(running, { timeout: 5000 }).toBe("");
+
+    vi.unstubAllEnvs();
     expect(await withBrowser(open(), async () => "next scan runs")).toBe("next scan runs");
   });
 

@@ -3,24 +3,23 @@ import type http from "node:http";
 import { chromium, type Browser, type Page } from "playwright-core";
 import sharp from "sharp";
 import { limits } from "@/server/config/limits";
-import { NotImplementedError } from "@/server/errors";
 import { safeFetch } from "@/server/net/safe-fetch";
 import { COLLECTOR_SOURCE } from "@/server/scan/inpage/generated/collector";
+import { MAX_TITLE_CHARS } from "@/server/scan/navigate";
+import { MAX_SITE_NAME_CHARS } from "@/server/scan/preflight";
 import { toneFromBytes } from "@/server/scan/post/tone";
 import type {
   CapturedNetwork,
   CollectorOptions,
   RawCollectorOutput,
   SafeFetch,
-  SafeFetchOptions,
-  SafeResponse,
 } from "@/server/scan/types";
 import { serveFixture, type FixtureServer } from "../../fixtures/serve";
 
 /**
- * Test helpers for Track C. Tracks A and B (safeFetch, runInPage, capture) are stubs on this branch, so these helpers
- * stand in for them with the same contracts: the collector runs in a CDP isolated world like `runInPage` does
- * (spec 7.5), and the network listener keeps what `startCapture` keeps (spec 7.4).
+ * Test helpers for the assets tests. They run the collector without the engine, with the same contracts: the collector
+ * runs in a CDP isolated world like `runInPage` does (spec 7.5), and the network listener keeps what `startCapture`
+ * keeps (spec 7.4).
  */
 
 const CHROME = process.env.CHROME_EXECUTABLE_PATH ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -43,9 +42,14 @@ export function collectorOptions(host: string, siteName: string, patch: Partial<
     maxSvgBytes: limits.svgMaxBytes,
     maxSvgTotalBytes: limits.svgTotalBytes,
     spriteFetchMs: limits.spriteFetchMs,
+    blobFetchMs: limits.blobFetchMs,
+    maxTextNodes: limits.collectorMaxTextNodes,
     maxBrandLinks: limits.maxBrandLinks,
     maxBlobBytes: limits.blobMaxBytes,
     maxBlobTotalBytes: limits.blobTotalBytes,
+    maxOutputChars: limits.collectorMaxOutputChars,
+    maxTitleChars: MAX_TITLE_CHARS,
+    maxSiteNameChars: MAX_SITE_NAME_CHARS,
     ...patch,
   };
 }
@@ -154,46 +158,5 @@ export async function serveAssetsFixture(routes: Record<string, http.RequestList
   return server;
 }
 
-/** Plain `fetch` with the `SafeFetch` shape, for as long as the real one is a stub. No address checks: tests only. */
-const localFetch: SafeFetch = async (url: string, options: SafeFetchOptions = {}): Promise<SafeResponse> => {
-  const controller = new AbortController();
-  const timer = options.timeoutMs ? setTimeout(() => controller.abort(), options.timeoutMs) : undefined;
-  const onAbort = () => controller.abort();
-  options.signal?.addEventListener("abort", onAbort, { once: true });
-  const cleanup = () => {
-    clearTimeout(timer);
-    options.signal?.removeEventListener("abort", onAbort);
-  };
-  let response: Response;
-  try {
-    response = await fetch(url, { method: options.method ?? "GET", headers: options.headers, signal: controller.signal, redirect: "follow" });
-  } catch (error) {
-    cleanup();
-    throw error;
-  }
-  const empty = () => new ReadableStream<Uint8Array>({ start: (c) => c.close() });
-  return {
-    url: response.url,
-    status: response.status,
-    headers: response.headers,
-    redirected: response.redirected,
-    stream: () => response.body ?? empty(),
-    buffer: async () => Buffer.from(await response.arrayBuffer()).subarray(0, options.maxBytes),
-    text: () => response.text(),
-    json: <T>() => response.json() as Promise<T>,
-    cancel: async () => {
-      cleanup();
-      await response.body?.cancel().catch(() => {});
-    },
-  };
-};
-
-/** The real `safeFetch` once Track A lands, the local adapter until then. */
-export const testFetch: SafeFetch = async (url, options) => {
-  try {
-    return await safeFetch(url, options);
-  } catch (error) {
-    if (!(error instanceof NotImplementedError)) throw error;
-    return localFetch(url, options);
-  }
-};
+/** `safeFetch`, which reaches the fixture host through SCAN_TEST_ALLOW_HOSTS (see `serveAssetsFixture`). */
+export const testFetch: SafeFetch = safeFetch;

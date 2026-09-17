@@ -45,6 +45,12 @@ const near = (swatches: Swatch[], hex: string, max = 0.08) => swatches.some((s) 
 const html = (target: Page) => target.evaluate(() => document.documentElement.outerHTML);
 const hiddenCount = (target: Page) => target.evaluate(() => document.querySelectorAll("[data-palette-hidden]").length);
 
+/** A render-blocking stylesheet that never loads, in front of plain colored content. */
+const NO_FRAME_HTML = `<!doctype html><html><head><link rel="stylesheet" href="/never.css"></head>
+<body style="margin:0;background:#ffffff;color:#141e28"><header style="background:#2f5bea;height:120px">Brand</header>
+<main><button style="background:#2f5bea;color:#fff">Start</button><p>Some text on the page</p></main></body></html>`;
+const pending: import("node:http").ServerResponse[] = [];
+
 let server: FixtureServer;
 let browser: Browser;
 let context: BrowserContext;
@@ -56,6 +62,14 @@ const extract = (target: Page, options: Partial<ExtractPaletteOptions> = {}) =>
 
 beforeAll(async () => {
   server = await serveFixture({
+    "/no-frame.html": (_req, res) => {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(NO_FRAME_HTML);
+    },
+    // Never answers, so the page never renders a frame
+    "/never.css": (_req, res) => {
+      pending.push(res);
+    },
     "/consent.html": (_req, res) => {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       res.end(CONSENT_HTML);
@@ -65,6 +79,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  for (const res of pending) res.end();
   await browser?.close();
   await server?.close();
 });
@@ -81,7 +96,6 @@ afterEach(() => context.close());
 describe("extractPalette", () => {
   it("extracts the fixture brand and text colors and leaves the DOM as it was", async () => {
     await page.goto(`${server.origin}/`, { waitUntil: "load" });
-    await page.evaluate(PALETTE_SOURCE);
     // Warm-up run (JIT, first screenshot), so the timing below measures a scan and not the test runner
     expect(await extract(page)).not.toBeNull();
     const before = await html(page);
@@ -217,6 +231,19 @@ describe("extractPalette", () => {
     expect(await page.locator("#onetrust-banner-sdk").isVisible()).toBe(true);
   });
 
+  it("keeps the DOM signals when the screenshot times out because the page cannot render a frame", async () => {
+    await page.goto(`${server.origin}/no-frame.html`, { waitUntil: "domcontentloaded" });
+    const timeBudgetMs = 3000;
+
+    const started = performance.now();
+    const palette = await extract(page, { timeBudgetMs });
+
+    expect(reasons).toEqual([]);
+    expect(palette).not.toBeNull();
+    expect(near(palette!.brand, "#2f5bea")).toBe(true);
+    expect(performance.now() - started).toBeLessThan(timeBudgetMs + MARGIN_MS);
+  });
+
   it("returns null without touching the page when the scan is already aborted", async () => {
     await page.goto(`${server.origin}/consent.html`, { waitUntil: "load" });
     const controller = new AbortController();
@@ -296,5 +323,19 @@ describe("in-page collect", () => {
     expect(signals.vars).toEqual([["--brand", "#2f5bea", 1]]);
     expect(signals.iconUrls.every((url) => url.length <= 2048)).toBe(true);
     expect(JSON.stringify(signals).length).toBeLessThan(50_000);
+  });
+
+  it("clamps out of range rgb() channels and ignores malformed ones, like the browser", async () => {
+    await page.goto(`${server.origin}/consent.html`, { waitUntil: "load" });
+    await page.evaluate(() => {
+      const style = document.createElement("style");
+      style.textContent = ":root { --brand: rgb(300, 20, 20); --primary: rgb(1.5.5, 20, 20); }";
+      document.head.append(style);
+    });
+    await page.evaluate(PALETTE_SOURCE);
+
+    const signals = await collect({ hideOverlays: false });
+
+    expect(signals.vars).toEqual([["--brand", "#ff1414", 1]]);
   });
 });

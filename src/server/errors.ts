@@ -21,10 +21,3 @@ export class HttpError extends Error {
     this.name = "HttpError";
   }
 }
-
-export class NotImplementedError extends Error {
-  constructor(what: string) {
-    super(`Not implemented: ${what}`);
-    this.name = "NotImplementedError";
-  }
-}

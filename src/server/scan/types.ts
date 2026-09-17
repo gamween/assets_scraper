@@ -83,9 +83,14 @@ export interface CollectorOptions {
   maxSvgBytes: number;
   maxSvgTotalBytes: number;
   spriteFetchMs: number;                    // external sprite fetch (spec 8.6)
+  blobFetchMs: number;                      // fetch of one `blob:` image (limits.blobFetchMs)
+  maxTextNodes: number;                     // text nodes read for font usage (limits.collectorMaxTextNodes)
   maxBrandLinks: number;                    // spec 8.1
   maxBlobBytes: number;                     // bytes of one `blob:` image before base64 (spec 7.4, limits.blobMaxBytes)
   maxBlobTotalBytes: number;                // all `blobs` together before base64 (spec 7.4, limits.blobTotalBytes)
+  maxOutputChars: number;                   // JSON characters of the whole output; lists are cut to fit (limits.collectorMaxOutputChars)
+  maxTitleChars: number;                    // `page.title` is cut to one character over this before the output is fitted (MAX_TITLE_CHARS)
+  maxSiteNameChars: number;                 // same for `page.siteName` (MAX_SITE_NAME_CHARS)
 }
 
 export interface RawCollectorOutput {
@@ -199,5 +204,10 @@ export interface PostInput {
   deadline: number;                 // epoch ms
 }
 
-export interface AssetsOutput { assets: Asset[]; hidden: Partial<Record<HiddenReason, number>>; warnings: WarningCode[] }
+export interface AssetsOutput {
+  assets: Asset[];
+  /** Every asset drop of the scan, `collector.noise` already included: the engine adds the fonts' counts, never the noise again (D1). */
+  hidden: Partial<Record<HiddenReason, number>>;
+  warnings: WarningCode[];
+}
 export interface FontsOutput { families: FontFamily[]; hidden: Partial<Record<HiddenReason, number>> }

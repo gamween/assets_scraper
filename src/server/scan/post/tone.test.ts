@@ -1,6 +1,6 @@
 import sharp from "sharp";
 import { describe, expect, it } from "vitest";
-import { createToneBudget, toneFromBytes, toneFromSvg } from "./tone";
+import { createToneBudget, toneFromBytes, toneFromSvg, toneRenderStats } from "./tone";
 
 /** A 32x32 PNG: `fill(x, y)` returns RGBA. */
 const png = (fill: (x: number, y: number) => [number, number, number, number]) => {
@@ -61,12 +61,15 @@ describe("toneFromSvg", () => {
 
 describe("createToneBudget", () => {
   const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"><rect width="4" height="4"/></svg>';
-  /** An SVG that takes a while to render: `circles` translucent circles on a 2000 px canvas. */
-  const heavy = (circles: number) =>
-    `<svg xmlns="http://www.w3.org/2000/svg" width="2000" height="2000">${Array.from(
-      { length: circles },
-      (_, i) => `<circle cx="${(i * 37) % 2000}" cy="${(i * 53) % 2000}" r="30" fill="#fff" fill-opacity="0.5"/>`,
-    ).join("")}</svg>`;
+  /**
+   * An SVG that takes a while to render (about 1.4 ms per copy on an M-series Mac) in little markup, as a hostile page's
+   * SVGs are within `svgMaxBytes`: `copies` uses of a group of 100 blurred squares.
+   */
+  const heavy = (copies: number) => {
+    const squares = Array.from({ length: 100 }, (_, i) => `<rect x="${(i * 37) % 200}" y="${(i * 53) % 200}" width="60" height="60" fill-opacity="0.5" filter="url(#b)"/>`).join("");
+    const uses = Array.from({ length: copies }, (_, i) => `<use href="#g" x="${(i * 7) % 1800}" y="${(i * 11) % 1800}"/>`).join("");
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="2000" height="2000"><defs><filter id="b"><feGaussianBlur stdDeviation="20"/></filter><g id="g">${squares}</g></defs>${uses}</svg>`;
+  };
   const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
   it("gives unknown past the count caps and the byte cap", async () => {
@@ -90,17 +93,58 @@ describe("createToneBudget", () => {
 
   it("gives unknown when a render outlives the budget", async () => {
     const started = performance.now();
-    expect(await createToneBudget({ budgetMs: 50 }).svg(heavy(20_000))).toBe("unknown");
+    expect(await createToneBudget({ budgetMs: 50 }).svg(heavy(400))).toBe("unknown");
     expect(performance.now() - started).toBeLessThan(1_000);
   });
 
+  it("keeps two renders in flight across budgets, renders a spent budget gave up on included, and starts no more", async () => {
+    await expect.poll(() => toneRenderStats().active, { timeout: 30_000 }).toBe(0);
+    const before = toneRenderStats().started;
+    let most = 0;
+    const sampler = setInterval(() => (most = Math.max(most, toneRenderStats().active)), 1);
+    try {
+      const markup = heavy(400);
+      const budgets = [createToneBudget({ budgetMs: 50 }), createToneBudget({ budgetMs: 50 })];
+      const tones = await Promise.all(budgets.flatMap((budget) => Array.from({ length: 4 }, () => budget.svg(markup))));
+      expect(tones).toEqual(Array(8).fill("unknown"));
+      // The two renders the budgets gave up on still hold their slots until they end.
+      expect(toneRenderStats().active).toBe(2);
+      await expect.poll(() => toneRenderStats().active, { timeout: 30_000 }).toBe(0);
+      expect(toneRenderStats().started - before).toBe(2);
+      expect(most).toBeLessThanOrEqual(2);
+    } finally {
+      clearInterval(sampler);
+    }
+  });
+
+  it("starts nothing once its signal aborts, and skips SVGs over the markup cap", async () => {
+    const before = toneRenderStats().started;
+    const stopped = new AbortController();
+    stopped.abort();
+    const budget = createToneBudget({ signal: stopped.signal });
+    expect(await budget.svg(svg)).toBe("unknown");
+    expect(await budget.raster(await png(() => [255, 255, 255, 255]), "image/png")).toBe("unknown");
+    expect(await createToneBudget({ maxSvgBytes: 10 }).svg(svg)).toBe("unknown");
+    expect(await createToneBudget({ maxSvgBytes: 10 }).raster(Buffer.from(svg), "image/svg+xml")).toBe("unknown");
+    expect(toneRenderStats().started).toBe(before);
+  });
+
   it("stops starting renders once the budget is spent, however many were asked for at once", async () => {
-    const budget = createToneBudget({ budgetMs: 400 });
+    const markup = heavy(40);
+    // The budget is sized from this machine's render time, so the test holds on fast and slow machines alike: two
+    // renders' worth per render slot leaves most of the 80 renders unstarted.
+    let renderMs = Infinity;
+    for (let i = 0; i < 3; i++) {
+      const start = performance.now();
+      expect(await toneFromSvg(markup)).not.toBe("unknown");
+      renderMs = Math.min(renderMs, performance.now() - start);
+    }
+    const budgetMs = Math.max(1, Math.round(renderMs * 2));
+    const budget = createToneBudget({ budgetMs });
     expect(await budget.svg(svg)).toBe("opaque");
-    const markup = heavy(2_000);
     const started = performance.now();
     const tones = await Promise.all(Array.from({ length: 80 }, () => budget.svg(markup)));
-    expect(performance.now() - started).toBeLessThan(1_000);
+    expect(performance.now() - started).toBeLessThan(budgetMs + 1_000);
     expect(tones.at(-1)).toBe("unknown");
     expect(tones.filter((tone) => tone === "unknown").length).toBeGreaterThan(40);
   });

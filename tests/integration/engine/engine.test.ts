@@ -6,11 +6,11 @@ import type { Page } from "playwright-core";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { Asset, ScanEvent, type Palette } from "@/lib/contract";
 import { BusyError, withBrowser } from "@/server/browser/launch";
-import { NotImplementedError } from "@/server/errors";
 import { SafeFetchError } from "@/server/net/safe-fetch";
 import { createScanEngine, type ScanEngineDeps } from "@/server/scan/engine";
 import { buildFontFamilies } from "@/server/scan/fonts";
 import { assembleAssets } from "@/server/scan/post/assemble";
+import { createSigner } from "@/server/security/sign";
 import type { AssetsOutput, FontsOutput, PostInput } from "@/server/scan/types";
 import { serveFixture, type FixtureServer } from "../../fixtures/serve";
 import { createFakeFetch, createFakeSigner, isProcessAlive, startTestProxy, type TestProxy } from "./helpers";
@@ -29,7 +29,7 @@ const FAKE_COLLECTOR = `globalThis.__assetsScraper = {
 };`;
 
 const HANGING_COLLECTOR = "globalThis.__assetsScraper = { collect: () => new Promise(() => {}) };";
-const THROWING_COLLECTOR = 'globalThis.__assetsScraper = { async collect() { throw new Error("Not implemented: C: collector"); } };';
+const THROWING_COLLECTOR = 'globalThis.__assetsScraper = { async collect() { throw new Error("collector bug in the page"); } };';
 /** Tells the test it runs (through the fixture route `/collector-started`), then never answers. */
 const REPORTING_COLLECTOR = 'globalThis.__assetsScraper = { collect: () => { fetch("/collector-started"); return new Promise(() => {}); } };';
 
@@ -39,6 +39,8 @@ let fixture: FixtureServer;
 let victim: FixtureServer;
 let onCollectorStarted = () => {};
 let onCollectorDone = () => {};
+/** The options a fake collector posts to /collector-options, so tests can check what the engine passed. */
+let postedCollectorOptions: Record<string, unknown> | undefined;
 let victimHits = 0;
 let downloadHits = 0;
 const downloadName = `assets-scraper-test-${randomUUID()}.bin`;
@@ -51,6 +53,10 @@ beforeAll(async () => {
   fixture = await serveFixture({
     "/collector-started": (_req, res) => {
       onCollectorStarted();
+      res.writeHead(204).end();
+    },
+    "/collector-options": (req, res) => {
+      postedCollectorOptions = JSON.parse(new URL(req.url ?? "/", "http://fixture").searchParams.get("options") ?? "null");
       res.writeHead(204).end();
     },
     "/collector-done": (_req, res) => {
@@ -254,7 +260,8 @@ describe("scan engine", () => {
     expect(launches).toHaveBeenCalledTimes(1);
     // The status rule counts elements, so it waits for the page to load.
     expect(events.map(describeEvent)).toEqual(["accepted", "step open start", "page", "step open done", "step load start", "step load done", "error blocked"]);
-    expect(events.at(-1)).toMatchObject({ diagnostics: { blockReason: "http-403" } });
+    // The page was blocked before collection: diagnostics say the collector never ran.
+    expect(events.at(-1)).toMatchObject({ diagnostics: { blockReason: "http-403", collector: "none" } });
   });
 
   it("never mistakes an app shell for a bot wall: the markup and captcha rules wait for the page to load", async () => {
@@ -699,6 +706,47 @@ describe("scan engine", () => {
     expect(Date.now() - started).toBeLessThan(25_000);
   });
 
+  it("signs the assets before the font files within the shared signing cap, and warns when files stay unsigned", async () => {
+    const fontUrls = ["regular", "bold"].map((name) => `${fixture.origin}/fonts/${name}.woff2`);
+    const family = (): FontsOutput["families"][number] => ({
+      id: "brand",
+      name: "Brand Sans",
+      cssFamilies: ["Brand Sans"],
+      source: "self-hosted",
+      license: { kind: "unknown" },
+      convertible: false,
+      downloadable: true,
+      usedOnPage: true,
+      usage: 1,
+      faces: fontUrls.map((url, index) => ({ weight: String(400 + index * 300), style: "normal", loaded: true, files: [{ url, proxy: "", format: "woff2", coversLatin: true }] })),
+    });
+    const run = async (max: number) => {
+      const { deps } = testDeps({
+        createSigner: () => createSigner({ secret: "test-only-signing-secret-0123456789abcdef", max }),
+        // The fonts finish first; the assets still take the signing cap before them.
+        assembleAssets: async (input) => {
+          await new Promise((resolve) => setTimeout(resolve, 200));
+          return fakeAssets(input);
+        },
+        buildFontFamilies: async () => ({ families: [family()], hidden: {} }),
+      });
+      const events = await scan(deps, `${fixture.origin}/`);
+      const assets = events.flatMap((event) => (event.type === "assets" ? event.items : []));
+      const fonts = events.find((event) => event.type === "fonts");
+      if (fonts?.type !== "fonts") throw new Error("expected fonts");
+      return { events, assetProxy: assets[0]?.original?.proxy, fontProxies: fonts.families[0].faces.map((face) => face.files[0].proxy) };
+    };
+
+    const capped = await run(2);
+    expect(capped.assetProxy).toMatch(/^\/api\/asset\?/);
+    expect(capped.fontProxies.map((proxy) => proxy !== "")).toEqual([true, false]);
+    expect(capped.events).toContainEqual({ type: "warning", code: "truncated" });
+
+    const roomy = await run(3);
+    expect(roomy.fontProxies.every((proxy) => proxy.startsWith("/api/asset?"))).toBe(true);
+    expect(roomy.events).not.toContainEqual({ type: "warning", code: "truncated" });
+  });
+
   it("keeps the network results when the collector throws or returns something else, and logs why", async () => {
     const log = vi.spyOn(console, "error").mockImplementation(() => {});
     const logged: string[] = [];
@@ -710,58 +758,30 @@ describe("scan engine", () => {
         const done = events.at(-1);
         if (done?.type !== "done") throw new Error(`expected done, got ${done && describeEvent(done)}`);
         expect(done.partial).toBe(true);
+        // It started, then failed: diagnostics keep the world it ran in.
+        expect(done.diagnostics.collector).toBe("isolated");
         expect(events).toContainEqual({ type: "warning", code: "partial" });
         expect(events.find((event) => event.type === "assets")).toMatchObject({ items: [{ id: "photo" }] });
         // The client gets no internal detail; the server log does.
-        expect(JSON.stringify(events)).not.toContain("Not implemented");
+        expect(JSON.stringify(events)).not.toContain("collector bug");
         expect(log).toHaveBeenCalledWith(expect.stringMatching(/^Scan [0-9a-f-]{36} collector failed in the isolated world$/), expect.any(Error));
       }
-      expect(logged.join("\n")).toContain("Not implemented: C: collector");
+      expect(logged.join("\n")).toContain("collector bug in the page");
     } finally {
       log.mockRestore();
     }
   });
 
-  it("accepts collector output at its SVG cap when JSON escapes every character of ordinary markup", async () => {
-    vi.stubEnv("SVG_TOTAL_BYTES", "5000000");
-    vi.stubEnv("BLOB_TOTAL_BYTES", "1");
-    // Quotes take 2 characters each in JSON, the most ordinary markup can take.
-    const collectorSource = `${FAKE_COLLECTOR}
-{
-  const collect = globalThis.__assetsScraper.collect;
-  globalThis.__assetsScraper.collect = async (options) => {
-    const output = await collect(options);
-    const context = { header: false, nav: false, footer: false, homeLink: false, logoWord: false, siteWord: false, logoWall: false, shadowRoot: false, iframe: false };
-    const markup = '"'.repeat(options.maxSvgTotalBytes);
-    return { ...output, svgs: [{ markup, hash: "h", source: "inline", referenced: false, order: 0, visible: true, context, usedCount: 1, hasLiveText: false, elementCount: 1 }] };
-  };
-}`;
-    let markupChars = 0;
-    const { deps } = testDeps({
-      collectorSource,
-      assembleAssets: (input) => {
-        markupChars = input.collector.svgs[0]?.markup.length ?? 0;
-        return fakeAssets(input);
-      },
-    });
-    const events = await scan(deps, `${fixture.origin}/`);
-    const done = events.at(-1);
-    if (done?.type !== "done") throw new Error(`expected done, got ${done && describeEvent(done)}`);
-    expect(done.partial).toBe(false);
-    expect(events).not.toContainEqual({ type: "warning", code: "truncated" });
-    expect(markupChars).toBe(5_000_000);
-  });
-
   it("fits collector output over its budget instead of losing it, and warns that it is truncated", async () => {
-    // A budget of about 8 MB: the SVG and blob caps add almost nothing.
-    vi.stubEnv("SVG_TOTAL_BYTES", "1");
-    vi.stubEnv("BLOB_TOTAL_BYTES", "1");
+    // A budget of 8 MB. This collector ignores maxOutputChars, like one a main-world page replaced: the engine fits it.
+    vi.stubEnv("COLLECTOR_MAX_OUTPUT_CHARS", "8000000");
     // A 50 KB data: URI on 300 elements (15 MB), a unique logo, a 9 MB SVG and a small one.
     const collectorSource = `${FAKE_COLLECTOR}
 {
   const collect = globalThis.__assetsScraper.collect;
   globalThis.__assetsScraper.collect = async (options) => {
     const output = await collect(options);
+    await fetch("/collector-options?options=" + encodeURIComponent(JSON.stringify(options)));
     const context = { header: false, nav: false, footer: false, homeLink: false, logoWord: false, siteWord: false, logoWall: false, shadowRoot: false, iframe: false };
     const candidate = (url, order) => ({ url, group: order, foundIn: "css-background", order, visible: true, context, declaredOnly: false });
     const pattern = "data:image/png;base64," + "A".repeat(50000);
@@ -770,6 +790,7 @@ describe("scan engine", () => {
     return { ...output, page: { ...output.page, title: "T".repeat(50000) }, candidates, svgs: [svg("<svg>" + "x".repeat(9000000) + "</svg>", 0), svg("<svg><path/></svg>", 1)] };
   };
 }`;
+    postedCollectorOptions = undefined;
     let collected: PostInput["collector"] | undefined;
     let pageTitle = "";
     const { deps } = testDeps({
@@ -787,7 +808,8 @@ describe("scan engine", () => {
     expect(events).toContainEqual({ type: "warning", code: "truncated" });
     expect(collected?.candidates.map((candidate) => candidate.order)).toEqual([0, 1]);
     expect(collected?.svgs.map((svg) => svg.markup)).toEqual(["<svg><path/></svg>"]);
-    expect(collected?.stats.truncated).toBe(true);
+    expect(collected?.stats).toMatchObject({ truncated: true });
+    expect(postedCollectorOptions).toMatchObject({ maxOutputChars: 8_000_000, maxTitleChars: 2_048, maxSiteNameChars: 200 });
     // The collector's title is cut, for post-processing and in the final page event.
     expect(pageTitle).toBe("T".repeat(2_048));
     expect(events.filter((event) => event.type === "page").at(-1)).toMatchObject({ page: { title: "T".repeat(2_048) } });
@@ -862,7 +884,7 @@ describe("scan engine", () => {
     const postFails = await scan(
       testDeps({
         assembleAssets: async () => {
-          throw new NotImplementedError("C: assembleAssets");
+          throw new Error("assemble bug");
         },
       }).deps,
       `${fixture.origin}/`,
@@ -896,11 +918,6 @@ describe("scan engine", () => {
     const log = vi.spyOn(console, "error").mockImplementation(() => {});
     const { deps } = testDeps();
     const { fetch, startEgressProxy, withBrowser: browser, createSigner } = deps;
-    const stubs: string[] = [];
-    const recordStub = (error: unknown) => {
-      if (error instanceof NotImplementedError) stubs.push(error.message);
-      throw error;
-    };
     let collectorNoise: PostInput["collector"]["noise"] = {};
     let assetsOut: AssetsOutput | undefined;
     let fontsOut: FontsOutput | undefined;
@@ -912,26 +929,19 @@ describe("scan engine", () => {
         createSigner,
         assembleAssets: async (input) => {
           collectorNoise = input.collector.noise;
-          return (assetsOut = await assembleAssets(input).catch(recordStub));
+          return (assetsOut = await assembleAssets(input));
         },
-        buildFontFamilies: async (input) => (fontsOut = await buildFontFamilies(input).catch(recordStub)),
+        buildFontFamilies: async (input) => (fontsOut = await buildFontFamilies(input)),
       },
       `${fixture.origin}/sprites.html`,
     );
     const logged = log.mock.calls;
     log.mockRestore();
     expect(events.filter((event) => event.type === "done" || event.type === "error")).toHaveLength(1);
+    expect(logged).toEqual([]);
     const last = events.at(-1);
 
-    if (stubs.length) {
-      // While a post-processing track is a stub (on this branch, before the Phase 2 merge), the scan fails as an internal
-      // error. Once every track is merged, no stub is left and the checks below run: this branch must never be taken then.
-      expect(last).toMatchObject({ type: "error", code: "internal", message: "Something went wrong on our side" });
-      expect(logged).toContainEqual([expect.stringMatching(/^Scan [0-9a-f-]{36} failed$/), expect.objectContaining({ message: expect.stringContaining("Not implemented") })]);
-      return;
-    }
-
-    // With the real modules: done, and each drop counted once. assembleAssets reports the collector's drops, and the
+    // Done, and each drop counted once. assembleAssets reports the collector's drops, and the
     // engine only sums the assets' and the fonts' counts.
     if (last?.type !== "done" || !assetsOut || !fontsOut) throw new Error(`expected done, got ${last && describeEvent(last)}`);
     expect(collectorNoise).toMatchObject({ "unreferenced-symbol": 1 });

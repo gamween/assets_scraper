@@ -29,7 +29,7 @@ beforeAll(async () => {
     },
     "/sources.html": (_req, res) => {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-      res.end(`<!doctype html><html><head><title>Sources</title><link itemprop="image" href="/assets/og.png"></head><body>
+      res.end(`<!doctype html><html><head><title>Sources</title><link itemprop="image" href="/assets/og.png"><meta name="msapplication-TileImage" content="/assets/touch.png"><meta name="msapplication-square150x150logo" content="/assets/logo.svg"></head><body>
         <div style="content: url(/assets/bg.png); width: 40px; height: 40px"></div>
         <a itemprop="image" href="/assets/hero.jpg">Product</a>
       </body></html>`);
@@ -216,7 +216,7 @@ describe("collector noise and edge cases", () => {
 });
 
 describe("collector sources", () => {
-  it("reads content: url() on an element and itemprop=image links", async () => {
+  it("reads content: url() on an element, itemprop=image links and msapplication meta icons", async () => {
     const { context, page } = await openPage(browser, `${server.origin}/sources.html`);
     const sources = await runCollector(page, collectorOptions(server.host, "Fixture"));
     await context.close();
@@ -224,12 +224,14 @@ describe("collector sources", () => {
     expect(found("bg.png")).toEqual(["css-other"]);
     expect(sources.candidates.find((c) => c.url === asset("bg.png"))).toMatchObject({ visible: true, rect: { width: 40, height: 40 } });
     expect(found("og.png")).toEqual(["og-image"]);
+    expect(found("touch.png")).toEqual(["meta-icon"]);
+    expect(found("logo.svg")).toEqual(["meta-icon"]);
     expect(found("hero.jpg")).toEqual([]);
   });
 });
 
 describe("collector brand links", () => {
-  it("keeps the registrable domain under co.uk-like suffixes and reads camelCase words", async () => {
+  it("keeps the registrable domain under co.uk-like suffixes for brand links and site words, and reads camelCase words", async () => {
     const context = await browser.newContext();
     const page = await context.newPage();
     await page.route("**/*", (route) =>
@@ -238,13 +240,16 @@ describe("collector brand links", () => {
             contentType: "text/html",
             body: `<!doctype html><title>Shop</title>
               <a href="https://assets.shop.co.uk/press">Press</a> <a href="https://www.other.co.uk/brand">Their brand</a>
-              <a href="https://shop.com.au/brand">Australia</a> <a href="/OurBrand">Resources</a> <a href="/about">OurLogos</a>`,
+              <a href="https://shop.com.au/brand">Australia</a> <a href="/OurBrand">Resources</a> <a href="/about">OurLogos</a>
+              <header><a href="/" class="shop-mark"><svg width="80" height="20"><rect width="80" height="20"/></svg></a></header>`,
           })
         : route.fulfill({ status: 404 }),
     );
     await page.goto("https://www.shop.co.uk/");
-    const shop = await runCollector(page, collectorOptions("www.shop.co.uk", "Shop"));
+    // No site name: the site word can only come from the host.
+    const shop = await runCollector(page, collectorOptions("www.shop.co.uk", ""));
     await context.close();
+    expect(shop.svgs.find((svg) => svg.context.homeLink)?.context.siteWord).toBe(true);
     expect(shop.brandLinks).toEqual([
       { href: "https://assets.shop.co.uk/press", text: "Press" },
       { href: "https://www.shop.co.uk/OurBrand", text: "Resources" },
@@ -296,4 +301,105 @@ describe("collector limits and hostile pages", () => {
     expect(tinySvgs.noise["svg-too-large"]).toBeGreaterThan(0);
     expect(tinySvgs.svgs.every((s) => s.markup.length <= 150)).toBe(true);
   });
+
+  it("cuts repeated and large items before small ones to stay under maxOutputChars and says so", async () => {
+    const { context, page } = await openPage(browser, `${server.origin}/`);
+    // One large data: URI on three elements at the top of the page: a tail cut would keep them and lose the small items.
+    const big = `data:image/png;base64,${"A".repeat(100_000)}`;
+    await page.evaluate((src) => {
+      for (let i = 0; i < 3; i++) {
+        const img = document.createElement("img");
+        img.src = src;
+        document.body.prepend(img);
+      }
+    }, big);
+    const full = await runCollector(page, collectorOptions(server.host, "Fixture"));
+    const size = JSON.stringify(full).length;
+    const roomy = await runCollector(page, collectorOptions(server.host, "Fixture", { maxOutputChars: size }));
+    const repeatsCap = size - 150_000;
+    const repeats = await runCollector(page, collectorOptions(server.host, "Fixture", { maxOutputChars: repeatsCap }));
+    const largeCap = size - 250_000;
+    const large = await runCollector(page, collectorOptions(server.host, "Fixture", { maxOutputChars: largeCap }));
+    const tinyCap = 2_000;
+    const tiny = await runCollector(page, collectorOptions(server.host, "Fixture", { maxOutputChars: tinyCap }));
+    await context.close();
+
+    expect(full.stats.truncated).toBe(false);
+    expect(roomy.stats.truncated).toBe(false);
+    expect(roomy.candidates).toHaveLength(full.candidates.length);
+    const others = (output: typeof full) => output.candidates.filter((c) => c.url !== big).map((c) => c.url);
+    const smallLists = (output: typeof full) => ({
+      others: others(output),
+      svgs: output.svgs.map((s) => s.hash),
+      fontFaces: output.fontFaces,
+      fontStatuses: output.fontStatuses,
+      fontUsage: output.fontUsage,
+      unreadableSheets: output.unreadableSheets,
+      blobs: output.blobs.map((b) => b.url),
+      brandLinks: output.brandLinks,
+    });
+    expect(full.candidates.filter((c) => c.url === big)).toHaveLength(3);
+    expect(others(full).length).toBeGreaterThan(0);
+    expect(full.svgs.length).toBeGreaterThan(0);
+    expect(full.fontFaces.length).toBeGreaterThan(0);
+    expect(full.blobs.length).toBeGreaterThan(0);
+    expect(full.brandLinks.length).toBeGreaterThan(0);
+
+    // The two repeated uses of the large URL go first (the largest repeats), and every small item in every list stays.
+    expect(repeats.stats.truncated).toBe(true);
+    expect(JSON.stringify(repeats).length).toBeLessThanOrEqual(repeatsCap);
+    expect(repeats.candidates.filter((c) => c.url === big)).toHaveLength(1);
+    expect(smallLists(repeats)).toEqual(smallLists(full));
+    expect(large.stats.truncated).toBe(true);
+    expect(JSON.stringify(large).length).toBeLessThanOrEqual(largeCap);
+    // Then the other repeated uses (the fixture repeats some URLs, their first use stays), then the large item itself.
+    expect(large.candidates.some((c) => c.url === big)).toBe(false);
+    expect(smallLists(large)).toEqual({ ...smallLists(full), others: [...new Set(others(full))] });
+
+    // The budget still holds when almost everything goes.
+    expect(tiny.stats.truncated).toBe(true);
+    expect(JSON.stringify(tiny).length).toBeLessThanOrEqual(tinyCap);
+  });
+
+  it("cuts a huge title and site name and drops a huge manifest URL before fitting, so the lists stay", async () => {
+    const { context, page } = await openPage(browser, `${server.origin}/`);
+    await page.evaluate(() => {
+      document.title = "T".repeat(40_000_000);
+      const meta = document.createElement("meta");
+      meta.setAttribute("property", "og:site_name");
+      meta.setAttribute("content", "S".repeat(1_000_000));
+      const manifest = document.createElement("link");
+      manifest.rel = "manifest";
+      manifest.href = `https://example.com/${"m".repeat(1_000_000)}.webmanifest`;
+      document.head.prepend(meta, manifest);
+    });
+    const options = collectorOptions(server.host, "Fixture", { maxOutputChars: 2_000_000 });
+    const hostile = await runCollector(page, options);
+    await context.close();
+    expect(hostile.page.title).toHaveLength(options.maxTitleChars + 1);
+    expect(hostile.page.siteName).toHaveLength(options.maxSiteNameChars + 1);
+    expect(hostile.manifestUrl).toBeUndefined();
+    expect(hostile.stats.truncated).toBe(false);
+    expect(hostile.candidates).toHaveLength(output.candidates.length);
+    expect(hostile.svgs).toHaveLength(output.svgs.length);
+    expect(hostile.fontFaces).toHaveLength(output.fontFaces.length);
+  });
+
+  // Past V8's maximum string length (about 536.8M characters) a whole-output JSON.stringify throws.
+  it("fits output too long to hold in one string", async () => {
+    const { context, page } = await openPage(browser, `${server.origin}/`);
+    await page.evaluate(() => {
+      const src = `data:image/png;base64,${"A".repeat(2_000_000)}`;
+      const box = document.createElement("div");
+      for (let i = 0; i < 280; i++) box.append(Object.assign(document.createElement("img"), { src }));
+      document.body.prepend(box);
+    });
+    const options = collectorOptions(server.host, "Fixture");
+    const huge = await runCollector(page, options);
+    await context.close();
+    // Before the per-item measure the collector cut nothing and the whole output could not be returned at all.
+    expect(huge.stats.truncated).toBe(true);
+    expect(JSON.stringify(huge).length).toBeLessThanOrEqual(options.maxOutputChars);
+    expect(huge.candidates.filter((c) => c.url.startsWith("data:image/png;base64,AAAA")).length).toBeGreaterThan(0);
+  }, 120_000);
 });

@@ -1,4 +1,5 @@
 import type { Page } from "playwright-core";
+import { capped, sleep, untilAborted } from "@/server/async";
 import { limits } from "@/server/config/limits";
 import { ScanFailure } from "@/server/errors";
 import { JSON_ESCAPE_FACTOR, runInPage } from "./inpage/run";
@@ -23,12 +24,8 @@ export interface PageFacts {
 const HTML_SAMPLE_CHARS = 200_000;
 /** Longest page title kept, in the early `page` event and the final one. */
 export const MAX_TITLE_CHARS = 2_048;
-/** Cap for the small reads after navigation (title, element count, markup sample). */
-const READ_MS = 3_000;
 const MAX_SCROLL_STEPS = 40;
 const BACK_TO_TOP_WAIT_MS = 300;
-/** Scrolling back is instant on a healthy page; a page stuck in a script should not cost more than this. */
-const BACK_TO_TOP_MS = 1_000;
 
 // In-page snippets are strings, not functions: bundlers can rewrite a function body with helpers that do not exist
 // in the page (critic R13).
@@ -73,50 +70,6 @@ const FINISH_ANIMATIONS_AND_FONTS = `(async () => {
   return true;
 })()`;
 
-/** Resolves with the result, or with `fallback` on error or after `ms`. Rejects only when the signal aborts. */
-function capped<T>(promise: Promise<T>, ms: number, fallback: T, signal?: AbortSignal): Promise<T> {
-  promise.catch(() => {});
-  if (signal?.aborted) return Promise.reject(signal.reason);
-  return new Promise<T>((resolve, reject) => {
-    const done = () => {
-      clearTimeout(timer);
-      signal?.removeEventListener("abort", onAbort);
-    };
-    const onAbort = () => {
-      done();
-      reject(signal?.reason);
-    };
-    const timer = setTimeout(() => {
-      done();
-      resolve(fallback);
-    }, Math.max(0, ms));
-    signal?.addEventListener("abort", onAbort, { once: true });
-    promise.then(
-      (value) => {
-        done();
-        resolve(value);
-      },
-      () => {
-        done();
-        resolve(fallback);
-      },
-    );
-  });
-}
-
-/** Settles like `promise`, or rejects with the abort reason as soon as the signal aborts. */
-function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
-  promise.catch(() => {});
-  if (signal.aborted) return Promise.reject(signal.reason);
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = () => reject(signal.reason);
-    signal.addEventListener("abort", onAbort, { once: true });
-    promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
-  });
-}
-
-const sleep = (ms: number, signal: AbortSignal) => capped(new Promise<void>(() => {}), ms, undefined, signal);
-
 function navigationFailure(error: unknown, signal: AbortSignal): unknown {
   if (signal.aborted) return signal.reason;
   const message = error instanceof Error ? error.message : String(error);
@@ -142,7 +95,7 @@ export async function readPageFacts(page: Page, options: { signal: AbortSignal; 
     // The sample and the title in JSON, every character escaped at worst, plus the element count and the keys. A page
     // over this cap would give no facts, and so no markup rules: the cap must hold for any sample.
     const maxResultChars = JSON_ESCAPE_FACTOR * (sampleChars + MAX_TITLE_CHARS + 1) + 1_024;
-    const { value } = await runInPage<unknown>(page, "", pageFacts(sampleChars), { timeoutMs: READ_MS, signal, maxResultChars });
+    const { value } = await runInPage<unknown>(page, "", pageFacts(sampleChars), { timeoutMs: limits.readMs, signal, maxResultChars });
     return isPageFacts(value) ? { ...value, title: cutText(value.title, MAX_TITLE_CHARS).trim() } : null;
   } catch {
     if (signal.aborted) throw signal.reason;
@@ -203,7 +156,7 @@ export async function loadAndScroll(
     if (atBottom) break;
   }
   await capped(page.waitForLoadState("networkidle", { timeout: limits.scrollIdleMs }), limits.scrollIdleMs, undefined, signal);
-  await capped(page.evaluate(BACK_TO_TOP), BACK_TO_TOP_MS, undefined, signal);
+  await capped(page.evaluate(BACK_TO_TOP), limits.backToTopMs, undefined, signal);
   await sleep(BACK_TO_TOP_WAIT_MS, signal);
   onStep("scroll", "done");
 }

@@ -316,7 +316,8 @@ export default withBotId(nextConfig);
   "fluid": true,
   "regions": ["iad1"],
   "functions": {
-    "src/app/api/scan/route.ts": { "maxDuration": 120, "supportsCancellation": true }
+    "src/app/api/scan/route.ts": { "maxDuration": 120, "supportsCancellation": true },
+    "src/app/api/asset/route.ts": { "maxDuration": 30, "supportsCancellation": true }
   }
 }
 ```
@@ -414,7 +415,7 @@ export type AssetFormat = z.infer<typeof AssetFormat>;
 export const FoundIn = z.enum([
   "img", "picture", "lazy-attribute", "noscript", "video-poster", "svg-image", "object-embed",
   "css-background", "css-mask", "css-pseudo", "css-other", "stylesheet",
-  "icon-link", "manifest", "og-image", "twitter-image", "json-ld",
+  "icon-link", "meta-icon", "manifest", "og-image", "twitter-image", "json-ld",
   "inline-svg", "sprite-symbol", "network", "shadow-dom", "iframe", "public-source",
 ]);
 export type FoundIn = z.infer<typeof FoundIn>;
@@ -544,7 +545,7 @@ export const Diagnostics = z.object({
   egress: z.object({ bytes: z.number(), blocked: z.number() }),
   bodyTimeouts: z.number(),
   blockReason: z.string().optional(),
-  collector: z.enum(["isolated", "main"]),
+  collector: z.enum(["isolated", "main", "none"]),
   version: z.string(),
 });
 export type Diagnostics = z.infer<typeof Diagnostics>;
@@ -867,10 +868,12 @@ const envNumber = (name: string, fallback: number): number => {
 
 export const limits = {
   scanDeadlineMs: 90_000,
+  maxConcurrentScans: 1,
   queueWaitMs: 15_000,
   preflightMs: 8_000,
   preflightMaxBytes: 1 * MB,
   launchMs: 20_000,
+  browserSetupMs: 10_000, // context, page and CDP guards after the launch
   gotoMs: 25_000,
   loadMs: 10_000,
   networkIdleMs: 3_000,
@@ -880,9 +883,20 @@ export const limits = {
   animationsMs: 2_000,
   collectMs: 15_000,
   settleMs: 5_000,
+  gracefulCloseMs: 5_000, // graceful browser close before the kill
+  killedCloseMs: 2_000, // wait for browser.close() after a kill
+  readMs: 3_000, // small in-page reads after navigation
+  backToTopMs: 1_000,
+  paletteBudgetMs: 3_000, // the palette phase's share of collectMs
+  paletteOverrunMs: 1_000, // the engine aborts extractPalette at paletteBudgetMs plus this
+  paletteStopMs: 1_000, // after that abort, time for extractPalette to put the page back
+  postGraceMs: 5_000, // page work stops this long before the scan deadline
+  cancelCleanupMs: 10_000,
+  egressCloseMs: 1_000,
   verifyMs: 8_000,
   verifyConcurrency: 16,
   maxDeclaredProbes: 150,
+  maxStylesheetUrls: 2_000, // stylesheet text URLs the network did not load that get a record
   egressMaxBytes: 400 * MB,
   egressMaxSockets: 96,
   bodyMaxBytes: 15 * MB,
@@ -895,8 +909,18 @@ export const limits = {
   svgTotalBytes: 12 * MB,
   svgMaxNormalizations: 400,
   collectorMaxElements: 80_000,
+  spriteFetchMs: 4_000,
+  blobFetchMs: 3_000,
+  collectorMaxTextNodes: 20_000,
+  manifestMs: 3_000,
+  manifestMaxBytes: 512_000,
+  maxBrandLinks: 6,
+  collectorMaxOutputChars: 32_000_000, // JSON characters of the collector output, lists cut to fit
+  fontParseMaxBytes: 5 * MB,
+  fontParseBudgetMs: 1_500,
+  fontParseMaxFiles: 40,
   maxAssets: 1_500,
-  maxSignedUrls: 800,
+  maxSignedUrls: 2_000,
   ndjsonLineBytes: 256_000,
   proxyMaxBytes: 25 * MB,
   proxyTimeoutMs: 20_000,
@@ -908,6 +932,11 @@ export const limits = {
   minTmpFreeMb: 250,
   minMemAvailableMb: 900,
   watchdogMemMb: 350,
+  googleFontsMs: 2_000,
+  googleFontsMaxFamilies: 8,
+  paletteFetchMs: 600,
+  wikidataMs: 3_000,
+  faviconServiceMs: 3_000,
   get scansPerDay() {
     return envNumber("SCANS_PER_DAY", 80);
   },
@@ -919,6 +948,8 @@ export const limits = {
   },
 } as const;
 ```
+
+As built, every key (not only the three budgets above) is read on each access and can be overridden with an environment variable named after it in SCREAMING_SNAKE_CASE (`postGraceMs` reads `POST_GRACE_MS`, `paletteBudgetMs` reads `PALETTE_BUDGET_MS`); values that are not whole numbers above 0 are ignored.
 
 - [ ] **Step 3: `src/server/scan/types.ts`**
 
@@ -1007,6 +1038,15 @@ export interface CollectorOptions {
   maxSvgNormalizations: number;
   maxSvgBytes: number;
   maxSvgTotalBytes: number;
+  spriteFetchMs: number;                    // external sprite fetch (spec 8.6)
+  blobFetchMs: number;                      // limits.blobFetchMs
+  maxTextNodes: number;                     // limits.collectorMaxTextNodes
+  maxBrandLinks: number;                    // spec 8.1
+  maxBlobBytes: number;                     // limits.blobMaxBytes
+  maxBlobTotalBytes: number;                // limits.blobTotalBytes
+  maxOutputChars: number;                   // JSON characters of the whole output; lists are cut to fit (limits.collectorMaxOutputChars)
+  maxTitleChars: number;                    // page.title is cut to one character over this before fitting
+  maxSiteNameChars: number;                 // same for page.siteName
 }
 
 export interface RawCollectorOutput {
@@ -1120,7 +1160,7 @@ export interface PostInput {
   deadline: number;                 // epoch ms
 }
 
-export interface AssetsOutput { assets: Asset[]; hidden: Record<string, number>; warnings: WarningCode[] }
+export interface AssetsOutput { assets: Asset[]; hidden: Record<string, number>; warnings: WarningCode[] } // hidden already includes collector.noise (D1)
 export interface FontsOutput { families: FontFamily[]; hidden: Record<string, number> }
 ```
 
@@ -1855,7 +1895,7 @@ describe("detectBlock", () => {
 **Files:** `src/server/scan/preflight.ts`, `src/server/scan/fallback.ts`, `tests/integration/engine/preflight.test.ts`
 
 - [ ] **Step 1: Failing tests**: preflight on the fixture returns `contentType` text/html and a `head` with the apple-touch icon and `og:image`; a route serving `application/pdf` returns `contentType` `application/pdf` and `head: null`; `http://127.0.0.1:<victim>/` rejects with `ScanFailure` code `blocked-address`; an unresolvable host `https://does-not-exist.invalid/` rejects with `dns`; a 403 page resolves (does not throw). Fallback: with a fake `fetch` returning a PNG for the Google favicon URL and a Wikidata JSON response with a `P154` value, `buildFallback` returns assets with `foundIn: ["public-source"]`, roles `favicon`/`site-logo`, signed proxies, and includes head icons; it never throws (network failures give an empty list).
-- [ ] **Step 2: Run, see failures** **Step 3: Implement** (preflight through `safeFetch` GET with `limits.preflightMaxBytes`, `Accept: text/html,*/*;q=0.8`, `SafeFetchError` to `ScanFailure` code mapping; fallback per spec 8.9 with Wikidata SPARQL `SELECT ?logo WHERE { ?item wdt:P856 ?site . FILTER(CONTAINS(LCASE(STR(?site)), "<host>")) ?item wdt:P154 ?logo } LIMIT 1` sent through `safeFetch` to `https://query.wikidata.org/sparql?format=json&query=...` with the generic user agent, 3 s timeout). **Step 4: Run** (PASS) **Step 5: Commit** `feat(scan): add preflight and public-source fallback for blocked sites`
+- [ ] **Step 2: Run, see failures** **Step 3: Implement** (preflight through `safeFetch` GET with `limits.preflightMaxBytes`, `Accept: text/html,*/*;q=0.8`, `SafeFetchError` to `ScanFailure` code mapping; fallback per spec 8.9 with the exact-match Wikidata SPARQL of `fallback.ts`, `SELECT ?logo ?site WHERE { VALUES ?site { <IRIs> } ?item wdt:P856 ?site . ?item wdt:P154 ?logo } LIMIT 5`, where `<IRIs>` are the 8 official website IRIs of the bare host (`https` and `http`, with and without `www.`, with and without the trailing slash); bindings for another host are ignored. A `FILTER(CONTAINS(...))` text match scans every official website and never answers in time. Sent through `safeFetch` to `https://query.wikidata.org/sparql?format=json&query=...` with the generic user agent, `limits.wikidataMs` (3 s) timeout). **Step 4: Run** (PASS) **Step 5: Commit** `feat(scan): add preflight and public-source fallback for blocked sites`
 
 ### Task B7: Engine
 
@@ -1869,8 +1909,8 @@ describe("detectBlock", () => {
   - aborting the signal during `scroll` ends the iterator without emitting `done` and kills Chrome;
   - a page whose script triggers a file download (`<a download>` click) does not write to disk and the scan completes;
   - `http://127.0.0.1:<victim>/` gives `error blocked-address` before launching Chrome;
-  - the real (stub) collectors: `createScanEngine()` on the fixture yields `error internal` (not an unhandled rejection), proving failure handling.
-- [ ] **Step 2: Run, see failures** **Step 3: Implement** spec section 7.2 end to end: `AbortSignal.any` with the request signal and the deadline, preflight, `startEgressProxy`, `withBrowser` (emitting `step queue` from `onQueued`), `startCapture` before `openPage`, `detectBlock` on the navigation result, early `page` event (empty `brandLinks`, no `favicon`), `loadAndScroll`, `prepareForCollection`, `extractPalette` then `runInPage(page, COLLECTOR_SOURCE, "globalThis.__assetsScraper.collect(<options>)")`, `capture.settle`, close browser, post-processing (`assembleAssets` and `buildFontFamilies` in parallel with a shared signer from `createSigner({ max: limits.maxSignedUrls })`), final `page` event (collector `brandLinks`, `favicon` from the favicon asset's signed source), batching `assets` with `chunkByBytes`, `done` with stats and diagnostics (egress stats, phases, health, `version` from `VERCEL_GIT_COMMIT_SHA` or `dev`). Every thrown `ScanFailure` becomes an `error` event; any other error becomes `internal` with the diagnostics. The deadline path emits whatever results exist with `partial: true` and a `warning partial`. **Step 4: Run** (PASS) **Step 5: Commit** `feat(scan): add scan engine orchestration with deadlines and cancellation`
+  - the default in-page and post-processing modules: `createScanEngine()` on the fixture yields `done` with no logged errors (in Phase 0 the stub collectors made it yield `error internal`; that expectation is history).
+- [ ] **Step 2: Run, see failures** **Step 3: Implement** spec section 7.2 end to end: `AbortSignal.any` with the request signal and the deadline, preflight, `startEgressProxy`, `withBrowser` (emitting `step queue` from `onQueued`), `startCapture` before `openPage`, `detectBlock` on the navigation result, early `page` event (empty `brandLinks`, no `favicon`), `loadAndScroll`, `prepareForCollection`, `extractPalette` (the engine only calls it: it opens its own isolated world and loads its own in-page code) then `runInPage(page, COLLECTOR_SOURCE, "globalThis.__assetsScraper.collect(<options>)")`, `capture.settle`, close browser, post-processing (`assembleAssets` and `buildFontFamilies` in parallel with a shared signer from `createSigner({ max: limits.maxSignedUrls })`; `assembleAssets` signs its sources, then the engine signs the font files with `signFontFiles` and adds a `truncated` warning when the cap left any unsigned), final `page` event (collector `brandLinks`, `favicon` from the favicon asset's signed source), batching `assets` with `chunkByBytes`, `done` with stats and diagnostics (egress stats, phases, health, `version` from `VERCEL_GIT_COMMIT_SHA` or `dev`). Every thrown `ScanFailure` becomes an `error` event; any other error becomes `internal` with the diagnostics. The deadline path emits whatever results exist with `partial: true` and a `warning partial`. **Step 4: Run** (PASS) **Step 5: Commit** `feat(scan): add scan engine orchestration with deadlines and cancellation`
 
 ### Task B8: Scan route
 
@@ -1990,7 +2030,7 @@ it("builds the same variant key for size variants", () => {
   - `noise.test.ts`: tracker host (`https://www.google-analytics.com/collect?v=1`) gives `tracker`; `pixel.gif` gives `spacer`; a decoded 1x1 image gives `pixel`; a 40x40 data URI PNG gives `tiny-data-uri`; an SVG data URI with only `<defs/>` gives `placeholder`; an `text/html` capture gives `not-image`; `https://cdn.cookielaw.org/logos/x.png` gives `consent`; `https://www.gstatic.com/recaptcha/api2/logo_48.png` gives `widget`; a normal logo gives `null`.
   - `variants.test.ts`: the fixture-like group (`photo-small.png` 200w and `photo-large.png` 1600w in one element group) merges and picks `photo-large.png`; a `<picture>` with `media` source does not merge with its fallback `src`; two URLs with the same `sha1` merge; a raster and an SVG in one group split; a fallback `src` shared by two elements joins only its preferred group.
   - `roles.test.ts`: header SVG in a home link with a logo word scores 8 and becomes `site-logo`; `og:image` becomes `social`; a 24x24 rendered SVG becomes `icon`; a favicon is never `icon`; `relevanceScore` orders site-logo above a large visible image above a hidden icon.
-  - `naming.test.ts`: display name priority (`aria-label` over `<title>` over `alt` over file basename); hashed basenames (`logo.a1b2c3d4.svg`, `hero-3f9ab1c2e4.png`) are cleaned; filenames are prefixed with the site slug once (`linear-logo.svg`, not `linear-linear-logo.svg`), capped at 80 characters, clash to `-2`, and `../evil/<name>` becomes safe.
+  - `naming.test.ts`: display name from the collector label over the file basename (the collector picks `aria-label` over `<title>` over `alt`, tested in `collector.test.ts`); hashed basenames (`logo.a1b2c3d4.svg`, `hero-3f9ab1c2e4.png`) are cleaned; filenames are prefixed with the site slug once (`linear-logo.svg`, not `linear-linear-logo.svg`), capped at 80 characters, clash to `-2`, and `../evil/<name>` becomes safe.
   - `tone.test.ts`: generate PNGs with sharp in the test (white shape on transparent gives `light`, black shape on transparent gives `dark`, opaque red gives `opaque`, half gray gives `mixed`); a JPEG buffer gives `opaque` without decoding; `toneFromSvg('<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" fill="#fff"/></svg>')` gives `opaque`, a white circle on transparent gives `light`; invalid bytes give `unknown`.
 - [ ] **Step 2: Run, see failures** **Step 3: Implement** (spec 8.2, 8.3, 8.5, 8.7, 8.8; port `noise.mjs` host lists; noise reasons are the `HiddenReason` names from the contract, not the lab strings). **Step 4: Run** (PASS) **Step 5: Commit** `feat(assets): add noise filter, variant grouping, roles, naming and tone`
 
@@ -2007,7 +2047,7 @@ it("builds the same variant key for size variants", () => {
 
 - [ ] **Step 1: Failing golden test** on the fixture site (via the harness), asserting on `RawCollectorOutput`:
   - `page.title` is `Fixture Co`, `page.siteName` is `Fixture`;
-  - the header SVG is in `svgs` with `context.homeLink && context.header`, `label` `Fixture home`, and its markup contains `rgb(20, 30, 40)` (currentColor resolved);
+  - the header SVG is in `svgs` with `context.homeLink && context.header`, `label` `Fixture home`, and its markup contains the link's live computed color, `rgb(0, 0, 238)` (currentColor resolved: the header link has no color rule and keeps the UA link color);
   - the gradient SVG markup contains `rgb(255, 51, 102)` and a `<linearGradient` copied into its `<defs>`;
   - the external sprite SVG markup contains the star path from `sprite.svg`;
   - the `.page-icons` SVG markup contains `rgb(0, 170, 119)`, and the two identical ones collapse to one entry with `usedCount: 2`;
@@ -2112,9 +2152,9 @@ describe("parseFontFaceCss", () => {
   - `Brand Serif`: `usedOnPage: true`, `googleFamily: "Source Sans 3"`, `convertible: true`;
   - `Unused Face`: `usedOnPage: false`, one face with `loaded: false`, files listed but no bytes;
   - families sorted by `usage` descending, then used before unused;
-  - every remote file has a signed `proxy`;
+  - `buildFontFamilies` signs nothing: every file comes out with `proxy: ""`; after `signFontFiles(families, signer)` (as the engine calls it once the assets are signed, spec 11.2) every remote file has a signed `proxy`;
   - a second case adds an `Inline Face` `@font-face` whose `src` is a `data:font/woff2;base64,` URI of `ss3.woff2`: its family has `source: "data-uri"` and one file with `inline.base64` equal to the file bytes, `url` and `proxy` both `""`, and nothing signed for it.
-- [ ] **Step 2: Run, see failures** **Step 3: Implement** spec section 9 (grouping stages 1 to 3, faces keyed by css family, weight, style, stretch; source classification by host; usage shares; Adobe `downloadable: false`; licence; Google matching of display names and embedded names; signing; `data:` files decoded, base64 or percent-encoded, into `inline` with empty `url` and `proxy`, as the `FontFile` comment in the contract says; the `fonts` line is not batched, so inline files can take it past the 256 KB line target). **Step 4: Run** (PASS) **Step 5: Commit** `feat(fonts): build font families with faces, usage, source and licence`
+- [ ] **Step 2: Run, see failures** **Step 3: Implement** spec section 9 (grouping stages 1 to 3, faces keyed by css family, weight, style, stretch; source classification by host; usage shares; Adobe `downloadable: false`; licence; Google matching of display names and embedded names; no signing inside `buildFontFamilies` (every file keeps `proxy: ""`, since it runs in parallel with `assembleAssets` and must not spend the shared cap first), plus the exported `signFontFiles(families, signer)` the engine calls afterwards (files of loaded faces, then Basic-Latin files of unloaded faces, then the rest; returns true when the cap left a file unsigned); `data:` files decoded, base64 or percent-encoded, into `inline` with empty `url` and `proxy`, as the `FontFile` comment in the contract says; the `fonts` line is not batched, so inline files can take it past the 256 KB line target). **Step 4: Run** (PASS) **Step 5: Commit** `feat(fonts): build font families with faces, usage, source and licence`
 
 ### Task D5: PR
 
@@ -2149,8 +2189,8 @@ Port `palette-lab/verify/src-v2/` with every fix enabled. Do not commit third-pa
 
 **Files:** `src/server/scan/inpage/palette.src.ts`, `src/server/scan/palette/index.ts`, `tests/integration/palette/extract.test.ts`
 
-- [ ] **Step 1: Failing integration test** on the fixture site with local Chrome: after `goto` and the collector bundle loaded through `page.evaluate(PALETTE_SOURCE)`, `extractPalette(page, { fetch: fakeFetch, signal, timeBudgetMs: 3000 })` returns a `Palette` where some brand swatch is within OKLab distance 0.08 of `#ff3366` or `#ee3333`, a neutral within 0.08 of `#141e28`, completes under 2 s, and leaves the DOM without `data-palette-hidden` attributes. A second fixture route `/consent.html` with a fixed OneTrust-like banner (`#onetrust-banner-sdk`) must not contribute its colors (banner is bright green `#00ff00`; assert no swatch near it).
-- [ ] **Step 2: Run, see failures** **Step 3: Port** `palette-inpage.ts` into `palette.src.ts` as `globalThis.__assetsScraperPalette` (`collect`, `restore`, `decodeIconColors`), and `palette-node.ts` into `index.ts` with these changes: run the in-page functions through `page.evaluate` of expressions on the global (the engine injects `PALETTE_SOURCE` first; `extractPalette` injects it if `globalThis.__assetsScraperPalette` is missing), fetch icon and manifest with `options.fetch` (not the context request API), respect `timeBudgetMs`, always restore overlays in `finally`, return `null` on any failure. **Step 4: Run** (PASS) **Step 5: Commit** `feat(palette): extract palettes from live pages`
+- [ ] **Step 1: Failing integration test** on the fixture site with local Chrome: after `goto` (nothing injected first), `extractPalette(page, { fetch: fakeFetch, signal, timeBudgetMs: 3000 })` returns a `Palette` where some brand swatch is within OKLab distance 0.08 of `#ff3366` or `#ee3333`, a neutral within 0.08 of `#141e28`, completes under 2 s, and leaves the DOM without `data-palette-hidden` attributes. A second fixture route `/consent.html` with a fixed OneTrust-like banner (`#onetrust-banner-sdk`) must not contribute its colors (banner is bright green `#00ff00`; assert no swatch near it).
+- [ ] **Step 2: Run, see failures** **Step 3: Port** `palette-inpage.ts` into `palette.src.ts` as `globalThis.__assetsScraperPalette` (`collect`, `restore`, `decodeIconColors`), and `palette-node.ts` into `index.ts` with these changes: `extractPalette` opens its own isolated world (CDP `Page.createIsolatedWorld`, the main world only when that fails, spec 7.5) and evaluates a fresh copy of `PALETTE_SOURCE` there for each in-page call, so nothing is installed on the page and the engine never injects anything, fetch icon and manifest with `options.fetch` (not the context request API), respect `timeBudgetMs`, always restore overlays in `finally`, return `null` on any failure. **Step 4: Run** (PASS) **Step 5: Commit** `feat(palette): extract palettes from live pages`
 
 ### Task E4: PR
 
@@ -2176,7 +2216,7 @@ Build against the contract with mocked NDJSON. Create realistic fixtures from la
   - `asset-bytes.test.ts`: inline SVG returns a `image/svg+xml` Blob without network; inline base64 decodes; https remote tries direct CORS first and falls back to `proxy` on a thrown fetch or non-OK status; `http:` goes straight to the proxy; a failing proxy throws `AssetUnavailableError`; a `FontFile` with `inline` (a data URI font: `url` and `proxy` are `""`, the proxy cannot fetch `data:` and the CSP blocks fetching it) decodes without any fetch.
   - `filters.test.ts`: `sectionize(assets, fonts, { tab: "all", query: "", sort: "relevance" })` puts `site-logo`, `logo`, `favicon` in `logos`, small icons (longest rendered side <= 48) in `smallIcons`, `declaredOnly` in `stylesheets`, sorts by score; `tab: "svg"` has no `logos` section; `query` matches name, filename, URLs and font names case-insensitively; sort `largest`, `file-size`, `name`, `page-order` behave.
   - `store.test.ts`: `select`, `toggle`, `selectRange` over visual order, `selectAllVisible` excludes collapsed sections, `clearSelection`, selection survives tab change, `openDetail`/`next`/`previous` wrap within the visible list.
-  - `zip.test.ts` (Node, client-zip works with `Response`): `buildZip(selection, host)` yields entries `linear.app-assets/svg/<filename>`, `images/`, `fonts/<family>/`, adds `.ttf` for convertible WOFF2 fonts through `proxy&fmt=ttf`, adds inline font files from their bytes (named from family, weight, style and format, never from the empty `url`; when convertible, their `.ttf` comes from the in-browser WOFF2 conversion of spec 9, since `fmt=ttf` needs the proxy), skips failed entries and reports them.
+  - `zip.test.ts` (Node, client-zip works with `Response`): `buildZip(selection, host)` yields entries `linear.app-assets/svg/<filename>`, `images/`, `fonts/<family>/`, adds `.ttf` for convertible WOFF2 fonts through `proxy&fmt=ttf`, adds inline font files from their bytes (named from family, weight, style and format, never from the empty `url`) in their original format only, with no `.ttf` even when convertible, since `fmt=ttf` needs the proxy (spec 9), skips failed entries and reports them.
   - `recent.test.ts`: keeps the last 5 unique hosts, survives `localStorage` throwing.
 - [ ] **Step 2: Run, see failures** **Step 3: Implement** (spec 12.1, 12.3 previews, 12.4, critic G3 `getAssetBlob`, client-zip `downloadZip` with an async generator and 6 concurrent fetches, `showSaveFilePicker` when available, zustand store). **Step 4: Run** (PASS) **Step 5: Commit** `feat(client): add scan client, asset bytes, filters, selection store and ZIP builder`
 

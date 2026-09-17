@@ -17,7 +17,8 @@ import type {
  * Runs inside the scanned page, normally in a CDP isolated world where `customElements` is null, so it never uses it.
  * It cannot import app code: `parseSrcset` and `extractCssUrls` are copies of `post/parse.ts`, keep them in sync.
  * Returns plain JSON. Caps: `maxElements` walked, `timeBudgetMs`, `maxSvgNormalizations`, `maxSvgBytes` per SVG,
- * `maxSvgTotalBytes` for all SVG markup, blob byte caps. Hitting one sets `stats.truncated`.
+ * `maxSvgTotalBytes` for all SVG markup, blob byte caps, `maxOutputChars` of JSON for the whole output. Hitting one sets
+ * `stats.truncated`.
  */
 
 declare global {
@@ -28,8 +29,8 @@ const SVG_NS = "http://www.w3.org/2000/svg";
 const XLINK_NS = "http://www.w3.org/1999/xlink";
 const MAX_SAME_MARKUP_NORMALIZATIONS = 3;
 const MAX_STYLED_SVG_ELEMENTS = 4_000;
-const MAX_TEXT_NODES = 20_000;
-const BLOB_FETCH_MS = 3_000;
+/** `page.baseUrl` and `manifestUrl` longer than this are left out, so they cannot push the lists out of the budget. */
+const MAX_PAGE_URL_CHARS = 8_192;
 
 const LAZY_ATTR =
   /^data-(?:lazy-?)?(?:src|srcset|original|original-set|hi-?res(?:-src)?|full(?:-src)?|large(?:-src)?|zoom(?:-src)?|fallback(?:-src)?|bg|background|background-image|image|img|echo|flickity-lazyload|lazy|srcset-lazy|pin-media|retina|2x)$/i;
@@ -289,7 +290,10 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
   const hostname = location.hostname.replace(/^www\./, "");
   const siteTokens = new Set<string>();
   {
-    const label = hostname.split(".").slice(-2, -1)[0] ?? "";
+    // The label before the public suffix: "shop" for shop.com and for shop.co.uk.
+    const labels = hostname.split(".");
+    const suffix = labels.length > 2 && labels[labels.length - 1].length === 2 && SECOND_LEVEL_LABELS.test(labels[labels.length - 2]) ? 2 : 1;
+    const label = labels[labels.length - 1 - suffix] ?? "";
     if (label.length > 2 && !/^\d+$/.test(label)) siteTokens.add(label.toLowerCase());
     const ogSite = document.querySelector('meta[property="og:site_name"]')?.getAttribute("content");
     const appName = document.querySelector('meta[name="application-name"]')?.getAttribute("content");
@@ -692,7 +696,7 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
     const content = meta.getAttribute("content");
     if (/^og:image(?::url|:secure_url)?$|^image$|^thumbnail$/.test(key)) addMeta(meta, content, "og-image");
     else if (/^twitter:image(?::src)?$/.test(key)) addMeta(meta, content, "twitter-image");
-    else if (key === "msapplication-tileimage") addMeta(meta, content, "icon-link");
+    else if (/^msapplication-(?:tileimage|square70x70logo|square150x150logo|wide310x150logo|square310x310logo)$/.test(key)) addMeta(meta, content, "meta-icon");
   }
   // Microdata image as a link, the other metadata form of itemprop=image. Body links and images that carry it are
   // content, collected (or not) as such, never social images.
@@ -734,12 +738,12 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
   {
     let textNodes = 0;
     for (const { root } of roots) {
-      if (textNodes >= MAX_TEXT_NODES || outOfTime()) break;
+      if (textNodes >= options.maxTextNodes || outOfTime()) break;
       const start = (root as Document).body ?? root;
       const owner = (root as Document).createTreeWalker ? (root as Document) : root.ownerDocument;
       if (!start || !owner) continue;
       const walker = owner.createTreeWalker(start, NodeFilter.SHOW_TEXT);
-      for (let node = walker.nextNode(); node && textNodes < MAX_TEXT_NODES; node = walker.nextNode()) {
+      for (let node = walker.nextNode(); node && textNodes < options.maxTextNodes; node = walker.nextNode()) {
         const text = node.nodeValue?.trim();
         const parent = node.parentElement;
         if (!text || !parent || /^(?:script|style|noscript|template)$/.test(parent.localName)) continue;
@@ -1113,7 +1117,7 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
       }
       let entry: { mime: string; bytes: Uint8Array } | null = null;
       try {
-        const response = await fetch(url, { signal: AbortSignal.timeout(BLOB_FETCH_MS) });
+        const response = await fetch(url, { signal: AbortSignal.timeout(options.blobFetchMs) });
         const blob = await response.blob();
         if (blob.size <= options.maxBlobBytes) entry = { mime: blob.type || "application/octet-stream", bytes: new Uint8Array(await blob.arrayBuffer()) };
       } catch {
@@ -1172,14 +1176,20 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
     }
   }
 
-  const title = document.title;
+  // Cut like the engine does (one character over the cap, so it still sees an over-long text) before the output is
+  // measured, so a huge title cannot push the lists out of the budget.
+  const title = String(document.title).slice(0, options.maxTitleChars + 1);
   const siteName =
-    document.querySelector('meta[property="og:site_name"]')?.getAttribute("content")?.trim() ||
-    document.querySelector('meta[name="application-name"]')?.getAttribute("content")?.trim() ||
-    undefined;
+    (
+      document.querySelector('meta[property="og:site_name"]')?.getAttribute("content")?.trim() ||
+      document.querySelector('meta[name="application-name"]')?.getAttribute("content")?.trim()
+    )?.slice(0, options.maxSiteNameChars + 1) || undefined;
+  // The engine only fetches an http(s) manifest and falls back to the page URL for an empty base, so over-long URLs go.
+  const pageBaseUrl = baseURI.length <= MAX_PAGE_URL_CHARS ? baseURI : "";
+  if (manifestUrl && (manifestUrl.length > MAX_PAGE_URL_CHARS || !/^https?:/i.test(manifestUrl))) manifestUrl = undefined;
 
-  return {
-    page: { title, ...(siteName ? { siteName } : {}), baseUrl: baseURI, elementCount: document.getElementsByTagName("*").length },
+  const output: RawCollectorOutput = {
+    page: { title, ...(siteName ? { siteName } : {}), baseUrl: pageBaseUrl, elementCount: document.getElementsByTagName("*").length },
     candidates: [...candidates.values()],
     svgs: [...svgs.values()],
     ...(manifestUrl ? { manifestUrl } : {}),
@@ -1192,6 +1202,61 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
     noise,
     stats: { elements: elements.length, ms: Math.round(performance.now() - T0), truncated },
   };
+  if (fitOutput(output, options.maxOutputChars)) output.stats.truncated = true;
+  return output;
+}
+
+const OUTPUT_LISTS = ["candidates", "svgs", "fontFaces", "fontStatuses", "fontUsage", "unreadableSheets", "blobs", "brandLinks"] as const;
+
+/**
+ * Cuts the output lists until the output is at most `maxChars` characters of JSON, and says whether it cut anything.
+ * Same order as the engine's safety net (`FIT_COLLECTOR_OUTPUT`): first the candidates that repeat the URL of an earlier
+ * candidate (they only add a use of an asset that stays), then the largest items, and among equals the later one in page
+ * order. Small items that free almost no space stay while a large one can go.
+ *
+ * Each item is measured on its own and the rest of the output with its lists emptied, so no single string ever holds
+ * the whole output (past V8's maximum string length a whole-output `JSON.stringify` throws and nothing would be cut).
+ * The running total counts a comma per item, at most one per list too many, so the result never goes over `maxChars`.
+ * The engine fits again as a safety net (a main-world page can replace `JSON.stringify` or the whole collector), so a
+ * measure that fails cuts nothing.
+ */
+function fitOutput(output: RawCollectorOutput, maxChars: number): boolean {
+  const items: { key: (typeof OUTPUT_LISTS)[number]; index: number; repeat: boolean; size: number }[] = [];
+  let total: number;
+  try {
+    const rest: Record<string, unknown> = { ...output };
+    for (const key of OUTPUT_LISTS) rest[key] = [];
+    total = JSON.stringify(rest).length;
+    const urls = new Set<string>();
+    for (const key of OUTPUT_LISTS) {
+      const list: unknown[] = output[key];
+      list.forEach((item, index) => {
+        const url = key === "candidates" ? (item as RawCandidate).url : undefined;
+        const repeat = url !== undefined && urls.has(url);
+        if (url !== undefined) urls.add(url);
+        items.push({ key, index, repeat, size: (JSON.stringify(item) ?? "null").length + 1 });
+        total += items[items.length - 1].size;
+      });
+    }
+  } catch {
+    return false;
+  }
+  // The exact size has one comma less per non-empty list.
+  if (total - OUTPUT_LISTS.filter((key) => output[key].length > 0).length <= maxChars) return false;
+  items.sort((a, b) => Number(b.repeat) - Number(a.repeat) || b.size - a.size || b.index - a.index);
+  const dropped = new Map<string, Set<number>>();
+  for (const item of items) {
+    if (total <= maxChars) break;
+    let indexes = dropped.get(item.key);
+    if (!indexes) dropped.set(item.key, (indexes = new Set()));
+    indexes.add(item.index);
+    total -= item.size;
+  }
+  for (const [key, indexes] of dropped) {
+    const list: unknown[] = output[key as (typeof OUTPUT_LISTS)[number]];
+    (output[key as (typeof OUTPUT_LISTS)[number]] as unknown[]) = list.filter((_, index) => !indexes.has(index));
+  }
+  return true;
 }
 
 function decodeURIComponentSafe(text: string): string {

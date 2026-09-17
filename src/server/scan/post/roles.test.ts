@@ -30,6 +30,7 @@ describe("assignRole", () => {
     expect(role({ foundIn: ["img", "twitter-image"], rendered: { width: 24, height: 24 } })).toBe("social");
     expect(role({ foundIn: ["icon-link"], intrinsic: { width: 16, height: 16 } })).toBe("favicon");
     expect(role({ foundIn: ["manifest"] })).toBe("favicon");
+    expect(role({ foundIn: ["meta-icon"], intrinsic: { width: 144, height: 144 } })).toBe("favicon");
     expect(role({ logoWall: true, rendered: { width: 120, height: 40 } })).toBe("logo");
     expect(role({ logoWord: true, rendered: { width: 20, height: 20 } })).toBe("logo");
     expect(role({ label: "Acme Logo", rendered: { width: 300, height: 100 } })).toBe("logo");

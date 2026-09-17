@@ -28,11 +28,12 @@ export type AssetFormat = z.infer<typeof AssetFormat>;
 export const FoundIn = z.enum([
   "img", "picture", "lazy-attribute", "noscript", "video-poster", "svg-image", "object-embed",
   "css-background", "css-mask", "css-pseudo", "css-other", "stylesheet",
-  "icon-link", "manifest", "og-image", "twitter-image", "json-ld",
+  "icon-link", "meta-icon", "manifest", "og-image", "twitter-image", "json-ld",
   "inline-svg", "sprite-symbol", "network", "shadow-dom", "iframe", "public-source",
 ]);
 export type FoundIn = z.infer<typeof FoundIn>;
 
+/** `proxy` is the signed `/api/asset` path, or "" past the per-scan signing cap (spec 11.2): direct fetch only. */
 export const AssetSource = z.object({
   url: z.string(),
   proxy: z.string(),
@@ -82,7 +83,8 @@ export const FontFormat = z.enum(["woff2", "woff", "ttf", "otf", "eot", "other"]
 export type FontFormat = z.infer<typeof FontFormat>;
 
 /**
- * A remote font file has its absolute http(s) `url`, a signed `proxy` and no `inline`.
+ * A remote font file has its absolute http(s) `url`, a signed `proxy` and no `inline`. Past the per-scan signing cap
+ * (spec 11.2) its `proxy` is "": clients fetch it directly only, and mark it unavailable when that fails.
  * A file declared as a `data:` URI (family `source: "data-uri"`) has no network path: the asset proxy only fetches
  * http(s), and the app CSP (`connect-src 'self' https:`) blocks `fetch("data:...")`. Its bytes travel in `inline` as
  * base64, whatever the encoding of the URI was, and `url` and `proxy` are both "". Clients read `inline` first, as for
@@ -198,7 +200,8 @@ export const Diagnostics = z.object({
   egress: z.object({ bytes: z.number(), blocked: z.number() }),
   bodyTimeouts: z.number(),
   blockReason: z.string().optional(),
-  collector: z.enum(["isolated", "main"]),
+  // `none`: the collector never started (a blocked page, a failed navigation, a scan stopped before collection).
+  collector: z.enum(["isolated", "main", "none"]),
   version: z.string(),
 });
 export type Diagnostics = z.infer<typeof Diagnostics>;

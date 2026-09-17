@@ -129,6 +129,16 @@ beforeAll(async () => {
       res.writeHead(200, { "content-type": "image/png" });
       res.write(Buffer.from([0x89, 0x50, 0x4e, 0x47]));
     },
+    // An MJPEG webcam: a multipart image stream whose body never ends.
+    "/cam.mjpg": (_req, res) => {
+      res.writeHead(200, { "content-type": "multipart/x-mixed-replace; boundary=frame" });
+      res.write("--frame\r\ncontent-type: image/jpeg\r\n\r\n");
+      held.push(res);
+    },
+    "/cam.html": (_req, res) => {
+      res.writeHead(200, { "content-type": "text/html" });
+      res.end('<!doctype html><title>Cam</title><img src="/cam.mjpg">');
+    },
     "/moved.png": (_req, res) => {
       res.writeHead(302, { location: "/assets/touch.png" });
       res.end();
@@ -336,8 +346,49 @@ describe("startCapture", () => {
     expect(svgs.length).toBeGreaterThan(0);
     expect(jpegs.length).toBeGreaterThan(0);
     expect(rasters.length).toBeGreaterThan(1);
-    for (const image of [...svgs, ...jpegs]) expect(image.tone).toBe("light");
+    for (const image of svgs) expect(image.tone).toBe("light");
+    for (const image of jpegs) expect(image.tone).toBe("opaque");
     expect(rasters.filter((image) => image.tone !== "unknown")).toHaveLength(1);
+  });
+
+  it("stops toning at the tone budget, counted while renders are in flight, and starts none once settled", async () => {
+    vi.stubEnv("TONE_BUDGET_MS", "300");
+    const signals: AbortSignal[] = [];
+    // A render that never ends, as a librsvg render of a hostile SVG can take minutes and cannot be stopped.
+    const hung = (_buffer: Buffer, _contentType: string, signal: AbortSignal) => {
+      signals.push(signal);
+      return new Promise<Tone>(() => {});
+    };
+    const started = Date.now();
+    const network = await onBrowser(async (page) => {
+      const capture = startCapture(page, { signal: new AbortController().signal, toneFromBytes: hung });
+      await page.goto(`${fixture.origin}/`, { waitUntil: "networkidle" });
+      return capture.settle(10_000);
+    });
+    expect(Date.now() - started).toBeLessThan(8_000);
+    expect(signals.length).toBeGreaterThan(0);
+    for (const image of network.images) expect(image.tone === "unknown" || image.tone === "opaque").toBe(true);
+    expect(signals.every((signal) => signal.aborted)).toBe(true);
+  });
+
+  it("gives no tone to an SVG over the markup cap", async () => {
+    vi.stubEnv("SVG_MAX_BYTES", "10");
+    const toned: string[] = [];
+    const network = await onBrowser(async (page) => {
+      const capture = startCapture(page, {
+        signal: new AbortController().signal,
+        toneFromBytes: async (_buffer, contentType) => {
+          toned.push(contentType);
+          return "light";
+        },
+      });
+      await page.goto(`${fixture.origin}/`, { waitUntil: "networkidle" });
+      return capture.settle(5000);
+    });
+    const svgs = network.images.filter((image) => image.sha1 && image.contentType.startsWith("image/svg"));
+    expect(svgs.length).toBeGreaterThan(0);
+    for (const image of svgs) expect(image.tone).toBe("unknown");
+    expect(toned.filter((type) => type.includes("svg"))).toEqual([]);
   });
 
   it("keeps the bytes of the reads in flight within the total body cap", async () => {
@@ -475,6 +526,17 @@ describe("startCapture", () => {
       expect(network.images.some((image) => image.url.endsWith("/moved.png"))).toBe(false);
       expect(network.images.find((image) => image.url.endsWith("/assets/touch.png"))?.sha1).toBeDefined();
       for (const image of network.images) expect(Tone.options).toContain(image.tone);
+    });
+  });
+
+  it("never reads a multipart stream, whose body does not end by design", async () => {
+    await onBrowser(async (page) => {
+      const capture = startCapture(page, { signal: new AbortController().signal, bodyReadMs: 500 });
+      await Promise.all([page.waitForResponse((response) => response.url().endsWith("/cam.mjpg")), page.goto(`${fixture.origin}/cam.html`, { waitUntil: "domcontentloaded" })]);
+      await delay(1000);
+      const network = await capture.settle(5000);
+      expect(network.bodyTimeouts).toBe(0);
+      expect(network.skippedBodies).toBe(1);
     });
   });
 

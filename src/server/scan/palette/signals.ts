@@ -50,7 +50,7 @@ export interface RawPaletteSignals {
   stats: { visited: number; walkMs: number; hidden: number; truncated: boolean };
 }
 
-/** What `palette.src.ts` installs as `globalThis.__assetsScraperPalette`. */
+/** What `palette.src.ts` installs as `__assetsScraperPalette` on the object that shadows `globalThis` (`palette/index.ts`). */
 export interface PaletteInPage {
   collect(options: PaletteSignalOptions): RawPaletteSignals;
   /** Shows the hidden overlays again: puts back each one's `style` attribute and removes `data-palette-hidden`. */

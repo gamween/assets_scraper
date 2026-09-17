@@ -1,6 +1,6 @@
 import vm from "node:vm";
-import { describe, expect, it } from "vitest";
-import { FIT_COLLECTOR_OUTPUT, pageContextFor, pageWorkMs, postProcessingWindow, safeBrandLinks } from "./engine";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { FIT_COLLECTOR_OUTPUT, pageContextFor, paletteCap, pageWorkMs, postProcessingWindow, safeBrandLinks, safeNoise } from "./engine";
 
 const S = 1000;
 const window = (now: number) => postProcessingWindow({ startedAt: 0, now: now * S, deadlineMs: 90 * S, verifyMs: 8 * S });
@@ -9,6 +9,19 @@ describe("pageWorkMs", () => {
   it("stops page work 5 s before the scan deadline", () => {
     expect(pageWorkMs(90 * S)).toBe(85 * S);
     expect(pageWorkMs(3 * S)).toBe(0);
+  });
+});
+
+describe("paletteCap", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("aborts the palette 1 s after its budget by default", () => {
+    expect(paletteCap()).toBe(4 * S);
+  });
+
+  it("moves with a raised palette budget, so extractPalette still gets its whole budget", () => {
+    vi.stubEnv("PALETTE_BUDGET_MS", "5000");
+    expect(paletteCap()).toBe(6 * S);
   });
 });
 
@@ -99,12 +112,44 @@ describe("FIT_COLLECTOR_OUTPUT", () => {
     expect(JSON.stringify(fitted).length).toBeLessThanOrEqual(budget);
   });
 
+  it("drops the later of equal-size items first, so page order wins", () => {
+    const svgs = ["a", "b", "c"].map((char) => ({ markup: `<svg>${char.repeat(1_000)}</svg>` }));
+    const whole = output({ svgs });
+    const budget = JSON.stringify(whole).length - 500;
+    const fitted = fit(whole, budget);
+    expect(fitted.svgs.map((svg) => svg.markup[5])).toEqual(["a", "b"]);
+  });
+
+  it("drops an item that cannot be stringified instead of throwing, and keeps the rest", () => {
+    // Stands for an item past V8's maximum string length, which a replaced collector can return
+    const huge = { toJSON: () => { throw new RangeError("Invalid string length"); } };
+    const candidates = [{ url: "https://example.com/logo.png", order: 0 }];
+    const fitted = fit(output({ candidates, blobs: [huge, "small"] }), 10_000);
+    expect(fitted.blobs).toEqual(["small"]);
+    expect(fitted.candidates).toEqual(candidates);
+    expect(fitted.stats.truncated).toBe(true);
+  });
+
   it("never goes over a budget that the output can fit, lists that end up empty included", () => {
     const bare = JSON.stringify(output({ stats: { truncated: true } })).length;
     for (let budget = bare; budget < bare + 120; budget += 1) {
       const fitted = fit(output({ candidates: [{ url: "https://example.com/1.png", order: 0 }], svgs: [{ markup: "<svg/>" }], blobs: ["b".repeat(30)] }), budget);
       expect(JSON.stringify(fitted).length).toBeLessThanOrEqual(budget);
     }
+  });
+});
+
+describe("safeNoise", () => {
+  it("keeps hidden reasons with whole non-negative counts", () => {
+    const noise = { "lottie-frame": 3, "unreferenced-symbol": 0, "tiny-svg": 1.5, spacer: -1, tracker: Infinity, pixel: "2", made_up: 1 };
+    expect(safeNoise(noise)).toEqual({ "lottie-frame": 3, "unreferenced-symbol": 0 });
+  });
+
+  it("drops a page's made-up keys however many", () => {
+    const noise = Object.fromEntries(Array.from({ length: 100_000 }, (_, i) => [`fake-${i}`, 1]));
+    expect(safeNoise({ ...noise, "tiny-svg": 2 })).toEqual({ "tiny-svg": 2 });
+    expect(safeNoise(null)).toEqual({});
+    expect(safeNoise([1, 2])).toEqual({});
   });
 });
 

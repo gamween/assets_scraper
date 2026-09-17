@@ -1,8 +1,29 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { limits } from "@/server/config/limits";
 import { SignLimitError } from "@/server/security/sign";
-import type { CandidateContext, CapturedImage, PostInput, RawCandidate, RawCollectorOutput, SafeFetch, Signer } from "../types";
+import type { CandidateContext, CapturedImage, CapturedSheet, PostInput, RawCandidate, RawCollectorOutput, SafeFetch, Signer } from "../types";
 import { assembleAssets, siteLabel } from "./assemble";
+
+// Counts the image header reads of inline rasters, and how many run at once
+const metadataCalls = vi.hoisted(() => ({ total: 0, active: 0, peak: 0 }));
+vi.mock("sharp", async (importOriginal) => {
+  const actual = (await importOriginal<typeof import("sharp")>()).default;
+  const wrapped = (...args: Parameters<typeof actual>) => {
+    const instance = actual(...args);
+    const metadata = instance.metadata.bind(instance);
+    instance.metadata = (async () => {
+      metadataCalls.total++;
+      metadataCalls.peak = Math.max(metadataCalls.peak, ++metadataCalls.active);
+      try {
+        return await metadata();
+      } finally {
+        metadataCalls.active--;
+      }
+    }) as typeof instance.metadata;
+    return instance;
+  };
+  return { default: Object.assign(wrapped, actual) };
+});
 
 /** assembleAssets on synthetic collector output, with a fetch that answers every probe with a 404. */
 
@@ -48,10 +69,10 @@ const captured = (url: string, patch: Partial<CapturedImage> = {}): CapturedImag
 
 const proxyOf = (url: string) => `/api/asset?u=${encodeURIComponent(url)}`;
 
-const run = (collector: RawCollectorOutput, images: CapturedImage[] = [], signer: Signer = { sign: proxyOf, count: 0 }) => {
+const run = (collector: RawCollectorOutput, images: CapturedImage[] = [], signer: Signer = { sign: proxyOf, count: 0 }, sheets: CapturedSheet[] = []) => {
   const input: PostInput = {
     collector,
-    network: { images, fonts: [], sheets: [], bodyTimeouts: 0, skippedBodies: 0 },
+    network: { images, fonts: [], sheets, bodyTimeouts: 0, skippedBodies: 0 },
     page: { requestedUrl: PAGE, finalUrl: PAGE, host: "shop.example", siteName: "Shop", title: "Shop" },
     signer,
     fetch: notFound,
@@ -102,10 +123,32 @@ describe("assembleAssets hidden counts", () => {
     expect(hidden).toEqual({ "probe-failed": 1 });
   });
 
+  it("still probes /favicon.ico when the page only declares a meta icon", async () => {
+    const collector = collectorOutput({ candidates: [candidate(`${PAGE}tile.png`, 1, 1, { foundIn: "meta-icon" })] });
+    const { assets } = await run(collector, [captured(`${PAGE}tile.png`), captured(`${PAGE}favicon.ico`)]);
+    expect(assets.map((a) => [a.original?.url, a.role, a.foundIn])).toEqual(
+      expect.arrayContaining([
+        [`${PAGE}tile.png`, "favicon", ["meta-icon"]],
+        [`${PAGE}favicon.ico`, "favicon", ["icon-link"]],
+      ]),
+    );
+    expect(assets).toHaveLength(2);
+  });
+
   it("counts a declared /favicon.ico link that fails its probe", async () => {
     const collector = collectorOutput({ candidates: [candidate(`${PAGE}favicon.ico`, 1, 1, { foundIn: "icon-link" })] });
     const { assets, hidden } = await run(collector);
     expect(assets).toEqual([]);
+    expect(hidden).toEqual({ "probe-failed": 1 });
+  });
+});
+
+describe("assembleAssets empty captures", () => {
+  it("checks an image captured with an empty body again instead of keeping it", async () => {
+    const url = `${PAGE}stream.png`;
+    const collector = collectorOutput({ candidates: [candidate(`${PAGE}favicon.png`, 1, 1, { foundIn: "icon-link" }), candidate(url, 2, 2, { visible: true })] });
+    const { assets, hidden } = await run(collector, [captured(`${PAGE}favicon.png`), captured(url, { bytes: 0, width: undefined, height: undefined, tone: "unknown" })]);
+    expect(assets.map((asset) => asset.original?.url)).toEqual([`${PAGE}favicon.png`]);
     expect(hidden).toEqual({ "probe-failed": 1 });
   });
 });
@@ -170,4 +213,56 @@ describe("assembleAssets on a heavy page", () => {
     expect(warnings).toEqual(expect.arrayContaining(["truncated", "verify-skipped"]));
     expect(hidden["probe-failed"]).toBeUndefined();
   }, 60_000);
+});
+
+describe("assembleAssets on URL-heavy stylesheets", () => {
+  afterEach(() => vi.unstubAllEnvs());
+  const sheet = (urls: string[]): CapturedSheet => ({
+    url: `${PAGE}site.css`,
+    status: 200,
+    cssText: urls.map((url, i) => `.a${i}{background:url(${url})}`).join("\n"),
+  });
+
+  it("reads at most maxStylesheetUrls URLs the network did not load, and every URL it did load", async () => {
+    vi.stubEnv("MAX_STYLESHEET_URLS", "5");
+    vi.stubEnv("MAX_DECLARED_PROBES", "1000");
+    const loaded = `${PAGE}img/loaded.png`;
+    const declared = Array.from({ length: 20 }, (_, i) => `${PAGE}img/${i}.png`);
+    const { assets, hidden, warnings } = await run(collectorOutput({ candidates: [candidate(`${PAGE}favicon.png`, 1, 1, { foundIn: "icon-link" })] }), [captured(`${PAGE}favicon.png`), captured(loaded)], undefined, [sheet([...declared, loaded])]);
+    // Five declared URLs get a record (and fail their probe), the other 15 never do
+    expect(hidden).toEqual({ "probe-failed": 5 });
+    expect(assets.find((asset) => asset.original?.url === loaded)?.foundIn).toEqual(["stylesheet"]);
+    expect(warnings).toContain("truncated");
+  });
+
+  it("reads a 15 MB sheet of 370,000 URLs quickly, keeping only the capped records", async () => {
+    const urls = Array.from({ length: 370_000 }, (_, i) => `/img/i${i}.png`);
+    const started = performance.now();
+    const { assets, hidden, warnings } = await run(collectorOutput({}), [], undefined, [sheet(urls)]);
+    expect(performance.now() - started).toBeLessThan(15_000);
+    expect(assets).toEqual([]);
+    // Probes stop at maxDeclaredProbes, the other capped records are skipped, the rest were never made
+    expect(hidden["probe-failed"]).toBeLessThanOrEqual(limits.maxDeclaredProbes);
+    expect(warnings).toEqual(expect.arrayContaining(["truncated", "verify-skipped"]));
+  }, 60_000);
+});
+
+describe("assembleAssets inline rasters", () => {
+  const png1x1 = (i: number, padding = 0) => {
+    // A 1x1 PNG with a distinct text chunk, so every data URI is a distinct URL
+    const base = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
+    return `data:image/png;base64,${Buffer.concat([base, Buffer.from(String(i)), Buffer.alloc(padding)]).toString("base64")}`;
+  };
+
+  it("never decodes raster data URIs under 1 KB, and reads the others a few at a time", async () => {
+    metadataCalls.total = 0;
+    metadataCalls.peak = 0;
+    const tiny = Array.from({ length: 5_000 }, (_, i) => candidate(png1x1(i), i + 1, i + 1));
+    const large = Array.from({ length: 20 }, (_, i) => candidate(png1x1(i, 2_000), 10_000 + i, 10_000 + i));
+    const { assets, hidden } = await run(collectorOutput({ candidates: [...tiny, ...large] }));
+    expect(assets).toEqual([]);
+    expect(hidden["tiny-data-uri"]).toBe(5_020);
+    expect(metadataCalls.total).toBe(20);
+    expect(metadataCalls.peak).toBeLessThanOrEqual(2);
+  });
 });

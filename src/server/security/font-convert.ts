@@ -1,3 +1,4 @@
+import { untilAborted } from "@/server/async";
 import { safeFetch } from "@/server/net/safe-fetch";
 import { isConvertibleFont, parseFontBinary } from "@/server/scan/fonts/index";
 import type { FontBinaryMeta } from "@/server/scan/types";
@@ -122,14 +123,4 @@ export async function convertWoff2(source: Buffer, signal: AbortSignal): Promise
   const convertible = await untilAborted(isConvertibleFont(meta, { fetch: safeFetch, signal }), signal);
   signal.throwIfAborted();
   return convertible ? { ok: true, bytes: output, contentType } : { ok: false, reason: "license" };
-}
-
-/** `promise`, or a rejection with `signal.reason` as soon as `signal` aborts, whichever comes first. */
-function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const abort = () => reject(signal.reason);
-    signal.addEventListener("abort", abort, { once: true });
-    if (signal.aborted) abort();
-    promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
-  });
 }

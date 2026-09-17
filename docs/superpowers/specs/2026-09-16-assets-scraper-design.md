@@ -118,7 +118,7 @@ The route handler is a thin adapter that runs the gate and writes events as NDJS
 | `src/lib/client/scan-client.ts` | POST, stream decode, cancel, retry once on `busy`, access code header | ndjson, contract |
 | `src/lib/client/asset-bytes.ts` | `getAssetBlob`: inline bytes, else direct CORS fetch, else proxy | contract |
 | `src/lib/client/zip.ts` | ZIP of a selection with client-zip, streaming save when available | client-zip, asset-bytes |
-| `src/lib/client/woff2.ts` | Lazy WOFF2 to TTF conversion | wawoff2 |
+| `src/server/security/font-convert.ts` | WOFF2 to TTF conversion behind the asset proxy (`fmt=ttf`), licence checked again | wawoff2 |
 | `src/lib/client/clipboard.ts` | Safari-safe text copy | none |
 | `src/lib/client/store.ts` | UI state: scan state, results, filters, selection, detail | zustand |
 | `src/components/**` | UI components | shadcn (Base UI), lucide-react |
@@ -144,12 +144,12 @@ export type AssetFormat = "svg" | "png" | "jpg" | "webp" | "avif" | "gif" | "ico
 export type FoundIn =
   | "img" | "picture" | "lazy-attribute" | "noscript" | "video-poster" | "svg-image" | "object-embed"
   | "css-background" | "css-mask" | "css-pseudo" | "css-other" | "stylesheet"
-  | "icon-link" | "manifest" | "og-image" | "twitter-image" | "json-ld"
+  | "icon-link" | "meta-icon" | "manifest" | "og-image" | "twitter-image" | "json-ld"
   | "inline-svg" | "sprite-symbol" | "network" | "shadow-dom" | "iframe" | "public-source";
 
 export interface AssetSource {
   url: string;            // absolute http(s) URL
-  proxy: string;          // signed same-origin path: /api/asset?u=...&e=...&s=...
+  proxy: string;          // signed same-origin path /api/asset?u=...&e=...&s=..., or "" past the signing cap (11.2)
   format: AssetFormat;
   width?: number;
   height?: number;
@@ -246,7 +246,7 @@ export interface Diagnostics {
   egress: { bytes: number; blocked: number };
   bodyTimeouts: number;
   blockReason?: string;
-  collector: "isolated" | "main";
+  collector: "isolated" | "main" | "none";   // none: the collector never ran
   version: string;                  // git SHA
 }
 
@@ -289,7 +289,7 @@ The engine owns an `AbortController` tied to `request.signal` and to a hard dead
 |---|---|---|---|
 | 1 | Preflight `safeFetch` of the URL (manual redirects, 1 MB cap). Maps DNS, connect and private-address failures to error codes. A non-HTML response gives `not-html` with the URL as a single asset. A 403, 429 or 503 does not stop the scan | `open` start | 8 s |
 | 2 | Semaphore (one scan per instance). Emits `step queue` while waiting | `queue` | 15 s, then `busy` |
-| 3 | Start the egress proxy, launch Chromium | `open` | 20 s |
+| 3 | Start the egress proxy, launch Chromium, then set up its context and page | `open` | 20 s, then 10 s for setup |
 | 4 | `goto(url, domcontentloaded)`, then `detectBlock` | `open` done | 25 s |
 | 5 | `waitForLoadState('load')`, then `networkidle` | `load` | 10 s and 3 s |
 | 6 | `img[loading=lazy]` to eager, scroll `document.scrollingElement` by 0.85 viewport every 180 ms, idle, back to top, wait 300 ms | `scroll` | 8 s scroll, 2.5 s idle |
@@ -338,7 +338,7 @@ Walk every element in the document, in every open shadow root and in every reada
 - `<video poster>`, SVG `<image href>`, `<object data>`, `<embed src>`, `<iframe src=*.svg>`, `<input type=image>`.
 - Computed styles of every element and its `::before`/`::after`: `background-image`, `mask-image`, `-webkit-mask-image`, `border-image-source`, `list-style-image`, `-webkit-mask-box-image-source`, `content`. `image-set()` URLs share a group.
 - Stylesheets: CSSOM for readable sheets (including adopted and shadow sheets, recursing into grouping rules), captured network CSS parsed with css-tree for the rest. CSS custom properties that hold `url()` count. URLs that were never rendered are `declaredOnly` and must pass a probe (section 8.4).
-- Icons and meta: `link[rel~=icon|shortcut|apple-touch-icon|apple-touch-icon-precomposed|mask-icon|fluid-icon|image_src]`, web manifest icons (manifest fetched in Node), `og:image` variants, `twitter:image`, `msapplication-TileImage`, `itemprop=image`, JSON-LD `logo`. `/favicon.ico` is probed when no icon link exists.
+- Icons and meta: `link[rel~=icon|shortcut|apple-touch-icon|apple-touch-icon-precomposed|mask-icon|fluid-icon|image_src]`, web manifest icons (manifest fetched in Node), `og:image` variants, `twitter:image`, `itemprop=image`, JSON-LD `logo`. Meta icons (`msapplication-TileImage` and the `msapplication-square70x70logo`, `square150x150logo`, `wide310x150logo`, `square310x310logo` tiles) are found in `meta-icon`, labeled "Meta tag" in the UI. `/favicon.ico` is probed when no icon `<link>` exists: meta icons and manifest icons do not count.
 - Inline SVG: top-level `<svg>` elements. Sprite sheets (only definitions) are expanded into their referenced symbols. Unreferenced symbols are counted in `hidden` but not listed.
 - `blob:` URLs: network body first, then `fetch` inside the page, then canvas `toDataURL` for a still-loaded image.
 - `data:` URIs: decoded. SVG data URIs join the SVG kind.
@@ -367,14 +367,14 @@ Union-find over the remaining URLs. Two URLs merge when they share an element gr
 
 Rules: Next.js `/_next/image?url=` under any base path, Vercel `/_vercel/image`, Netlify `/.netlify/images`, Astro `/_image?href=`, Nuxt IPX, Gatsby Image CDN `?u=`, Cloudflare `/cdn-cgi/image/`, Framer (drop query), Webflow `-p-<w>`, Wix `/v1/(fill|fit|crop)/`, Shopify (size params and suffixes), Squarespace (`?format=2500w`), Cloudinary upload and fetch (skip signed), imgix and imgix-backed DatoCMS and Prismic (skip signed), Unsplash (keep `ixid`), Sanity, Contentful (also by `Server` header), Storyblok, HubSpot, WordPress Jetpack params, WordPress `-WxH` and `-scaled`, Jetpack Photon, Ghost, Hugo, ImageKit, Builder.io (can turn into SVG), generic source-in-parameter proxy.
 
-Verification: `safeFetch` GET with `Range: bytes=0-262143`, `Accept: image/png,image/jpeg,image/gif,image/svg+xml,*/*;q=0.5`, normal UA, `Referer` set to the page. Accept 2xx with `image/*`, or octet-stream after magic-byte sniffing. Read the full size from `content-range`. Pick the verified original. When the aspect ratio differs by more than 3 percent, set `aspectChanged` and keep the display version downloadable. When the content type becomes SVG, move the asset to the SVG kind. Declared URL probes use the same request. Budget: 8 s total, 16 concurrent, at most 150 declared probes.
+Verification: `safeFetch` GET with `Range: bytes=0-262143`, `Accept: image/png,image/jpeg,image/gif,image/svg+xml,*/*;q=0.5`, normal UA, `Referer` set to the page. Accept 2xx with `image/*`, or octet-stream after magic-byte sniffing. Read the full size from `content-range`. Pick the verified original. When the aspect ratio differs by more than 3 percent, set `aspectChanged` and keep the display version downloadable. When the content type becomes SVG, move the asset to the SVG kind. Declared URL probes use the same request. Budget: 8 s total, 16 concurrent, at most 150 declared probes. Stylesheet text read in Node adds at most 2,000 URLs the network did not load (every URL it did load is kept), and stops at the verification deadline even though it is CPU work (a sheet is read synchronously, so only a deadline that leaves the post-processing grace time can bound it); past either, `truncated`, and URLs only an unread sheet declares, `data:` URIs included, are left out.
 
 ### 8.5 Roles and relevance
 
 - `logoScore` = logo word 3 + link to home 3 + header or nav 2 + site word 2 + top under 160 px and visible 1 + footer 1.
 - `site-logo`: score >= 6, or a JSON-LD logo.
 - `logo`: logo word, logo wall, or `alt` containing "logo".
-- `favicon`: icon links, manifest icons, `/favicon.ico`.
+- `favicon`: icon links, meta icons, manifest icons, `/favicon.ico`.
 - `social`: `og:image`, `twitter:image`.
 - `icon`: longest rendered side <= 48 CSS px, or intrinsic side <= 48 px when not rendered. Logo and favicon roles are exempt. This is the single small-icon rule.
 - `sprite-symbol` for expanded symbols, `illustration` for SVGs above the icon size, `image` otherwise.
@@ -402,16 +402,18 @@ For every top-level SVG, in the page:
 Tone decides the preview background of a tile.
 
 - JPEG: `opaque` without decoding.
-- Other rasters with captured bytes up to 3 MB: `sharp` resize to fit 32x32, read RGBA. At least 98 percent opaque pixels gives `opaque`. Otherwise mean luminance of non-transparent pixels (alpha-weighted, Rec. 709): above 0.7 gives `light` (show on dark), below 0.3 gives `dark` (show on light), else `mixed` (checkerboard).
-- SVG: render the normalized markup with `sharp` at 64 px, same thresholds.
-- No bytes, errors, or over the caps (300 rasters, 400 SVGs, 3 s total): `unknown`, shown on the checkerboard.
+- Other rasters with captured bytes up to 3 MB: `sharp` resize to fit 32x32, read RGBA. A mean alpha of at least 0.98 gives `opaque` (a mean, not a count of opaque pixels, so the soft edge of a downscaled full image or a uniform 99 percent alpha is not transparency). Otherwise mean luminance of non-transparent pixels (alpha-weighted, Rec. 709): above 0.7 gives `light` (show on dark), below 0.3 gives `dark` (show on light), else `mixed` (checkerboard).
+- SVG up to `svgMaxBytes` (1 MB, the markup cap): render the normalized markup with `sharp` at 64 px, same thresholds.
+- No bytes, errors, or over the caps: `unknown`, shown on the checkerboard. The caps (`toneMaxRasters` 300, `toneMaxSvgs` 400, `toneBudgetMs` 3 s, `toneMaxBytes` 3 MB) apply per stage: network capture and post-processing each get their own. The time budget runs while a stage has renders waiting or in flight; once it is spent, or capture has settled, no render of that stage starts.
+- At most 2 `sharp` renders run at once in the process, whatever the stage or scan. They run on the libuv thread pool that DNS lookups and fs calls share, and a librsvg render cannot be stopped, so a render keeps its slot until it really ends, even after its stage gave up on it.
 
 ### 8.9 Block detection and fallback
 
 `detectBlock(status, title, html, headers, elementCount)`:
 
 - `cf-mitigated: challenge` header.
-- Title matches `/just a moment|attention required|access denied|access to this page has been denied|are you a robot|verify you are (a )?human|please verify you are a human|pardon our interruption|request unsuccessful|security check|one more step|checking your browser/i`.
+- Title matches a challenge phrase, as whole words: `/just a moment|attention required|access to this page has been denied|are you a robot|verify you are (a )?human|please verify you are a human|pardon our interruption|checking your browser/i` always counts.
+- Title matches a generic phrase, `/access denied|request unsuccessful|security check|one more step/i`, only when the status is 400 or more or the page has fewer than 300 elements (ordinary pages use these words too).
 - Challenge markup (`cf-chl-`, `/cdn-cgi/challenge-platform/`, `captcha-delivery.com`, `px-captcha`, `_Incapsula_Resource`, `perimeterx.net`, `_pxAppId`, `ak-challenge`, `sec-cpt`) only when the status is 400 or more or the page has fewer than 60 elements.
 - Captcha-only page (fewer than 80 elements with hCaptcha, reCAPTCHA or Turnstile).
 - 403, 429 or 503 with fewer than 300 elements.
@@ -430,11 +432,13 @@ On a block: `error { code: "blocked", fallback }` where `fallback` contains asse
 - `convertible` = open licence. `downloadable` = not `adobe-fonts`.
 - Google Fonts match: for each used family, `safeFetch` `https://fonts.googleapis.com/css2?family=<name>` with a 2 s timeout, at most 8 families. A 200 sets `googleFamily`.
 - Variable axes from `fvar`.
-- UI downloads: files as served (single file, or a small ZIP for several files). "Download TTF" converts WOFF2 in the browser with lazily loaded wawoff2, offered only when `convertible`. Adobe Fonts show the name and a link to fonts.adobe.com, no file.
+- UI downloads: files as served (single file, or a small ZIP for several files). "Download TTF" fetches the WOFF2 through the asset proxy with `fmt=ttf`, which checks the licence again and converts it on the server with wawoff2. It is offered only when `convertible` and the file has a proxy path. Fonts embedded as data URIs (`inline`) have no proxy path and download in their original format only, with no TTF. Adobe Fonts show the name and a link to fonts.adobe.com, no file.
 
 ## 10. Palette
 
 The palette module is a port of the validated lab code (v2 with every fix enabled): in-page signal collection, node-side extras and post-processing.
+
+`extractPalette(page, options)` owns its in-page execution: it opens its own isolated world (the main world only when that fails, as in 7.5) and evaluates a fresh copy of the palette bundle for each call, so nothing is installed on the page. The engine only calls it, before the collector.
 
 - In-page: hide consent overlays and dialogs (including hosts outside `<body>` and zero-size fixed hosts), detect the logo, walk the DOM (8,000 elements or 600 ms) and record weighted color samples by source (`bg`, `text`, `link`, `cta`, `grad` with exclusive area, `svg`, `border`, `var`, `meta`, logo), normalizing every color through a 1x1 canvas and compositing alpha over the effective backdrop. Restore everything afterwards.
 - Node: fetch the best icon and the web manifest through `safeFetch` (600 ms), take a viewport PNG screenshot while overlays are hidden, quantize it (5-bit histogram, media rects masked except full-viewport smooth backgrounds), pool vivid hues.
@@ -454,12 +458,12 @@ The palette module is a port of the validated lab code (v2 with every fix enable
 ### 11.2 Asset proxy
 
 - HMAC-SHA256 with `ASSET_URL_SECRET` over `v1\n<expiry>\n<url>`, truncated to 32 base64url characters, timing-safe comparison. Expiry is bucketed by hour, 6 to 7 hours of life, so CDN cache keys repeat. Development without the secret uses a random per-process key.
-- At most 800 signed URLs per scan.
+- At most 2,000 signed URLs per scan, one signer shared by the assets and the fonts. Assets sign first (`http:` sources first, then by score), font files after them: files of loaded faces, then Basic-Latin files of unloaded faces, then the rest. Past the cap a source or file keeps its `url` with `proxy: ""` and the scan emits a `truncated` warning.
 - `Sec-Fetch-Site` must be `same-origin` or `none`, with `Vary: Sec-Fetch-Site`.
 - `safeFetch` with `Referer` set to the page origin, 25 MB cap, 20 s timeout, 5 redirects. Content types allowed: `image/*`, `font/*`, `application/font-*`, `application/x-font-*`, and `application/octet-stream` after magic-byte sniffing.
 - Response headers: `content-security-policy: default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; sandbox`, `x-content-type-options: nosniff`, `cross-origin-resource-policy: same-origin`, `content-disposition` (attachment with the sanitized `dl` name, else inline), `cache-control: private, max-age=3600`, `vercel-cdn-cache-control: public, s-maxage=86400`.
 - Daily proxied bytes budget (`PROXY_BYTES_PER_DAY`), taken before bytes are served: a known `content-length` in full, a body of unknown length in blocks of at least 1 MiB (the first before the status, the next whenever a chunk passes what the body holds). A take refused before the status gives 429; a block refused mid-body errors the stream. The unused part of the last block goes back when the body ends, fails or is cancelled (through `waitUntil`), so bodies in flight overshoot a store without atomic increments by at most one block each.
-- The client uses the proxy only when direct access fails, and always for `http:` URLs.
+- The client uses the proxy only when direct access fails, and always for `http:` URLs. A `proxy` of `""` means direct fetch only: when that fetch fails, the client marks the asset or file unavailable.
 
 ### 11.3 Budgets and switches
 
@@ -505,7 +509,7 @@ No analytics, no public listing, `noindex` everywhere, no server-side storage of
 
 - SVG actions: `Copy SVG code` (C), `Download SVG` (D), `Open source` (O, remote files only).
 - Image actions: `Download` (D) with the real format, `Download as displayed` when `aspectChanged`, `Open source` (O).
-- Font row actions: `Download` (file or small ZIP), `Download TTF` when `convertible`, `Copy name`, `Google Fonts` link when matched, `Adobe Fonts` link instead of downloads for Adobe.
+- Font row actions: `Download` (file or small ZIP), `Download TTF` when `convertible` and the file has a proxy path (not for data-URI files or files past the signing cap), `Copy name`, `Google Fonts` link when matched, `Adobe Fonts` link instead of downloads for Adobe.
 
 **Errors.** Error panels replace the status block (copy in section 13). Blocked sites show `From public sources` assets under the message when any. `Copy debug info` copies the diagnostics JSON.
 
@@ -523,7 +527,7 @@ No analytics, no public listing, `noindex` everywhere, no server-side storage of
 - Floating bar at the bottom center, 52 px, 12 px above the edge plus the safe area: `8 selected · 2.4 MB`, `Clear`, `Download ZIP`.
 - `Download all` zips every asset of the current tab, small icons only when expanded.
 - ZIP built in the browser with client-zip from an async generator, 6 fetches at a time through `getAssetBlob(asset, "original")`. `showSaveFilePicker` streaming when available, blob download otherwise, with a warning above 300 MB. Progress in the button (`Zipping 18 of 48`) and a `Cancel` link. Failed entries end in a toast (`2 files couldn't be downloaded`, `Show`).
-- Layout: `<host>-assets/svg/`, `<host>-assets/images/`, `<host>-assets/fonts/<family>/`. Open-licence WOFF2 fonts also get a converted `.ttf` next to them.
+- Layout: `<host>-assets/svg/`, `<host>-assets/images/`, `<host>-assets/fonts/<family>/`. Open-licence WOFF2 fonts that have a proxy path also get a converted `.ttf` next to them. Data-URI fonts are added from their own bytes in their original format only.
 
 ### 12.5 Keyboard
 
@@ -602,9 +606,11 @@ All in `src/server/config/limits.ts`, env-overridable.
 | Body read | 15 MB each, 8 s each, 24 concurrent, 250 MB total |
 | Blob bytes to client | 2 MB each, 16 MB total |
 | Inline SVG | 1 MB each, 12 MB total, 400 normalizations |
+| Collector output | 32,000,000 JSON characters; over it, repeated candidate URLs go first, then the largest items (12 MB of SVG plus 16 MB of blobs no longer always fits whole) |
+| Font metadata parsing | 5 MB each, 1,500 ms and 40 files per scan (past them a font is hashed without metadata) |
 | Assets per scan | 1,500 |
-| Signed URLs per scan | 800 |
-| Verification and probes | 8 s, 16 concurrent, 150 declared probes |
+| Signed URLs per scan | 2,000 |
+| Verification and probes | 8 s, 16 concurrent, 150 declared probes, 2,000 unloaded stylesheet URLs |
 | Proxy response | 25 MB, 20 s |
 | NDJSON line | 256 KB |
 
@@ -621,8 +627,8 @@ All in `src/server/config/limits.ts`, env-overridable.
 
 - Vercel project `assets-scraper` (existing), framework Next.js, Node 24.x, Fluid on, region `iad1`. Deploys through the Vercel CLI (remote builds on x64; never `--prebuilt` from Apple Silicon).
 - `next.config.ts`: `outputFileTracingIncludes` for `/api/scan` with the real (symlink-resolved) paths of `@sparticuz/chromium/bin/**` and `playwright-core/browsers.json`; security headers; `typedRoutes`; React Compiler.
-- `vercel.json`: `{ "fluid": true, "regions": ["iad1"], "functions": { "src/app/api/scan/route.ts": { "maxDuration": 120, "supportsCancellation": true } } }`.
-- Env: `ASSET_URL_SECRET` (required in production), optional `SCAN_DISABLED`, `ACCESS_CODE`, `SCANS_PER_DAY`, `SCANS_PER_MONTH`, `PROXY_BYTES_PER_DAY`, `APP_HOSTS`, `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`.
+- `vercel.json`: `{ "fluid": true, "regions": ["iad1"], "functions": { "src/app/api/scan/route.ts": { "maxDuration": 120, "supportsCancellation": true }, "src/app/api/asset/route.ts": { "maxDuration": 30, "supportsCancellation": true } } }`.
+- Env: `ASSET_URL_SECRET` (required in production), optional `SCAN_DISABLED`, `ACCESS_CODE`, `SCANS_PER_DAY`, `SCANS_PER_MONTH`, `PROXY_BYTES_PER_DAY`, `APP_HOSTS`, `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`. `.env.example` lists them with `OPS_TOKEN` and the test-only `SCAN_TEST_ALLOW_HOSTS`. The CI e2e job sets `ASSET_URL_SECRET` to a fixed test value, since `next start` runs in production mode.
 - Firewall: one rate-limit rule (section 7.1), BotID enabled.
 - Diagnostics travel in `done` and `error` events because Hobby keeps runtime logs for one hour. `GET /api/health` returns the build SHA and flags, never URLs.
 - Dependency policy: `@sparticuz/chromium` and `playwright-core` pinned exactly and bumped together within a week of each Chrome security release.

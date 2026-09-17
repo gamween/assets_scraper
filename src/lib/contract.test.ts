@@ -102,6 +102,8 @@ describe("contract", () => {
       const line = JSON.stringify(ScanEvent.parse(event));
       expect(ScanEvent.parse(JSON.parse(line))).toEqual(JSON.parse(JSON.stringify(event)));
     }
+    // "none": the collector never ran (a blocked page).
+    expect(ScanEvent.parse({ ...error, diagnostics: { ...diagnostics, collector: "none" } })).toMatchObject({ diagnostics: { collector: "none" } });
     expect(() => ScanEvent.parse({ ...done, diagnostics: { ...diagnostics, collector: "worker" } })).toThrow();
     expect(() => ScanEvent.parse({ ...error, code: "nope" })).toThrow();
   });

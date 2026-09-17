@@ -2,9 +2,10 @@ import { createHash } from "node:crypto";
 import type { Page, Response } from "playwright-core";
 import sharp from "sharp";
 import type { Tone } from "@/lib/contract";
+import { timeoutAfter } from "@/server/async";
 import { limits } from "@/server/config/limits";
 import { parseFontBinary } from "./fonts";
-import { toneFromBytes } from "./post/tone";
+import { createToneBudget } from "./post/tone";
 import type { CapturedFont, CapturedImage, CapturedNetwork, CapturedSheet, FontBinaryMeta } from "./types";
 
 export interface CaptureHandle {
@@ -18,7 +19,8 @@ export interface CaptureOptions {
   bodyReadMs?: number;
   /** Most URLs recorded, images, fonts and stylesheets together; `MAX_RECORDS` by default. */
   maxRecords?: number;
-  toneFromBytes?: (buffer: Buffer, contentType: string) => Promise<Tone>;
+  /** Replaces the tone renderer, for tests. Capture still applies the tone caps around it. */
+  toneFromBytes?: (buffer: Buffer, contentType: string, signal: AbortSignal) => Promise<Tone>;
   parseFontBinary?: (buffer: Buffer) => FontBinaryMeta | null;
 }
 
@@ -32,36 +34,11 @@ const MAX_RECORDS = 4_000;
  * capture reads (SVG, CSS) decode to 4 to 10 times their compressed size, so it would almost always be over the cap.
  */
 const ENCODED_EXPANSION = 4;
-/**
- * Font parsing budgets. Parsing is synchronous on the event loop (a 5 MB WOFF2 takes about 200 ms), and any response
- * whose URL ends in a font extension counts as a font, so a page controls how many there are and how large. Past a cap
- * a font is still hashed, but has no metadata.
- */
-const FONT_PARSE_MAX_BYTES = 5 * 1024 * 1024;
-const FONT_PARSE_BUDGET_MS = 1_500;
-const FONT_PARSE_MAX_FILES = 40;
 const FONT_TYPE = /font|woff|opentype|truetype|sfnt/i;
 const FONT_EXTENSION = /\.(woff2?|ttf|otf|eot)(?:[?#]|$)/i;
 const SVG = (url: string, contentType: string) => /image\/svg/i.test(contentType) || /\.svgz?(?:[?#]|$)/i.test(url);
 
-const isJpeg = (body: Buffer) => body[0] === 0xff && body[1] === 0xd8 && body[2] === 0xff;
-
 class BodyTimeout extends Error {}
-
-const timeoutAfter = <T>(promise: Promise<T>, ms: number): Promise<T> =>
-  new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new BodyTimeout()), ms);
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (error: unknown) => {
-        clearTimeout(timer);
-        reject(error);
-      },
-    );
-  });
 
 /**
  * Network capture (spec 7.4), attached before navigation. Images, fonts and stylesheets are recorded once per URL, up
@@ -86,7 +63,6 @@ const timeoutAfter = <T>(promise: Promise<T>, ms: number): Promise<T> =>
  * the price is that a response that never ends holds its slot until the browser closes.
  */
 export function startCapture(page: Page, options: CaptureOptions): CaptureHandle {
-  const tone = options.toneFromBytes ?? toneFromBytes;
   const parseFont = options.parseFontBinary ?? parseFontBinary;
   const readMs = options.bodyReadMs ?? limits.bodyReadMs;
   const maxRecords = options.maxRecords ?? MAX_RECORDS;
@@ -100,9 +76,6 @@ export function startCapture(page: Page, options: CaptureOptions): CaptureHandle
   let reserved = 0;
   let bytesRead = 0;
   let blobBytes = 0;
-  let tonedRasters = 0;
-  let tonedSvgs = 0;
-  let toneMs = 0;
   let parsedFonts = 0;
   let fontParseMs = 0;
   let bodyTimeouts = 0;
@@ -111,6 +84,11 @@ export function startCapture(page: Page, options: CaptureOptions): CaptureHandle
 
   const isStopped = () => stopped || options.signal.aborted;
 
+  // Tone runs within this stage's caps (spec 8.8) and stops once settle has returned the records: a render that ends
+  // later is never read, so none starts, and the ones still waiting for a render slot give up.
+  const toneDone = new AbortController();
+  const toneBudget = createToneBudget({ signal: AbortSignal.any([toneDone.signal, options.signal]), tone: options.toneFromBytes });
+
   /**
    * Runs `read` once a body slot is free and its reservation fits in the total cap (see above). A body declared over
    * the per-body cap, or over what is left of the total, is skipped without a read. Reads still queued when capture
@@ -118,6 +96,12 @@ export function startCapture(page: Page, options: CaptureOptions): CaptureHandle
    */
   const schedule = (response: Response, read: (body: Buffer) => Promise<void> | void) => {
     const headers = response.headers();
+    // A multipart response (an MJPEG webcam) is a stream by design: its body never ends and would hold a slot and a
+    // reservation until the browser closes.
+    if (headers["content-type"]?.trim().toLowerCase().startsWith("multipart/")) {
+      skippedBodies += 1;
+      return;
+    }
     // Undefined gives NaN: no declared length. With an encoding, the declared length is only a lower bound of the body.
     const declared = Number(headers["content-length"]);
     const known = Number.isFinite(declared);
@@ -193,7 +177,7 @@ export function startCapture(page: Page, options: CaptureOptions): CaptureHandle
   const readBody = async (pending: Promise<Buffer>, onGiveUp: () => void): Promise<Buffer | undefined> => {
     let body: Buffer;
     try {
-      body = await timeoutAfter(pending, readMs);
+      body = await timeoutAfter(pending, readMs, () => new BodyTimeout());
     } catch (error) {
       if (error instanceof BodyTimeout) {
         bodyTimeouts += 1;
@@ -209,22 +193,6 @@ export function startCapture(page: Page, options: CaptureOptions): CaptureHandle
     return body;
   };
 
-  const toneOf = async (body: Buffer, contentType: string, svg: boolean): Promise<Tone> => {
-    if (body.length > limits.toneMaxBytes || toneMs >= limits.toneBudgetMs) return "unknown";
-    // A JPEG is opaque without decoding (spec 8.8), so it uses none of the raster budget.
-    if (svg ? tonedSvgs >= limits.toneMaxSvgs : !isJpeg(body) && tonedRasters >= limits.toneMaxRasters) return "unknown";
-    if (svg) tonedSvgs += 1;
-    else if (!isJpeg(body)) tonedRasters += 1;
-    const started = performance.now();
-    try {
-      return await tone(body, contentType);
-    } catch {
-      return "unknown";
-    } finally {
-      toneMs += performance.now() - started;
-    }
-  };
-
   const captureImage = async (record: CapturedImage, body: Buffer) => {
     record.bytes = body.length;
     record.sha1 = createHash("sha1").update(body).digest("hex");
@@ -238,7 +206,8 @@ export function startCapture(page: Page, options: CaptureOptions): CaptureHandle
         // Not a format sharp reads (ico, broken bytes): no dimensions.
       }
     }
-    record.tone = await toneOf(body, record.contentType, svg);
+    // The budget gives an SVG over the markup cap no tone either.
+    record.tone = await toneBudget.raster(body, record.contentType);
     if (svg && body.length <= limits.svgMaxBytes) record.svgText = body.toString("utf8");
     if (record.url.startsWith("blob:") && body.length <= limits.blobMaxBytes && blobBytes + body.length <= limits.blobTotalBytes) {
       blobBytes += body.length;
@@ -249,7 +218,8 @@ export function startCapture(page: Page, options: CaptureOptions): CaptureHandle
   const captureFont = (record: CapturedFont, body: Buffer) => {
     record.bytes = body.length;
     record.sha1 = createHash("sha1").update(body).digest("hex");
-    if (body.length > FONT_PARSE_MAX_BYTES || parsedFonts >= FONT_PARSE_MAX_FILES || fontParseMs >= FONT_PARSE_BUDGET_MS) return;
+    // Font parsing budgets (limits.fontParse*): past any of them the font keeps `meta: null`.
+    if (body.length > limits.fontParseMaxBytes || parsedFonts >= limits.fontParseMaxFiles || fontParseMs >= limits.fontParseBudgetMs) return;
     parsedFonts += 1;
     const started = performance.now();
     try {
@@ -308,7 +278,8 @@ export function startCapture(page: Page, options: CaptureOptions): CaptureHandle
         page.off("response", onResponse);
         next();
       }
-      if (jobs.size) await timeoutAfter(Promise.allSettled([...jobs]), timeoutMs).catch(() => {});
+      if (jobs.size) await timeoutAfter(Promise.allSettled([...jobs]), timeoutMs, () => new BodyTimeout()).catch(() => {});
+      toneDone.abort();
       return {
         images: [...images.values()].map((record) => ({ ...record })),
         fonts: [...fonts.values()].map((record) => ({ ...record })),
