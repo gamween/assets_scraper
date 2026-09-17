@@ -43,14 +43,18 @@ describe("createFileLookup", () => {
     try {
       // 2 MiB left
       expect(lookup.take(lookup.file(base64(MAX_INLINE_BYTES - 2 * MIB, 0))!)).toBe(true);
-      const tooLarge = [base64(2 * MIB + 1, 1), base64(2 * MIB + 2, 2)].map((uri) => lookup.file(uri)!);
+      // one escape anywhere, such as escaped padding, no longer divides the estimate by 3
+      const tooLarge = [base64(2 * MIB + 1, 1), base64(2 * MIB + 2, 2), base64(2 * MIB + 2, 3).replace(/=$/, "%3D"), `${base64(2 * MIB + 1, 4)}%20`].map((uri) => lookup.file(uri)!);
       from.mockClear();
       for (const file of tooLarge) expect(lookup.take(file)).toBe(false);
       expect(longestDecoded()).toBeLessThan(8_000);
-      // an estimate never refuses what fits: an exact base64 size, and escapes that encode every byte
+      // an estimate never refuses what fits: an exact base64 size, even with escaped padding, and escapes for every byte
       expect(lookup.take(lookup.file(escaped(MIB))!)).toBe(true);
-      expect(lookup.take(lookup.file(base64(MIB, 3))!)).toBe(true);
-      expect(lookup.take(lookup.file(base64(font.length, 4))!)).toBe(false);
+      expect(lookup.take(lookup.file(base64(MIB, 5).replace(/==$/, "%3D%3D"))!)).toBe(true);
+      expect(lookup.take(lookup.file(base64(font.length, 6))!)).toBe(false);
+      const exact = createFileLookup(new Map(), "www.site.example");
+      expect(exact.take(exact.file(base64(MAX_INLINE_BYTES - MIB, 7))!)).toBe(true);
+      expect(exact.take(exact.file(base64(MIB, 8))!)).toBe(true);
     } finally {
       from.mockRestore();
     }

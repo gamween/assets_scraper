@@ -79,17 +79,21 @@ export function decodeDataUri(uri: string): { mime: string; bytes: Buffer } | nu
 }
 
 /**
- * The bytes a `data:` URI decodes to, estimated from its length without decoding it: 3 per 4 base64 characters less the
- * padding, a third of the characters when escapes (`%41`) may encode each byte, else one per character. Line breaks in
- * base64 make the estimate a little high, and only characters outside ASCII, which no font payload holds, make it low.
+ * The bytes a `data:` URI decodes to, estimated from its length without decoding it: one per character less 2 per `%`,
+ * since an escape (`%41`) encodes one byte in 3 characters, then for base64 3 bytes per 4 characters less the padding,
+ * which may be escaped too (`%3D`). Line breaks in base64 make the estimate a little high. Otherwise it is never above
+ * the decoded size, whichever characters are escaped.
  */
 function estimateDataUriBytes(uri: string): number {
   const parts = readDataUri(uri);
   if (!parts) return 0;
   const { base64, payload } = parts;
-  const chars = payload.includes("%") ? Math.ceil(payload.length / 3) : payload.length;
+  let escapes = 0;
+  for (let index = payload.indexOf("%"); index >= 0; index = payload.indexOf("%", index + 1)) escapes += 1;
+  const chars = Math.max(0, payload.length - 2 * escapes);
   if (!base64) return chars;
-  const padding = payload.endsWith("==") ? 2 : payload.endsWith("=") ? 1 : 0;
+  const tail = payload.slice(-6).replace(/%3d/gi, "=");
+  const padding = tail.endsWith("==") ? 2 : tail.endsWith("=") ? 1 : 0;
   return Math.max(0, Math.floor((chars * 3) / 4) - padding);
 }
 
