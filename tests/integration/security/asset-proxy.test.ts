@@ -41,6 +41,7 @@ const COMMENTS = `${"<!---->".repeat(24)}<html></html>`;
 let upstream: FixtureServer;
 let victim: FixtureServer;
 let victimHits = 0;
+const hits = new Map<string, number>();
 
 beforeAll(async () => {
   victim = await serveFixture({ "/secret.png": (_q, s) => { victimHits++; s.end("SECRET"); } });
@@ -51,6 +52,7 @@ beforeAll(async () => {
     "/no-type": (_q, s) => { s.writeHead(200); s.end(png); },
     "/declared-big": (_q, s) => { s.writeHead(200, { "content-type": "image/png", "content-length": String(4096) }); s.end(Buffer.alloc(4096)); },
     "/chunked-big": (_q, s) => { s.writeHead(200, { "content-type": "image/png" }); s.write(png); s.end(Buffer.alloc(4096)); },
+    "/counted.png": (q, s) => { hits.set(q.url ?? "", (hits.get(q.url ?? "") ?? 0) + 1); s.writeHead(200, { "content-type": "image/png" }); s.end(png); },
     "/chunked-late": (_q, s) => {
       s.writeHead(200, { "content-type": "image/png" });
       s.write(Buffer.concat([png.subarray(0, 8), Buffer.alloc(4088)]));
@@ -122,6 +124,18 @@ describe("handleAssetRequest", () => {
     expect(sized.status).toBe(200);
     expect(sized.headers.get("content-length")).toBe(String(png.length));
     expect(Buffer.from(await sized.arrayBuffer())).toEqual(png);
+  });
+
+  it("refuses HEAD and other methods without fetching the upstream", async () => {
+    for (const method of ["HEAD", "POST"]) {
+      const signed = proxied("/counted.png");
+      const response = await handleAssetRequest(new Request(signed.url, { method, headers: SAME_ORIGIN }));
+      expect(await errorOf(response), method).toMatchObject({ status: 405, code: "method" });
+      expect(response.headers.get("allow")).toBe("GET");
+    }
+    expect(hits.get("/counted.png")).toBeUndefined();
+    expect((await handleAssetRequest(proxied("/counted.png"))).status).toBe(200);
+    expect(hits.get("/counted.png")).toBe(1);
   });
 
   it("refuses cross-site, same-site and header-less requests", async () => {

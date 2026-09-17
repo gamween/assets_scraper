@@ -39,11 +39,11 @@ const FETCH_STATUS: Record<SafeFetchErrorCode, number> = {
  * handle proxy failures by HTTP status (403, 400, 413, 415, 429, 5xx) and must not parse these bodies with `ApiError`.
  */
 export type AssetProxyErrorCode =
-  | "cross-site" | "invalid-params" | "bad-signature" | "expired" | "budget" | "upstream-status" | "too-large"
+  | "method" | "cross-site" | "invalid-params" | "bad-signature" | "expired" | "budget" | "upstream-status" | "too-large"
   | "unsupported-type" | "not-convertible" | "license" | "internal" | SafeFetchErrorCode;
 
-function errorResponse(status: number, code: AssetProxyErrorCode, message: string): Response {
-  return Response.json({ error: { code, message } }, { status, headers: { ...SAFETY_HEADERS, "cache-control": "no-store" } });
+function errorResponse(status: number, code: AssetProxyErrorCode, message: string, headers: Record<string, string> = {}): Response {
+  return Response.json({ error: { code, message } }, { status, headers: { ...SAFETY_HEADERS, "cache-control": "no-store", ...headers } });
 }
 
 function allowedDeclaredType(mediaType: string): boolean {
@@ -117,14 +117,18 @@ async function convertFont(upstream: SafeResponse, signal: AbortSignal, dl: stri
 }
 
 /**
- * Signed byte proxy behind `GET /api/asset` (spec 11.2): same-origin callers only, HMAC-checked URL, SSRF-safe fetch
- * with size and time caps, image and font types only (untyped bytes by magic number), sandboxed and not sniffable,
- * cached on the CDN, and counted against the daily proxied bytes budget. `fmt=ttf` decompresses an open-licence WOFF2.
+ * Signed byte proxy behind `GET /api/asset` (spec 11.2): GET only, same-origin callers only, HMAC-checked URL, SSRF-safe
+ * fetch with size and time caps, image and font types only (untyped bytes by magic number), sandboxed and not
+ * sniffable, cached on the CDN, and counted against the daily proxied bytes budget. `fmt=ttf` decompresses an
+ * open-licence WOFF2.
  */
 export async function handleAssetRequest(request: Request, options: AssetProxyOptions = {}): Promise<Response> {
   const maxBytes = options.maxBytes ?? limits.proxyMaxBytes;
   const timeoutMs = options.timeoutMs ?? limits.proxyTimeoutMs;
   try {
+    // A HEAD would fetch the upstream for headers alone and leave a body of unknown length unread and uncounted.
+    if (request.method !== "GET") return errorResponse(405, "method", "Use GET.", { allow: "GET" });
+
     // Spec 11.2: only this app's pages (same-origin) or a link opened directly (none). A missing header is refused
     // too, so every browser with Fetch Metadata is covered; scripts can forge the header, the byte budget bounds them.
     const site = request.headers.get("sec-fetch-site");
