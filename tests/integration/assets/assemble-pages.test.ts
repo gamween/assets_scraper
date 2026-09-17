@@ -23,6 +23,7 @@ let server: FixtureServer;
 let browser: Browser;
 let noisePng: Buffer;
 let bigPng: Buffer;
+let faviconMissing = false;
 
 const css = (text: string): http.RequestListener => (_req, res) => {
   res.writeHead(200, { "content-type": "text/css" });
@@ -123,6 +124,11 @@ beforeAll(async () => {
       res.end(noisePng);
     },
     "/favicon.ico": (_req, res) => {
+      if (faviconMissing) {
+        res.writeHead(404, { "content-type": "text/html" });
+        res.end("<!doctype html><title>Not found</title>");
+        return;
+      }
       res.writeHead(200, { "content-type": "image/x-icon" });
       res.end(readFileSync(path.join(import.meta.dirname, "../../../src/app/favicon.ico")));
     },
@@ -156,12 +162,13 @@ describe("assembleAssets on purpose-built pages", () => {
     expect(partner.display?.format).toBe("png");
   });
 
-  it("adds web manifest icons and drops the ones that fail their probe", async () => {
+  it("adds web manifest icons, drops the ones that fail their probe and still probes /favicon.ico", async () => {
     const { assets, hidden } = await scan("/manifest.html");
     const icons = assets.filter((a) => a.foundIn.includes("manifest"));
     expect(icons).toEqual([expect.objectContaining({ role: "favicon", name: "Pages favicon", width: 180, height: 180, visible: false })]);
     expect(hidden["probe-failed"]).toBe(1);
-    expect(assets.some((a) => a.original?.url.endsWith("/favicon.ico"))).toBe(false);
+    // manifest icons are not icon links (spec 8.1)
+    expect(assets.find((a) => a.original?.url === `${server.origin}/favicon.ico`)).toMatchObject({ role: "favicon", foundIn: ["icon-link"] });
   });
 
   it("reads image URLs from stylesheets the page cannot read", async () => {
@@ -178,6 +185,18 @@ describe("assembleAssets on purpose-built pages", () => {
     const favicon = assets.find((a) => a.original?.url === `${server.origin}/favicon.ico`);
     expect(favicon).toMatchObject({ role: "favicon", format: "ico", foundIn: ["icon-link"], width: expect.any(Number) });
     expect(favicon?.filename).toBe("site-favicon.ico");
+  });
+
+  it("does not count a missing /favicon.ico as a failed probe", async () => {
+    faviconMissing = true;
+    try {
+      const { assets, hidden } = await scan("/bare.html");
+      expect(assets.some((a) => a.original?.url.endsWith("/favicon.ico"))).toBe(false);
+      expect(assets.find((a) => a.name === "Poster")).toBeDefined();
+      expect(hidden).toEqual({});
+    } finally {
+      faviconMissing = false;
+    }
   });
 
   it("reads captured stylesheets the page could not walk and keeps image-set declarations apart", async () => {

@@ -40,6 +40,8 @@ interface UrlRecord extends VariantMember, SizeHints {
   logoWall: boolean;
   declaredOnly: boolean;
   jsonLd: boolean;
+  implicit: boolean;          // /favicon.ico added without the page declaring it
+  groupSet: Set<number>;      // `groups` as a set: one URL can be shared by thousands of elements
   uses: Set<number>;
   capture?: CapturedImage;
   contentType?: string;
@@ -94,11 +96,15 @@ const siteLabel = (host: string) => {
   return labels.length > 1 ? labels.at(-2)! : labels[0];
 };
 
+/**
+ * `hidden` only counts what post-processing drops. The collector's own drops (`collector.noise`) are not repeated here:
+ * the engine adds both into `stats.hidden`.
+ */
 export async function assembleAssets(input: PostInput): Promise<AssetsOutput> {
   const { collector, page } = input;
   const pageUrl = page.finalUrl;
   const baseUrl = collector.page.baseUrl || pageUrl;
-  const hidden: Partial<Record<HiddenReason, number>> = { ...collector.noise };
+  const hidden: Partial<Record<HiddenReason, number>> = {};
   const hide = (reason: HiddenReason) => {
     hidden[reason] = (hidden[reason] ?? 0) + 1;
   };
@@ -175,8 +181,10 @@ export async function assembleAssets(input: PostInput): Promise<AssetsOutput> {
     const fileDrafts = await Promise.all(
       groups.map(async ({ members, best }) => {
         const resolved = await resolve(members, best);
-        if (resolved.kind === "failed") hide("probe-failed");
-        if (resolved.kind === "noise") hide(resolved.reason);
+        // A missing or unusable /favicon.ico was never declared by the page, so it is not counted (spec 8.2).
+        const declared = members.some((member) => !member.implicit);
+        if (declared && resolved.kind === "failed") hide("probe-failed");
+        if (declared && resolved.kind === "noise") hide(resolved.reason);
         if (resolved.kind !== "inline" && resolved.kind !== "remote") return null;
         return fileAsset(members, best, resolved);
       }),
@@ -198,8 +206,17 @@ async function buildRecords(input: PostInput, baseUrl: string, limiter: Limiter,
   const { collector, network, page } = input;
   const pageUrl = page.finalUrl;
   const records = new Map<string, UrlRecord>();
-  let nextGroup = Math.max(0, ...collector.candidates.map((c) => c.group)) + 1;
-  let nextOrder = Math.max(collector.page.elementCount, ...collector.candidates.map((c) => c.order)) + 1;
+  // A loop, not Math.max(...list): a heavy page gives more candidates than a call can take as arguments.
+  let nextGroup = 0;
+  let nextOrder = collector.page.elementCount;
+  let iconLink = false;
+  for (const candidate of collector.candidates) {
+    nextGroup = Math.max(nextGroup, candidate.group);
+    nextOrder = Math.max(nextOrder, candidate.order);
+    iconLink ||= candidate.foundIn === "icon-link";
+  }
+  nextGroup++;
+  nextOrder++;
   const empty: CandidateContext = {
     header: false, nav: false, footer: false, homeLink: false, logoWord: false, siteWord: false, logoWall: false, shadowRoot: false, iframe: false,
   };
@@ -223,12 +240,16 @@ async function buildRecords(input: PostInput, baseUrl: string, limiter: Limiter,
     if (!record) {
       record = {
         url, scheme, kind: "raster", groups: [], artDirectedOnly: true, foundIn: [], order: candidate.order, visible: false,
-        labelOrder: Infinity, logoScore: 0, logoWord: false, logoWall: false, declaredOnly: true, jsonLd: false, uses: new Set(),
+        labelOrder: Infinity, logoScore: 0, logoWord: false, logoWall: false, declaredOnly: true, jsonLd: false, implicit: false,
+        groupSet: new Set(), uses: new Set(),
       };
       records.set(url, record);
     }
     if (!record.foundIn.includes(candidate.foundIn)) record.foundIn.push(candidate.foundIn);
-    if (!record.groups.includes(candidate.group)) record.groups.push(candidate.group);
+    if (!record.groupSet.has(candidate.group)) {
+      record.groupSet.add(candidate.group);
+      record.groups.push(candidate.group);
+    }
     if (candidate.descriptor && !candidate.media && record.preferredGroup === undefined) record.preferredGroup = candidate.group;
     record.artDirectedOnly = record.artDirectedOnly && !!candidate.media;
     if (candidate.descriptor?.w) record.descriptorW = Math.max(record.descriptorW ?? 0, candidate.descriptor.w);
@@ -319,10 +340,13 @@ async function buildRecords(input: PostInput, baseUrl: string, limiter: Limiter,
     }
   }
 
-  // /favicon.ico when the page declares no icon
-  if (![...records.values()].some((record) => record.foundIn.includes("icon-link") || record.foundIn.includes("manifest"))) {
+  // /favicon.ico when the page declares no icon link (spec 8.1), manifest icons or not
+  if (!iconLink) {
     try {
-      add(synthetic(new URL("/favicon.ico", pageUrl).href, "icon-link"));
+      const url = new URL("/favicon.ico", pageUrl).href;
+      const declared = records.has(url);
+      add(synthetic(url, "icon-link"));
+      if (!declared) records.get(url)!.implicit = true;
     } catch {
       // no origin
     }
@@ -432,7 +456,7 @@ function groupFacts(members: UrlRecord[]) {
     rendered: members.map((m) => m.rendered).filter((r) => r !== undefined).sort((a, b) => area(b) - area(a))[0],
     label: withLabel[0]?.label,
     linkText: byOrder.find((m) => m.linkText)?.linkText,
-    logoScore: Math.max(...members.map((m) => m.logoScore)),
+    logoScore: members.reduce((max, m) => Math.max(max, m.logoScore), 0),
     logoWord: members.some((m) => m.logoWord),
     logoWall: members.some((m) => m.logoWall),
     jsonLd: members.some((m) => m.jsonLd),
