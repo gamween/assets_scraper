@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -272,6 +273,58 @@ describe("withBrowser", () => {
     } finally {
       vi.unstubAllEnvs();
       await rm(scratch, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the result and releases its slot when the cleanup after the browser fails", async () => {
+    vi.stubEnv("QUEUE_WAIT_MS", "500");
+    const pidfile = path.join(tmpdir(), "assets-scraper", `chromium-${process.pid}-0.pid`);
+    try {
+      const result = await withBrowser(open(), async ({ pid }) => {
+        expect(readFileSync(pidfile, "utf8").trim()).toBe(String(pid));
+        // A pidfile that cannot be removed (EISDIR here, EACCES or EBUSY in production).
+        rmSync(pidfile);
+        mkdirSync(path.join(pidfile, "blocker"), { recursive: true });
+        return "collected";
+      });
+      expect(result).toBe("collected");
+    } finally {
+      rmSync(pidfile, { recursive: true, force: true });
+    }
+    expect(await withBrowser(open(), async () => "next scan runs")).toBe("next scan runs");
+  });
+
+  it("leaves no unhandled rejection and no busy slot when a launch aborted mid-way cannot clean up", async () => {
+    const pidfile = path.join(tmpdir(), "assets-scraper", `chromium-${process.pid}-0.pid`);
+    const unhandled = vi.fn();
+    process.on("unhandledRejection", unhandled);
+    const controller = new AbortController();
+    let pid = 0;
+    try {
+      const startProxy = async () => {
+        // Once the wrapper has written the pidfile, the launch is under way: make the pidfile impossible to remove and
+        // cancel the scan before the browser is up.
+        void (async () => {
+          for (let tries = 0; tries < 2000 && !(existsSync(pidfile) && statSync(pidfile).isFile() && readFileSync(pidfile, "utf8").trim()); tries += 1) await delay(5);
+          pid = Number(readFileSync(pidfile, "utf8"));
+          rmSync(pidfile);
+          mkdirSync(path.join(pidfile, "blocker"), { recursive: true });
+          controller.abort(new Error("cancelled during launch"));
+        })();
+        return proxy.port;
+      };
+      await expect(withBrowser({ egressPort: startProxy, signal: controller.signal }, () => new Promise<never>(() => {}))).rejects.toThrow("cancelled during launch");
+      // The late browser keeps the slot until it is shut down; the next call gets the slot after that, and clears the
+      // pidfile before its own launch.
+      const next = await withBrowser({ ...open(), onDequeued: () => rmSync(pidfile, { recursive: true, force: true }) }, async () => "next scan runs");
+      expect(next).toBe("next scan runs");
+      expect(pid).toBeGreaterThan(1);
+      await expect.poll(() => isProcessAlive(pid), { timeout: 5000 }).toBe(false);
+      await delay(100);
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      process.off("unhandledRejection", unhandled);
+      rmSync(pidfile, { recursive: true, force: true });
     }
   });
 

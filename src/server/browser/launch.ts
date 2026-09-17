@@ -323,6 +323,7 @@ interface Launched {
   browser: Browser;
   pid?: number;
   pidfile: string;
+  binary: string;
 }
 
 async function launch(slot: number, executable: Executable, egressPort: number): Promise<Launched> {
@@ -337,18 +338,21 @@ async function launch(slot: number, executable: Executable, egressPort: number):
     proxy: { server: `http://127.0.0.1:${egressPort}` },
     env: { ...browserEnv(), [PIDFILE_ENV]: pidfile },
   });
-  return { browser, pid: await readPid(pidfile), pidfile };
+  return { browser, pid: await readPid(pidfile), pidfile, binary: executable.binary };
 }
 
 /**
  * Graceful close when the scan ended normally, SIGKILL otherwise or when close hangs (critic R6). A graceful close stops
- * waiting as soon as the signal aborts too, so a hung close never holds a scan past its deadline.
+ * waiting as soon as the signal aborts too, so a hung close never holds a scan past its deadline. Never rejects: a
+ * cleanup step that fails (a pidfile that cannot be removed) is left to the stale-browser check of the next launch.
  */
-async function shutdown({ browser, pid, pidfile }: Launched, graceful: boolean, signal: AbortSignal): Promise<void> {
+async function shutdown({ browser, pid, pidfile, binary }: Launched, graceful: boolean, signal: AbortSignal): Promise<void> {
   const closed = graceful && (await within(browser.close().then(() => true, () => false), 5_000, signal));
-  if (pid && (!closed || isAlive(pid))) killProcessTree(pid);
+  if (pid && !closed) killProcessTree(pid);
+  // A close that worked waited for Chromium to exit, so a live PID now may be another process that reused it.
+  if (pid && closed && isAlive(pid) && (await isOwnBrowser(pid, binary, pidfile))) killProcessTree(pid);
   if (!closed) await within(browser.close().catch(() => {}), 2_000);
-  await rm(pidfile, { force: true });
+  await rm(pidfile, { force: true }).catch(() => {});
   if (isServerless() && busySlots.size === 1) await sweepTmp();
 }
 
@@ -458,11 +462,17 @@ export async function withBrowser<T>(options: WithBrowserOptions, fn: (session: 
     return result;
   } finally {
     if (launched) {
-      await shutdown(launched, succeeded, signal);
-      releaseSlot(slot);
+      try {
+        await shutdown(launched, succeeded, signal);
+      } finally {
+        releaseSlot(slot);
+      }
     } else if (launching) {
       // Aborted mid-launch: reject now, kill the browser once it is up, and keep the slot (and its pidfile) until then.
-      void launching.then((late) => shutdown(late, false, signal), () => {}).finally(() => releaseSlot(slot));
+      void launching
+        .then((late) => shutdown(late, false, signal))
+        .catch(() => {})
+        .finally(() => releaseSlot(slot));
     } else {
       releaseSlot(slot);
     }
