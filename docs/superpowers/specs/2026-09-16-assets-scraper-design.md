@@ -118,7 +118,7 @@ The route handler is a thin adapter that runs the gate and writes events as NDJS
 | `src/lib/client/scan-client.ts` | POST, stream decode, cancel, retry once on `busy`, access code header | ndjson, contract |
 | `src/lib/client/asset-bytes.ts` | `getAssetBlob`: inline bytes, else direct CORS fetch, else proxy | contract |
 | `src/lib/client/zip.ts` | ZIP of a selection with client-zip, streaming save when available | client-zip, asset-bytes |
-| `src/lib/client/woff2.ts` | Lazy WOFF2 to TTF conversion | wawoff2 |
+| `src/server/security/font-convert.ts` | WOFF2 to TTF conversion behind the asset proxy (`fmt=ttf`), licence checked again | wawoff2 |
 | `src/lib/client/clipboard.ts` | Safari-safe text copy | none |
 | `src/lib/client/store.ts` | UI state: scan state, results, filters, selection, detail | zustand |
 | `src/components/**` | UI components | shadcn (Base UI), lucide-react |
@@ -430,7 +430,7 @@ On a block: `error { code: "blocked", fallback }` where `fallback` contains asse
 - `convertible` = open licence. `downloadable` = not `adobe-fonts`.
 - Google Fonts match: for each used family, `safeFetch` `https://fonts.googleapis.com/css2?family=<name>` with a 2 s timeout, at most 8 families. A 200 sets `googleFamily`.
 - Variable axes from `fvar`.
-- UI downloads: files as served (single file, or a small ZIP for several files). "Download TTF" converts WOFF2 in the browser with lazily loaded wawoff2, offered only when `convertible`. Adobe Fonts show the name and a link to fonts.adobe.com, no file.
+- UI downloads: files as served (single file, or a small ZIP for several files). "Download TTF" fetches the WOFF2 through the asset proxy with `fmt=ttf`, which checks the licence again and converts it on the server with wawoff2. It is offered only when `convertible` and the file has a proxy path. Fonts embedded as data URIs (`inline`) have no proxy path and download in their original format only, with no TTF. Adobe Fonts show the name and a link to fonts.adobe.com, no file.
 
 ## 10. Palette
 
@@ -523,7 +523,7 @@ No analytics, no public listing, `noindex` everywhere, no server-side storage of
 - Floating bar at the bottom center, 52 px, 12 px above the edge plus the safe area: `8 selected · 2.4 MB`, `Clear`, `Download ZIP`.
 - `Download all` zips every asset of the current tab, small icons only when expanded.
 - ZIP built in the browser with client-zip from an async generator, 6 fetches at a time through `getAssetBlob(asset, "original")`. `showSaveFilePicker` streaming when available, blob download otherwise, with a warning above 300 MB. Progress in the button (`Zipping 18 of 48`) and a `Cancel` link. Failed entries end in a toast (`2 files couldn't be downloaded`, `Show`).
-- Layout: `<host>-assets/svg/`, `<host>-assets/images/`, `<host>-assets/fonts/<family>/`. Open-licence WOFF2 fonts also get a converted `.ttf` next to them.
+- Layout: `<host>-assets/svg/`, `<host>-assets/images/`, `<host>-assets/fonts/<family>/`. Open-licence WOFF2 fonts that have a proxy path also get a converted `.ttf` next to them. Data-URI fonts are added from their own bytes in their original format only.
 
 ### 12.5 Keyboard
 

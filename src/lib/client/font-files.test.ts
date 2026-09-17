@@ -50,5 +50,7 @@ describe("fontFileEntries", () => {
     expect(hasTtf({ convertible: false }, remote)).toBe(false);
     // Past the signing cap (proxy "") the server cannot convert the file
     expect(hasTtf({ convertible: true }, { ...remote, proxy: "" })).toBe(false);
+    // Data-URI fonts download in their original format only (spec 9)
+    expect(hasTtf({ convertible: true }, { ...remote, url: "", inline: { mime: "font/woff2", base64: "d09GMg==" } })).toBe(false);
   });
 });
