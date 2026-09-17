@@ -120,6 +120,33 @@ async function build(parts: Parts) {
   return { families, byName, fetch: input.fetch as ReturnType<typeof fakeGoogleFetch>, signer: input.signer as RecordingSigner };
 }
 
+/**
+ * The length of the longest string key given to a `Map` or a `Set` while `task` runs. V8 hashes a string of 16,384
+ * characters or more by its length alone, so such keys of one length collide.
+ */
+async function longestKeyDuring(task: () => Promise<unknown>): Promise<number> {
+  let longest = 0;
+  const restores = [Map.prototype, Set.prototype].flatMap((prototype) =>
+    (["get", "has", "set", "add", "delete"] as const)
+      .filter((name) => Object.hasOwn(prototype, name))
+      .map((name) => {
+        const original = Reflect.get(prototype, name) as (this: unknown, key: unknown, ...rest: unknown[]) => unknown;
+        const recording = function (this: unknown, key: unknown, ...rest: unknown[]) {
+          if (typeof key === "string" && key.length > longest) longest = key.length;
+          return original.call(this, key, ...rest);
+        };
+        Object.defineProperty(prototype, name, { value: recording });
+        return () => Object.defineProperty(prototype, name, { value: original });
+      }),
+  );
+  try {
+    await task();
+  } finally {
+    for (const restore of restores) restore();
+  }
+  return longest;
+}
+
 const captured = (url: string, meta = interMeta, status = 200): CapturedFont => ({ url, status, contentType: "font/woff2", bytes: 1_000, meta });
 const loaded = (family: string, weight = "400") => ({ family, weight, style: "normal", stretch: "normal", status: "loaded" as const });
 const rule = (family: string, urls: (string | { url?: string; local?: string; format?: string })[], extra = {}) => ({
@@ -387,6 +414,41 @@ describe("buildFontFamilies", () => {
     expect(capped.byName.get("Huge")!.faces[0].files).toMatchObject([{ url: "https://www.site.example/huge.woff", format: "woff" }]);
     expect(capped.byName.get("Tiny")!.faces[0].files).toMatchObject([{ url: "", bytes: font.length, inline: { base64: font.toString("base64") } }]);
     expect(vi.mocked(parseFontBinary).mock.calls.map(([buffer]) => buffer.length)).toEqual([font.length]);
+  });
+
+  it("skips data: URIs from the CSSOM estimated over 4 MiB or longer serialized than written, as stylesheets do", async () => {
+    const font = bytes("jbm-cyr.woff2").toString("base64");
+    const fallback = `${PAGE}fallback.woff2`;
+    const { byName } = await build({
+      fontFaces: [
+        rule("Kept", [`data:font/woff2;base64,${font}`]),
+        // Base64 decoding skips the accented letter, which URL.parse writes as 6 characters
+        rule("Accented", [`data:font/woff2;base64,${font}\u00e9`, fallback]),
+        rule("Large", [`data:font/woff2,wOF2${"A".repeat(MAX_INLINE_BYTES - 3)}`, fallback]),
+      ],
+    });
+    expect(byName.get("Kept")!.faces[0].files).toMatchObject([{ url: "", format: "woff2", bytes: 1_172 }]);
+    for (const family of ["Accented", "Large"]) expect(byName.get(family)!.faces[0].files.map((file) => file.url), family).toEqual([fallback]);
+  });
+
+  it("keys no Map or Set by a data: URI over 8 KiB, and lists a data: URI font found in the CSSOM and a stylesheet once", async () => {
+    // Grouping 7,552 distinct data: URIs of 16,400 characters, all hashed alike, took 54 seconds: each insert in the
+    // files of a scan, and in its declared URLs, compared the URI with every earlier one
+    const font = bytes("jbm-cyr.woff2");
+    const payload = Buffer.concat([font, Buffer.alloc(12_300 - font.length)]).toString("base64");
+    const uri = (index: number) => `data:font/woff2;v=${String(index).padStart(2, "0")};base64,${payload}`;
+    const faces = Array.from({ length: 8 }, (_, index) => `Face ${index}`);
+    let families: FontFamily[] = [];
+    const longest = await longestKeyDuring(async () => {
+      ({ families } = await build({
+        fontFaces: faces.map((face, index) => rule(face, [uri(index), uri(index + 8)])),
+        sheets: [{ url: `${PAGE}a.css`, status: 200, cssText: faces.map((face, index) => `@font-face{font-family:"${face}";src:url(${uri(index)})}`).join("") }],
+      }));
+    });
+    expect(uri(0).length).toBeGreaterThan(16_384);
+    expect(longest).toBeLessThanOrEqual(MAX_URL_CHARS);
+    expect(families.map((family) => family.name).sort()).toEqual(faces);
+    for (const family of families) expect(family.faces.flatMap((face) => face.files), family.name).toMatchObject([{ url: "", format: "woff2", bytes: 12_300 }]);
   });
 
   it("reads at most 5,000 rules from the CSSOM and 5,000 from captured stylesheets", async () => {

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { FontFamily, FontFormat, InlineBytes } from "@/lib/contract";
 import type { CapturedFont, FontBinaryMeta } from "../types";
 import { parseFontBinary, sniffFontFormat } from "./binary";
@@ -76,12 +77,20 @@ export function remoteUrl(url: string, base?: string): string | null {
   return parsed.href;
 }
 
-/** The media type of a `data:` URI, whether its payload is base64, and the payload. Null without a comma. */
+/** A `base64` parameter in the header of a `data:` URI, whitespace around it ignored. */
+const BASE64_PARAM = /;\s*base64\s*(?=;|$)/i;
+
+/**
+ * The media type of a `data:` URI, whether its payload is base64, and the payload. Null without a comma. The header is
+ * not split into its parameters: splitting a 15 MB header of semicolons took 660 ms and 308 MB, each time it was read.
+ */
 function readDataUri(uri: string): { mime: string; base64: boolean; payload: string } | null {
   const comma = uri.indexOf(",");
   if (!isDataUri(uri) || comma < 0) return null;
-  const [mime = "", ...params] = uri.slice("data:".length, comma).split(";").map((part) => part.trim().toLowerCase());
-  return { mime, base64: params.includes("base64"), payload: uri.slice(comma + 1) };
+  const header = uri.slice("data:".length, comma);
+  const semicolon = header.indexOf(";");
+  const mime = (semicolon < 0 ? header : header.slice(0, semicolon)).trim().toLowerCase();
+  return { mime, base64: BASE64_PARAM.test(header), payload: uri.slice(comma + 1) };
 }
 
 /** Bytes of a `data:` URI, base64 or percent-encoded. Null when it has no payload. */
@@ -119,6 +128,17 @@ function estimateDataUriBytes(uri: string): number {
   const tail = payload.slice(-6).replace(/%3d/gi, "=");
   const padding = tail.endsWith("==") ? 2 : tail.endsWith("=") ? 1 : 0;
   return Math.max(0, Math.floor((chars * 3) / 4) - padding);
+}
+
+/**
+ * A `data:` URI as `URL.parse` serializes it, or null when no scan could list it: its estimated size is over
+ * `MAX_INLINE_BYTES`, or it serializes longer than it is written. `URL.parse` writes each control or non-ASCII
+ * character, which a font in a URI never has, as 3 to 12 characters: the sources of 16 captured stylesheets of 15 MB
+ * took 720 MB. Stylesheets and the CSSOM read their `data:` URIs through it, so that rules never keep such URIs.
+ */
+export function fontDataUri(uri: string): string | null {
+  const href = URL.parse(uri)?.href;
+  return href !== undefined && href.length <= uri.length && isDataUri(href) && estimateDataUriBytes(href) <= MAX_INLINE_BYTES ? href : null;
 }
 
 function percentDecode(value: string): Buffer {
@@ -181,8 +201,17 @@ export interface FileLookup {
   take(file: FileRecord): boolean;
 }
 
+/**
+ * The key of a file URL in a `Map` or a `Set`: its SHA-256 digest when it is over `MAX_URL_CHARS`, which only a `data:`
+ * URI can be. V8 hashes a string of 16,384 characters or more by its length alone, so distinct `data:` URIs of one
+ * length collide and each insert compares them with every earlier one: grouping 7,552 of 16,400 characters took 54
+ * seconds. Digests cost the time of reading each URI once.
+ */
+const fileKey = (url: string) => (url.length > MAX_URL_CHARS ? `sha256:${createHash("sha256").update(url).digest("base64")}` : url);
+
 /** The files of one scan, with its budget of `data:` URI fonts. */
 export function createFileLookup(captured: Map<string, CapturedFont>, pageHost: string): FileLookup {
+  // By `fileKey`
   const files = new Map<string, FileRecord | null>();
   // How to accept each data: URI file, and the answers given
   const loaders = new Map<FileRecord, () => boolean>();
@@ -220,7 +249,8 @@ export function createFileLookup(captured: Map<string, CapturedFont>, pageHost: 
 
   return {
     file(url, formatHint) {
-      if (files.has(url)) return files.get(url)!;
+      const key = fileKey(url);
+      if (files.has(key)) return files.get(key)!;
       let record: FileRecord | null = null;
       if (isDataUri(url)) {
         const format = sniffDataUri(url);
@@ -232,7 +262,7 @@ export function createFileLookup(captured: Map<string, CapturedFont>, pageHost: 
         const format = font?.meta?.format ?? hinted ?? (extension ? EXTENSION_FORMATS[extension] : "other");
         record = { url, format, bytes: font?.bytes, meta: font?.meta ?? null, captured: !!font, ...classifySource(url, pageHost) };
       }
-      files.set(url, record);
+      files.set(key, record);
       return record;
     },
     take(file) {

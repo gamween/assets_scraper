@@ -3,7 +3,7 @@ import { limits } from "@/server/config/limits";
 import { SignLimitError } from "@/server/security/sign";
 import type { CapturedFont, FontBinaryMeta, FontsOutput, PostInput, RawFontFaceRule, RawFontStatus, RawFontUsage, SafeFetch, Signer } from "../types";
 import { decodeIdent, MAX_FAMILY_CHARS, MAX_SRC_ENTRIES, normalizeStretch, normalizeStyle, normalizeWeight, parseFontFaceCss, withinDescriptorLimits } from "./css";
-import { createFileLookup, isDataUri, remoteUrl, type FileRecord } from "./files";
+import { createFileLookup, fontDataUri, isDataUri, remoteUrl, type FileRecord } from "./files";
 import { matchGoogleFamilies } from "./google";
 import { classifyLicense } from "./license";
 import { binaryFamilyName, cleanCssFamily, GENERIC_FAMILIES, resolveFamilyName, resolveFamilyNameOf, splitFamilies } from "./names";
@@ -23,6 +23,9 @@ export { parseFontFaceCss } from "./css";
  * - File URLs other than `data:` URIs, from stylesheets, the CSSOM and captures: at most `MAX_URL_CHARS` characters as
  *   written and resolved, against base URLs of at most `MAX_URL_CHARS` (`files.ts`). A longer URL gives no file, and
  *   a longer base URL resolves only absolute URLs.
+ * - `data:` URIs, from stylesheets and the CSSOM: estimated at most `MAX_INLINE_BYTES` and serialized no longer than
+ *   written (`fontDataUri`, `files.ts`), or they give no file. Those over `MAX_URL_CHARS` are looked up by their digest,
+ *   and none is added to the declared URLs, which only find captures without a rule.
  * - Family names: at most `MAX_FAMILY_CHARS` characters before decoding (`css.ts`), in stylesheets, the CSSOM and
  *   `document.fonts`. A rule or status with a longer one is skipped.
  * - Weights, styles and stretches: at most `MAX_DESCRIPTOR_CHARS` characters, and unicode ranges at most
@@ -177,7 +180,7 @@ function collectRules(input: PostInput): { rules: RawFontFaceRule[]; declaredFam
     if (family) declaredFamilies.add(family.toLowerCase());
     const src = raw.src.slice(0, MAX_SRC_ENTRIES).flatMap((entry: unknown) => {
       if (!isObject(entry) || typeof entry.url !== "string" || !entry.url) return [];
-      const url = isDataUri(entry.url) ? entry.url : remoteUrl(entry.url, raw.baseUrl);
+      const url = isDataUri(entry.url) ? fontDataUri(entry.url) : remoteUrl(entry.url, raw.baseUrl);
       return url ? [{ url, format: typeof entry.format === "string" ? entry.format : undefined }] : [];
     });
     if (!family || !src.length) continue;
@@ -255,12 +258,13 @@ function groupFiles(
   const loadedFaces = new Set(loaded.map((status) => faceKey(status.family, status)));
   const loadedFamilies = new Set(loaded.map((status) => status.family));
   const groups = new Map<string, Group>();
+  // Remote URLs of rules, to find the captures without one
   const declared = new Set<string>();
 
   const candidates = rules.map((rule) => ({
     rule,
     files: rule.src.flatMap((entry) => {
-      declared.add(entry.url!);
+      if (!isDataUri(entry.url!)) declared.add(entry.url!);
       const file = files.file(entry.url!, entry.format);
       return file ? [file] : [];
     }),

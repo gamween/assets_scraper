@@ -3,7 +3,7 @@ import { tokenize } from "css-tree/tokenizer";
 import { ident } from "css-tree/utils";
 import { describe, expect, it, vi } from "vitest";
 import { decodeIdent, MAX_DESCRIPTOR_CHARS, MAX_FAMILY_CHARS, MAX_SRC_ENTRIES, MAX_UNICODE_RANGE_CHARS, parseFontFaceCss, parseFontSrc } from "./css";
-import { MAX_URL_CHARS } from "./files";
+import { MAX_INLINE_BYTES, MAX_URL_CHARS } from "./files";
 import { fastestMs, growthFactor, LINEAR_GROWTH_BOUND, random } from "./testing";
 
 // Counts the tokens the fonts code reads and the CSS escapes it decodes, to show where it stops reading
@@ -91,6 +91,27 @@ describe("parseFontFaceCss", () => {
       { family: "Brand Sans", src: [{ url: "https://s.example/css/a.woff2", format: "woff2" }, { url: "https://s.example/css/b.woff" }], weight: "700", style: "normal", unicodeRange: "U+0-FF", baseUrl: BASE, origin: "network" },
     ]);
     expect(parseFontFaceCss(`@font-face{font-family:imp !important;src:url(a.woff2)}@font-face{font-family:source;src:url(a.woff2) !important}`, BASE)).toEqual([]);
+  });
+
+  it("keeps a descriptor value as one slice of the stylesheet however many comments it holds, and only the descriptors a rule reads", () => {
+    // `a/**/a/**/...` made two strings for each comment in a value, whatever its descriptor: a 15 MB stylesheet of them
+    // peaked at 283 MB. A value is now read with its comments, which parsing reads as spaces, or dropped over its cap.
+    const sheet = (comments: number) =>
+      `@font-face{font-family:A/**/B;src:url(a.woff2)${"/**/".repeat(comments)},url(b.woff2);unknown:${"a/**/".repeat(comments)};font-weight:bold/**/}` +
+      `@font-face{font-family:C;src:url(c.woff2);font-style:${"a/**/".repeat(comments)}}`;
+    const slices = vi.spyOn(String.prototype, "slice");
+    const read = (comments: number) => {
+      slices.mockClear();
+      const rules = parseFontFaceCss(sheet(comments), BASE);
+      return { rules, slices: slices.mock.calls.length };
+    };
+    try {
+      const many = read(20_000);
+      expect(many).toEqual(read(100));
+      expect(many.rules).toEqual([{ family: "A B", src: [{ url: `${DIR}a.woff2` }, { url: `${DIR}b.woff2` }], weight: "700", style: "normal", baseUrl: BASE, origin: "network" }]);
+    } finally {
+      slices.mockRestore();
+    }
   });
 
   it("drops a family longer than 1,024 characters before decoding it", () => {
@@ -291,6 +312,18 @@ describe("parseFontSrc", () => {
     } finally {
       parses.mockRestore();
     }
+  });
+
+  it("gives no source for a data: URI estimated over 4 MiB, or longer serialized than written, as control and non-ASCII characters make it", () => {
+    const read = (uris: string[]) => parseFontSrc([...uris.map((uri) => `url("${uri}")`), "url(z.woff2)"].join(", "), BASE).map((source) => source.url);
+    // estimated at the byte budget, and one byte over it
+    const plain = (bytes: number) => `data:font/woff2,wOF2${"A".repeat(bytes - 4)}`;
+    expect(MAX_INLINE_BYTES).toBe(4 * MIB);
+    // a newline escape is dropped by URL.parse
+    expect(read([plain(MAX_INLINE_BYTES), "data:font/woff2;base64,d09G\\a Mg=="])).toEqual([plain(MAX_INLINE_BYTES), "data:font/woff2;base64,d09GMg==", `${DIR}z.woff2`]);
+    // URL.parse percent-encoded the non-ASCII characters of 16 captured stylesheets of 15 MB into 720 MB of sources
+    expect(read([plain(MAX_INLINE_BYTES + 1), "data:font/woff2,wOF2\u00e9", "data:font/woff2,wOF2\\1 A", "data:font/woff2,wOF2#A  A"])).toEqual([`${DIR}z.woff2`]);
+    expect(parseFontFaceCss(`@font-face{font-family:A;src:url("data:font/woff2,wOF2\u4e00")}`, BASE)).toEqual([]);
   });
 
   it("gives no source for a local() name over 1,024 characters before decoding, and decodes arguments only while they can make a source or a hint", () => {

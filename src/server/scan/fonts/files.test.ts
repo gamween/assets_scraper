@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { classifySource, createFileLookup, decodeDataUri, MAX_INLINE_BYTES, remoteUrl } from "./files";
+import { classifySource, createFileLookup, decodeDataUri, fontDataUri, MAX_INLINE_BYTES, remoteUrl } from "./files";
 
 const MIB = 1024 * 1024;
 const font = readFileSync(path.join(process.cwd(), "tests/fixtures/site/assets/jbm-cyr.woff2"));
@@ -21,6 +21,37 @@ describe("decodeDataUri", () => {
     expect(decodeDataUri("data:font/woff2;base64,")).toBeNull();
     expect(decodeDataUri("data:font/woff2")).toBeNull();
     expect(decodeDataUri("https://x.example/a.woff2")).toBeNull();
+  });
+
+  it("reads the media type and the base64 parameter of a header without making a string for each parameter", () => {
+    expect(decodeDataUri("data: Font/WOFF2 ;charset=utf-8; BASE64 ,d09GMg==")).toEqual({ mime: "font/woff2", bytes: Buffer.from("wOF2") });
+    expect(decodeDataUri("data:;base64x;x=base64,d09GMg==")).toEqual({ mime: "", bytes: Buffer.from("d09GMg==") });
+    // Splitting a 15 MB header of semicolons took 660 ms and 308 MB, each time a data: URI was read
+    const trims = vi.spyOn(String.prototype, "trim");
+    let decoded: ReturnType<typeof decodeDataUri>;
+    let calls: number;
+    try {
+      decoded = decodeDataUri(`data:font/woff2${";a".repeat(100_000)};base64,d09GMg==`);
+      calls = trims.mock.calls.length;
+    } finally {
+      trims.mockRestore();
+    }
+    expect(decoded?.bytes).toEqual(Buffer.from("wOF2"));
+    expect(calls).toBeLessThanOrEqual(1);
+  });
+});
+
+describe("fontDataUri", () => {
+  it("serializes a data: URI as URL.parse does, or gives null when its estimated size is over 4 MiB or it serializes longer than written", () => {
+    expect(fontDataUri("DATA:font/woff2;base64,d09G\nMg== ")).toBe("data:font/woff2;base64,d09GMg==");
+    // estimated at the byte budget, and one byte over it
+    const plain = (bytes: number) => `data:font/woff2,wOF2${"A".repeat(bytes - 4)}`;
+    expect(fontDataUri(plain(MAX_INLINE_BYTES))).toBe(plain(MAX_INLINE_BYTES));
+    expect(fontDataUri(plain(MAX_INLINE_BYTES + 1))).toBeNull();
+    // URL.parse writes each control and non-ASCII character as 3 to 12 characters, and each space after a `?` or `#` as 3
+    for (const char of ["\u0001", "\u007f", "\u00e9", "\u4e00", "\u{1f600}"]) expect(fontDataUri(`data:font/woff2,wOF2${char}A`), char).toBeNull();
+    expect(fontDataUri("data:font/woff2,wOF2#A  A")).toBeNull();
+    expect(fontDataUri("data:font/woff2,wOF2 A")).toBe("data:font/woff2,wOF2 A");
   });
 });
 

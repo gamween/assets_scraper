@@ -1,7 +1,7 @@
 import { tokenize, tokenTypes as T } from "css-tree/tokenizer";
 import { ident } from "css-tree/utils";
 import type { RawFontFaceRule } from "../types";
-import { isDataUri, parseFileUrl } from "./files";
+import { fontDataUri, isDataUri, parseFileUrl } from "./files";
 
 // Only the css-tree tokenizer, never its parser. The parser is one shared object whose token buffers keep the size of
 // the largest source it ever parsed and are cleared on every parse: after one large stylesheet, each later parse costs
@@ -125,11 +125,11 @@ class ByteStack {
   }
 }
 
-/** The source of a `url()`: a `data:` URI of any length, or another URL within the bounds of `parseFileUrl`. */
+/** The source of a `url()`: a `data:` URI within the bounds of `fontDataUri`, or a URL within those of `parseFileUrl`. */
 function absoluteUrl(value: string, baseUrl: string): FontSrc | null {
   // Not `new URL`: a stylesheet can hold a million invalid URLs, and a throw costs 10 times a parse
-  const url = !value ? null : isDataUri(value) ? URL.parse(value) : parseFileUrl(value, baseUrl);
-  return url ? { url: url.href } : null;
+  const url = !value ? null : isDataUri(value) ? fontDataUri(value) : parseFileUrl(value, baseUrl)?.href;
+  return url ? { url } : null;
 }
 
 /** A `url(`, `local(` or `format(` function of a `src` entry, read at its own nesting level. */
@@ -149,9 +149,10 @@ interface SrcFunction {
  * Lenient like the discovery lab: in each comma-separated entry, the first valid `url()` or non-empty `local()` is the
  * source, whatever comes before it, and the first `format()` after a `url()` is its hint. At most `MAX_SRC_ENTRIES`
  * `url()` and `local()` sources are read, valid or not: tokenizing stops at the next one. A `local()` name over
- * `MAX_FAMILY_CHARS` characters before decoding, and a `url()` other than a `data:` URI over `MAX_URL_CHARS`
- * (`files.ts`), give no source. The arguments of a function are decoded only while they can still make its source or
- * hint: 15 MB of `local(ab ab ...)` or `url("ab" "ab" ...)` cost no more than tokenizing them past the first few.
+ * `MAX_FAMILY_CHARS` characters before decoding, a `data:` URI out of the bounds of `fontDataUri`, and another `url()`
+ * over `MAX_URL_CHARS` (`files.ts`), give no source. The arguments of a function are decoded only while they can still
+ * make its source or hint: 15 MB of `local(ab ab ...)` or `url("ab" "ab" ...)` cost no more than tokenizing them past
+ * the first few.
  * Unbalanced closing tokens are skipped and functions left open at the end of the value are closed.
  */
 export function parseFontSrc(src: string, baseUrl: string): FontSrc[] {
@@ -304,20 +305,38 @@ const GROUP_RULES = new Set(["media", "supports", "layer", "container", "documen
  */
 const HOLDS_RULES = 0x80;
 
+/** The descriptors `toRule` reads. */
+const READ_DESCRIPTORS = new Set(["font-family", "src", "font-weight", "font-style", "font-stretch", "unicode-range"]);
+
 /** The descriptors of an open `@font-face` block, and the declaration being read in it. */
 interface FontFaceBlock {
   /** Stack depth of the block's own declarations. */
   depth: number;
+  /** Values of `READ_DESCRIPTORS`, as written, comments included. */
   descriptors: Record<string, string>;
   /** Lowercase name of the declaration, once read. */
   name: string | null;
-  /** Where the rest of the value starts after its colon, or -1 before the colon. */
+  /** Where the value starts after its colon, or -1 before the colon. */
   valueStart: number;
-  /** The value text before each comment, each comment read as a space. */
-  parts: string[];
   /** Whether the last token other than whitespace and comments was `!`. */
   bang: boolean;
   invalid: boolean;
+}
+
+/**
+ * A descriptor value with each comment read as a space, as browsers read it, or "" when it is missing. Only for values
+ * within their caps: it makes two strings for each comment.
+ */
+function uncomment(value = ""): string {
+  if (!value.includes("/*")) return value;
+  const parts: string[] = [];
+  let from = 0;
+  tokenize(value, (type, start, end) => {
+    if (type !== T.Comment) return;
+    parts.push(value.slice(from, start), " ");
+    from = end;
+  });
+  return parts.join("") + value.slice(from);
 }
 
 /**
@@ -327,9 +346,11 @@ interface FontFaceBlock {
  * over semicolons up to its block), or followed by anything but whitespace and comments before its block, is not a
  * rule. Names are read with their CSS escapes decoded. Relative URLs resolve against `baseUrl` (the stylesheet URL).
  * A rule with a family over `MAX_FAMILY_CHARS`, or a weight, style, stretch or unicode range over the caps of
- * `withinDescriptorLimits`, is skipped. Stops after `maxRules` rules. Broken CSS never throws: invalid declarations are
- * skipped and blocks left open at the end are closed. In a descriptor value a comment reads as a space, and a
- * descriptor marked `!important` is dropped, as browsers drop it.
+ * `withinDescriptorLimits`, its comments counted, is skipped. Stops after `maxRules` rules. Broken CSS never throws:
+ * invalid declarations are skipped and blocks left open at the end are closed. In a descriptor value a comment reads as
+ * a space, and a descriptor marked `!important` is dropped, as browsers drop it. A value is kept as one slice of the
+ * stylesheet, for the descriptors a rule reads only: with two strings kept for each comment, a 15 MB stylesheet of one
+ * value full of comments peaked at 283 MB.
  */
 export function parseFontFaceCss(cssText: string, baseUrl: string, options: { maxRules?: number } = {}): RawFontFaceRule[] {
   const maxRules = options.maxRules ?? Infinity;
@@ -345,10 +366,10 @@ export function parseFontFaceCss(cssText: string, baseUrl: string, options: { ma
   let prelude = false;
 
   const endDeclaration = (block: FontFaceBlock, end: number) => {
-    if (block.name && block.valueStart >= 0 && !block.invalid) {
-      block.descriptors[block.name] = block.parts.join("") + cssText.slice(block.valueStart, end);
+    if (block.name && READ_DESCRIPTORS.has(block.name) && block.valueStart >= 0 && !block.invalid) {
+      block.descriptors[block.name] = cssText.slice(block.valueStart, end);
     }
-    Object.assign(block, { name: null, valueStart: -1, parts: [], bang: false, invalid: false });
+    Object.assign(block, { name: null, valueStart: -1, bang: false, invalid: false });
   };
 
   const endFontFace = (end: number) => {
@@ -367,12 +388,12 @@ export function parseFontFaceCss(cssText: string, baseUrl: string, options: { ma
     } else if (block.valueStart < 0) {
       if (type === T.Ident && block.name === null) block.name = decodeIdent(cssText.slice(start, end)).toLowerCase();
       else if (type === T.Colon && block.name !== null) block.valueStart = end;
-      else if (type !== T.WhiteSpace) block.invalid = true;
+      else if (!isBlank(type)) block.invalid = true;
     } else if (type === T.Delim && cssText[start] === "!") {
       block.bang = true;
     } else if (type === T.Ident && block.bang && decodeIdent(cssText.slice(start, end)).toLowerCase() === "important") {
       block.invalid = true;
-    } else if (type !== T.WhiteSpace) {
+    } else if (!isBlank(type)) {
       block.bang = false;
     }
   };
@@ -392,16 +413,7 @@ export function parseFontFaceCss(cssText: string, baseUrl: string, options: { ma
     }
     const atRules = inRules();
     if (fontFace) {
-      if (type === T.Comment) {
-        if (fontFace.valueStart >= 0) {
-          const { parts, valueStart } = fontFace;
-          if (start > valueStart) parts.push(cssText.slice(valueStart, start), " ");
-          else if (parts[parts.length - 1] !== " ") parts.push(" ");
-          fontFace.valueStart = end;
-        }
-      } else if (stack.length === fontFace.depth) {
-        readDeclaration(fontFace, type, start, end);
-      }
+      if (stack.length === fontFace.depth) readDeclaration(fontFace, type, start, end);
     } else if (atRules) {
       // A semicolon ends an at-rule without a block. In a qualified rule's prelude it is one more prelude token.
       if (type === T.Semicolon && atRule !== null) {
@@ -422,7 +434,7 @@ export function parseFontFaceCss(cssText: string, baseUrl: string, options: { ma
     const ruleBlock = type === T.LeftCurlyBracket && atRules && !fontFace;
     stack.push(ruleBlock && GROUP_RULES.has(atRule ?? "") ? closer | HOLDS_RULES : closer);
     if (ruleBlock && atRule === "font-face" && !prelude) {
-      fontFace = { depth: stack.length, descriptors: {}, name: null, valueStart: -1, parts: [], bang: false, invalid: false };
+      fontFace = { depth: stack.length, descriptors: {}, name: null, valueStart: -1, bang: false, invalid: false };
     }
     if (ruleBlock) {
       statementStart = true;
@@ -448,13 +460,14 @@ function toRule(descriptors: Record<string, string>, baseUrl: string): RawFontFa
     unicodeRange: descriptors["unicode-range"],
   };
   if (value.length > MAX_FAMILY_CHARS || !withinDescriptorLimits(face)) return null;
+  // Tokenizing the family and the sources reads their comments as spaces
   const family = readFamilyName(value);
   const src = parseFontSrc(descriptors.src ?? "", baseUrl);
   if (!family || !src.length) return null;
-  const rule: RawFontFaceRule = { family, src, weight: normalizeWeight(face.weight), style: normalizeStyle(face.style), baseUrl, origin: "network" };
-  const stretch = collapse(face.stretch ?? "");
+  const rule: RawFontFaceRule = { family, src, weight: normalizeWeight(uncomment(face.weight)), style: normalizeStyle(uncomment(face.style)), baseUrl, origin: "network" };
+  const stretch = collapse(uncomment(face.stretch));
   if (stretch) rule.stretch = stretch;
-  const unicodeRange = collapse(face.unicodeRange ?? "");
+  const unicodeRange = collapse(uncomment(face.unicodeRange));
   if (unicodeRange) rule.unicodeRange = unicodeRange;
   return rule;
 }
