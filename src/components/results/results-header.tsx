@@ -8,7 +8,7 @@ import { previewSrc } from "@/lib/client/asset-bytes";
 import { rescan, shareablePath } from "@/lib/client/scan-session";
 import { useApp } from "@/lib/client/store";
 import { copyWithToast } from "./asset-actions";
-import { downloadAll } from "@/components/selection/zip-actions";
+import { cancelZip, downloadAll } from "@/components/selection/zip-actions";
 
 function SiteFavicon() {
   const favicon = useApp((s) => s.page?.favicon);
@@ -69,6 +69,11 @@ export function ResultsHeader({ actions = true }: { actions?: boolean }) {
             <RotateCw aria-hidden="true" />
             Rescan
           </Button>
+          {zippingAll ? (
+            <button type="button" onClick={cancelZip} className="h-8 rounded-md px-2 text-body text-text-2 underline decoration-border-strong underline-offset-4 hover:text-text">
+              Cancel
+            </button>
+          ) : null}
           <Button variant="primary" onClick={downloadAll} disabled={count === 0 || (zip !== null && !zippingAll)} aria-live="polite">
             {zippingAll ? <LoaderCircle className="spinner" aria-hidden="true" /> : <Download aria-hidden="true" />}
             <span className="tabular-nums">{zippingAll ? `Zipping ${zip.done} of ${zip.total}` : "Download all"}</span>

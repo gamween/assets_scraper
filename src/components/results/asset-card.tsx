@@ -117,7 +117,7 @@ export const AssetCard = memo(function AssetCard({ asset }: { asset: Asset }) {
           {assetMetaParts(asset).map((part, index) => (
             <span key={index}>
               {/* Mono spaces are wide: pull the separator in so the reference 221 px tile fits the whole line. */}
-              {index > 0 ? <span className="-mx-[3px] text-text-3/60">{" · "}</span> : null}
+              {index > 0 ? <span className="-mx-[4px] text-text-3/60">{" · "}</span> : null}
               {part}
             </span>
           ))}

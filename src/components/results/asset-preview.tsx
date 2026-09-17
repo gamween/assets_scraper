@@ -86,7 +86,7 @@ export function AssetPreview({ asset, variant, className }: { asset: Asset; vari
         decoding="async"
         style={frameStyle(asset, variant)}
         className={cn(
-          "block max-h-full max-w-full object-contain transition-opacity duration-150 ease-enter select-none",
+          "block max-h-full max-w-full object-contain transition-opacity duration-[120ms] ease-enter select-none",
           loaded ? "opacity-100" : "opacity-0",
           animatedTile && still && "opacity-0 group-hover/card:opacity-100",
           className,
