@@ -152,18 +152,30 @@ test.describe("selection and ZIP", () => {
     expect(downloaded).toBe(false);
   });
 
-  test("Download all zips the current tab whatever the search, without collapsed small icons", async ({ page }) => {
+  test("Download all zips the current tab whatever the search, small icons only when expanded", async ({ page }) => {
     await openResults(page);
     await page.getByRole("tab", { name: /^SVG/ }).click();
     const filenames = await page.getByTestId("asset-card").evaluateAll((cards) => cards.map((card) => card.getAttribute("data-filename")!));
     expect(filenames.length).toBeGreaterThan(1);
+    const smallIcon = findAsset(linear, (a) => a.kind === "svg" && a.role === "icon");
+    const cssOnly = findAsset(linear, (a) => a.kind === "svg" && a.declaredOnly);
+    // Both sections are collapsed: the grid shows neither file.
+    expect(filenames).not.toContain(smallIcon.filename);
+    expect(filenames).not.toContain(cssOnly.filename);
+
     // Spec 12.4: the search narrows the grid and select-all, not Download all.
-    await page.getByRole("searchbox", { name: "Filter by name or URL" }).fill(siteLogo.filename);
+    const search = page.getByRole("searchbox", { name: "Filter by name or URL" });
+    await search.fill(siteLogo.filename);
     await expect(page.getByTestId("asset-card")).not.toHaveCount(filenames.length);
     const zip = await zipEntries(page, () => page.getByRole("button", { name: "Download all" }).click());
     expect(zip.name).toBe("linear.app-assets.zip");
-    expect(zip.entries.sort()).toEqual(filenames.map((name) => `linear.app-assets/svg/${name}`).sort());
-    const smallIcon = findAsset(linear, (a) => a.kind === "svg" && a.role === "icon");
+    // Every file of the tab, stylesheet-only files included; small icons wait for Show.
+    expect(zip.entries.sort()).toEqual([...filenames, cssOnly.filename].map((name) => `linear.app-assets/svg/${name}`).sort());
     expect(zip.entries).not.toContain(`linear.app-assets/svg/${smallIcon.filename}`);
+
+    await search.fill("");
+    await page.getByRole("region", { name: "Small icons", exact: true }).getByRole("button", { name: "Show" }).click();
+    const expanded = await zipEntries(page, () => page.getByRole("button", { name: "Download all" }).click());
+    expect(expanded.entries).toContain(`linear.app-assets/svg/${smallIcon.filename}`);
   });
 });

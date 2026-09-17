@@ -64,7 +64,7 @@ export interface AppState {
   detailId: string | null;
   /**
    * A collapsed section whose asset opened in detail (through `&asset=<id>`). Detail navigation walks it until the
-   * dialog closes; the grid, select-all and Download all keep treating it as collapsed.
+   * dialog closes; the grid, select-all and Download all treat it as they treat any collapsed section.
    */
   revealed: SectionId | null;
   zip: ZipProgress | null;
@@ -320,16 +320,19 @@ export function getDetailList(state: AppState): Asset[] {
   return value;
 }
 
+/** Sections that `Download all` takes even while collapsed: only small icons wait for `Show` (spec 12.4). */
+const DOWNLOAD_ALL_SECTIONS: readonly SectionId[] = ["stylesheets", "declared-fonts"];
+
 /**
- * Spec 12.4 `Download all`: every item of the current tab, whatever the search, in visual order. Collapsed sections
- * (small icons, stylesheet-only files, unused fonts) are included only when expanded.
+ * Spec 12.4 `Download all`: every item of the current tab, whatever the search, in visual order, small icons only
+ * when that section is expanded. Stylesheet-only files and unused fonts are in even while their sections are collapsed.
  */
 export function getDownloadAllItems(state: AppState): Item[] {
   const fallback = state.phase === "error" && !state.assets.length ? (state.error?.fallback ?? []) : [];
   const sections = fallback.length
     ? publicSourcesSection(fallback, { query: "", sort: state.sort })
     : sectionize(state.assets, state.fonts, { tab: state.tab, query: "", sort: state.sort });
-  return visibleItems(sections, new Set(state.expanded));
+  return visibleItems(sections, new Set([...state.expanded, ...DOWNLOAD_ALL_SECTIONS]));
 }
 
 export function findAsset(state: AppState, id: string | null): Asset | null {

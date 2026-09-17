@@ -42,7 +42,7 @@ export const SECTION_TITLES: Record<SectionId, string> = {
   "public-sources": "From public sources",
 };
 
-/** Sections that start collapsed and whose items stay out of select-all and Download all until expanded. */
+/** Sections that start collapsed and whose items stay out of the grid and select-all until expanded. */
 export const COLLAPSIBLE_SECTIONS: ReadonlySet<SectionId> = new Set<SectionId>(["small-icons", "stylesheets", "declared-fonts"]);
 
 export interface FilterOptions {

@@ -114,7 +114,7 @@ describe("app store", () => {
     expect(keys(store)).toEqual(["asset:icon"]);
   });
 
-  it("downloads every item of the current tab whatever the search, collapsed sections only when expanded", () => {
+  it("downloads every item of the current tab whatever the search, small icons only when expanded", () => {
     const store = loadedStore();
     store.getState().setQuery("hero");
     const all = () => getDownloadAllItems(store.getState()).map((item) => item.key);
@@ -123,6 +123,29 @@ describe("app store", () => {
     expect(all()).toEqual(["asset:logo", "asset:illu"]);
     store.getState().toggleSection("small-icons");
     expect(all()).toEqual(["asset:logo", "asset:illu", "asset:icon"]);
+  });
+
+  it("downloads stylesheet-only files and unused fonts even while their sections are collapsed", () => {
+    const store = createAppStore();
+    const cssOnly = makeAsset({ id: "css-bg", kind: "image", role: "image", declaredOnly: true, score: 90, order: 6 });
+    const unused = makeFont({ id: "serif", name: "Brand Serif", usedOnPage: false });
+    store.getState().beginScan({ url: "https://linear.app/", host: "linear.app" });
+    for (const event of [
+      { type: "assets", items: [logo, icon, hero, cssOnly] },
+      { type: "fonts", families: [font, unused] },
+      { type: "done", partial: false, stats: { assets: 4, svg: 2, images: 2, fonts: 2, hidden: {}, durationMs: 1000 }, diagnostics },
+    ] satisfies StreamEvent[]) {
+      store.getState().applyEvent(event);
+    }
+    const state = store.getState();
+    expect(state.expanded).toEqual([]);
+    // The grid and select-all leave the collapsed sections out; Download all only waits for small icons.
+    expect(getVisibleItems(state).map((item) => item.key)).toEqual(["asset:logo", "asset:hero", "font:inter"]);
+    expect(getDownloadAllItems(state).map((item) => item.key)).toEqual(["asset:logo", "asset:hero", "font:inter", "asset:css-bg", "font:serif"]);
+    store.getState().setTab("images");
+    expect(getDownloadAllItems(store.getState()).map((item) => item.key)).toEqual(["asset:hero", "asset:css-bg"]);
+    store.getState().setTab("fonts");
+    expect(getDownloadAllItems(store.getState()).map((item) => item.key)).toEqual(["font:inter", "font:serif"]);
   });
 
   it("keeps the selection across tab changes", () => {

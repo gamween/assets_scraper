@@ -76,7 +76,7 @@ function startZip(items: ZipItem[], source: ZipProgress["source"]) {
     });
 }
 
-/** `Download all`: every item of the current tab, whatever the search; collapsed sections stay out until expanded. */
+/** `Download all`: every item of the current tab, whatever the search; small icons only when expanded. */
 export function downloadAll() {
   startZip(getDownloadAllItems(appStore.getState()).map(toZipItem), "all");
 }
