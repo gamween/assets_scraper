@@ -143,6 +143,16 @@ describe("assembleAssets hidden counts", () => {
   });
 });
 
+describe("assembleAssets empty captures", () => {
+  it("checks an image captured with an empty body again instead of keeping it", async () => {
+    const url = `${PAGE}stream.png`;
+    const collector = collectorOutput({ candidates: [candidate(`${PAGE}favicon.png`, 1, 1, { foundIn: "icon-link" }), candidate(url, 2, 2, { visible: true })] });
+    const { assets, hidden } = await run(collector, [captured(`${PAGE}favicon.png`), captured(url, { bytes: 0, width: undefined, height: undefined, tone: "unknown" })]);
+    expect(assets.map((asset) => asset.original?.url)).toEqual([`${PAGE}favicon.png`]);
+    expect(hidden).toEqual({ "probe-failed": 1 });
+  });
+});
+
 describe("assembleAssets signing", () => {
   it("signs http: sources first within the signing cap, since the client always proxies them", async () => {
     const shown = [1, 2, 3].map((i) => `${PAGE}photo-${i}.png`);

@@ -291,10 +291,12 @@ async function buildRecords(input: PostInput, baseUrl: string, limiter: Limiter,
 
   for (const candidate of collector.candidates) add(candidate);
 
-  // Captured bodies, by URL
+  // Captured bodies, by URL. An empty body (a response Chrome abandoned, or a broken 200) is no capture: the URL is
+  // checked like one the network did not load.
   const captured = new Map<string, CapturedImage>();
   const ok = (status: number) => status >= 200 && status < 300;
   for (const image of network.images) {
+    if (image.bytes === 0) continue;
     const existing = captured.get(image.url);
     if (!existing || (!ok(existing.status) && ok(image.status))) captured.set(image.url, image);
   }
