@@ -43,6 +43,8 @@ export const MAX_INLINE_FONTS = 32;
 export const MAX_INLINE_BYTES = 4 * MIB;
 /** Payload characters decoded to sniff the format of a `data:` URI: enough for the 36 bytes an EOT signature needs. */
 const SNIFF_CHARS = 512;
+/** Payload characters decoded when the first `SNIFF_CHARS` give fewer than `SNIFF_BYTES`, for whitespace or escapes. */
+const SLOW_SNIFF_CHARS = 4 * KIB;
 const SNIFF_BYTES = 36;
 
 export const isDataUri = (url: string): boolean => /^data:/i.test(url);
@@ -59,15 +61,37 @@ export function remoteUrl(url: string, base?: string): string | null {
   }
 }
 
-/** Bytes of a `data:` URI, base64 or percent-encoded. Null when it has no payload. */
-export function decodeDataUri(uri: string): { mime: string; bytes: Buffer } | null {
+/** The media type of a `data:` URI, whether its payload is base64, and the payload. Null without a comma. */
+function readDataUri(uri: string): { mime: string; base64: boolean; payload: string } | null {
   const comma = uri.indexOf(",");
   if (!isDataUri(uri) || comma < 0) return null;
   const [mime = "", ...params] = uri.slice("data:".length, comma).split(";").map((part) => part.trim().toLowerCase());
-  const payload = uri.slice(comma + 1);
+  return { mime, base64: params.includes("base64"), payload: uri.slice(comma + 1) };
+}
+
+/** Bytes of a `data:` URI, base64 or percent-encoded. Null when it has no payload. */
+export function decodeDataUri(uri: string): { mime: string; bytes: Buffer } | null {
+  const parts = readDataUri(uri);
+  if (!parts) return null;
+  const { mime, base64, payload } = parts;
   const raw = payload.includes("%") ? percentDecode(payload) : Buffer.from(payload, "latin1");
-  const bytes = params.includes("base64") ? Buffer.from(raw.toString("latin1").replace(/\s+/g, ""), "base64") : raw;
+  const bytes = base64 ? Buffer.from(raw.toString("latin1").replace(/\s+/g, ""), "base64") : raw;
   return bytes.length ? { mime, bytes } : null;
+}
+
+/**
+ * The bytes a `data:` URI decodes to, estimated from its length without decoding it: 3 per 4 base64 characters less the
+ * padding, a third of the characters when escapes (`%41`) may encode each byte, else one per character. Line breaks in
+ * base64 make the estimate a little high, and only characters outside ASCII, which no font payload holds, make it low.
+ */
+function estimateDataUriBytes(uri: string): number {
+  const parts = readDataUri(uri);
+  if (!parts) return 0;
+  const { base64, payload } = parts;
+  const chars = payload.includes("%") ? Math.ceil(payload.length / 3) : payload.length;
+  if (!base64) return chars;
+  const padding = payload.endsWith("==") ? 2 : payload.endsWith("=") ? 1 : 0;
+  return Math.max(0, Math.floor((chars * 3) / 4) - padding);
 }
 
 function percentDecode(value: string): Buffer {
@@ -102,14 +126,17 @@ export function classifySource(url: string, pageHost: string): { source: FontSou
   return { source: siteOf(host) === siteOf(pageHost) ? "self-hosted" : "third-party", host };
 }
 
-/** The format of a `data:` URI from the signature of its first bytes, without decoding the whole payload. */
+/**
+ * The format of a `data:` URI from the signature of its first bytes, decoding at most `SLOW_SNIFF_CHARS` of its payload.
+ * A payload that starts with more whitespace than that is not a font.
+ */
 function sniffDataUri(uri: string): FontFormat {
   const comma = uri.indexOf(",");
   if (comma < 0) return "other";
   const end = comma + 1 + SNIFF_CHARS;
   let head = decodeDataUri(uri.slice(0, end))?.bytes;
   // A payload that starts with whitespace or percent escapes can need more characters
-  if ((!head || head.length < SNIFF_BYTES) && uri.length > end) head = decodeDataUri(uri)?.bytes;
+  if ((!head || head.length < SNIFF_BYTES) && uri.length > end) head = decodeDataUri(uri.slice(0, comma + 1 + SLOW_SNIFF_CHARS))?.bytes;
   return head ? sniffFontFormat(head) : "other";
 }
 
@@ -120,9 +147,9 @@ export interface FileLookup {
    */
   file(url: string, formatHint?: string): FileRecord | null;
   /**
-   * Whether a file can be listed. Remote files always can. A `data:` URI file is decoded the first time, and accepted
-   * while the scan has listed fewer than `MAX_INLINE_FONTS` of them and its bytes fit in what is left of
-   * `MAX_INLINE_BYTES`; it then carries `bytes` and `inline`. The answer never changes for a file.
+   * Whether a file can be listed. Remote files always can. A `data:` URI file is accepted while the scan has listed
+   * fewer than `MAX_INLINE_FONTS` of them and its bytes fit in what is left of `MAX_INLINE_BYTES`, and decoded the first
+   * time only when its estimated size fits; it then carries `bytes` and `inline`. The answer never changes for a file.
    */
   take(file: FileRecord): boolean;
 }
@@ -150,7 +177,8 @@ export function createFileLookup(captured: Map<string, CapturedFont>, pageHost: 
       source: "data-uri",
     };
     loaders.set(record, () => {
-      const decoded = inlineFonts < MAX_INLINE_FONTS ? decodeDataUri(uri) : null;
+      if (inlineFonts >= MAX_INLINE_FONTS || estimateDataUriBytes(uri) > MAX_INLINE_BYTES - inlineBytes) return false;
+      const decoded = decodeDataUri(uri);
       if (!decoded || inlineBytes + decoded.bytes.length > MAX_INLINE_BYTES) return false;
       inlineFonts += 1;
       inlineBytes += decoded.bytes.length;
