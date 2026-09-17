@@ -30,7 +30,7 @@ export function EmptyState({ title, line, children }: { title: string; line?: st
 
 export function PartialBanner() {
   return (
-    <div role="status" className="mt-6 flex items-center gap-2.5 rounded-lg border border-[#ecd9b0] bg-[#fdf8ec] px-3.5 py-2.5 text-body text-[#6e4300]">
+    <div role="status" className="mt-6 flex items-center gap-2.5 rounded-lg border border-warning-line bg-warning-soft px-3.5 py-2.5 text-body text-warning">
       <TriangleAlert className="size-4 shrink-0 text-warning" aria-hidden="true" />
       Partial results. The page didn&apos;t finish loading.
     </div>

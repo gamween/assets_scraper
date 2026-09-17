@@ -11,9 +11,9 @@ const buttonVariants = cva(
   {
     variants: {
       variant: {
-        primary: "bg-ink text-ink-fg hover:bg-[#2c2c31] active:bg-[#3a3a40]",
+        primary: "bg-ink text-ink-fg hover:bg-ink-hover active:bg-ink-active",
         secondary: "border-border bg-surface text-text hover:border-border-strong hover:bg-well/60 active:bg-well",
-        ghost: "text-text-2 hover:bg-well hover:text-text active:bg-[#ebebed]",
+        ghost: "text-text-2 hover:bg-well hover:text-text active:bg-border/60",
         link: "h-auto! px-0! text-text underline decoration-border-strong underline-offset-4 hover:decoration-text",
       },
       size: {

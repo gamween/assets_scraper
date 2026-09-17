@@ -33,6 +33,14 @@
   --grid-b: #eeeef0;
   --shadow-float: 0 1px 2px rgb(0 0 0 / 0.06), 0 8px 24px rgb(0 0 0 / 0.1);
 
+  /* States and tints derived from the tokens above, never set on their own. */
+  --ink-hover: color-mix(in srgb, var(--ink) 90%, var(--ink-fg));
+  --ink-active: color-mix(in srgb, var(--ink) 84%, var(--ink-fg));
+  --warning-soft: color-mix(in srgb, var(--warning) 6%, var(--surface));
+  --warning-line: color-mix(in srgb, var(--warning) 22%, var(--surface));
+  --success-soft: color-mix(in srgb, var(--success) 6%, var(--surface));
+  --success-line: color-mix(in srgb, var(--success) 20%, var(--surface));
+
   --top-bar-height: 56px;
   --filter-bar-height: 52px;
   color-scheme: light;
@@ -49,12 +57,18 @@
   --color-text-3: var(--text-3);
   --color-ink: var(--ink);
   --color-ink-fg: var(--ink-fg);
+  --color-ink-hover: var(--ink-hover);
+  --color-ink-active: var(--ink-active);
   --color-accent: var(--accent);
   --color-accent-fg: var(--accent-fg);
   --color-accent-soft: var(--accent-soft);
   --color-danger: var(--danger);
   --color-success: var(--success);
   --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-warning-line: var(--warning-line);
+  --color-success-soft: var(--success-soft);
+  --color-success-line: var(--success-line);
   --color-preview-light: var(--preview-light);
   --color-preview-dark: var(--preview-dark);
   --color-grid-a: var(--grid-a);

@@ -26,7 +26,7 @@ function ActionButton({ label, shortcut, primary = false, onClick, icon }: { lab
       type="button"
       onClick={onClick}
       aria-keyshortcuts={shortcut}
-      className={cn(ACTION_CLASS, primary ? "border-ink bg-ink text-ink-fg hover:bg-[#2c2c31]" : "border-border bg-surface text-text hover:border-border-strong hover:bg-well/60")}
+      className={cn(ACTION_CLASS, primary ? "border-ink bg-ink text-ink-fg hover:bg-ink-hover" : "border-border bg-surface text-text hover:border-border-strong hover:bg-well/60")}
     >
       {icon}
       <span className="flex-1 text-left">{label}</span>
@@ -211,7 +211,7 @@ function DetailBody({ asset }: { asset: Asset }) {
           </div>
 
           {asset.hasLiveText ? (
-            <p className="rounded-md border border-[#ecd9b0] bg-[#fdf8ec] px-3 py-2 text-small text-[#6e4300]">Text in this SVG uses a web font. Outside the page it may render in a fallback font.</p>
+            <p className="rounded-md border border-warning-line bg-warning-soft px-3 py-2 text-small text-warning">Text in this SVG uses a web font. Outside the page it may render in a fallback font.</p>
           ) : null}
 
           <Metadata asset={asset} />
@@ -287,7 +287,7 @@ export function DetailDialog() {
   return (
     <DialogPrimitive.Root open={open} onOpenChange={(next) => (next ? undefined : appStore.getState().closeDetail())}>
       <DialogPrimitive.Portal>
-        <DialogPrimitive.Backdrop className="fixed inset-0 z-50 bg-[#18181b]/30 transition-opacity duration-150 ease-enter data-ending-style:opacity-0 data-ending-style:duration-100 data-starting-style:opacity-0" />
+        <DialogPrimitive.Backdrop className="fixed inset-0 z-50 bg-ink/30 transition-opacity duration-150 ease-enter data-ending-style:opacity-0 data-ending-style:duration-100 data-starting-style:opacity-0" />
         <DialogPrimitive.Popup
           ref={popupRef}
           initialFocus={popupRef}

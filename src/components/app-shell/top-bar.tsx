@@ -81,7 +81,7 @@ export function TopBar() {
               className="pr-2 font-mono text-mono"
             />
             {inputError ? (
-              <p id={errorId} role="alert" className="absolute top-full left-0 mt-1.5 rounded-md border border-border bg-surface px-2 py-1 text-small whitespace-nowrap text-danger shadow-float">
+              <p id={errorId} role="alert" className="absolute top-full left-0 mt-1.5 rounded-md border border-border bg-surface px-2 py-1 text-small whitespace-nowrap text-danger">
                 {inputError}
               </p>
             ) : null}

@@ -14,7 +14,7 @@ export function Badge({
         "inline-flex h-5 items-center rounded-sm border px-1.5 font-mono text-mono-xs font-medium whitespace-nowrap",
         tone === "neutral" && "border-border bg-well text-text-2",
         tone === "surface" && "border-border bg-surface/95 text-text-2",
-        tone === "success" && "border-[#cfe6d6] bg-[#f0f8f2] text-success",
+        tone === "success" && "border-success-line bg-success-soft text-success",
         className,
       )}
     >
