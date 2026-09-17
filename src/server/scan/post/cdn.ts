@@ -26,13 +26,19 @@ const IMGIX_PARAMS = [
 ];
 const WORDPRESS_PARAMS = ["w", "h", "resize", "fit", "crop", "quality", "strip", "zoom", "lb"];
 /**
- * Query parameters that only ask an image CDN for a transformed rendering of a file the path already names. A query
- * built from these alone can be dropped to ask for the file itself. Version and cache-busting keys are deliberately
- * out: dropping those changes nothing, and would only spend a probe. `url`-style keys are out too, since there the
- * query carries the source and the path is the transformer.
+ * Query parameters that only ask an image CDN for the same picture at another size, quality or format. A query built
+ * from these alone can be dropped to ask for the file itself. Version and cache-busting keys are deliberately out:
+ * dropping those changes nothing, and would only spend a probe. `url`-style keys are out too, since there the query
+ * carries the source and the path is the transformer.
+ *
+ * The list stays narrower than `IMGIX_PARAMS` on purpose. A host rule names the host it rewrites, so it may strip
+ * parameters that change what the picture shows (`rect`, `txt`, `mark`, `rot`, `flip`, `blur`); this rule fires on
+ * every host, and its output also feeds `variantKey`, where a wrong guess merges two different pictures into one
+ * asset with no probe to catch it. Only names that keep the subject intact belong here.
  */
 const TRANSFORM_ONLY_PARAMS = new Set([
-  ...IMGIX_PARAMS, "imwidth", "resize", "scale-down-to", "strip", "zoom", "compress", "progressive",
+  "w", "h", "width", "height", "q", "quality", "fm", "format", "auto", "fit", "dpr", "imwidth", "compress",
+  "progressive", "strip", "resize", "scale-down-to", "zoom", "lossless",
 ]);
 /** Query parameters that only change how an image is rendered, removed from variant keys (spec 8.3). */
 const PRESENTATIONAL_PARAMS = [
@@ -249,10 +255,11 @@ function oneStep(u: URL, hints: CdnHints, depth: number): Rewrite[] {
     if (m) for (const extension of ["png", "jpg", "jpeg", "webp"]) push(`${u.origin}${m[1]}.${extension}`, "low");
   }
 
-  // A query built only from image transform parameters, on a path that already names an image file. Every host rule
-  // above is one instance of this shape, so a CDN the list does not know (a Contentful or imgix custom domain, for
-  // one) gets the same treatment without needing a `Server` hint. The probe that follows decides whether the stripped
-  // URL is real, so a wrong guess costs one request and falls back to the page's own URL.
+  // A query built only from size, quality and format parameters, on a path that already names an image file. Every
+  // host rule above is one instance of this shape, so a CDN the list does not know (a Contentful or imgix custom
+  // domain, for one) gets the same treatment without needing a `Server` hint. On the `resolve` path a probe decides
+  // whether the stripped URL is real, so a wrong guess costs one request; on the `variantKey` path there is no probe,
+  // which is why `TRANSFORM_ONLY_PARAMS` holds no parameter that changes what the picture shows.
   if (depth === 0 && !out.length && u.search && new RegExp(`\\.${IMG_EXT}$`, "i").test(path)) {
     const names = [...sp.keys()];
     if (names.length > 0 && names.every((name) => TRANSFORM_ONLY_PARAMS.has(name.toLowerCase()))) push(withoutQuery(u), "medium");

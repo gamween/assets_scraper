@@ -77,6 +77,14 @@ describe("originalCandidates", () => {
       expect(originalCandidates("https://cdn.example/resize?w=400", {})).toEqual([]);
     });
 
+    it("leaves a query that changes what the picture shows alone", () => {
+      // These are imgix names, and the host rules that know imgix may strip them. This rule fires on every host and
+      // also feeds `variantKey`, where nothing probes the guess, so a crop or an overlay is not transform-only.
+      for (const query of ["rect=0,0,100,100", "fp-x=0.2&fp-y=0.8&fit=crop", "txt=hello", "mark=logo.png", "rot=90", "flip=h", "blur=40", "trim=color", "bg=ff0000", "faceindex=2", "or=90"]) {
+        expect(originalCandidates(`https://cdn.unknown.example/a/photo.jpg?${query}`, {})).toEqual([]);
+      }
+    });
+
     it("never outranks the rule that knows the host", () => {
       // Squarespace wants ?format=2500w, not a bare path, and this fallback must not win by recursing one level deeper.
       expect(originalCandidates("https://images.squarespace-cdn.com/content/v1/abc/a.jpeg?format=500w", {})[0])
@@ -154,5 +162,13 @@ describe("variantKey", () => {
     expect(variantKey("https://a.com/draft-1w.png")).not.toBe(variantKey("https://a.com/draft-2w.png"));
     // The size segment rule is scoped to the CDN that defines it.
     expect(variantKey("https://a.com/image/thumb/id/220x54.png")).not.toBe(variantKey("https://a.com/image/thumb/id/440x108.png"));
+    // Two crops of one source file are two different pictures, and `variantKey` never probes, so the generic
+    // transform-only rewrite must not strip a query that art-directs. Spec 8.3 keeps art-directed sources apart.
+    expect(variantKey("https://cdn.unknown.example/a/photo.jpg?rect=0,0,100,100&w=400"))
+      .not.toBe(variantKey("https://cdn.unknown.example/a/photo.jpg?rect=200,200,100,100&w=400"));
+    expect(variantKey("https://cdn.unknown.example/a/photo.jpg?fp-x=0.1&fp-y=0.1&fit=crop&w=400"))
+      .not.toBe(variantKey("https://cdn.unknown.example/a/photo.jpg?fp-x=0.9&fp-y=0.9&fit=crop&w=400"));
+    expect(variantKey("https://cdn.unknown.example/a/photo.jpg?txt=one&w=400"))
+      .not.toBe(variantKey("https://cdn.unknown.example/a/photo.jpg?txt=two&w=400"));
   });
 });
