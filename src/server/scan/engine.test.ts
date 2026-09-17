@@ -1,6 +1,6 @@
 import vm from "node:vm";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { FIT_COLLECTOR_OUTPUT, pageContextFor, paletteCap, pageWorkMs, postProcessingWindow, safeBrandLinks } from "./engine";
+import { FIT_COLLECTOR_OUTPUT, pageContextFor, paletteCap, pageWorkMs, postProcessingWindow, safeBrandLinks, safeNoise } from "./engine";
 
 const S = 1000;
 const window = (now: number) => postProcessingWindow({ startedAt: 0, now: now * S, deadlineMs: 90 * S, verifyMs: 8 * S });
@@ -136,6 +136,20 @@ describe("FIT_COLLECTOR_OUTPUT", () => {
       const fitted = fit(output({ candidates: [{ url: "https://example.com/1.png", order: 0 }], svgs: [{ markup: "<svg/>" }], blobs: ["b".repeat(30)] }), budget);
       expect(JSON.stringify(fitted).length).toBeLessThanOrEqual(budget);
     }
+  });
+});
+
+describe("safeNoise", () => {
+  it("keeps hidden reasons with whole non-negative counts", () => {
+    const noise = { "lottie-frame": 3, "unreferenced-symbol": 0, "tiny-svg": 1.5, spacer: -1, tracker: Infinity, pixel: "2", made_up: 1 };
+    expect(safeNoise(noise)).toEqual({ "lottie-frame": 3, "unreferenced-symbol": 0 });
+  });
+
+  it("drops a page's made-up keys however many", () => {
+    const noise = Object.fromEntries(Array.from({ length: 100_000 }, (_, i) => [`fake-${i}`, 1]));
+    expect(safeNoise({ ...noise, "tiny-svg": 2 })).toEqual({ "tiny-svg": 2 });
+    expect(safeNoise(null)).toEqual({});
+    expect(safeNoise([1, 2])).toEqual({});
   });
 });
 

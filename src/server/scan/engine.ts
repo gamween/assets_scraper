@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Page } from "playwright-core";
-import type { Asset, Diagnostics, PageInfo, Palette, ScanEvent, StepId, WarningCode } from "@/lib/contract";
+import { type Asset, type Diagnostics, HiddenReason, type PageInfo, type Palette, type ScanEvent, type StepId, type WarningCode } from "@/lib/contract";
 import { chunkByBytes } from "@/lib/ndjson";
 import { BusyError, readMemAvailableMb, withBrowser } from "@/server/browser/launch";
 import { orAfter, untilAborted } from "@/server/async";
@@ -170,6 +170,20 @@ function isCollectorOutput(value: unknown): value is RawCollectorOutput {
     typeof stats.truncated === "boolean" &&
     COLLECTOR_LISTS.every((key) => Array.isArray(value[key]))
   );
+}
+
+/**
+ * The collector's drop counts as they seed `stats.hidden`: known hidden reasons with whole non-negative counts. A
+ * main-world page can replace the collector and return any keys and numbers in `noise`.
+ */
+export function safeNoise(noise: unknown): RawCollectorOutput["noise"] {
+  const kept: RawCollectorOutput["noise"] = {};
+  if (!isRecord(noise)) return kept;
+  for (const reason of HiddenReason.options) {
+    const count = Object.hasOwn(noise, reason) ? noise[reason] : undefined;
+    if (Number.isSafeInteger(count) && (count as number) >= 0) kept[reason] = count as number;
+  }
+  return kept;
 }
 
 /** Longest brand link text sent to the client, which shows it on a chip. */
@@ -643,7 +657,7 @@ async function runBrowserStage(input: ScanContext & {
           );
           signal.throwIfAborted();
           if (!isCollectorOutput(result.value)) throw new Error("The collector returned something other than collector output");
-          collector = result.value;
+          collector = { ...result.value, noise: safeNoise(result.value.noise) };
         } catch (error) {
           if (signal.aborted) throw error;
           // Spec 7.3: the collector ran out of time, broke, or lost its page (a crash, an out-of-memory kill, a page
