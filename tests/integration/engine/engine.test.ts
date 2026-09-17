@@ -437,6 +437,50 @@ describe("scan engine", () => {
     }
   });
 
+  it("never stops a scan that waits for its slot because another scan's browser uses the memory", async () => {
+    let proxy: TestProxy | undefined;
+    let holding = false;
+    let released = false;
+    let release = () => {};
+    try {
+      // Another scan holds the only browser slot, and its browser takes the memory until it is done.
+      proxy = await startTestProxy({ allow: [fixture.host] });
+      const held = withBrowser({ egressPort: proxy.port, signal: new AbortController().signal }, () => {
+        holding = true;
+        return new Promise<void>((resolve) => (release = resolve));
+      });
+      await expect.poll(() => holding, { timeout: 20_000 }).toBe(true);
+      const readings: number[] = [];
+      const { deps } = testDeps({
+        readMemAvailableMb: async () => {
+          const available = released ? 4_000 : 200;
+          readings.push(available);
+          return available;
+        },
+      });
+      const events = await scan(deps, `${fixture.origin}/`, {
+        onEvent: (event) => {
+          // Long enough for several watchdog readings while queued.
+          if (event.type === "step" && event.step === "queue" && event.state === "start")
+            setTimeout(() => {
+              released = true;
+              release();
+            }, 1_500);
+        },
+      });
+      await held;
+      const done = events.at(-1);
+      if (done?.type !== "done") throw new Error(`expected done, got ${done && describeEvent(done)}`);
+      expect(done.partial).toBe(false);
+      expect(stepsOf(events).slice(0, 3)).toEqual(["step open start", "step queue start", "step queue done"]);
+      // The watchdog guards the scan's own browser: it starts with it.
+      expect(readings).not.toContain(200);
+    } finally {
+      release();
+      await proxy?.close();
+    }
+  });
+
   it("caps the palette phase when extractPalette never answers", async () => {
     vi.stubEnv("SCAN_DEADLINE_MS", "30000");
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});

@@ -435,12 +435,19 @@ async function runBrowserStage(input: ScanContext & {
   let queuedAt: number | undefined;
   let egress: EgressProxy | undefined;
 
-  const readMemory = deps.readMemAvailableMb;
-  const watchdogTimer = readMemory ? setInterval(() => void checkMemory(readMemory), WATCHDOG_INTERVAL_MS) : undefined;
-  async function checkMemory(read: () => Promise<number | undefined>) {
-    const available = await read().catch(() => undefined);
-    if (available !== undefined && available < limits.watchdogMemMb) watchdog.abort(new LowMemory());
-  }
+  let watchdogTimer: ReturnType<typeof setInterval> | undefined;
+  /**
+   * Spec 7.3: the memory watchdog guards this scan's browser, so it starts once that browser runs. While the scan waits
+   * for its slot, the memory belongs to the scan that holds the slot, whose own watchdog frees it.
+   */
+  const startWatchdog = () => {
+    const read = deps.readMemAvailableMb;
+    if (!read || watchdogTimer) return;
+    watchdogTimer = setInterval(async () => {
+      const available = await read().catch(() => undefined);
+      if (available !== undefined && available < limits.watchdogMemMb) watchdog.abort(new LowMemory());
+    }, WATCHDOG_INTERVAL_MS);
+  };
 
   try {
     await deps.withBrowser(
@@ -463,6 +470,7 @@ async function runBrowserStage(input: ScanContext & {
         },
       },
       async (session) => {
+        startWatchdog();
         Object.assign(diagnostics, { cold: session.cold, queueMs: session.queueMs, ...session.health });
         diagnostics.phases.launch = session.launchMs;
         const { page } = session;
