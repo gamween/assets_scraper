@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { FontFamily } from "@/lib/contract";
-import { SignLimitError } from "@/server/security/sign";
+import { createSigner, SignLimitError } from "@/server/security/sign";
 import type { CapturedFont, CapturedSheet, FontBinaryMeta, PostInput, RawCollectorOutput, Signer } from "../types";
 import { parseFontBinary } from "./binary";
 import { MAX_DESCRIPTOR_CHARS, MAX_UNICODE_RANGE_CHARS, normalizeStretch, normalizeStyle, normalizeWeight } from "./css";
@@ -713,6 +713,24 @@ describe("buildFontFamilies", () => {
     expect(all.capped).toBe(false);
     expect(all.signer.signed).toHaveLength(5);
     expect(all.signer.signed.slice(3).sort()).toEqual([cyrillic, otherFamily].sort());
+  });
+
+  it("past the cap still gives a file the path of a URL the scan already signed", async () => {
+    const [fresh, shared] = ["fresh", "shared"].map((name) => `https://www.site.example/${name}.woff2`);
+    const signer = createSigner({ secret: "s".repeat(32), max: 1 });
+    // an asset with the same URL was signed first and used the whole cap
+    const assetPath = signer.sign(shared);
+    const { byName, capped } = await build({
+      fontFaces: [rule("Face", [fresh], { weight: "400" }), rule("Face", [shared], { weight: "700" })],
+      fonts: [captured(fresh)],
+      fontStatuses: [loaded("Face", "400")],
+      signer: Object.assign(signer, { signed: [] }),
+    });
+    expect(capped).toBe(true);
+    expect(byName.get("Face")!.faces.map((face) => [face.weight, face.files[0].proxy])).toEqual([
+      ["400", ""],
+      ["700", assetPath],
+    ]);
   });
 
   it("checks Google Fonts for the first 8 used families, a renamed font by its embedded name only", async () => {

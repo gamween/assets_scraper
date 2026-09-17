@@ -398,7 +398,8 @@ function countUsage(usage: RawFontUsage[], loadedFamilies: Set<string>, byCssFam
  * Signs the remote font files of a scan, in place (spec 11.2). The engine calls it once the assets are signed, since the
  * per-scan signing cap is shared: files of loaded faces first, then Basic-Latin files of faces that did not load, then
  * the rest, each tier in family order (most used first) and Basic-Latin files first within the loaded faces. Past the
- * cap a remote file keeps its URL with an empty `proxy`. Returns true when the cap left a file unsigned.
+ * cap a remote file keeps its URL with an empty `proxy`, unless the signer already signed that URL. Returns true when the
+ * cap left a file unsigned.
  */
 export function signFontFiles(families: FontFamily[], signer: Signer): boolean {
   const rank = (face: FontFaceInfo, file: FontFile) => (face.loaded ? 0 : 2) + (file.coversLatin ? 0 : 1);
@@ -408,14 +409,13 @@ export function signFontFiles(families: FontFamily[], signer: Signer): boolean {
   for (const { file } of files.sort((a, b) => a.rank - b.rank)) {
     let proxy = proxies.get(file.url);
     if (proxy === undefined) {
-      proxy = "";
-      if (!capped) {
-        try {
-          proxy = signer.sign(file.url);
-        } catch (error) {
-          if (!(error instanceof SignLimitError)) throw error;
-          capped = true;
-        }
+      // Past the cap the signer still returns the paths of URLs it signed before (an asset's, or an earlier file's)
+      try {
+        proxy = signer.sign(file.url);
+      } catch (error) {
+        if (!(error instanceof SignLimitError)) throw error;
+        proxy = "";
+        capped = true;
       }
       proxies.set(file.url, proxy);
     }
