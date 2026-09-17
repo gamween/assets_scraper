@@ -58,7 +58,8 @@ type StillState = "pending" | "ready" | "unavailable";
  * Remount with `key={asset.id}` to reset the fallback state for another asset.
  *
  * GIF tiles draw their first frame on a canvas once the image has loaded, then unmount the image: it only mounts again
- * while `playing` (the card is hovered), and covers the still frame once loaded.
+ * while `playing` (the card is hovered), and covers the still frame once loaded. When no frame can be drawn, the tile
+ * shows its format instead until hovered, so the animation still never runs on its own.
  */
 export function AssetPreview({ asset, variant, playing = false, className }: { asset: Asset; variant: "tile" | "detail"; playing?: boolean; className?: string }) {
   const source = variant === "tile" ? (asset.display ?? asset.original) : (asset.original ?? asset.display);
@@ -81,12 +82,12 @@ export function AssetPreview({ asset, variant, playing = false, className }: { a
     );
   }
 
-  const stillReady = gifTile && still === "ready";
   const frame = frameStyle(asset, variant);
+  const showImage = !gifTile || still === "pending" || playing;
 
   return (
     <>
-      {!stillReady || playing ? (
+      {showImage ? (
         <img
           src={src}
           alt=""
@@ -98,7 +99,7 @@ export function AssetPreview({ asset, variant, playing = false, className }: { a
           className={cn(
             "block max-h-full max-w-full object-contain transition-opacity duration-[120ms] ease-enter select-none",
             gifTile && "peer/gif [grid-area:1/1]",
-            stillReady ? "opacity-0 data-loaded:opacity-100" : gifTile && still === "pending" ? "opacity-0" : loaded ? "opacity-100" : "opacity-0",
+            !gifTile ? (loaded ? "opacity-100" : "opacity-0") : still === "pending" ? "opacity-0" : "opacity-0 data-loaded:opacity-100",
             className,
           )}
           onLoad={(event) => {
@@ -135,10 +136,18 @@ export function AssetPreview({ asset, variant, playing = false, className }: { a
           style={frame}
           className={cn(
             "pointer-events-none block max-h-full max-w-full object-contain transition-opacity duration-[120ms] ease-enter [grid-area:1/1]",
-            stillReady ? "opacity-100 peer-data-loaded/gif:opacity-0" : "opacity-0",
+            still === "ready" ? "opacity-100 peer-data-loaded/gif:opacity-0" : "opacity-0",
             still === "unavailable" && "hidden",
           )}
         />
+      ) : null}
+      {gifTile && still === "unavailable" ? (
+        <span
+          data-testid="gif-placeholder"
+          className="pointer-events-none font-mono text-mono-xs font-medium text-text-3 transition-opacity duration-[120ms] ease-enter [grid-area:1/1] peer-data-loaded/gif:opacity-0"
+        >
+          GIF
+        </span>
       ) : null}
     </>
   );

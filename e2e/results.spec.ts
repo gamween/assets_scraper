@@ -195,7 +195,7 @@ test.describe("results", () => {
     await expect.poll(() => img.evaluate((el: HTMLImageElement) => el.complete && el.naturalWidth > 0)).toBe(true);
   });
 
-  test("GIF tiles show their first frame and play only while hovered", async ({ page }) => {
+  function withGifs() {
     const photo = findAsset(linear, (a) => a.kind === "image" && a.role === "image" && a.visible && !!a.display && (a.renderedWidth ?? 0) > 100);
     const url = "https://e2e.test/e2e-assets/linear.app/loop.gif";
     const remote = { url, proxy: `/api/asset?u=${Buffer.from(url).toString("base64url")}&e=1&s=s`, format: "gif" as const, width: 400, height: 300 };
@@ -209,6 +209,11 @@ test.describe("results", () => {
       added = true;
       return { ...event, items: [...event.items, remoteGif, inlineGif] };
     });
+    return { events, remoteGif, inlineGif };
+  }
+
+  test("GIF tiles show their first frame and play only while hovered", async ({ page }) => {
+    const { events, remoteGif, inlineGif } = withGifs();
     await openResults(page, events);
     await page.getByRole("tab", { name: /^Images/ }).click();
 
@@ -238,6 +243,34 @@ test.describe("results", () => {
       .getByTestId("gif-still")
       .evaluate((canvas: HTMLCanvasElement) => [...canvas.getContext("2d")!.getImageData(4, 3, 1, 1).data]);
     expect(pixel).toEqual([43, 80, 232, 255]);
+  });
+
+  test("GIF tiles whose first frame can't be drawn still play only while hovered", async ({ page }) => {
+    // No 2D context: the still frame is unavailable.
+    await page.addInitScript(() => {
+      HTMLCanvasElement.prototype.getContext = () => null;
+    });
+    const { events, remoteGif, inlineGif } = withGifs();
+    await openResults(page, events);
+    await page.getByRole("tab", { name: /^Images/ }).click();
+
+    for (const id of [remoteGif.id, inlineGif.id]) {
+      const card = page.locator(`[data-asset-id="${id}"]`);
+      const well = card.getByTestId("preview-well");
+      await card.scrollIntoViewIfNeeded();
+      await expect(well.getByTestId("gif-still")).toHaveAttribute("data-state", "unavailable");
+      await expect(well.locator("img")).toHaveCount(0);
+      await expect(well.getByTestId("gif-placeholder")).toHaveText("GIF");
+
+      await card.hover();
+      await expect(well.locator("img")).toHaveAttribute("data-loaded", "");
+      await expect(well.locator("img")).toHaveCSS("opacity", "1");
+      await expect(well.getByTestId("gif-placeholder")).toHaveCSS("opacity", "0");
+
+      await page.mouse.move(1, 1);
+      await expect(well.locator("img")).toHaveCount(0);
+      await expect(well.getByTestId("gif-placeholder")).toHaveCSS("opacity", "1");
+    }
   });
 
   test("scraped SVG markup never reaches the DOM", async ({ page }) => {
