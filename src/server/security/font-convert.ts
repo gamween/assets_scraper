@@ -79,16 +79,19 @@ export type Woff2Conversion =
 
 /**
  * A whole WOFF2 file to the sfnt it wraps, when its licence allows conversion: `font/ttf` for TrueType outlines,
- * `font/otf` for CFF outlines (`OTTO`), which cannot become TrueType without re-drawing the glyphs.
+ * `font/otf` for CFF outlines (`OTTO`), which cannot become TrueType without re-drawing the glyphs. woff2 runs first: it
+ * validates the table directory and refuses implausible sizes in native code, so the licence is then read from a plain
+ * sfnt, fontkit never decodes an untrusted brotli stream in JavaScript (sized from table lengths the file declares), and
+ * bytes woff2 refuses never cost a Google Fonts check.
  */
 export async function convertWoff2(source: Buffer, signal: AbortSignal): Promise<Woff2Conversion> {
-  let meta: FontBinaryMeta | null = null;
-  try {
-    meta = parseFontBinary(source);
-  } catch {}
-  if (!(await isConvertibleFont(meta, { fetch: safeFetch, signal }))) return { ok: false, reason: "license" };
   const output = await decompressWoff2(source);
   const contentType = output && sniffContentType(output);
   if (!output || (contentType !== "font/ttf" && contentType !== "font/otf")) return { ok: false, reason: "not-convertible" };
+  let meta: FontBinaryMeta | null = null;
+  try {
+    meta = parseFontBinary(output);
+  } catch {}
+  if (!(await isConvertibleFont(meta, { fetch: safeFetch, signal }))) return { ok: false, reason: "license" };
   return { ok: true, bytes: output, contentType };
 }

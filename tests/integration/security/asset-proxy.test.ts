@@ -4,7 +4,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { serveFixture, type FixtureServer } from "../../fixtures/serve";
 
 const fonts = vi.hoisted(() => ({
-  parseFontBinary: vi.fn((buffer: Buffer) => ({ format: buffer.subarray(0, 4).toString("latin1") === "wOF2" ? "woff2" : "other" })),
+  parseFontBinary: vi.fn((buffer: Buffer) => ({ format: ({ wOF2: "woff2", OTTO: "otf", "\0\x01\0\0": "ttf" } as Record<string, string>)[buffer.subarray(0, 4).toString("latin1")] ?? "other" })),
   isConvertibleFont: vi.fn(async () => true),
 }));
 vi.mock("@/server/scan/fonts/index", () => fonts);
@@ -246,7 +246,8 @@ describe("handleAssetRequest", () => {
     const bytes = Buffer.from(await ttf.arrayBuffer());
     expect(bytes.subarray(0, 4).toString("hex")).toBe("00010000");
     expect(ttf.headers.get("content-length")).toBe(String(bytes.length));
-    expect(fonts.isConvertibleFont).toHaveBeenCalledWith({ format: "woff2" }, expect.objectContaining({ fetch: expect.any(Function), signal: expect.any(AbortSignal) }));
+    // the licence is read from the decompressed sfnt
+    expect(fonts.isConvertibleFont).toHaveBeenCalledWith({ format: "ttf" }, expect.objectContaining({ fetch: expect.any(Function), signal: expect.any(AbortSignal) }));
 
     const otf = await handleAssetRequest(proxied("/assets/ss3.woff2", "&fmt=ttf&dl=ss3.ttf"));
     expect(otf.headers.get("content-type")).toBe("font/otf");

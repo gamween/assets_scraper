@@ -3,8 +3,8 @@ import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const fonts = vi.hoisted(() => ({
-  parseFontBinary: vi.fn((buffer: Buffer) => ({ format: buffer.subarray(0, 4).toString("latin1") === "wOF2" ? "woff2" : "other" })),
-  isConvertibleFont: vi.fn(async () => true),
+  parseFontBinary: vi.fn((buffer: Buffer) => ({ format: ({ wOF2: "woff2", OTTO: "otf", "\0\x01\0\0": "ttf" } as Record<string, string>)[buffer.subarray(0, 4).toString("latin1")] ?? "other" })),
+  isConvertibleFont: vi.fn<(meta: unknown, options: { signal: AbortSignal }) => Promise<boolean>>(async () => true),
 }));
 vi.mock("@/server/scan/fonts/index", () => fonts);
 
@@ -94,7 +94,10 @@ describe("convertWoff2", () => {
     const otf = await convertWoff2(ss3, new AbortController().signal);
     expect(otf).toMatchObject({ ok: true, contentType: "font/otf" });
     expect(otf.ok && otf.bytes.subarray(0, 4).toString("latin1")).toBe("OTTO");
-    expect(fonts.isConvertibleFont).toHaveBeenCalledWith(expect.objectContaining({ format: expect.any(String) }), expect.objectContaining({ fetch: expect.any(Function), signal: expect.any(AbortSignal) }));
+    // the licence is read from the sfnt woff2 produced, so fontkit never decodes untrusted brotli streams in JavaScript
+    expect(fonts.parseFontBinary.mock.calls.map(([buffer]) => buffer.subarray(0, 4).toString("latin1"))).toEqual(["\0\x01\0\0", "OTTO"]);
+    expect(fonts.isConvertibleFont.mock.calls.map(([meta]) => meta)).toEqual([{ format: "ttf" }, { format: "otf" }]);
+    expect(fonts.isConvertibleFont).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ fetch: expect.any(Function), signal: expect.any(AbortSignal) }));
   });
 
   it("keeps each output intact when conversions run at the same time", async () => {
@@ -110,7 +113,12 @@ describe("convertWoff2", () => {
     fonts.isConvertibleFont.mockResolvedValue(false);
     expect(await convertWoff2(inter, new AbortController().signal)).toEqual({ ok: false, reason: "license" });
     fonts.isConvertibleFont.mockResolvedValue(true);
+    fonts.parseFontBinary.mockClear();
+    fonts.isConvertibleFont.mockClear();
+    // woff2 validates the table directory first: bytes it refuses never reach fontkit or the Google Fonts check
     const truncated = Buffer.from(inter.subarray(0, 64));
     expect(await convertWoff2(truncated, new AbortController().signal)).toEqual({ ok: false, reason: "not-convertible" });
+    expect(fonts.parseFontBinary).not.toHaveBeenCalled();
+    expect(fonts.isConvertibleFont).not.toHaveBeenCalled();
   });
 });
