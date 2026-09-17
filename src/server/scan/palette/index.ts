@@ -1,5 +1,6 @@
 import type { Page } from "playwright-core";
 import type { Palette } from "@/lib/contract";
+import { untilAborted } from "@/server/async";
 import { limits } from "@/server/config/limits";
 import { PALETTE_SOURCE } from "../inpage/generated/palette";
 import type { SafeFetch } from "../types";
@@ -187,14 +188,4 @@ async function restoreOverlays(scopePromise: Promise<PaletteScope>): Promise<voi
   );
   await Promise.race([restored, waited]);
   clearTimeout(timer);
-}
-
-/** Settles like `promise`, or rejects as soon as `signal` aborts. */
-function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = () => reject(signal.reason);
-    if (signal.aborted) onAbort();
-    signal.addEventListener("abort", onAbort, { once: true });
-    promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
-  });
 }

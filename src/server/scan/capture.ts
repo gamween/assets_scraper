@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { Page, Response } from "playwright-core";
 import sharp from "sharp";
 import type { Tone } from "@/lib/contract";
+import { timeoutAfter } from "@/server/async";
 import { limits } from "@/server/config/limits";
 import { parseFontBinary } from "./fonts";
 import { toneFromBytes } from "./post/tone";
@@ -47,21 +48,6 @@ const SVG = (url: string, contentType: string) => /image\/svg/i.test(contentType
 const isJpeg = (body: Buffer) => body[0] === 0xff && body[1] === 0xd8 && body[2] === 0xff;
 
 class BodyTimeout extends Error {}
-
-const timeoutAfter = <T>(promise: Promise<T>, ms: number): Promise<T> =>
-  new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new BodyTimeout()), ms);
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (error: unknown) => {
-        clearTimeout(timer);
-        reject(error);
-      },
-    );
-  });
 
 /**
  * Network capture (spec 7.4), attached before navigation. Images, fonts and stylesheets are recorded once per URL, up
@@ -193,7 +179,7 @@ export function startCapture(page: Page, options: CaptureOptions): CaptureHandle
   const readBody = async (pending: Promise<Buffer>, onGiveUp: () => void): Promise<Buffer | undefined> => {
     let body: Buffer;
     try {
-      body = await timeoutAfter(pending, readMs);
+      body = await timeoutAfter(pending, readMs, () => new BodyTimeout());
     } catch (error) {
       if (error instanceof BodyTimeout) {
         bodyTimeouts += 1;
@@ -308,7 +294,7 @@ export function startCapture(page: Page, options: CaptureOptions): CaptureHandle
         page.off("response", onResponse);
         next();
       }
-      if (jobs.size) await timeoutAfter(Promise.allSettled([...jobs]), timeoutMs).catch(() => {});
+      if (jobs.size) await timeoutAfter(Promise.allSettled([...jobs]), timeoutMs, () => new BodyTimeout()).catch(() => {});
       return {
         images: [...images.values()].map((record) => ({ ...record })),
         fonts: [...fonts.values()].map((record) => ({ ...record })),

@@ -7,7 +7,6 @@ import type { SafeFetch, Signer } from "./types";
 
 /** Spec 8.9: Wikidata asks for a descriptive user agent. Nothing personal goes in it. */
 const PUBLIC_SOURCE_USER_AGENT = "AssetsScraper/1.0 (+https://github.com/gamween/assets_scraper)";
-const FAVICON_SERVICE_MS = 3_000;
 const FAVICON_MAX_BYTES = 1024 * 1024;
 /**
  * The fallback travels in a single `error` line (spec 14: 256 KB). Each asset carries its URL four times (display and
@@ -131,7 +130,7 @@ export function directAsset(input: { url: string; contentType: string; bytes?: n
 
 async function googleFavicon(host: string, fetch: SafeFetch, signal: AbortSignal): Promise<Draft | null> {
   const url = `https://www.google.com/s2/favicons?domain=${encodeURIComponent(host)}&sz=256`;
-  const response = await fetch(url, { headers: { "user-agent": PUBLIC_SOURCE_USER_AGENT }, timeoutMs: FAVICON_SERVICE_MS, maxBytes: FAVICON_MAX_BYTES, signal });
+  const response = await fetch(url, { headers: { "user-agent": PUBLIC_SOURCE_USER_AGENT }, timeoutMs: limits.faviconServiceMs, maxBytes: FAVICON_MAX_BYTES, signal });
   const contentType = response.headers.get("content-type") ?? "";
   // Google answers 404 with a generic globe when it has no icon for the host.
   if (response.status !== 200 || !contentType.startsWith("image/")) {

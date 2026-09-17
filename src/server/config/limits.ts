@@ -28,6 +28,27 @@ const defaults = {
   minTmpFreeMb: 250,
   minMemAvailableMb: 900,
   watchdogMemMb: 350,
+  /** Graceful browser close before the kill (critic R6). */
+  gracefulCloseMs: 5_000,
+  /** The small in-page reads after navigation: title, element count, markup sample. */
+  readMs: 3_000,
+  /** Scrolling back to the top after the lazy scroll. */
+  backToTopMs: 1_000,
+  /** The palette phase's share of `collectMs` (spec 10: about 200 ms of work). */
+  paletteBudgetMs: 3_000,
+  /** The engine's own stop for the palette phase: extractPalette's signal aborts then, in case it overruns its budget. */
+  paletteCapMs: 4_000,
+  /** After that abort, how long extractPalette gets to put the page back before the collector runs. */
+  paletteStopMs: 1_000,
+  /**
+   * CPU time post-processing gets at least after its network deadline: page work stops this long before the scan
+   * deadline, so that what it gathered still turns into results by the deadline.
+   */
+  postGraceMs: 5_000,
+  /** How long a cancelled scan waits for its cleanup (browser kill, proxy close) before the stream ends anyway. */
+  cancelCleanupMs: 10_000,
+  /** How long a scan waits for its egress proxy to stop, so a close that hangs never holds the scan past its deadline. */
+  egressCloseMs: 1_000,
 
   // Verification and probes (spec 8.4)
   verifyMs: 8_000,
@@ -52,6 +73,8 @@ const defaults = {
   svgMaxNormalizations: 400,
   spriteFetchMs: 4_000,
   maxBrandLinks: 6,
+  /** JSON characters the collector output gets past its blobs and SVG markup: candidates, font rules and links. */
+  collectorJsonRoomChars: 8 * MB,
 
   // Results
   maxAssets: 1_500,
@@ -73,6 +96,7 @@ const defaults = {
   googleFontsMaxFamilies: 8,
   paletteFetchMs: 600,
   wikidataMs: 3_000,
+  faviconServiceMs: 3_000,
 
   // Asset proxy (spec 11.2)
   proxyMaxBytes: 25 * MB,

@@ -3,6 +3,7 @@ import type { Page } from "playwright-core";
 import type { Asset, Diagnostics, PageInfo, Palette, ScanEvent, StepId, WarningCode } from "@/lib/contract";
 import { chunkByBytes } from "@/lib/ndjson";
 import { BusyError, readMemAvailableMb, withBrowser } from "@/server/browser/launch";
+import { orAfter, untilAborted } from "@/server/async";
 import { limits } from "@/server/config/limits";
 import { ScanFailure } from "@/server/errors";
 import { type EgressProxy, startEgressProxy } from "@/server/net/egress-proxy";
@@ -48,38 +49,16 @@ const defaultDeps: ScanEngineDeps = {
   readMemAvailableMb: process.platform === "linux" ? readMemAvailableMb : undefined,
 };
 
-/** Palette signals take about 200 ms (spec 10); this is its share of the 15 s collection cap. */
-const PALETTE_BUDGET_MS = 3_000;
-/** The engine's own stop for the palette phase: extractPalette's signal aborts then, in case it overruns its budget. */
-const PALETTE_CAP_MS = PALETTE_BUDGET_MS + 1_000;
-/**
- * After the abort, how long extractPalette gets to put the page back (it hides overlays while it reads colors) before
- * the engine stops waiting and the collector runs.
- */
-const PALETTE_STOP_MS = 1_000;
-/**
- * CPU time post-processing gets at least, after its network deadline. Page work stops this long before the scan
- * deadline, so that what it gathered still turns into results by the deadline.
- */
-const POST_GRACE_MS = 5_000;
-/** How long a cancelled scan waits for its cleanup (browser kill, proxy close) before the stream ends anyway. */
-const CANCEL_CLEANUP_MS = 10_000;
 const WATCHDOG_INTERVAL_MS = 500;
-/**
- * How long a scan waits for its egress proxy to stop. It stops after page work, when the page deadline may have passed
- * already, so a close that hangs must not hold the scan past its own deadline.
- */
-const EGRESS_CLOSE_MS = 1_000;
-const MB = 1024 * 1024;
 
 /**
  * Characters of JSON the collector output is fitted in (see FIT_COLLECTOR_OUTPUT). Node holds the result several times
  * while Playwright and the engine parse it, so this bounds the memory a page can make the scan use. It holds the blob
  * bytes at their cap as base64 (which JSON never escapes), inline SVG markup at its cap with every character escaped
- * the way ordinary markup can be (quotes, backslashes and line breaks take 2 characters), and room for candidates, font
- * rules and links.
+ * the way ordinary markup can be (quotes, backslashes and line breaks take 2 characters), and `limits.collectorJsonRoomChars`
+ * for candidates, font rules and links.
  */
-const collectorBudgetChars = () => Math.ceil((limits.blobTotalBytes * 4) / 3) + 2 * limits.svgTotalBytes + 8 * MB;
+const collectorBudgetChars = () => Math.ceil((limits.blobTotalBytes * 4) / 3) + 2 * limits.svgTotalBytes + limits.collectorJsonRoomChars;
 /** The fitted output can differ from the budget by a few characters (see FIT_COLLECTOR_OUTPUT). */
 const COLLECTOR_RESULT_SLACK_CHARS = 1_024;
 const COLLECTOR_LISTS = ["candidates", "svgs", "fontFaces", "fontStatuses", "fontUsage", "unreadableSheets", "blobs", "brandLinks"] as const;
@@ -149,17 +128,6 @@ class BlockedPage extends Error {
     super(`Blocked: ${reason}`);
     this.name = "BlockedPage";
   }
-}
-
-/** Settles like `promise`, or rejects with the abort reason as soon as the signal aborts. */
-function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
-  promise.catch(() => {});
-  if (signal.aborted) return Promise.reject(signal.reason);
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = () => reject(signal.reason);
-    signal.addEventListener("abort", onAbort, { once: true });
-    promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
-  });
 }
 
 /** Reads the collector output of a scan whose collector never answered: the network capture still gives assets. */
@@ -248,31 +216,24 @@ function mergeCounts(...sources: Partial<Record<string, number>>[]): Record<stri
   return total;
 }
 
-/** Resolves like `promise`, or with `fallback` once `ms` have passed. */
-function orAfter<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const late = new Promise<T>((resolve) => (timer = setTimeout(() => resolve(fallback), ms)));
-  return Promise.race([promise, late]).finally(() => clearTimeout(timer));
-}
-
 /**
- * How long page work (preflight and browser, spec 7.2 phases 1 to 9) may run: the scan deadline minus POST_GRACE_MS,
+ * How long page work (preflight and browser, spec 7.2 phases 1 to 9) may run: the scan deadline minus `limits.postGraceMs`,
  * so that at the deadline the scan has already emitted what is ready (spec 7.2).
  */
 export function pageWorkMs(deadlineMs: number): number {
-  return Math.max(0, deadlineMs - POST_GRACE_MS);
+  return Math.max(0, deadlineMs - limits.postGraceMs);
 }
 
 /**
  * When post-processing (spec 7.2 phase 10) must end. Network work gets up to `limits.verifyMs`, cut so that CPU work
- * still gets POST_GRACE_MS before the scan deadline; a scan whose page work was stopped by its deadline gets no network
+ * still gets `limits.postGraceMs` before the scan deadline; a scan whose page work was stopped by its deadline gets no network
  * time. CPU work (tone, SVG and font parsing) may use the rest of the scan: only the scan deadline stops it, so a slow
  * instance still gives whole results while time is left. Nothing runs past the scan deadline.
  */
 export function postProcessingWindow(input: { startedAt: number; now: number; deadlineMs: number; verifyMs: number }): { networkDeadline: number; endsAt: number } {
   const { startedAt, now, deadlineMs, verifyMs } = input;
   const scanEnds = startedAt + deadlineMs;
-  const networkDeadline = Math.max(now, Math.min(now + verifyMs, scanEnds - POST_GRACE_MS));
+  const networkDeadline = Math.max(now, Math.min(now + verifyMs, scanEnds - limits.postGraceMs));
   return { networkDeadline, endsAt: scanEnds };
 }
 
@@ -612,13 +573,14 @@ async function runBrowserStage(input: ScanContext & {
         const collectEnds = Date.now() + limits.collectMs;
         const noPalette = (reason: string, error?: unknown) => console.warn(`Scan ${diagnostics.scanId} has no palette (${reason})`, ...(error === undefined ? [] : [error]));
         const stopped = Symbol("palette stopped");
+        const paletteCapMs = limits.paletteCapMs;
         const extraction = deps
-          .extractPalette(page, { fetch: deps.fetch, signal: AbortSignal.any([signal, AbortSignal.timeout(PALETTE_CAP_MS)]), timeBudgetMs: PALETTE_BUDGET_MS, onNull: noPalette })
+          .extractPalette(page, { fetch: deps.fetch, signal: AbortSignal.any([signal, AbortSignal.timeout(paletteCapMs)]), timeBudgetMs: limits.paletteBudgetMs, onNull: noPalette })
           .catch((error: unknown) => {
             noPalette("error", error);
             return null;
           });
-        const extracted = await timed("palette", () => untilAborted(orAfter<Palette | null | typeof stopped>(extraction, PALETTE_CAP_MS + PALETTE_STOP_MS, stopped), signal));
+        const extracted = await timed("palette", () => untilAborted(orAfter(extraction, paletteCapMs + limits.paletteStopMs, stopped), signal));
         signal.throwIfAborted();
         if (extracted === stopped) noPalette("timeout");
         palette = extracted === stopped ? null : extracted;
@@ -683,7 +645,7 @@ async function runBrowserStage(input: ScanContext & {
       const stats = proxy.stats();
       diagnostics.egress = { bytes: stats.bytes, blocked: stats.blocked };
       // Not awaited past its cap: a close that hangs finishes in the background.
-      await orAfter((async () => proxy.close())().catch(() => {}), EGRESS_CLOSE_MS, undefined);
+      await orAfter((async () => proxy.close())().catch(() => {}), limits.egressCloseMs, undefined);
     }
   }
 
@@ -723,9 +685,7 @@ export function createScanEngine(overrides: Partial<ScanEngineDeps> = {}): ScanB
               })
               .finally(() => queue.close()));
           const cleanup = async () => {
-            let timer: ReturnType<typeof setTimeout> | undefined;
-            await Promise.race([running, new Promise<void>((resolve) => (timer = setTimeout(resolve, CANCEL_CLEANUP_MS)))]);
-            clearTimeout(timer);
+            await orAfter(running ?? Promise.resolve(), limits.cancelCleanupMs, undefined);
             return { value: undefined, done: true } as const;
           };
           return {
