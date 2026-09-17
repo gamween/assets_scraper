@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
+import type { Page } from "playwright-core";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { Asset, ScanEvent, type Palette } from "@/lib/contract";
 import { BusyError, withBrowser } from "@/server/browser/launch";
@@ -422,14 +423,56 @@ describe("scan engine", () => {
 
   it("caps the palette phase when extractPalette never answers", async () => {
     vi.stubEnv("SCAN_DEADLINE_MS", "30000");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const { deps } = testDeps({ extractPalette: () => new Promise<Palette | null>(() => {}) });
     const events = await scan(deps, `${fixture.origin}/`);
+    const logged = warn.mock.calls.map(([message]) => String(message));
+    warn.mockRestore();
     const done = events.at(-1);
     if (done?.type !== "done") throw new Error(`expected done, got ${done && describeEvent(done)}`);
     expect(done.partial).toBe(false);
     expect(events.find((event) => event.type === "palette")).toEqual({ type: "palette", palette: null });
-    expect(done.diagnostics.phases.palette).toBeGreaterThanOrEqual(3_900);
-    expect(done.diagnostics.phases.palette).toBeLessThan(6_000);
+    // Aborted at 4 s, then given 1 s to put the page back.
+    expect(done.diagnostics.phases.palette).toBeGreaterThanOrEqual(4_900);
+    expect(done.diagnostics.phases.palette).toBeLessThan(7_000);
+    expect(logged).toContainEqual(expect.stringMatching(/^Scan [0-9a-f-]{36} has no palette \(timeout\)$/));
+  });
+
+  it("aborts extractPalette at its cap and lets it restore the page before the collector runs", async () => {
+    vi.stubEnv("SCAN_DEADLINE_MS", "30000");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const setMark = (page: Page, mark: string) => page.evaluate((value) => (document.documentElement.dataset.overlays = value), mark);
+    let abortedAfter = 0;
+    // Like the real palette: hides overlays, honors its signal, and restores them before it returns.
+    const extractPalette: ScanEngineDeps["extractPalette"] = async (page, { signal, onNull }) => {
+      const started = Date.now();
+      await setMark(page, "hidden");
+      await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
+      abortedAfter = Date.now() - started;
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      await setMark(page, "restored");
+      onNull?.("aborted");
+      return null;
+    };
+    // The collector reports what it saw as the page title.
+    const collectorSource = `${FAKE_COLLECTOR}
+{
+  const collect = globalThis.__assetsScraper.collect;
+  globalThis.__assetsScraper.collect = async (options) => {
+    const output = await collect(options);
+    return { ...output, page: { ...output.page, title: "overlays " + document.documentElement.dataset.overlays } };
+  };
+}`;
+    const events = await scan(testDeps({ extractPalette, collectorSource }).deps, `${fixture.origin}/`);
+    const logged = warn.mock.calls.map(([message]) => String(message));
+    warn.mockRestore();
+    const done = events.at(-1);
+    if (done?.type !== "done") throw new Error(`expected done, got ${done && describeEvent(done)}`);
+    expect(abortedAfter).toBeGreaterThanOrEqual(3_900);
+    expect(abortedAfter).toBeLessThan(4_900);
+    expect(events.filter((event) => event.type === "page").at(-1)).toMatchObject({ page: { title: "overlays restored" } });
+    expect(events.find((event) => event.type === "palette")).toEqual({ type: "palette", palette: null });
+    expect(logged).toContainEqual(expect.stringMatching(/^Scan [0-9a-f-]{36} has no palette \(aborted\)$/));
   });
 
   it("keeps what page work collected when the browser close hangs past the page deadline", async () => {

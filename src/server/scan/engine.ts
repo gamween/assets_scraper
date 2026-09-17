@@ -27,7 +27,8 @@ export interface ScanEngineDeps {
   createSigner: (options?: { max?: number }) => Signer;
   assembleAssets: (input: PostInput) => Promise<AssetsOutput>;
   buildFontFamilies: (input: PostInput) => Promise<FontsOutput>;
-  extractPalette: (page: Page, options: { fetch: SafeFetch; signal: AbortSignal; timeBudgetMs: number }) => Promise<Palette | null>;
+  /** `onNull` tells why the palette is null, for the logs. */
+  extractPalette: (page: Page, options: { fetch: SafeFetch; signal: AbortSignal; timeBudgetMs: number; onNull?: (reason: string, error?: unknown) => void }) => Promise<Palette | null>;
   /** Bundled in-page collector that defines `globalThis.__assetsScraper.collect`. */
   collectorSource: string;
   /** MemAvailable in MB for the memory watchdog (spec 7.3); the watchdog is off without it. */
@@ -49,8 +50,13 @@ const defaultDeps: ScanEngineDeps = {
 
 /** Palette signals take about 200 ms (spec 10); this is its share of the 15 s collection cap. */
 const PALETTE_BUDGET_MS = 3_000;
-/** The engine's own stop for the palette phase, in case extractPalette overruns its budget. */
+/** The engine's own stop for the palette phase: extractPalette's signal aborts then, in case it overruns its budget. */
 const PALETTE_CAP_MS = PALETTE_BUDGET_MS + 1_000;
+/**
+ * After the abort, how long extractPalette gets to put the page back (it hides overlays while it reads colors) before
+ * the engine stops waiting and the collector runs.
+ */
+const PALETTE_STOP_MS = 1_000;
 /**
  * CPU time post-processing gets after its network deadline. Page work stops this long before the scan deadline, so
  * that what it gathered still turns into results by the deadline.
@@ -467,14 +473,18 @@ async function runBrowserStage(input: ScanContext & {
         collectStarted = step("collect", "start");
         await timed("prepare", () => prepareForCollection(page, { signal }));
         const collectEnds = Date.now() + limits.collectMs;
-        const extracted = await timed("palette", () =>
-          untilAborted(orAfter(deps.extractPalette(page, { fetch: deps.fetch, signal, timeBudgetMs: PALETTE_BUDGET_MS }), PALETTE_CAP_MS, null), signal).catch((error: unknown) => {
-            if (signal.aborted) throw error;
+        const noPalette = (reason: string, error?: unknown) => console.warn(`Scan ${diagnostics.scanId} has no palette (${reason})`, ...(error === undefined ? [] : [error]));
+        const stopped = Symbol("palette stopped");
+        const extraction = deps
+          .extractPalette(page, { fetch: deps.fetch, signal: AbortSignal.any([signal, AbortSignal.timeout(PALETTE_CAP_MS)]), timeBudgetMs: PALETTE_BUDGET_MS, onNull: noPalette })
+          .catch((error: unknown) => {
+            noPalette("error", error);
             return null;
-          }),
-        );
+          });
+        const extracted = await timed("palette", () => untilAborted(orAfter<Palette | null | typeof stopped>(extraction, PALETTE_CAP_MS + PALETTE_STOP_MS, stopped), signal));
         signal.throwIfAborted();
-        palette = extracted;
+        if (extracted === stopped) noPalette("timeout");
+        palette = extracted === stopped ? null : extracted;
 
         const timeoutMs = Math.max(1_000, collectEnds - Date.now());
         const options: CollectorOptions = {
