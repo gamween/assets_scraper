@@ -1,6 +1,6 @@
 import vm from "node:vm";
-import { describe, expect, it } from "vitest";
-import { FIT_COLLECTOR_OUTPUT, pageContextFor, pageWorkMs, postProcessingWindow, safeBrandLinks } from "./engine";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { FIT_COLLECTOR_OUTPUT, pageContextFor, paletteCap, pageWorkMs, postProcessingWindow, safeBrandLinks } from "./engine";
 
 const S = 1000;
 const window = (now: number) => postProcessingWindow({ startedAt: 0, now: now * S, deadlineMs: 90 * S, verifyMs: 8 * S });
@@ -9,6 +9,19 @@ describe("pageWorkMs", () => {
   it("stops page work 5 s before the scan deadline", () => {
     expect(pageWorkMs(90 * S)).toBe(85 * S);
     expect(pageWorkMs(3 * S)).toBe(0);
+  });
+});
+
+describe("paletteCap", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("aborts the palette 1 s after its budget by default", () => {
+    expect(paletteCap()).toBe(4 * S);
+  });
+
+  it("moves with a raised palette budget, so extractPalette still gets its whole budget", () => {
+    vi.stubEnv("PALETTE_BUDGET_MS", "5000");
+    expect(paletteCap()).toBe(6 * S);
   });
 });
 

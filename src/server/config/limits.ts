@@ -36,8 +36,11 @@ const defaults = {
   backToTopMs: 1_000,
   /** The palette phase's share of `collectMs` (spec 10: about 200 ms of work). */
   paletteBudgetMs: 3_000,
-  /** The engine's own stop for the palette phase: extractPalette's signal aborts then, in case it overruns its budget. */
-  paletteCapMs: 4_000,
+  /**
+   * How far past `paletteBudgetMs` the engine's own stop for the palette phase lands: extractPalette's signal aborts at
+   * budget plus this, in case it overruns its budget, so raising the budget moves the stop with it.
+   */
+  paletteOverrunMs: 1_000,
   /** After that abort, how long extractPalette gets to put the page back before the collector runs. */
   paletteStopMs: 1_000,
   /**

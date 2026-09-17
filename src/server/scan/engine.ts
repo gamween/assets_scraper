@@ -209,6 +209,9 @@ function mergeCounts(...sources: Partial<Record<string, number>>[]): Record<stri
   return total;
 }
 
+/** When the engine aborts extractPalette's signal: always past the palette's own budget, which stops it first. */
+export const paletteCap = (): number => limits.paletteBudgetMs + limits.paletteOverrunMs;
+
 /**
  * How long page work (preflight and browser, spec 7.2 phases 1 to 9) may run: the scan deadline minus `limits.postGraceMs`,
  * so that at the deadline the scan has already emitted what is ready (spec 7.2).
@@ -573,7 +576,7 @@ async function runBrowserStage(input: ScanContext & {
         const collectEnds = Date.now() + limits.collectMs;
         const noPalette = (reason: string, error?: unknown) => console.warn(`Scan ${diagnostics.scanId} has no palette (${reason})`, ...(error === undefined ? [] : [error]));
         const stopped = Symbol("palette stopped");
-        const paletteCapMs = limits.paletteCapMs;
+        const paletteCapMs = paletteCap();
         const extraction = deps
           .extractPalette(page, { fetch: deps.fetch, signal: AbortSignal.any([signal, AbortSignal.timeout(paletteCapMs)]), timeBudgetMs: limits.paletteBudgetMs, onNull: noPalette })
           .catch((error: unknown) => {
