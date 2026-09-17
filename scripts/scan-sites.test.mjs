@@ -108,7 +108,40 @@ const blockingServer = async () => {
   return { base: `http://127.0.0.1:${server.address().port}`, close: () => new Promise((resolve) => server.close(resolve)) };
 };
 
+/** A stub /api/scan that streams the given NDJSON lines verbatim. */
+const streamingServer = async (lines) => {
+  const server = createServer((request, response) => {
+    response.writeHead(200, { "content-type": "application/x-ndjson" });
+    response.end(lines.map((line) => `${line}\n`).join(""));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return { base: `http://127.0.0.1:${server.address().port}`, close: () => new Promise((resolve) => server.close(resolve)) };
+};
+
 describe("main", () => {
+  it("skips NDJSON lines that are valid JSON but not events, instead of losing the scan", async () => {
+    const out = await mkdtemp(path.join(tmpdir(), "scan-sites-"));
+    // `null` is the damaging one: reading `.type` off it used to throw and turn the whole scan into a transport failure.
+    const server = await streamingServer([
+      "null",
+      "42",
+      '"a string"',
+      "[1, 2]",
+      JSON.stringify({ type: "done", partial: false, stats: { durationMs: 7, assets: 0, svg: 0, images: 0, fonts: 0, hidden: {} } }),
+    ]);
+    try {
+      const args = [script, "--base", server.base, "--sites", "example.com", "--retries", "0", "--out", out];
+      await run(process.execPath, args);
+
+      const summary = JSON.parse(await readFile(path.join(out, "summary.json"), "utf8"));
+      expect(summary.rows[0].status).toBe("done");
+      expect(summary.rows[0].durationMs).toBe(7);
+      expect(summary.rows[0].badLines).toEqual(["null", "42", '"a string"', "[1, 2]"]);
+    } finally {
+      await server.close();
+    }
+  }, 30_000);
+
   it("does not fail the run when the only site without a result is blocked as expected", async () => {
     const out = await mkdtemp(path.join(tmpdir(), "scan-sites-"));
     const server = await blockingServer();

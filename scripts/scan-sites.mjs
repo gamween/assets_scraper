@@ -46,7 +46,24 @@ export function parseArgs(argv) {
   return options;
 }
 
-/** Yields one parsed event per NDJSON line; a line that is not JSON is reported and skipped. */
+/** An NDJSON line is only an event when it parses to a plain object: `null` and `42` are valid JSON but not events. */
+const isEvent = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+
+/** Parses one NDJSON line into an event, or reports it as a bad line and returns null. */
+function parseEvent(line, onBadLine) {
+  let parsed;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    onBadLine(line.slice(0, 200));
+    return null;
+  }
+  if (isEvent(parsed)) return parsed;
+  onBadLine(line.slice(0, 200));
+  return null;
+}
+
+/** Yields one parsed event per NDJSON line; a line that is not a JSON object is reported and skipped. */
 async function* readEvents(response, onBadLine) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
@@ -60,22 +77,16 @@ async function* readEvents(response, onBadLine) {
       const line = buffer.slice(0, cut).trim();
       buffer = buffer.slice(cut + 1);
       if (line) {
-        try {
-          yield JSON.parse(line);
-        } catch {
-          onBadLine(line.slice(0, 200));
-        }
+        const event = parseEvent(line, onBadLine);
+        if (event) yield event;
       }
       cut = buffer.indexOf("\n");
     }
   }
   const last = (buffer + decoder.decode()).trim();
   if (last) {
-    try {
-      yield JSON.parse(last);
-    } catch {
-      onBadLine(last.slice(0, 200));
-    }
+    const event = parseEvent(last, onBadLine);
+    if (event) yield event;
   }
 }
 
