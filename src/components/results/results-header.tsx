@@ -38,7 +38,9 @@ export function ResultsHeader({ actions = true }: { actions?: boolean }) {
   const title = useApp((s) => s.page?.title || s.page?.host || s.host || "");
   const host = useApp((s) => s.page?.host ?? s.host ?? "");
   const url = useApp((s) => s.url);
-  const count = useApp((s) => s.assets.length + s.fonts.length);
+  // Spec 12.2 meta `linear.app · 48 assets · 11s`: SVGs and images, like `stats.assets`. Fonts have their own tab count.
+  const assetCount = useApp((s) => s.assets.length);
+  const itemCount = useApp((s) => s.assets.length + s.fonts.length);
   const duration = useApp((s) => s.done?.stats.durationMs);
   const zip = useApp((s) => s.zip);
   const zippingAll = zip?.source === "all";
@@ -50,7 +52,7 @@ export function ResultsHeader({ actions = true }: { actions?: boolean }) {
         <div className="min-w-0">
           <h1 className="truncate text-title font-semibold text-text">{title}</h1>
           <p data-testid="results-meta" className="truncate font-mono text-mono text-text-3 tabular-nums">
-            {[host, formatCount(count, "asset"), duration !== undefined ? formatDuration(duration) : null].filter(Boolean).join(" · ")}
+            {[host, formatCount(assetCount, "asset"), duration !== undefined ? formatDuration(duration) : null].filter(Boolean).join(" · ")}
           </p>
         </div>
       </div>
@@ -74,7 +76,7 @@ export function ResultsHeader({ actions = true }: { actions?: boolean }) {
               Cancel
             </button>
           ) : null}
-          <Button variant="primary" onClick={downloadAll} disabled={count === 0 || (zip !== null && !zippingAll)} aria-live="polite">
+          <Button variant="primary" onClick={downloadAll} disabled={itemCount === 0 || (zip !== null && !zippingAll)} aria-live="polite">
             {zippingAll ? <LoaderCircle className="spinner" aria-hidden="true" /> : <Download aria-hidden="true" />}
             <span className="tabular-nums">{zippingAll ? `Zipping ${zip.done} of ${zip.total}` : "Download all"}</span>
           </Button>

@@ -28,12 +28,15 @@ export function useGlobalShortcuts() {
   }, []);
 }
 
-/** Tab title follows the scan: `Scanning linear.app`, `48 assets · linear.app`, `Scan failed · linear.app`. */
+/**
+ * Tab title follows the scan: `Scanning linear.app`, `48 assets · linear.app`, `Scan failed · linear.app`. The count is
+ * SVGs and images only, like `stats.assets`.
+ */
 export function useDocumentTitle() {
   const title = useApp((s) => {
     const host = s.host ?? "";
     if (s.phase === "scanning") return `Scanning ${host}`;
-    if (s.phase === "results") return `${formatCount(s.assets.length + s.fonts.length, "asset")} · ${host}`;
+    if (s.phase === "results") return `${formatCount(s.assets.length, "asset")} · ${host}`;
     if (s.phase === "error") return `Scan failed · ${host}`;
     return "Assets Scraper";
   });

@@ -22,8 +22,11 @@ test.describe("results", () => {
     await context.grantPermissions(["clipboard-read", "clipboard-write"]);
     await openResults(page, linear);
     await expect(page.getByRole("heading", { level: 1, name: "Linear: The system for product development" })).toBeVisible();
-    await expect(page.getByTestId("results-meta")).toHaveText(`linear.app · ${linearTotal} assets · 11s`);
-    await expect(page).toHaveTitle(`${linearTotal} assets · linear.app`);
+    // Fonts count in their tab, not in the asset count (contract `stats.assets`).
+    const stats = linear.flatMap((event) => (event.type === "done" ? [event.stats] : []))[0];
+    expect(linearAssets.length).toBe(stats.assets);
+    await expect(page.getByTestId("results-meta")).toHaveText(`linear.app · ${stats.assets} assets · 11s`);
+    await expect(page).toHaveTitle(`${stats.assets} assets · linear.app`);
     await expect(page.getByRole("button", { name: "Rescan" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Download all" })).toBeVisible();
 
