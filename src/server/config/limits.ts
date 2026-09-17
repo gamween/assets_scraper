@@ -16,6 +16,8 @@ const defaults = {
   preflightMs: 8_000,
   preflightMaxBytes: 1 * MB,
   launchMs: 20_000,
+  /** The new browser's context, page and CDP guards, once Chrome is up. It takes milliseconds when nothing hangs. */
+  browserSetupMs: 10_000,
   gotoMs: 25_000,
   loadMs: 10_000,
   networkIdleMs: 3_000,

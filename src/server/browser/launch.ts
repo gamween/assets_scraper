@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { Browser, BrowserContext, CDPSession, Frame, Page } from "playwright-core";
-import { orAfter, untilAborted } from "@/server/async";
+import { orAfter, timeoutAfter, untilAborted } from "@/server/async";
 import { limits } from "@/server/config/limits";
 
 export class BusyError extends Error {
@@ -455,7 +455,9 @@ export async function withBrowser<T>(options: WithBrowserOptions, fn: (session: 
       await guardPages(context, page);
       return { context, page };
     };
-    const { context, page } = await untilAborted(setup(), signal);
+    // Without its own bound, a hang in context or page setup would wait out the page deadline and read as a slow page.
+    const settingUp = timeoutAfter(setup(), limits.browserSetupMs, () => new Error(`Browser context setup took more than ${limits.browserSetupMs} ms`));
+    const { context, page } = await untilAborted(settingUp, signal);
     const result = await untilAborted(fn({ browser, context, page, cold, queueMs, launchMs, health, pid: launched.pid }), signal);
     succeeded = true;
     return result;

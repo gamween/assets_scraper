@@ -873,6 +873,7 @@ export const limits = {
   preflightMs: 8_000,
   preflightMaxBytes: 1 * MB,
   launchMs: 20_000,
+  browserSetupMs: 10_000, // context, page and CDP guards after the launch
   gotoMs: 25_000,
   loadMs: 10_000,
   networkIdleMs: 3_000,

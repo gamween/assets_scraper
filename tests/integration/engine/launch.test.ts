@@ -233,6 +233,22 @@ describe("withBrowser", () => {
     expect(await withBrowser(open(), async () => "next scan runs")).toBe("next scan runs");
   });
 
+  it("rejects without running fn when context setup outlasts its budget, kills the browser and frees the slot", async () => {
+    // No context, page and CDP guards come up in 1 ms: setup always outlasts this budget, as a hung setup does.
+    vi.stubEnv("BROWSER_SETUP_MS", "1");
+    const pidfile = path.join(browserStateDir(), `chromium-${process.pid}-0.pid`);
+    const ran = vi.fn();
+    const started = Date.now();
+    await expect(withBrowser(open(), ran)).rejects.toThrow("Browser context setup took more than 1 ms");
+    expect(ran).not.toHaveBeenCalled();
+    expect(Date.now() - started).toBeLessThan(15_000);
+    const running = () => spawnSync("pgrep", ["-f", pidfileMarker(pidfile)]).stdout.toString().trim();
+    await expect.poll(running, { timeout: 5000 }).toBe("");
+
+    vi.unstubAllEnvs();
+    expect(await withBrowser(open(), async () => "next scan runs")).toBe("next scan runs");
+  });
+
   it("stops waiting for a hung graceful close and kills the browser as soon as the signal aborts", async () => {
     const controller = new AbortController();
     let pid = 0;
