@@ -258,9 +258,7 @@ async function runScan({ url, deps, cancel, emit }: ScanContext): Promise<void> 
     // Phases 2 to 9: browser.
     const browserStage = await runBrowserStage({ url, deps, cancel, emit, pre, diagnostics, deadline: pageDeadline.signal, timed });
     const { nav, network } = browserStage;
-    let { collector } = browserStage;
-    const partial = browserStage.partial;
-    collector ??= emptyCollectorOutput(nav, network);
+    const collector = browserStage.collector ?? emptyCollectorOutput(nav, network);
 
     // Phase 10: post-processing.
     step("process", "start");
@@ -298,51 +296,10 @@ async function runScan({ url, deps, cancel, emit }: ScanContext): Promise<void> 
     step("process", "done");
 
     // Phase 11: results.
-    const warnings = new Set<WarningCode>(assetsOut.warnings);
-    let assets: Asset[] = assetsOut.assets;
-    if (assets.length > limits.maxAssets) {
-      assets = assets.slice(0, limits.maxAssets);
-      warnings.add("truncated");
-    }
-    const faviconAsset = assets.find((asset) => asset.role === "favicon" && (asset.display ?? asset.original));
-    const page: PageInfo = {
-      requestedUrl: url,
-      finalUrl,
-      host,
-      title: context.title,
-      ...(context.siteName ? { siteName: context.siteName } : {}),
-      ...(faviconAsset ? { favicon: faviconAsset.display ?? faviconAsset.original ?? undefined } : {}),
-      status: nav.status,
-      brandLinks: collector.brandLinks,
-    };
-    emit({ type: "page", page });
-    emit({ type: "palette", palette: browserStage.palette });
-    const batches = chunkByBytes(assets, limits.ndjsonLineBytes);
-    for (const items of batches.length ? batches : [[]]) emit({ type: "assets", items });
-    emit({ type: "fonts", families: fontsOut.families });
-
-    const isPartial = partial || processedPartly;
-    if (isPartial) warnings.add("partial");
-    if (collector.stats.truncated && !partial) warnings.add("truncated");
-    if (network.bodyTimeouts > 0) warnings.add("body-timeout");
-    if (diagnostics.collector === "main") warnings.add("collector-fallback");
-    for (const code of warnings) emit({ type: "warning", code });
-
-    emit({
-      type: "done",
-      partial: isPartial,
-      stats: {
-        assets: assets.length,
-        svg: assets.filter((asset) => asset.kind === "svg").length,
-        images: assets.filter((asset) => asset.kind === "image").length,
-        fonts: fontsOut.families.length,
-        // Spec 8.2, each drop counted once: assembleAssets owns the collector's drops (`collector.noise`: Lottie frames,
-        // unreferenced symbols, oversized inline SVGs) and adds them to its own `hidden`, so they are not added again here.
-        hidden: mergeCounts(assetsOut.hidden, fontsOut.hidden),
-        durationMs: Date.now() - startedAt,
-      },
-      diagnostics: snapshot(),
-    });
+    emitResults(
+      { url, nav, context, collector, network, palette: browserStage.palette, assetsOut, fontsOut, pagePartial: browserStage.partial, processedPartly, diagnostics: snapshot(), startedAt },
+      emit,
+    );
   } catch (error) {
     if (cancel.aborted) return;
     if (error instanceof BlockedPage) {
@@ -365,6 +322,73 @@ async function runScan({ url, deps, cancel, emit }: ScanContext): Promise<void> 
   } finally {
     clearTimeout(pageDeadlineTimer);
   }
+}
+
+interface ScanResults {
+  url: string;
+  nav: NavigationResult;
+  context: PageContext;
+  collector: RawCollectorOutput;
+  network: CapturedNetwork;
+  palette: Palette | null;
+  assetsOut: AssetsOutput;
+  fontsOut: FontsOutput;
+  /** Page work stopped early (deadline, memory watchdog, collector failure). */
+  pagePartial: boolean;
+  /** Post-processing ran out of time before one of its tasks finished. */
+  processedPartly: boolean;
+  diagnostics: Diagnostics;
+  startedAt: number;
+}
+
+/** Spec 7.2 phase 11: the final `page`, `palette`, `assets` batches, `fonts`, warnings, then `done`. */
+function emitResults(results: ScanResults, emit: (event: ScanEvent) => void): void {
+  const { url, nav, context, collector, network, assetsOut, fontsOut, pagePartial, diagnostics } = results;
+  const warnings = new Set<WarningCode>(assetsOut.warnings);
+  let assets: Asset[] = assetsOut.assets;
+  if (assets.length > limits.maxAssets) {
+    assets = assets.slice(0, limits.maxAssets);
+    warnings.add("truncated");
+  }
+  const faviconAsset = assets.find((asset) => asset.role === "favicon" && (asset.display ?? asset.original));
+  const page: PageInfo = {
+    requestedUrl: url,
+    finalUrl: context.finalUrl,
+    host: context.host,
+    title: context.title,
+    ...(context.siteName ? { siteName: context.siteName } : {}),
+    ...(faviconAsset ? { favicon: faviconAsset.display ?? faviconAsset.original ?? undefined } : {}),
+    status: nav.status,
+    brandLinks: collector.brandLinks,
+  };
+  emit({ type: "page", page });
+  emit({ type: "palette", palette: results.palette });
+  const batches = chunkByBytes(assets, limits.ndjsonLineBytes);
+  for (const items of batches.length ? batches : [[]]) emit({ type: "assets", items });
+  emit({ type: "fonts", families: fontsOut.families });
+
+  const partial = pagePartial || results.processedPartly;
+  if (partial) warnings.add("partial");
+  if (collector.stats.truncated && !pagePartial) warnings.add("truncated");
+  if (network.bodyTimeouts > 0) warnings.add("body-timeout");
+  if (diagnostics.collector === "main") warnings.add("collector-fallback");
+  for (const code of warnings) emit({ type: "warning", code });
+
+  emit({
+    type: "done",
+    partial,
+    stats: {
+      assets: assets.length,
+      svg: assets.filter((asset) => asset.kind === "svg").length,
+      images: assets.filter((asset) => asset.kind === "image").length,
+      fonts: fontsOut.families.length,
+      // Spec 8.2, each drop counted once: assembleAssets owns the collector's drops (`collector.noise`: Lottie frames,
+      // unreferenced symbols, oversized inline SVGs) and adds them to its own `hidden`, so they are not added again here.
+      hidden: mergeCounts(assetsOut.hidden, fontsOut.hidden),
+      durationMs: Date.now() - results.startedAt,
+    },
+    diagnostics,
+  });
 }
 
 interface BrowserStage {
