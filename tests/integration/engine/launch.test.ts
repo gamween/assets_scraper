@@ -76,7 +76,6 @@ describe("withBrowser", () => {
     const state = await withBrowser(open(), async (session) => {
       pid = session.pid ?? 0;
       expect(isProcessAlive(pid)).toBe(true);
-      expect(session.cold).toBe(true);
       expect(session.launchMs).toBeGreaterThan(0);
       await session.page.goto("about:blank");
       return session.page.evaluate(() => document.readyState);
@@ -84,6 +83,15 @@ describe("withBrowser", () => {
     expect(state).toBe("complete");
     expect(pid).toBeGreaterThan(1);
     await expect.poll(() => isProcessAlive(pid), { timeout: 5000 }).toBe(false);
+  });
+
+  it("reports only the first launch of an instance as cold", async () => {
+    // A fresh copy of the module, so the result does not depend on the launches of the tests before this one.
+    vi.resetModules();
+    const fresh = await import("@/server/browser/launch");
+    const first = await fresh.withBrowser(open(), async ({ cold }) => cold);
+    const second = await fresh.withBrowser(open(), async ({ cold }) => cold);
+    expect([first, second]).toEqual([true, false]);
   });
 
   it("runs concurrent calls one at a time", async () => {
@@ -150,8 +158,7 @@ describe("withBrowser", () => {
   });
 
   it("uses the hardened context behind the egress proxy", async () => {
-    await withBrowser(open(), async ({ browser, page, cold }) => {
-      expect(cold).toBe(false);
+    await withBrowser(open(), async ({ browser, page }) => {
       await page.goto(`${fixture.origin}/blank.html`);
       expect(proxy.requests).toContain(`${fixture.origin}/blank.html`);
 
