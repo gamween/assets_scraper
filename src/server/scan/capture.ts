@@ -52,8 +52,9 @@ const timeoutAfter = <T>(promise: Promise<T>, ms: number): Promise<T> =>
 
 /**
  * Network capture (spec 7.4), attached before navigation. Images, fonts and stylesheets are recorded once per URL, up
- * to `maxRecords` URLs (responses past that count as skipped bodies); 3xx responses are skipped. Bodies are read with caps (size, time, concurrency, total bytes), then hashed, measured,
- * toned or parsed and dropped. Only SVG text, CSS text and `blob:` bytes are kept.
+ * to `maxRecords` URLs (responses past that count as skipped bodies); 3xx responses are skipped. Bodies are read with
+ * caps (size, time, concurrency, total bytes), then hashed, measured, toned or parsed and dropped. Only SVG text, CSS
+ * text and `blob:` bytes are kept.
  *
  * Playwright hands over a body only whole, so the total cap works by reservation: a read starts only when its declared
  * length, or the per-body cap when no length is declared, still fits next to the bytes already read and the reads in
