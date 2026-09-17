@@ -73,6 +73,18 @@ describe("readSignals", () => {
     });
   });
 
+  it("drops long strings", () => {
+    const long = "https://example.com/" + "a".repeat(3_000);
+    const read = readSignals({
+      ...valid(),
+      url: long,
+      vars: [[`--brand-${"x".repeat(1_000)}`, "#0052ff", 1], ["--brand", "#0052ff", 1]],
+      iconUrls: [long, "https://example.com/icon.png"],
+      manifestUrl: long,
+    });
+    expect(read).toMatchObject({ url: "", vars: [["--brand", "#0052ff", 1]], iconUrls: ["https://example.com/icon.png"], manifestUrl: null });
+  });
+
   it("caps list sizes", () => {
     const many = {
       ...valid(),

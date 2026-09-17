@@ -3,7 +3,8 @@
  *
  * Installs `globalThis.__assetsScraperPalette`: `collect` hides overlays and returns color samples, `restore` undoes
  * the hiding once the screenshot is taken, `decodeIconColors` rasterizes icon bytes. Port of the validated lab code
- * (v2, every fix enabled).
+ * (v2, every fix enabled). Node runs it in an isolated world with `globalThis` shadowed (`palette/index.ts`), so the
+ * functions keep no state between calls: what `restore` needs is stored on the hidden elements.
  */
 import type {
   MediaKind, MediaRect, PaletteInPage, PaletteSignalOptions, PaletteSource, RawPaletteSignals, RectTuple,
@@ -13,13 +14,26 @@ declare global {
   var __assetsScraperPalette: PaletteInPage | undefined;
 }
 
+/**
+ * Set on every hidden element: "-" when it had no `style` attribute, else "=" followed by that attribute, which
+ * `restore` puts back as it was.
+ */
 const HIDDEN_ATTRIBUTE = "data-palette-hidden";
-const HIDE_STYLE_ID = "__palette_hide_style";
+
+// Output caps, so a page cannot make the result large (Node applies the same caps in `readSignals`)
+const MAX_SAMPLES = 20_000;
+const MAX_MEDIA_RECTS = 2_000;
+const MAX_LOGO_RECTS = 20;
+const MAX_URL_LENGTH = 2_048;
+const MAX_VAR_NAME_LENGTH = 100;
+/** Colors read from one gradient or paint server (real ones have a handful of stops). */
+const MAX_PAINT_COLORS = 64;
 
 function collect(opts: PaletteSignalOptions = {}): RawPaletteSignals {
   const t0 = performance.now();
   const maxElements = opts.maxElements ?? 8000;
   const walkBudgetMs = opts.walkBudgetMs ?? 600;
+  const overlayBudgetMs = opts.overlayBudgetMs ?? 300;
   const vw = document.documentElement.clientWidth || innerWidth;
   const vh = innerHeight;
   const sy = scrollY;
@@ -65,7 +79,7 @@ function collect(opts: PaletteSignalOptions = {}): RawPaletteSignals {
   const COLOR_TOKEN_RE = /(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\([^()]*\)|#[0-9a-fA-F]{3,8}\b/g;
   const tokens = (s: string): RGBA[] => {
     const out: RGBA[] = [];
-    for (const t of s.match(COLOR_TOKEN_RE) || []) {
+    for (const t of (s.match(COLOR_TOKEN_RE) || []).slice(0, MAX_PAINT_COLORS)) {
       const c = parse(t);
       if (c) out.push(c);
     }
@@ -81,7 +95,7 @@ function collect(opts: PaletteSignalOptions = {}): RawPaletteSignals {
     if (e) {
       e[2] += w;
       e[3]++;
-    } else agg.set(k, [src, color, w, 1]);
+    } else if (agg.size < MAX_SAMPLES) agg.set(k, [src, color, w, 1]);
   };
 
   // above-the-fold weighting: [until N viewports, weight]
@@ -109,17 +123,17 @@ function collect(opts: PaletteSignalOptions = {}): RawPaletteSignals {
   // ---------- 1. hide consent banners, modals, backdrops ----------
   const hiddenEls: Element[] = [];
   if (opts.hideOverlays !== false && document.body) {
+    const tOverlays = performance.now();
+    const overlaysOverBudget = () => performance.now() - tOverlays > overlayBudgetMs;
     const hide = (el: Element) => {
-      if (el === document.body || el === document.documentElement || el.hasAttribute(HIDDEN_ATTRIBUTE)) return;
-      el.setAttribute(HIDDEN_ATTRIBUTE, "");
+      const style = (el as HTMLElement).style as CSSStyleDeclaration | undefined;
+      if (!style || el === document.body || el === document.documentElement || el.hasAttribute(HIDDEN_ATTRIBUTE)) return;
+      const inline = el.getAttribute("style");
+      el.setAttribute(HIDDEN_ATTRIBUTE, inline === null ? "-" : "=" + inline);
+      // Inline !important wins over every author rule, including a consent manager's own display:block!important
+      style.setProperty("display", "none", "important");
       hiddenEls.push(el);
     };
-    if (!document.getElementById(HIDE_STYLE_ID)) {
-      const st = document.createElement("style");
-      st.id = HIDE_STYLE_ID;
-      st.textContent = `[${HIDDEN_ATTRIBUTE}]{display:none!important}`;
-      (document.head || document.documentElement).appendChild(st);
-    }
     const CONSENT_SEL = [
       "#onetrust-consent-sdk", "#onetrust-banner-sdk", "#CybotCookiebotDialog", "#usercentrics-root",
       "#usercentrics-cmp-ui", "#truste-consent-track", ".truste_box_overlay", "#didomi-host", "#qc-cmp2-container",
@@ -132,50 +146,58 @@ function collect(opts: PaletteSignalOptions = {}): RawPaletteSignals {
     ].join(",");
     // A 0x0 host can still paint through fixed children or a shadow root (Transcend on notion.com: a 0x0 fixed <div> under <html>)
     try {
-      document.querySelectorAll(CONSENT_SEL).forEach((el) => {
+      for (const el of document.querySelectorAll(CONSENT_SEL)) {
+        if (overlaysOverBudget()) break;
         const r = el.getBoundingClientRect();
         if (r.width * r.height > 0 || el.shadowRoot || getComputedStyle(el).position === "fixed") hide(el);
-      });
+      }
     } catch {
       // bad selector in old engines
     }
     const CONSENT_TEXT = /cookie|consent|gdpr|we value your privacy|we care about your privacy/i;
     const fullCover: Element[] = [];
     let backdropFound = false;
+    // Consent managers and modal portals are appended last, next to <body> under <html> or at the end of <body>: those
+    // subtrees come first (children of <body> from the last one), so a page too large for the budget still gets them
+    // checked before its app root. Each subtree keeps document order, ancestors before descendants.
+    const roots = [
+      ...[...document.documentElement.children].filter((el) => el !== document.head && el !== document.body),
+      ...[...document.body.children].reverse(),
+    ];
     let scanned = 0;
-    // Consent managers also inject next to <body> (direct children of <html>)
-    for (const el of document.querySelectorAll("body *, html > :not(head):not(body), html > :not(head):not(body) *")) {
-      // Same time budget as the walk: on huge pages, stop looking rather than stall the scan
-      if ((++scanned & 255) === 0 && performance.now() - t0 > walkBudgetMs) break;
-      const cs = getComputedStyle(el);
-      if (cs.position !== "fixed" && cs.position !== "sticky") continue;
-      if (cs.display === "none") continue;
-      // consent managers rendered in a shadow root under a 0x0 fixed host
-      if (el.shadowRoot && CONSENT_TEXT.test((el.shadowRoot.textContent || "").slice(0, 4000))) {
-        hide(el);
-        continue;
-      }
-      const r = el.getBoundingClientRect();
-      const cr = clipRect(r);
-      if (!cr) continue;
-      const cover = (cr[2] * cr[3]) / (vw * vh);
-      const txt = (el.textContent || "").slice(0, 4000);
-      if (cover < 0.75 && CONSENT_TEXT.test(txt) && !el.querySelector("nav") && el.localName !== "header") {
-        hide(el);
-        continue;
-      }
-      if (el.localName === "iframe" && cover < 0.6) {
-        // fixed iframes: consent banners, chat widgets
-        hide(el);
-        continue;
-      }
-      if (cover >= 0.85 && cs.position === "fixed") {
-        const bg = parse(cs.backgroundColor);
-        if (bg && bg[3] > 0.05 && bg[3] < 0.95 && txt.trim().length < 40) {
-          // dimming backdrop
+    scan: for (const root of roots) {
+      for (const el of [root, ...root.querySelectorAll("*")]) {
+        if ((++scanned & 63) === 0 && overlaysOverBudget()) break scan;
+        const cs = getComputedStyle(el);
+        if (cs.position !== "fixed" && cs.position !== "sticky") continue;
+        if (cs.display === "none") continue;
+        // consent managers rendered in a shadow root under a 0x0 fixed host
+        if (el.shadowRoot && CONSENT_TEXT.test((el.shadowRoot.textContent || "").slice(0, 4000))) {
           hide(el);
-          backdropFound = true;
-        } else if (!bg && txt.length < 1500 && !el.querySelector("nav, header, main")) fullCover.push(el);
+          continue;
+        }
+        const r = el.getBoundingClientRect();
+        const cr = clipRect(r);
+        if (!cr) continue;
+        const cover = (cr[2] * cr[3]) / (vw * vh);
+        const txt = (el.textContent || "").slice(0, 4000);
+        if (cover < 0.75 && CONSENT_TEXT.test(txt) && !el.querySelector("nav") && el.localName !== "header") {
+          hide(el);
+          continue;
+        }
+        if (el.localName === "iframe" && cover < 0.6) {
+          // fixed iframes: consent banners, chat widgets
+          hide(el);
+          continue;
+        }
+        if (cover >= 0.85 && cs.position === "fixed") {
+          const bg = parse(cs.backgroundColor);
+          if (bg && bg[3] > 0.05 && bg[3] < 0.95 && txt.trim().length < 40) {
+            // dimming backdrop
+            hide(el);
+            backdropFound = true;
+          } else if (!bg && txt.length < 1500 && !el.querySelector("nav, header, main")) fullCover.push(el);
+        }
       }
     }
     // A dimming backdrop means a modal is open: hide transparent full-screen fixed wrappers (the modal container)
@@ -184,7 +206,7 @@ function collect(opts: PaletteSignalOptions = {}): RawPaletteSignals {
     const BTN = /^(accept|allow|agree|i agree|ok|okay|got it|reject|decline|deny|refuse|manage|customi[sz]e|cookie settings|preferences|tout accepter|tout refuser|accepter|refuser|continuer sans accepter)\b/i;
     let nb = 0;
     for (const btn of document.querySelectorAll('button, [role="button"], a[role="button"], input[type="button"], input[type="submit"]')) {
-      if (++nb > 400) break;
+      if (++nb > 400 || overlaysOverBudget()) break;
       const label = ((btn as HTMLInputElement).value || btn.textContent || "").trim().slice(0, 40);
       if (!BTN.test(label) || btn.closest(`[${HIDDEN_ATTRIBUTE}]`)) continue;
       let banner: Element | null = null;
@@ -297,10 +319,10 @@ function collect(opts: PaletteSignalOptions = {}): RawPaletteSignals {
         const stops: RGBA[] = [];
         const node = document.getElementById(m[1]);
         if (node) {
-          node.querySelectorAll("stop").forEach((s) => {
+          for (const s of [...node.querySelectorAll("stop")].slice(0, MAX_PAINT_COLORS)) {
             const c = parse(getComputedStyle(s).stopColor);
             if (c) stops.push(c);
-          });
+          }
         }
         g = stops;
         gradCache.set(m[1], g);
@@ -313,13 +335,15 @@ function collect(opts: PaletteSignalOptions = {}): RawPaletteSignals {
   const CTA_MAX_AREA = 0.08 * vw * vh;
   let visited = 0;
   let truncated = false;
+  // Own budget: overlay hiding and logo detection do not eat into the walk
+  const tWalk = performance.now();
 
   while (stack.length) {
     const f = stack.pop()!;
     const el = f.el;
     const tag = el.localName;
     if (SKIP.has(tag) || el.hasAttribute(HIDDEN_ATTRIBUTE)) continue;
-    if (++visited > maxElements || ((visited & 255) === 0 && performance.now() - t0 > walkBudgetMs)) {
+    if (++visited > maxElements || ((visited & 255) === 0 && performance.now() - tWalk > walkBudgetMs)) {
       truncated = true;
       break;
     }
@@ -355,8 +379,9 @@ function collect(opts: PaletteSignalOptions = {}): RawPaletteSignals {
       if (MEDIA.has(tag) || (hasUrl && !clipText)) {
         const cr = clipRect(r);
         if (cr) {
-          if (inLogo) logoImageRects.push(cr);
-          else if (cr[2] * cr[3] > 400) {
+          if (inLogo) {
+            if (logoImageRects.length < MAX_LOGO_RECTS) logoImageRects.push(cr);
+          } else if (cr[2] * cr[3] > 400 && mediaRects.length < MAX_MEDIA_RECTS) {
             const kind: MediaKind = MEDIA.has(tag) ? (tag === "embed" || tag === "object" ? "iframe" : (tag as MediaKind)) : "bgimg";
             mediaRects.push([cr[0], cr[1], cr[2], cr[3], kind]);
           }
@@ -492,7 +517,7 @@ function collect(opts: PaletteSignalOptions = {}): RawPaletteSignals {
       const cs = getComputedStyle(target);
       for (let i = 0; i < cs.length && vars.length < 400; i++) {
         const name = cs[i];
-        if (!name.startsWith("--") || seen.has(name)) continue;
+        if (!name.startsWith("--") || name.length > MAX_VAR_NAME_LENGTH || seen.has(name)) continue;
         seen.add(name);
         const s = nameScore(name);
         if (!s) continue;
@@ -520,7 +545,7 @@ function collect(opts: PaletteSignalOptions = {}): RawPaletteSignals {
   meta.maskIconColor = toHex(document.querySelector('link[rel="mask-icon"]')?.getAttribute("color"));
   // Icon and manifest URLs are fetched from Node (page CSP and CORS often block in-page fetches)
   const iconLinks = [...document.querySelectorAll<HTMLLinkElement>('link[rel~="apple-touch-icon"], link[rel~="icon"]')]
-    .filter((l) => l.href && !l.href.startsWith("data:"))
+    .filter((l) => l.href && l.href.length <= MAX_URL_LENGTH && !l.href.startsWith("data:"))
     .map((l) => ({
       href: l.href,
       apple: l.rel.includes("apple"),
@@ -530,10 +555,11 @@ function collect(opts: PaletteSignalOptions = {}): RawPaletteSignals {
   const iconUrls = iconLinks.map((i) => i.href);
   // conventional path, tried second when no apple-touch-icon is declared
   if (!iconLinks.some((i) => i.apple)) iconUrls.splice(1, 0, location.origin + "/apple-touch-icon.png");
-  const manifestUrl = document.querySelector<HTMLLinkElement>('link[rel="manifest"]')?.href || null;
+  const manifestHref = document.querySelector<HTMLLinkElement>('link[rel="manifest"]')?.href;
+  const manifestUrl = manifestHref && manifestHref.length <= MAX_URL_LENGTH ? manifestHref : null;
 
   return {
-    url: location.href, vw, vh, docH,
+    url: location.href.length <= MAX_URL_LENGTH ? location.href : "", vw, vh, docH,
     samples: [...agg.values()].map((s) => [s[0], s[1], Math.round(s[2] * 100) / 100, s[3]] as [PaletteSource, string, number, number]),
     vars, meta, mediaRects, logoImageRects, logoBackdrop, logoFound: !!logoEl,
     iconUrls: [...new Set(iconUrls)].slice(0, 3), manifestUrl,
@@ -573,8 +599,13 @@ async function decodeIconColors(arg: { b64: string; mime: string }): Promise<[st
 }
 
 function restore(): void {
-  document.querySelectorAll(`[${HIDDEN_ATTRIBUTE}]`).forEach((el) => el.removeAttribute(HIDDEN_ATTRIBUTE));
-  document.getElementById(HIDE_STYLE_ID)?.remove();
+  for (const el of document.querySelectorAll(`[${HIDDEN_ATTRIBUTE}]`)) {
+    const saved = el.getAttribute(HIDDEN_ATTRIBUTE) || "";
+    if (saved !== "-" && !saved.startsWith("=")) continue; // the page's own attribute, never hidden by collect
+    el.removeAttribute(HIDDEN_ATTRIBUTE);
+    if (saved === "-") el.removeAttribute("style");
+    else el.setAttribute("style", saved.slice(1));
+  }
 }
 
 globalThis.__assetsScraperPalette = { collect, restore, decodeIconColors };

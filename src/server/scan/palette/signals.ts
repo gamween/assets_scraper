@@ -8,8 +8,10 @@ export type PaletteSource =
 export interface PaletteSignalOptions {
   /** Hard cap on elements visited (DOM order, so the top of the page first). */
   maxElements?: number;
-  /** Time budget for overlay hiding and for the DOM walk, ms. */
+  /** Time budget for the DOM walk, ms (default 600). */
   walkBudgetMs?: number;
+  /** Separate time budget for finding the overlays to hide, ms (default 300). */
+  overlayBudgetMs?: number;
   /** Hide consent banners, modal dialogs and full-screen backdrops (for the walk and the screenshot). */
   hideOverlays?: boolean;
 }
@@ -51,7 +53,7 @@ export interface RawPaletteSignals {
 /** What `palette.src.ts` installs as `globalThis.__assetsScraperPalette`. */
 export interface PaletteInPage {
   collect(options: PaletteSignalOptions): RawPaletteSignals;
-  /** Removes every `data-palette-hidden` attribute and the hiding stylesheet. */
+  /** Shows the hidden overlays again: puts back each one's `style` attribute and removes `data-palette-hidden`. */
   restore(): void;
   /** Rasterizes icon bytes (PNG, ICO, JPEG, WebP, GIF) at 64 px: [#rrggbb, opaque pixel count][]. */
   decodeIconColors(arg: { b64: string; mime: string }): Promise<[string, number][]>;
@@ -67,18 +69,20 @@ const MAX_MEDIA_RECTS = 2_000;
 const MAX_LOGO_RECTS = 20;
 const MAX_ICON_URLS = 3;
 const MAX_ICON_COLORS = 4_096;
+const MAX_URL_LENGTH = 2_048;
+const MAX_VAR_NAME_LENGTH = 100;
 
 const isNumber = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 const isHex = (v: unknown): v is string => typeof v === "string" && HEX.test(v);
 const hexOrNull = (v: unknown): string | null => (isHex(v) ? v : null);
-const isHttpUrl = (v: unknown): v is string => typeof v === "string" && v.length <= 2048 && /^https?:\/\//i.test(v);
+const isHttpUrl = (v: unknown): v is string => typeof v === "string" && v.length <= MAX_URL_LENGTH && /^https?:\/\//i.test(v);
 const isRect = (v: unknown): v is RectTuple => Array.isArray(v) && v.length >= 4 && v.slice(0, 4).every(isNumber);
 const entries = (v: unknown): unknown[][] => (Array.isArray(v) ? v.filter(Array.isArray) : []);
 
 /**
- * Validates what the page returned. Page scripts can tamper with in-page code, so every list is capped and every
- * malformed entry dropped: build time stays bounded and a bad color never fails the palette. Returns null when the
- * value is not signals at all.
+ * Validates what the page returned. Page scripts can tamper with in-page code, so every list and string is capped and
+ * every malformed entry dropped: build time and size stay bounded and a bad color never fails the palette. Returns null
+ * when the value is not signals at all.
  */
 export function readSignals(value: unknown): RawPaletteSignals | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
@@ -87,7 +91,7 @@ export function readSignals(value: unknown): RawPaletteSignals | null {
   const meta = (v.meta && typeof v.meta === "object" ? v.meta : {}) as Record<string, unknown>;
   const stats = (v.stats && typeof v.stats === "object" ? v.stats : {}) as Record<string, unknown>;
   return {
-    url: typeof v.url === "string" ? v.url : "",
+    url: typeof v.url === "string" && v.url.length <= MAX_URL_LENGTH ? v.url : "",
     vw: v.vw,
     vh: v.vh,
     docH: isNumber(v.docH) ? v.docH : v.vh,
@@ -96,7 +100,7 @@ export function readSignals(value: unknown): RawPaletteSignals | null {
       .slice(0, MAX_SAMPLES)
       .map((s) => [s[0], s[1], s[2], s[3]] as RawPaletteSignals["samples"][number]),
     vars: entries(v.vars)
-      .filter((s) => typeof s[0] === "string" && isHex(s[1]) && isNumber(s[2]))
+      .filter((s) => typeof s[0] === "string" && s[0].length <= MAX_VAR_NAME_LENGTH && isHex(s[1]) && isNumber(s[2]))
       .slice(0, MAX_VARS)
       .map((s) => [s[0], s[1], s[2]] as [string, string, number]),
     meta: {
