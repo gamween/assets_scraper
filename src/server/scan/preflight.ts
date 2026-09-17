@@ -28,6 +28,15 @@ export interface PreflightResult {
 const HEAD_SCAN_CHARS = 1024 * 1024;
 /** Longer tags are skipped: real `link` and `meta` tags are short, and long ones only carry data URIs. */
 const MAX_TAG_CHARS = 16 * 1024;
+/**
+ * Most entries kept per list (icons, social images, JSON-LD logos). The fallback uses at most 8 of each, so this is
+ * plenty, and a page that declares thousands of URLs costs no more than one that declares a few.
+ */
+const MAX_HEAD_ENTRIES = 32;
+/** Longer URLs are skipped, so they never take a slot: the fallback cannot use them (they would not fit its line). */
+export const MAX_HEAD_URL_CHARS = 2_048;
+/** Enough for any real site name; `og:site_name` goes into the name of every fallback asset. */
+const MAX_SITE_NAME_CHARS = 200;
 
 const ICON_RELS = new Set(["icon", "apple-touch-icon", "apple-touch-icon-precomposed", "mask-icon", "fluid-icon", "image_src"]);
 const SOCIAL_IMAGE_KEYS = new Set(["og:image", "og:image:url", "og:image:secure_url", "twitter:image", "twitter:image:src"]);
@@ -158,9 +167,14 @@ function* headTags(source: string): Generator<HeadTag> {
   }
 }
 
+/** Cuts `value` to `max` characters without leaving half of a surrogate pair. */
+const cut = (value: string, max: number) => (value.length <= max ? value : value.slice(0, max).replace(/[\uD800-\uDBFF]$/, ""));
+
 /**
  * Reads what the fallback needs from raw HTML (spec 8.9): title, `og:site_name`, icon links, social images, JSON-LD
- * logos and the manifest link. Scans the first megabyte, makes URLs absolute (http and https only), never throws.
+ * logos and the manifest link. Scans the first megabyte, makes URLs absolute (http and https only), keeps the first
+ * `MAX_HEAD_ENTRIES` distinct URLs of each list, never throws. Linear in the length of the markup: a list that is
+ * full costs one comparison per further entry.
  */
 export function parseHead(html: string, baseUrl: string): PageHead {
   const head: PageHead = { icons: [], ogImages: [], jsonLdLogos: [] };
@@ -174,13 +188,26 @@ export function parseHead(html: string, baseUrl: string): PageHead {
   const baseHref = tags.find((tag) => tag.name === "base" && tag.attributes.get("href"))?.attributes.get("href");
   base = absoluteHttpUrl(baseHref, base) ?? base;
 
+  const seen = { icons: new Set<string>(), ogImages: new Set<string>(), jsonLdLogos: new Set<string>() };
+  const isFull = (list: keyof typeof seen) => seen[list].size >= MAX_HEAD_ENTRIES;
+  /** The absolute URL, marked as seen, when it is usable and new to `list`; otherwise undefined. The caller adds it. */
+  const fresh = (list: keyof typeof seen, value: string | undefined) => {
+    const url = absoluteHttpUrl(value, base);
+    if (!url || url.length > MAX_HEAD_URL_CHARS || seen[list].has(url)) return undefined;
+    seen[list].add(url);
+    return url;
+  };
+
   for (const { name, attributes, content } of tags) {
     if (name === "link") {
       const rel = (attributes.get("rel") ?? "").toLowerCase().split(/\s+/).filter(Boolean);
-      const href = absoluteHttpUrl(attributes.get("href"), base);
+      if (rel.includes("manifest") && !head.manifestUrl) {
+        const manifest = absoluteHttpUrl(attributes.get("href"), base);
+        if (manifest) head.manifestUrl = manifest;
+      }
+      if (isFull("icons") || !rel.some((token) => ICON_RELS.has(token))) continue;
+      const href = fresh("icons", attributes.get("href"));
       if (!href) continue;
-      if (rel.includes("manifest")) head.manifestUrl ??= href;
-      if (!rel.some((token) => ICON_RELS.has(token)) || head.icons.some((icon) => icon.href === href)) continue;
       const icon: PageHead["icons"][number] = { href, rel: rel.join(" ") };
       const sizes = attributes.get("sizes")?.trim();
       const type = attributes.get("type")?.trim();
@@ -190,10 +217,10 @@ export function parseHead(html: string, baseUrl: string): PageHead {
     } else if (name === "meta") {
       const key = (attributes.get("property") ?? attributes.get("name") ?? "").trim().toLowerCase();
       const value = attributes.get("content")?.trim();
-      if (key === "og:site_name" && value) head.siteName ??= value;
-      const url = SOCIAL_IMAGE_KEYS.has(key) ? absoluteHttpUrl(value, base) : undefined;
-      if (url && !head.ogImages.includes(url)) head.ogImages.push(url);
-    } else if (name === "script" && attributes.get("type")?.trim().toLowerCase() === "application/ld+json") {
+      if (key === "og:site_name" && value) head.siteName ??= cut(value, MAX_SITE_NAME_CHARS);
+      const url = SOCIAL_IMAGE_KEYS.has(key) && !isFull("ogImages") ? fresh("ogImages", value) : undefined;
+      if (url) head.ogImages.push(url);
+    } else if (name === "script" && !isFull("jsonLdLogos") && attributes.get("type")?.trim().toLowerCase() === "application/ld+json") {
       let data: unknown;
       try {
         data = JSON.parse((content ?? "").trim().replace(/^<!--|-->$/g, ""));
@@ -201,8 +228,8 @@ export function parseHead(html: string, baseUrl: string): PageHead {
         continue;
       }
       collectLogos(data, (value) => {
-        const url = typeof value === "string" ? absoluteHttpUrl(value, base) : undefined;
-        if (url && !head.jsonLdLogos.includes(url)) head.jsonLdLogos.push(url);
+        const url = typeof value === "string" && !isFull("jsonLdLogos") ? fresh("jsonLdLogos", value) : undefined;
+        if (url) head.jsonLdLogos.push(url);
       });
     }
   }

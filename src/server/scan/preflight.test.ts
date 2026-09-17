@@ -76,6 +76,31 @@ describe("parseHead", () => {
     }
   });
 
+  it("stays linear on long lists of distinct URLs, and keeps the first 32 of each list", () => {
+    const logos = `<script type="application/ld+json">${JSON.stringify({ logo: Array.from({ length: 110_000 }, (_, i) => String(i)) })}</script>`;
+    const icons = Array.from({ length: 20_000 }, (_, i) => `<link rel=icon href=${i}>`).join("");
+    const images = Array.from({ length: 20_000 }, (_, i) => `<meta property=og:image content=${i}>`).join("");
+    for (const html of [logos, icons, images]) {
+      const started = performance.now();
+      const head = parseHead(html, BASE);
+      expect(performance.now() - started).toBeLessThan(1000);
+      const list = html === logos ? head.jsonLdLogos : html === icons ? head.icons.map((icon) => icon.href) : head.ogImages;
+      expect(list).toEqual(Array.from({ length: 32 }, (_, i) => `https://www.example.com/products/${i}`));
+    }
+  });
+
+  it("skips URLs too long for the fallback, so they never take the place of usable ones", () => {
+    const html = `${Array.from({ length: 40 }, (_, i) => `<link rel="icon" href="/${i}-${"a".repeat(2048)}.png">`).join("")}<link rel="icon" href="/short.png">`;
+    expect(parseHead(html, BASE).icons).toEqual([{ href: "https://www.example.com/short.png", rel: "icon" }]);
+  });
+
+  it("caps the site name", () => {
+    const head = parseHead(`<meta property="og:site_name" content="${"n".repeat(10_000)}">`, BASE);
+    expect(head.siteName).toBe("n".repeat(200));
+    // A cut never leaves half of a surrogate pair.
+    expect(parseHead(`<meta property="og:site_name" content="${"n".repeat(199)}😀">`, BASE).siteName).toBe("n".repeat(199));
+  });
+
   it("only reads the first megabyte", () => {
     const html = `<title>Big</title>${" ".repeat(1024 * 1024)}<link rel="icon" href="/late.png">`;
     expect(parseHead(html, BASE)).toEqual({ title: "Big", icons: [], ogImages: [], jsonLdLogos: [] });
