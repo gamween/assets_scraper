@@ -9,7 +9,7 @@ import { Kbd } from "@/components/common/kbd";
 import { copySvgCode, downloadAsset, openSource, sourceUrl, svgMarkup } from "@/components/results/asset-actions";
 import { AssetPreview, WELL_CLASSES, wellBackground } from "@/components/results/asset-preview";
 import { BackgroundControl } from "@/components/results/filter-bar";
-import { foundInLabel, roleBadge } from "@/components/results/labels";
+import { foundInLabel, roleLabel } from "@/components/results/labels";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { Asset } from "@/lib/contract";
 import { formatBytes, formatCount, formatDimensions } from "@/lib/format";
@@ -147,7 +147,6 @@ function DetailBody({ asset }: { asset: Asset }) {
   const background = override ?? globalBackground;
   const well = wellBackground(asset.tone, background);
   const index = list.findIndex((item) => item.id === asset.id);
-  const badge = roleBadge(asset);
   const svg = asset.kind === "svg";
   const remote = sourceUrl(asset) !== null;
   const formatLabel = (asset.original?.format ?? asset.format).toUpperCase();
@@ -184,11 +183,9 @@ function DetailBody({ asset }: { asset: Asset }) {
               {asset.name}
             </DialogPrimitive.Title>
             <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-              {badge ? (
-                <Badge data-testid="detail-badge" className="font-sans text-[11px] tracking-normal">
-                  {badge}
-                </Badge>
-              ) : null}
+              <Badge data-testid="detail-badge" className="font-sans text-[11px] tracking-normal">
+                {roleLabel(asset)}
+              </Badge>
               <span className="truncate font-mono text-mono text-text-3">{asset.filename}</span>
             </div>
           </div>

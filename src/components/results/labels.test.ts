@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { makeAsset, remoteSource } from "@/lib/client/testing";
-import { assetMeta, hiddenSummary, splitExtension } from "./labels";
+import { assetMeta, hiddenSummary, roleBadge, roleLabel, splitExtension } from "./labels";
 
 describe("hiddenSummary", () => {
   it("names the reasons by count", () => {
@@ -28,6 +28,12 @@ describe("card labels", () => {
     expect(assetMeta(file)).toBe("SVG · 512 B · File");
     const og = makeAsset({ id: "og", format: "jpg", original: remoteSource("https://cdn.test/og.jpg", { format: "jpg", width: 1200, height: 630, bytes: 360_000 }) });
     expect(assetMeta(og)).toBe("JPG · 1200×630 · 352 KB");
+  });
+
+  it("labels every role in the detail view and only notable roles on cards", () => {
+    const roles = ["site-logo", "logo", "favicon", "social", "icon", "illustration", "image", "sprite-symbol"] as const;
+    expect(roles.map((role) => roleLabel({ role }))).toEqual(["Site logo", "Logo", "Favicon", "OG image", "Icon", "Illustration", "Image", "Sprite symbol"]);
+    expect(roles.map((role) => roleBadge(makeAsset({ id: role, role })))).toEqual(["Logo", "Logo", "Favicon", "OG image", null, null, null, null]);
   });
 
   it("keeps the extension apart for middle truncation", () => {

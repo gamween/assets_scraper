@@ -17,6 +17,20 @@ export function roleBadge(asset: Asset): string | null {
   }
 }
 
+const ROLE_LABELS: Record<Asset["role"], string> = {
+  "site-logo": "Site logo",
+  logo: "Logo",
+  favicon: "Favicon",
+  social: "OG image",
+  icon: "Icon",
+  illustration: "Illustration",
+  image: "Image",
+  "sprite-symbol": "Sprite symbol",
+};
+
+/** Detail view badge (spec 12.2): every role has one, unlike the card badges. */
+export const roleLabel = (asset: Pick<Asset, "role">) => ROLE_LABELS[asset.role];
+
 const isInlineSvg = (asset: Asset) => asset.kind === "svg" && !!asset.inline && "text" in asset.inline;
 
 /** Parts of the card meta line: `SVG · 88×22 · 3.0 KB · Inline`, `JPG · 1200×630 · 352 KB`. */

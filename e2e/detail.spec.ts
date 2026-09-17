@@ -29,7 +29,7 @@ test.describe("detail view", () => {
     const detail = dialog(page);
     await expect(detail).toBeVisible();
     await expect(detail.getByRole("heading", { name: siteLogo.name })).toBeVisible();
-    await expect(detail.getByTestId("detail-badge")).toHaveText("Logo");
+    await expect(detail.getByTestId("detail-badge")).toHaveText("Site logo");
     await expect(detail.getByTestId("detail-counter")).toHaveText(`1 of ${total}`);
     const meta = detail.getByTestId("detail-meta");
     await expect(meta.locator("dt")).toHaveText(["Format", "Dimensions", "File size", "Found in", "Used", "Source"]);
@@ -108,6 +108,8 @@ test.describe("detail view", () => {
   test("&asset= opens the detail after results load and closing removes it", async ({ page }) => {
     await openResults(page, linear, `&asset=${photo.id}`);
     await expect(dialog(page).getByRole("heading", { level: 2 })).toHaveText(photo.name);
+    // Every role has a badge in the detail view, plain images included.
+    await expect(dialog(page).getByTestId("detail-badge")).toHaveText("Image");
     await page.getByRole("button", { name: "Close" }).click();
     await expect(dialog(page)).toHaveCount(0);
     await expect(page).toHaveURL(/\?url=https%3A%2F%2Flinear\.app%2F$/);
