@@ -402,9 +402,9 @@ For every top-level SVG, in the page:
 Tone decides the preview background of a tile.
 
 - JPEG: `opaque` without decoding.
-- Other rasters with captured bytes up to 3 MB: `sharp` resize to fit 32x32, read RGBA. At least 98 percent opaque pixels gives `opaque`. Otherwise mean luminance of non-transparent pixels (alpha-weighted, Rec. 709): above 0.7 gives `light` (show on dark), below 0.3 gives `dark` (show on light), else `mixed` (checkerboard).
+- Other rasters with captured bytes up to 3 MB: `sharp` resize to fit 32x32, read RGBA. A mean alpha of at least 0.98 gives `opaque` (a mean, not a count of opaque pixels, so the soft edge of a downscaled full image or a uniform 99 percent alpha is not transparency). Otherwise mean luminance of non-transparent pixels (alpha-weighted, Rec. 709): above 0.7 gives `light` (show on dark), below 0.3 gives `dark` (show on light), else `mixed` (checkerboard).
 - SVG: render the normalized markup with `sharp` at 64 px, same thresholds.
-- No bytes, errors, or over the caps (300 rasters, 400 SVGs, 3 s total): `unknown`, shown on the checkerboard.
+- No bytes, errors, or over the caps: `unknown`, shown on the checkerboard. The caps (`toneMaxRasters` 300, `toneMaxSvgs` 400, `toneBudgetMs` 3 s, `toneMaxBytes` 3 MB) apply per stage: network capture and post-processing each get their own.
 
 ### 8.9 Block detection and fallback
 
