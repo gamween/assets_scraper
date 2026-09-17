@@ -35,10 +35,14 @@ const LAZY_ATTR =
   /^data-(?:lazy-?)?(?:src|srcset|original|original-set|hi-?res(?:-src)?|full(?:-src)?|large(?:-src)?|zoom(?:-src)?|fallback(?:-src)?|bg|background|background-image|image|img|echo|flickity-lazyload|lazy|srcset-lazy|pin-media|retina|2x)$/i;
 const LAZY_BACKGROUND_ATTR = /^data-(?:bg|background|background-image|bg-src|lazy-background|image-src)$/i;
 /**
- * Spec 8.1 brand link words. A word must start the path segment or the text, so /wordpress, /express and /impressum do
- * not match, but it may run on (/brandassets, /logopack, /presse). /logout, /logon and /pressure are left out.
+ * Spec 8.1 brand link words. A word must start the path segment, the text or a camelCase word (/OurBrand), so
+ * /wordpress, /express and /impressum do not match, but it may run on (/brandassets, /logopack, /presse). /logout,
+ * /logon and /pressure are left out.
  */
 const BRAND_LINK = /(?:^|[^a-z])(?:brand|press(?!ure)|media[- _]?kit|newsroom|logo(?!ut|n(?![a-z]))|guidelines)/i;
+const isBrandLink = (text: string) => BRAND_LINK.test(text) || BRAND_LINK.test(text.replace(/([a-z])(?=[A-Z])/g, "$1 "));
+/** Second-level labels under a two-letter country code that are public suffixes: shop.co.uk, shop.com.au. */
+const SECOND_LEVEL_LABELS = /^(?:ac|co|com|edu|go|gov|ne|net|or|org)$/;
 const LOGO_WORD = /logo|brand|wordmark|logotype/;
 
 const STYLE_PROPS = [
@@ -1137,9 +1141,13 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
   // ------------------------------------------------ brand resource links
   const brandLinks: RawCollectorOutput["brandLinks"] = [];
   {
+    /** Registrable domain approximation: the last two labels, or three under a `co.uk`-like suffix. */
     const siteOf = (host: string) => {
       const bare = host.replace(/^www\./, "").toLowerCase();
-      return /^[\d.]+$|^\[|^localhost$/.test(bare) ? bare : bare.split(".").slice(-2).join(".");
+      if (/^[\d.]+$|^\[|^localhost$/.test(bare)) return bare;
+      const labels = bare.split(".");
+      const take = labels.length > 2 && labels[labels.length - 1].length === 2 && SECOND_LEVEL_LABELS.test(labels[labels.length - 2]) ? 3 : 2;
+      return labels.slice(-take).join(".");
     };
     const site = siteOf(location.hostname);
     const current = location.href.split("#")[0];
@@ -1153,7 +1161,7 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
       url.hash = "";
       if (siteOf(url.hostname) !== site || url.href === current || seen.has(url.href)) continue;
       const text = collapse(el.textContent, 80) || collapse(el.getAttribute("aria-label"), 80) || collapse(el.getAttribute("title"), 80);
-      if (!BRAND_LINK.test(decodeURIComponentSafe(url.pathname + url.search)) && !BRAND_LINK.test(text)) continue;
+      if (!isBrandLink(decodeURIComponentSafe(url.pathname + url.search)) && !isBrandLink(text)) continue;
       seen.add(url.href);
       brandLinks.push({ href: url.href, text });
     }

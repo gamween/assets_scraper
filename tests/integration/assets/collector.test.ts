@@ -208,6 +208,31 @@ describe("collector noise and edge cases", () => {
   });
 });
 
+describe("collector brand links", () => {
+  it("keeps the registrable domain under co.uk-like suffixes and reads camelCase words", async () => {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    await page.route("**/*", (route) =>
+      route.request().url() === "https://www.shop.co.uk/"
+        ? route.fulfill({
+            contentType: "text/html",
+            body: `<!doctype html><title>Shop</title>
+              <a href="https://assets.shop.co.uk/press">Press</a> <a href="https://www.other.co.uk/brand">Their brand</a>
+              <a href="https://shop.com.au/brand">Australia</a> <a href="/OurBrand">Resources</a> <a href="/about">OurLogos</a>`,
+          })
+        : route.fulfill({ status: 404 }),
+    );
+    await page.goto("https://www.shop.co.uk/");
+    const shop = await runCollector(page, collectorOptions("www.shop.co.uk", "Shop"));
+    await context.close();
+    expect(shop.brandLinks).toEqual([
+      { href: "https://assets.shop.co.uk/press", text: "Press" },
+      { href: "https://www.shop.co.uk/OurBrand", text: "Resources" },
+      { href: "https://www.shop.co.uk/about", text: "OurLogos" },
+    ]);
+  });
+});
+
 describe("collector labels", () => {
   it("takes the first label in order: aria-label, link aria-label, <title>, alt, data-framer-name, title attribute", async () => {
     const { context, page } = await openPage(browser, `${server.origin}/labels.html`);

@@ -88,11 +88,15 @@ export function svgSize(markup: string): { width?: number; height?: number } {
   return box?.length === 4 && box[2] > 0 && box[3] > 0 ? { width: box[2], height: box[3] } : {};
 }
 
-/** "linear" for linear.app, nothing for IP addresses. */
-const siteLabel = (host: string) => {
-  const hostname = host.replace(/:\d+$/, "").replace(/^www\./, "");
+/** Second-level labels under a two-letter country code that are public suffixes: shop.co.uk, shop.com.au. */
+const SECOND_LEVEL_LABELS = /^(?:ac|co|com|edu|go|gov|ne|net|or|org)$/;
+
+/** "linear" for linear.app, "shop" for shop.co.uk, nothing for IP addresses. */
+export const siteLabel = (host: string) => {
+  const hostname = host.replace(/:\d+$/, "").replace(/^www\./, "").toLowerCase();
   if (/^[\d.]+$|^\[/.test(hostname)) return "";
   const labels = hostname.split(".");
+  if (labels.length > 2 && labels.at(-1)!.length === 2 && SECOND_LEVEL_LABELS.test(labels.at(-2)!)) return labels.at(-3)!;
   return labels.length > 1 ? labels.at(-2)! : labels[0];
 };
 

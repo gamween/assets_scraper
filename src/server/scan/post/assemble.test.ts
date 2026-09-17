@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { limits } from "@/server/config/limits";
 import type { CandidateContext, CapturedImage, PostInput, RawCandidate, RawCollectorOutput, SafeFetch } from "../types";
-import { assembleAssets } from "./assemble";
+import { assembleAssets, siteLabel } from "./assemble";
 
 /** assembleAssets on synthetic collector output, with a fetch that answers every probe with a 404. */
 
@@ -57,6 +57,20 @@ const run = (collector: RawCollectorOutput, images: CapturedImage[] = []) => {
   };
   return assembleAssets(input);
 };
+
+describe("siteLabel", () => {
+  it.each([
+    ["linear.app", "linear"],
+    ["www.stripe.com", "stripe"],
+    ["www.shop.co.uk", "shop"],
+    ["assets.shop.com.au", "shop"],
+    ["co.uk", "co"],
+    ["localhost:3000", "localhost"],
+    ["127.0.0.1:8080", ""],
+  ])("names %s after %s", (host, label) => {
+    expect(siteLabel(host)).toBe(label);
+  });
+});
 
 describe("assembleAssets hidden counts", () => {
   it("reports the collector's drops together with its own, once each", async () => {
