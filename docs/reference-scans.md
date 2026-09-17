@@ -73,10 +73,9 @@ all), sanity.io's second `site-logo` is an 850x559 merch photo, techcrunch.com's
   as in the lab) and differs on 3 (chain.link, coinbase.com and stripe.com, see R5). The neutral ramp is identical on
   6 and differs on 5: allbirds.com (R6), chain.link (R5), linear.app (an improvement, below), plus framer.com and
   vercel.com, whose brand lists are empty in both.
-- linear.app and stripe.com are better than the lab, and both land a fix `reports/palette-verify.md` asked for:
-  linear.app's background neutral is `#08090a` where the lab gave `#101112` (it moves the site from 4/5 to 5/5), and
-  stripe.com returns the ribbon orange `#fe8f2c` where the lab had the stand-in `#ff6118` (the report names that
-  orange `#fe8f2e`).
+- linear.app is better than the lab and lands a fix `reports/palette-verify.md` asked for: its background neutral is
+  `#08090a` where the lab gave `#101112`, which moves the site from 4/5 to 5/5. Re-measured twice on 2026-09-17 with
+  the same result, so this one reproduces.
 
 ## Regressions
 
@@ -135,13 +134,19 @@ Suspected cause: the scroll pass finishes before the product carousels load. Par
 the storefront changes daily, which is also why the app has extra URLs; the missing set being whole product rows
 points at the scroll budget rather than at a discovery bug.
 
-### R5: two brand colours differ from the lab (chain.link, coinbase.com)
+### R5: brand lists differ from the lab (chain.link, coinbase.com, stripe.com)
 
 Evidence: chain.link gives `#0847f7 #6d94f9 #001a62` and drops the lab's fourth brand colour `#fbbd11`, the yellow of
 the site. Its neutrals also differ: `#0e1119 #a6aebc #eff6ff #ffffff` against the lab's `#f5f7fa #0e1119 #ffffff
-#d8dce2`. coinbase.com adds a sixth colour, `#27ad75`, that the lab did not have. stripe.com keeps five of six lab
-colours and replaces `#ff6118`, which `reports/palette-verify.md` called a stand-in, with `#fe8f2c`, the ribbon orange
-the report asked for (it names it `#fe8f2e`), so that one is an improvement, not a loss.
+#d8dce2`. coinbase.com returns `#0052ff #27ad75` where the lab returned `#0052ff` alone, so `#27ad75` is the second
+entry of a two colour list, not a sixth colour added to a longer one. stripe.com is the third one that differs, and it
+is not stable from run to run. run1 read `#533afd #7f7dfc #ffd676 #f795f7 #fe8f2c #ea2261` and an earlier version of
+this document called the fifth entry an improvement, on the grounds that `reports/palette-verify.md` had asked for the
+ribbon orange and called the lab's `#ff6118` a stand-in. That does not reproduce. Two fresh scans on 2026-09-17 both
+returned `#533afd #7f7dfc #ffd676 #1c1e54 #f795f7 #ea2261`: no orange at all, a dark navy `#1c1e54` in fourth place
+instead, and the pink and red one rank lower than in run1. So the app agrees with the lab on the first three brand
+colours and disagrees on the rest, and which colour fills the tail depends on what the rotating hero was showing.
+Treat any single-run claim about stripe.com's tail as noise.
 
 Suspected cause: the palette runs on a live page, and chain.link and coinbase.com both rotate hero content, so the
 signals are not identical to the lab's. Worth a second look at chain.link only: `#fbbd11` is a real brand colour and
@@ -163,6 +168,20 @@ Evidence: the app lists `Apple Icons 100` through `Apple Icons 900` as nine sepa
 one file, next to `SF Pro Text`, `SF Pro Display`, `SF Pro Icons` and `Apple Legacy Chevron`. The three used families
 are the same as the lab's. ilovechickpea.ca (6 against 7) and techcrunch.com (30 against 31) differ by one.
 
+Used families, the number the UI actually leads with, differ on the same two sites, which the count above hides.
+ilovechickpea.ca: 3 used against the lab's 4, the app missing `Akzidenz-Grotesk BQ Light with`. That lab name is
+itself a parse artefact, a `font-family` declaration cut mid sentence, so the app is arguably right here and the lab
+wrong. techcrunch.com: 4 used against the lab's 5, and the sets are not nested either way. The app has
+`NB International Pro`, `Roboto`, `Yellix` and `Open Sans`; the lab had `NB International Pro`, `Google Sans Text`,
+`Yellix`, `Google Symbols` and a starred `Roboto`. The two Google families come in through an embedded third party
+widget, so this is a page composition difference more than a rule difference.
+
+Two sites go the other way, the app counting more used families than the lab: gymshark.com 5 against 3 (the app adds
+`Roboto`, `Montserrat` and `gymshark-icons`) and webflow.com 3 against 2 (it adds `Inconsolata` and `Roboto`). Those
+three extras are fallback and icon families that do render on the page, so counting them is defensible. The other 18
+unblocked sites agree with the lab on the used count. Nothing here is a loss of a downloadable font: declared families
+match on every site except the three named above, and the licensing and download paths are unaffected.
+
 Suspected cause: family grouping (spec 9) keys on the cleaned CSS family name, and Apple declares a numbered family
 per weight, so the weight number is part of the name. Merging them would need a rule for a trailing weight number,
 which risks merging real families. The single family gaps on the other two sites are probably a page difference, not
@@ -179,11 +198,15 @@ including on the same hosts and in the same runs as the losses. The open questio
 candidates it upgrades from the ones it leaves transformed.
 
 Where it does not: 26 of stripe.com's 56 image assets stay on `images.stripeassets.com` with the Contentful query
-intact, 39 of gymshark.com's 64 stay on `www.gymshark.com/_next/image?url=...&w=...`, and the same shape accounts for
-5 on coinbase.com (`images.ctfassets.net` with a query) and 4 on notion.com. The repeat scans in run1b give the
-identical sets. The other 30 stripe.com image assets are already clean `images.stripeassets.com` URLs, and all 28 that
-pair against the lab carried a query in the lab's observed URL, so those are real upgrades, not URLs the page served
-clean.
+intact, 39 of gymshark.com's 64 stay on `www.gymshark.com/_next/image?url=...&w=...`, 5 on coinbase.com stay on
+`images.ctfassets.net` with a query, and 4 on notion.com. The other 30 stripe.com image assets carry no query: 29 are
+on `images.stripeassets.com` and one is on `assets.stripeassets.com`, a host no rule covers, so it is clean because
+the page served it clean, not because a rule cleaned it. Of the 29, the ones that pair against the lab carried a query
+in the lab's observed URL, so those are real upgrades.
+
+Only gymshark.com and squarespace.com were scanned twice: run1b holds those two files and nothing else, so the
+identical counts it shows are evidence for gymshark.com alone. There is no repeat-scan evidence for stripe.com,
+coinbase.com or notion.com, and an earlier version of this document claimed there was.
 
 This is not a stale baseline: two of the originals, re-fetched with the same `Accept` and range headers the app uses
 (`VERIFY_ACCEPT` and `bytes=0-262143` in `src/server/scan/post/verify.ts`), still answer 206 with an image body
@@ -196,10 +219,19 @@ Contentful custom domain, and the Contentful rule in `src/server/scan/post/cdn.t
 `images.(eu.)ctfassets.net` or else the `server` hint, so on a custom domain it fires through the hint alone. That
 hint is `best.server` (`assemble.ts:133`), which comes from `capture.server` (`assemble.ts:411`) and so exists only
 for URLs whose response the collector captured. The `cdn.test.ts` case for this shape ("Contentful by Server header",
-`cdn.test.ts:42`) passes the hint as its fourth element, read at `cdn.test.ts:12`: it shows the rule needs the hint,
-not that the rule fires without it. This site needs the hint (or the rule) fixed and re-measured, not a traced run.
+`cdn.test.ts:42`) supplies the hint as the fourth element of its row; the row is destructured at `cdn.test.ts:56` and
+the hint is passed to `originalCandidates` at `cdn.test.ts:57`. So the case shows the rule needs the hint, not that
+the rule fires without it. This site needs the hint (or the rule) fixed and re-measured, not a traced run.
 
-Suspected cause on gymshark.com: not identified, and this one does need instrumentation. The `/_next/image` rule
+coinbase.com is not in this class, although an earlier version of this document put it there. Its 5 stuck URLs are on
+`images.ctfassets.net` itself, the native Contentful host, which the rule matches on the host pattern alone:
+`originalCandidates` returns a candidate for 5 of 5 with no `server` hint at all. The same holds for 4 of notion.com's
+6 stuck URLs (the other 2 are `www.notion.com/front-static/...?v=2`, a cache-busting version query and not a transform,
+so no candidate is the right answer there). coinbase.com and notion.com therefore belong with gymshark.com below: the
+candidate exists and the loss happens inside `resolve`.
+
+Suspected cause on gymshark.com, coinbase.com and notion.com: not identified, and this one does need instrumentation.
+The `/_next/image` rule
 matches on the path alone, so the candidate is produced and the loss is inside `resolve`. The verify budget is still
 open despite no `verify-skipped` warning, because two paths suppress that warning. `verifyUrl` returns `SKIPPED` from
 its own deadline and abort check (`verify.ts:150`) without incrementing `limiter.skipped`, which only the limiter
