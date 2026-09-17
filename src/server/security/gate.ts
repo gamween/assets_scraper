@@ -1,9 +1,8 @@
 import { createHash, timingSafeEqual } from "node:crypto";
-import net from "node:net";
 import { checkBotId } from "botid/server";
 import { ScanRequest, type ApiError, type ErrorCode } from "@/lib/contract";
 import { normalizeInputUrl } from "@/lib/url";
-import { isOwnHost, isPublicIp, isTestAllowed } from "@/server/net/ip";
+import { isOwnHost, isTestAllowed, privateHostReason } from "@/server/net/ip";
 import { takeScanBudget } from "./budget";
 
 export type GateResult = { ok: true; url: string; host: string; ops: boolean } | { ok: false; response: Response };
@@ -113,9 +112,7 @@ export async function gateScanRequest(request: Request): Promise<GateResult> {
   const hostname = normalized.host.replace(/^\[(.*)\]$/, "$1");
   if (isOwnHost(hostname)) return fail(422, "own-host", "Assets Scraper can't scan itself.");
   const port = Number(url.port || (url.protocol === "https:" ? 443 : 80));
-  const privateLiteral = net.isIP(hostname) !== 0 && !isPublicIp(hostname);
-  const localName = hostname === "localhost" || hostname.endsWith(".localhost");
-  if ((privateLiteral || localName) && !isTestAllowed(hostname, port)) {
+  if (privateHostReason(hostname) && !isTestAllowed(hostname, port)) {
     return fail(422, "blocked-address", "Local and private network addresses are blocked.");
   }
   return { ok: true, url: normalized.url, host: normalized.host, ops };

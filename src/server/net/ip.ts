@@ -75,6 +75,19 @@ export function isTestAllowed(host: string, port: number): boolean {
   });
 }
 
+/**
+ * Why a host is refused before any DNS lookup, or null: `private-ip` for an IP literal outside public unicast space
+ * (bracketed IPv6 and legacy IPv4 spellings included), `private-dns` for `localhost` and `*.localhost`. Case, a port
+ * and root dots are ignored. The one rule shared by the gate, `safeFetch` and `resolvePublicHost`; callers apply the
+ * test allowlist themselves.
+ */
+export function privateHostReason(host: string): "private-ip" | "private-dns" | null {
+  const key = hostKey(host);
+  if (!key) return null;
+  if (ipaddr.isValid(key)) return isPublicIp(key) ? null : "private-ip";
+  return key === "localhost" || key.endsWith(".localhost") ? "private-dns" : null;
+}
+
 const DNS_NAME = /^(?=.{1,253}$)[a-z0-9_-]{1,63}(?:\.[a-z0-9_-]{1,63})*$/;
 
 /**
@@ -95,14 +108,14 @@ export async function resolvePublicHost(host: string, port: number): Promise<str
   if (!name) throw new SsrfError("invalid-host", host);
   if (isOwnHost(name)) throw new SsrfError("own-host", name);
   const allowed = isTestAllowed(name, port);
+  const reason = allowed ? null : privateHostReason(name);
 
   if (ipaddr.isValid(name)) {
-    const ip = ipaddr.parse(name).toString();
-    if (!allowed && !isPublicIp(ip)) throw new SsrfError("private-ip", name);
-    return ip;
+    if (reason) throw new SsrfError(reason, name);
+    return ipaddr.parse(name).toString();
   }
   if (!DNS_NAME.test(name)) throw new SsrfError("invalid-host", host);
-  if (!allowed && (name === "localhost" || name.endsWith(".localhost"))) throw new SsrfError("private-dns", name);
+  if (reason) throw new SsrfError(reason, name);
 
   let records: { address: string }[];
   try {

@@ -2,7 +2,7 @@ import net from "node:net";
 import { Agent, fetch as undiciFetch } from "undici";
 import { limits } from "@/server/config/limits";
 import type { SafeFetch, SafeFetchOptions, SafeResponse } from "@/server/scan/types";
-import { isOwnHost, isPublicIp, isTestAllowed, resolvePublicHost, SsrfError } from "./ip";
+import { isOwnHost, isTestAllowed, privateHostReason, resolvePublicHost, SsrfError } from "./ip";
 
 export type SafeFetchErrorCode = "invalid-url" | "blocked-address" | "own-host" | "unsupported-port" | "dns" | "connect" | "timeout" | "too-large" | "too-many-redirects" | "aborted";
 
@@ -48,8 +48,7 @@ function checkTarget(url: URL): Target {
   const port = Number(url.port || (url.protocol === "https:" ? 443 : 80));
   if (isOwnHost(hostname)) throw new SafeFetchError("own-host", `Own host: ${hostname}`);
   if (isTestAllowed(hostname, port)) return "test";
-  const localName = hostname === "localhost" || hostname.endsWith(".localhost");
-  if ((net.isIP(hostname) && !isPublicIp(hostname)) || localName) throw new SafeFetchError("blocked-address", `Blocked address: ${hostname}`);
+  if (privateHostReason(hostname)) throw new SafeFetchError("blocked-address", `Blocked address: ${hostname}`);
   if (port !== 80 && port !== 443) throw new SafeFetchError("unsupported-port", `Unsupported port: ${port}`);
   return "public";
 }

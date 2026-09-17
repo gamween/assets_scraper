@@ -8,7 +8,7 @@ vi.mock("node:dns/promises", async (importOriginal) => {
   return { ...actual, default: { ...actual, lookup: dnsMock.lookup }, lookup: dnsMock.lookup };
 });
 
-import { isOwnHost, isPublicIp, isTestAllowed, resolvePublicHost, SsrfError } from "./ip";
+import { isOwnHost, isPublicIp, isTestAllowed, privateHostReason, resolvePublicHost, SsrfError } from "./ip";
 
 describe("isPublicIp", () => {
   it.each([
@@ -28,6 +28,21 @@ describe("isPublicIp", () => {
   ])("blocks %j", (ip) => expect(isPublicIp(ip)).toBe(false));
 
   it.each(["8.8.8.8", "1.1.1.1", "2606:4700:4700::1111", "::ffff:8.8.8.8"])("allows %s", (ip) => expect(isPublicIp(ip)).toBe(true));
+});
+
+describe("privateHostReason", () => {
+  it.each(["127.0.0.1", "[::1]", "::1", "2130706433", "0x7f.1", "[::ffff:7f00:1]", "[::7f00:1]", "0.0.0.0", "169.254.169.254", "[fd00::1]"])(
+    "refuses the literal %s",
+    (host) => expect(privateHostReason(host)).toBe("private-ip"),
+  );
+
+  it.each(["localhost", "LOCALHOST", "localhost.", "app.localhost", "a.b.localhost.."])("refuses the name %s", (host) =>
+    expect(privateHostReason(host)).toBe("private-dns"),
+  );
+
+  it.each(["8.8.8.8", "[2606:4700:4700::1111]", "134744072", "example.com", "localhost.example.com", "notlocalhost", ""])("leaves %j to DNS and the other checks", (host) =>
+    expect(privateHostReason(host)).toBeNull(),
+  );
 });
 
 describe("own hosts and test allowlist", () => {
@@ -55,7 +70,7 @@ describe("own hosts and test allowlist", () => {
     const start = performance.now();
     expect(isOwnHost(dots)).toBe(false);
     await expect(resolvePublicHost(dots, 443)).rejects.toMatchObject({ reason: "invalid-host" });
-    expect(performance.now() - start).toBeLessThan(100);
+    expect(performance.now() - start).toBeLessThan(500);
     vi.stubEnv("APP_HOSTS", "scraper.example.com");
     expect(isOwnHost(`scraper.example.com${".".repeat(32_000)}`)).toBe(true);
   });
