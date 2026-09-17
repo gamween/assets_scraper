@@ -1,5 +1,13 @@
+import parse from "css-tree/parser";
 import { describe, expect, it } from "vitest";
 import { parseFontFaceCss, parseFontSrc } from "./css";
+import { fastestMs, growthFactor } from "./testing";
+
+const MIB = 1024 * 1024;
+const BASE = "https://s.example/css/a.css";
+
+/** A stylesheet of `rules` minimal `@font-face` rules, about 50 bytes each. */
+const sheetOf = (rules: number) => Array.from({ length: rules }, (_, index) => `@font-face{font-family:f${index};src:url(${index}.woff2)}`).join("");
 
 describe("parseFontFaceCss", () => {
   it("extracts faces with resolved URLs, formats, weights and ranges", () => {
@@ -27,6 +35,43 @@ describe("parseFontFaceCss", () => {
     ]);
   });
 
+  it("reads rules only where browsers do: at the start of a statement, at the top level or in group rules", () => {
+    const face = (family: string) => `@font-face{font-family:${family};src:url(${family}.woff2)}`;
+    const css = [
+      `@charset "utf-8";@import url(x.css);<!-- ${face("top")} -->`,
+      `@container card (min-width:1px){@layer{.a[title="}"]{content:"{"}${face("container")}}}`,
+      `@FONT-FACE{font-family:upper;src:url(upper.woff2)}@font-face;@font-face junk{font-family:prelude;src:url(prelude.woff2)}`,
+      `.style{${face("nested")}}.value{--x:${face("custom")};color:red}@keyframes k{from{opacity:0}}a ${face("selector")}`,
+      `@media screen{.a{b:c}${face("media")}}/* ${face("comment")} */`,
+    ].join("\n");
+    expect(parseFontFaceCss(css, BASE).map((rule) => rule.family)).toEqual(["top", "container", "upper", "prelude", "media"]);
+  });
+
+  it("reads comments as spaces, drops !important and keeps the last of repeated descriptors", () => {
+    const css = `@font-face{font-family:Brand/* x */Sans !important;src:url(a.woff2)/**/format("woff2"),url(b.woff);font-weight:300;font-weight:bold ! IMPORTANT;unicode-range:U+0-FF/* latin */}`;
+    expect(parseFontFaceCss(css, BASE)).toEqual([
+      { family: "Brand Sans", src: [{ url: "https://s.example/css/a.woff2", format: "woff2" }, { url: "https://s.example/css/b.woff" }], weight: "700", style: "normal", unicodeRange: "U+0-FF", baseUrl: BASE, origin: "network" },
+    ]);
+  });
+
+  it("stops after maxRules rules", () => {
+    expect(parseFontFaceCss(sheetOf(10), BASE, { maxRules: 3 }).map((rule) => rule.family)).toEqual(["f0", "f1", "f2"]);
+    expect(parseFontFaceCss(sheetOf(10), BASE, { maxRules: 0 })).toEqual([]);
+  });
+
+  it("stays linear on large stylesheets, even after css-tree parsed a larger one", async () => {
+    // css-tree's parser keeps buffers sized for the largest source it parsed and clears them on every parse, so
+    // parsing each rule with it made every later stylesheet cost time in proportion to that largest source
+    const sheet = sheetOf(10_000);
+    const before = await fastestMs(() => parseFontFaceCss(sheet, BASE));
+    parse(`/*${" ".repeat(8 * MIB)}*/`);
+    const after = await fastestMs(() => parseFontFaceCss(sheet, BASE));
+    expect(after).toBeLessThan(before * 3 + 10);
+
+    expect(parseFontFaceCss(sheetOf(50_000), BASE)).toHaveLength(50_000);
+    expect(await growthFactor((rules) => parseFontFaceCss(sheetOf(rules), BASE), 12_500)).toBeLessThan(8);
+  }, 60_000);
+
   it("skips rules without a family or a usable source and never throws on junk", () => {
     expect(parseFontFaceCss("@font-face{src:url(a.woff2)} @font-face{font-family:X}", "https://s.example/")).toEqual([]);
     expect(parseFontFaceCss("}}}{{{@font-face{", "https://s.example/")).toEqual([]);
@@ -52,15 +97,27 @@ describe("parseFontSrc", () => {
     ]);
     expect(parseFontSrc("url(url(url(", "https://s.example/")).toEqual([]);
     expect(parseFontSrc("url(   ", "https://s.example/")).toEqual([]);
+    expect(parseFontSrc(`url("a" b), local(), format(woff2), tech(x) url(), "c.woff2"`, "https://s.example/")).toEqual([]);
   });
 
-  it("stays linear on hostile values", () => {
-    const started = performance.now();
-    for (const value of ["url(" + " ".repeat(50_000), "url(".repeat(20_000), `url("${"a".repeat(50_000)}`, "local(".repeat(20_000)]) {
-      parseFontSrc(value, "https://s.example/");
-      parseFontFaceCss(`@font-face{font-family:X;src:${value}}`, "https://s.example/");
-    }
-    expect(performance.now() - started).toBeLessThan(2_000);
+  it("takes the first valid source of each entry and skips stray tokens", () => {
+    expect(parseFontSrc(`format(woff2) url("http://[bad") url(a.woff2) url(b.woff2) format(woff2) format(woff), local() local(Inter) format(woff2)`, "https://s.example/")).toEqual([
+      { url: "https://s.example/a.woff2", format: "woff2" },
+      { local: "Inter" },
+    ]);
+    expect(parseFontSrc(`] url(a.woff2)) format("woff2"`, "https://s.example/")).toEqual([{ url: "https://s.example/a.woff2", format: "woff2" }]);
+  });
+
+  it("stays linear on hostile values", async () => {
+    const hostile = (size: number) => ["url(" + " ".repeat(size), "url(".repeat(size / 4), `url("${"a".repeat(size)}`, "local(".repeat(size / 6), "(".repeat(size), `url(a.woff2)${" format(".repeat(size / 8)}`];
+    const factor = await growthFactor((size) => {
+      for (const value of hostile(size)) {
+        parseFontSrc(value, BASE);
+        parseFontFaceCss(`@font-face{font-family:X;src:${value}}`, BASE);
+        parseFontFaceCss(`@media x{${value}{@font-face{font-family:X;src:url(a.woff2)`, BASE);
+      }
+    }, 40_000);
+    expect(factor).toBeLessThan(8);
   });
 
   it("keeps the first format of a legacy list and drops unresolvable URLs", () => {
