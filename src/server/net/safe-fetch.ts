@@ -17,7 +17,11 @@ export const DEFAULT_USER_AGENT = "Mozilla/5.0 (compatible; AssetsScraper/1.0; +
 
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 const DNS_CODES = new Set(["ENOTFOUND", "EAI_AGAIN", "EAI_NONAME", "EAI_NODATA", "EAI_FAIL"]);
-const CONNECT_TIMEOUT_MS = 10_000;
+/**
+ * Time to open a connection, every address of the host included. Below the preflight deadline (`preflightMs`, 8 s), so
+ * a host that drops SYNs fails as `connect` before the exchange deadline turns it into `timeout`; two lost SYNs still fit.
+ */
+const CONNECT_TIMEOUT_MS = 5_000;
 
 /**
  * DNS for every hostname undici connects to goes through `resolvePublicAddresses`, and the socket connects only to the
@@ -84,8 +88,9 @@ function mapError(error: unknown, signal: AbortSignal, callerSignal: AbortSignal
     }
     const code = (current as { code?: unknown }).code;
     if (typeof code === "string" && DNS_CODES.has(code)) return new SafeFetchError("dns", code);
-    if (code === "UND_ERR_CONNECT_TIMEOUT") return new SafeFetchError("timeout", code);
   }
+  // Everything else, undici's own connect timeout included (a host that drops SYNs), means the host could not be
+  // reached: `connect`. `timeout` is only the exchange deadline above.
   const message = error instanceof Error ? (error.cause instanceof Error ? error.cause.message : error.message) : "Request failed";
   return new SafeFetchError("connect", message);
 }
