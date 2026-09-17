@@ -155,8 +155,9 @@ const MAX_BRAND_LINK_URL_CHARS = 2_048;
 export function safeBrandLinks(links: unknown): PageInfo["brandLinks"] {
   const kept: PageInfo["brandLinks"] = [];
   if (!Array.isArray(links)) return kept;
+  const max = limits.maxBrandLinks;
   for (const link of links) {
-    if (kept.length >= limits.maxBrandLinks) break;
+    if (kept.length >= max) break;
     if (!isRecord(link) || typeof link.href !== "string" || typeof link.text !== "string" || link.href.length > MAX_BRAND_LINK_URL_CHARS) continue;
     let url: URL;
     try {
