@@ -79,6 +79,55 @@ test.describe("error states", () => {
     await expect(page.getByRole("textbox", { name: "Page URL" })).toHaveValue("https://linear.app/");
   });
 
+  test("an invalid address in the top bar keeps the results and the address bar", async ({ page }) => {
+    const linear = loadFixture("linear");
+    await mockAssetRoutes(page, linear);
+    const record = await scan(page, linear);
+    await expect(page.getByTestId("results")).toBeVisible();
+    const field = page.getByTestId("top-bar-url");
+    await field.fill("not a url");
+    await field.press("Enter");
+    const message = page.getByRole("alert").filter({ hasText: "Enter a web address, like linear.app" });
+    await expect(message).toBeVisible();
+    await expect(field).toBeFocused();
+    await expect(field).toHaveAttribute("aria-invalid", "true");
+    await expect(page.getByTestId("results")).toBeVisible();
+    await expect(page).toHaveURL(/\/\?url=https%3A%2F%2Flinear\.app%2F$/);
+    await expect(page).toHaveTitle(/ · linear\.app$/);
+    expect(record.bodies).toHaveLength(1);
+
+    // Esc puts the current address back and clears the message.
+    await field.press("Escape");
+    await expect(field).toHaveValue("https://linear.app/");
+    await expect(message).toHaveCount(0);
+    await expect(page.getByTestId("results")).toBeVisible();
+  });
+
+  test("a timeout that still delivered assets keeps the results keys", async ({ page }) => {
+    const linear = loadFixture("linear");
+    const timedOut: ScanEvent[] = [
+      ...linear.filter((event) => event.type !== "done"),
+      { type: "error", code: "timeout", message: "stream timeout", diagnostics },
+    ];
+    await mockAssetRoutes(page, timedOut);
+    await scan(page, timedOut);
+    await expectPanel(page, "The page took too long to load", null, ["Rescan"]);
+    await expect(page.getByText("Partial results. The page didn't finish loading.")).toBeVisible();
+
+    await page.keyboard.press("2");
+    await expect(page.getByRole("tab", { name: /^SVG/ })).toHaveAttribute("aria-selected", "true");
+    await page.keyboard.press("/");
+    const search = page.getByRole("searchbox", { name: "Filter by name or URL" });
+    await expect(search).toBeFocused();
+    await search.blur();
+    await page.keyboard.press("ControlOrMeta+a");
+    await expect(page.getByRole("region", { name: "Selection" }).getByTestId("selection-count")).toContainText(
+      `${await page.getByTestId("asset-card").count()} selected`,
+    );
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("region", { name: "Selection" })).toHaveCount(0);
+  });
+
   test("access-code asks for the code, retries with the header and stores it", async ({ page }) => {
     const linear = loadFixture("linear");
     await mockAssetRoutes(page, linear);

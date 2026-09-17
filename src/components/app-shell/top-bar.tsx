@@ -2,19 +2,30 @@
 
 import { ArrowRight } from "lucide-react";
 import Link from "next/link";
-import { useId } from "react";
+import { useEffect, useId, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { goHome, submitUrl } from "@/lib/client/scan-session";
 import { useApp } from "@/lib/client/store";
 import { Mark } from "./wordmark";
 
-/** Sticky 56 px bar of the results layout: wordmark, URL field, Scan (spec 12.2, 12.6). */
+/**
+ * Sticky 56 px bar of the results layout: wordmark, URL field, Scan (spec 12.2, 12.6). An address that is not a URL
+ * shows the inline message under this field and keeps the page as it is (spec 13 `invalid-url`); Esc puts the current
+ * address back.
+ */
 export function TopBar() {
   const input = useApp((s) => s.input);
   const inputError = useApp((s) => s.inputError);
+  const url = useApp((s) => s.url);
   const setInput = useApp((s) => s.setInput);
+  const setInputError = useApp((s) => s.setInputError);
+  const inputRef = useRef<HTMLInputElement>(null);
   const errorId = useId();
+
+  useEffect(() => {
+    if (inputError) inputRef.current?.focus();
+  }, [inputError]);
 
   return (
     <header className="sticky top-[env(safe-area-inset-top,0px)] z-40 h-(--top-bar-height) border-b border-border bg-bg">
@@ -42,12 +53,22 @@ export function TopBar() {
         >
           <div className="relative min-w-0 flex-1">
             <Input
+              ref={inputRef}
               name="url"
               aria-label="Page URL"
               data-testid="top-bar-url"
               value={input}
               onChange={(event) => setInput(event.target.value)}
               onFocus={(event) => event.currentTarget.select()}
+              onBlur={() => {
+                if (inputError) setInputError(null);
+              }}
+              onKeyDown={(event) => {
+                if (event.key !== "Escape" || !url || (input === url && !inputError)) return;
+                event.preventDefault();
+                event.stopPropagation();
+                setInput(url);
+              }}
               placeholder="linear.app"
               autoComplete="off"
               autoCapitalize="off"

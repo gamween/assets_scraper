@@ -61,14 +61,16 @@ export function runScan(url: string, host: string, history: HistoryMode = "push"
   });
 }
 
-/** Normalizes user input and scans it; shows the inline error and returns false when the input is not a URL. */
+/**
+ * Normalizes user input and scans it. When the input is not a URL it only shows the inline error under the field the
+ * user typed in (spec 13 `invalid-url`) and returns false: a scan in flight, its results and the address bar stay.
+ */
 export function submitUrl(raw: string, history: HistoryMode = "push"): boolean {
   const result = normalizeInputUrl(raw);
-  const store = appStore.getState();
   if (!result.ok) {
-    if (store.phase !== "idle") store.reset(raw);
-    else store.setInput(raw);
-    appStore.getState().setInputError(INVALID_URL_MESSAGE);
+    const store = appStore.getState();
+    store.setInput(raw);
+    store.setInputError(INVALID_URL_MESSAGE);
     return false;
   }
   runScan(result.url, result.host, history);
@@ -118,8 +120,12 @@ export function syncFromLocation(): void {
   }
   const result = normalizeInputUrl(raw);
   if (!result.ok) {
+    // `/?url=` with something that is not a URL: the landing with the inline message, at `/` like any landing.
+    current?.abort();
+    current = null;
     store.reset(raw);
     appStore.getState().setInputError(INVALID_URL_MESSAGE);
+    writeHistory("/", "replace");
     return;
   }
   const asset = params.get("asset");

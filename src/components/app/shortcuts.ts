@@ -3,7 +3,7 @@
 import { useEffect } from "react";
 import { formatCount } from "@/lib/format";
 import { submitUrl } from "@/lib/client/scan-session";
-import { appStore, useApp } from "@/lib/client/store";
+import { appStore, useApp, type AppState } from "@/lib/client/store";
 import { normalizeInputUrl } from "@/lib/url";
 
 export function isEditableTarget(target: EventTarget | null): boolean {
@@ -45,6 +45,17 @@ export function useDocumentTitle() {
 const TAB_KEYS = { "1": "all", "2": "svg", "3": "images", "4": "fonts" } as const;
 
 /**
+ * Which results keys apply: the full set wherever the results grid shows (a finished scan, or a failed one that still
+ * delivered assets, like a timeout), and everything but the tabs over the fallback assets of a blocked site.
+ */
+export function shortcutScope(state: Pick<AppState, "phase" | "assets" | "fonts" | "error">): "results" | "fallback" | null {
+  if (state.phase === "results") return "results";
+  if (state.phase !== "error") return null;
+  if (state.assets.length + state.fonts.length > 0) return "results";
+  return state.error?.fallback?.length ? "fallback" : null;
+}
+
+/**
  * Spec 12.5 results keys: `/` search, `1` to `4` tabs, Cmd/Ctrl+A select all visible, Esc clears the selection, then
  * the search. The detail view handles its own keys while it is open.
  */
@@ -53,7 +64,8 @@ export function useResultsShortcuts() {
     const onKeyDown = (event: KeyboardEvent) => {
       const state = appStore.getState();
       if (state.detailId || event.defaultPrevented || event.isComposing) return;
-      if (state.phase !== "results" && !(state.phase === "error" && state.error?.fallback?.length)) return;
+      const scope = shortcutScope(state);
+      if (!scope) return;
       const editable = isEditableTarget(event.target);
       const modifier = event.metaKey || event.ctrlKey;
 
@@ -77,7 +89,7 @@ export function useResultsShortcuts() {
         }
         return;
       }
-      if (event.key in TAB_KEYS && state.phase === "results") {
+      if (event.key in TAB_KEYS && scope === "results") {
         event.preventDefault();
         state.setTab(TAB_KEYS[event.key as keyof typeof TAB_KEYS]);
       }
