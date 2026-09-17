@@ -5,6 +5,14 @@ import type { CandidateContext, Rect } from "../types";
 
 const ICON_MAX_SIDE = 48;
 const LOGO_TOP_PX = 160;
+const DRAWABLE = /<(?:path|circle|rect|ellipse|line|polyline|polygon|text|image|use)\b/i;
+
+/** An SVG file that only holds `<symbol>` definitions (an external sprite sheet), so it draws nothing by itself. */
+export function isSpriteSheet(markup: string): boolean {
+  if (!/<symbol\b/i.test(markup)) return false;
+  const outside = markup.replace(/<symbol\b[\s\S]*?<\/symbol\s*>/gi, "").replace(/<defs\b[\s\S]*?<\/defs\s*>/gi, "");
+  return !DRAWABLE.test(outside);
+}
 
 /** logo word 3 + link to home 3 + header or nav 2 + site word 2 + visible within the top 160 px 1 + footer 1. */
 export function logoScore(context: CandidateContext, visible: boolean, rect?: Rect): number {

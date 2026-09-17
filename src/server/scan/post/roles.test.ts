@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { CandidateContext } from "../types";
-import { assignRole, logoScore, relevanceScore, type RoleInput } from "./roles";
+import { assignRole, isSpriteSheet, logoScore, relevanceScore, type RoleInput } from "./roles";
 
 const context = (patch: Partial<CandidateContext> = {}): CandidateContext => ({
   header: false, nav: false, footer: false, homeLink: false, logoWord: false, siteWord: false, logoWall: false,
@@ -64,5 +64,15 @@ describe("relevanceScore", () => {
     expect(relevanceScore({ role: "image", visible: true, renderedWidth: 1200, renderedHeight: 600, order: 100 })).toBeCloseTo(100 + 90 + 50 - 1);
     expect(relevanceScore({ role: "favicon", visible: false, renderedWidth: 16, renderedHeight: 16, order: 0 })).toBe(300);
     expect(relevanceScore({ role: "sprite-symbol", visible: false, order: 3 })).toBeCloseTo(19.97);
+  });
+});
+
+describe("isSpriteSheet", () => {
+  it("recognizes SVG files that only define symbols", () => {
+    expect(isSpriteSheet('<svg xmlns="http://www.w3.org/2000/svg"><symbol id="a" viewBox="0 0 24 24"><path d="M0 0h24v24z"/></symbol></svg>')).toBe(true);
+    expect(isSpriteSheet('<svg><defs><linearGradient id="g"/><symbol id="a"><circle r="4"/></symbol></defs><style>.a{fill:red}</style></svg>')).toBe(true);
+    expect(isSpriteSheet('<svg><defs><symbol id="a"><path d="M0 0h8v8z"/></symbol></defs><use href="#a"/></svg>')).toBe(false);
+    expect(isSpriteSheet('<svg><symbol id="a"><path d="M0 0h8v8z"/></symbol><rect width="8" height="8"/></svg>')).toBe(false);
+    expect(isSpriteSheet('<svg><path d="M0 0h8v8z"/></svg>')).toBe(false);
   });
 });

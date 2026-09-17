@@ -1,6 +1,7 @@
 import type { Browser } from "playwright-core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Asset, Tone } from "@/lib/contract";
+import { SignLimitError } from "@/server/security/sign";
 import { assembleAssets } from "@/server/scan/post/assemble";
 import type { AssetsOutput, PostInput, Signer } from "@/server/scan/types";
 import type { FixtureServer } from "../../fixtures/serve";
@@ -11,10 +12,11 @@ let browser: Browser;
 let input: PostInput;
 let output: AssetsOutput;
 
-const fakeSigner = (): Signer => {
+const fakeSigner = (max = Infinity): Signer => {
   let count = 0;
   return {
     sign: (url) => {
+      if (count >= max) throw new SignLimitError("signing cap");
       count++;
       return `/api/asset?u=${url}`;
     },
@@ -128,7 +130,11 @@ describe("assembleAssets on the fixture page", () => {
   it("gives inline SVGs roles and counts", () => {
     const icons = output.assets.filter((a) => a.inline && "text" in a.inline && a.inline.text.includes("rgb(0, 170, 119)"));
     expect(icons).toEqual([expect.objectContaining({ role: "icon", usedCount: 2, renderedWidth: 40, renderedHeight: 40, width: 40, height: 40, tone: "mixed" })]);
-    expect(output.assets.filter((a) => a.role === "sprite-symbol")).toEqual([expect.objectContaining({ visible: false, foundIn: ["sprite-symbol"] })]);
+    expect(output.assets.filter((a) => a.role === "sprite-symbol" && a.inline)).toEqual([expect.objectContaining({ visible: false, foundIn: ["sprite-symbol"] })]);
+  });
+
+  it("ranks an external sprite sheet file with the sprite symbols", () => {
+    expect(byUrl("sprite.svg")).toEqual([expect.objectContaining({ kind: "svg", role: "sprite-symbol", foundIn: ["network"], visible: false })]);
   });
 });
 
@@ -163,5 +169,17 @@ describe("assembleAssets limits", () => {
     } finally {
       delete process.env.MAX_ASSETS;
     }
+  });
+
+  it("signs the most relevant sources first and warns at the signing cap", async () => {
+    const capped = await assembleAssets({ ...input, signer: fakeSigner(3) });
+    const sources = capped.assets.flatMap((a) => [a.display, a.original]).filter((source) => source !== null);
+    const urls = [...new Set(sources.map((source) => source.url))];
+    expect(urls.length).toBeGreaterThan(3);
+    for (const source of sources) expect(source.proxy).toBe(urls.indexOf(source.url) < 3 ? `/api/asset?u=${source.url}` : "");
+    expect(capped.warnings).toContain("truncated");
+
+    const broken: Signer = { sign: () => { throw new Error("no secret"); }, count: 0 };
+    await expect(assembleAssets({ ...input, signer: broken })).rejects.toThrow("no secret");
   });
 });

@@ -42,16 +42,24 @@ describe("extractStylesheetUrls", () => {
       .c { filter: url(#blur); }
     `;
     expect(extractStylesheetUrls(css, "https://cdn.example/css/site.css")).toEqual([
-      { url: "https://cdn.example/css/img/a.png", property: "background-image", imageSet: false },
-      { url: "https://cdn.example/icons/b.svg", property: "--icon", imageSet: false },
-      { url: "https://cdn.example/css/m.png", property: "mask-image", imageSet: true },
-      { url: "https://cdn.example/css/m@2x.png", property: "mask-image", imageSet: true },
+      { url: "https://cdn.example/css/img/a.png", property: "background-image", declaration: 0, imageSet: false },
+      { url: "https://cdn.example/icons/b.svg", property: "--icon", declaration: 1, imageSet: false },
+      { url: "https://cdn.example/css/m.png", property: "mask-image", declaration: 2, imageSet: true },
+      { url: "https://cdn.example/css/m@2x.png", property: "mask-image", declaration: 2, imageSet: true },
+    ]);
+  });
+
+  it("tells image-set declarations of the same property apart", () => {
+    const css = '.hero{background-image:image-set("a.png" 1x,"a2.png" 2x)} .card{background-image:image-set("c.png" 1x,"c2.png" 2x)}';
+    const urls = extractStylesheetUrls(css, "https://s.example/");
+    expect(urls.map((u) => [u.url, u.declaration])).toEqual([
+      ["https://s.example/a.png", 0], ["https://s.example/a2.png", 0], ["https://s.example/c.png", 1], ["https://s.example/c2.png", 1],
     ]);
   });
 
   it("survives broken CSS", () => {
     expect(extractStylesheetUrls(".a { background: url(ok.png) } }}} .b { color: ", "https://s.example/")).toEqual([
-      { url: "https://s.example/ok.png", property: "background", imageSet: false },
+      { url: "https://s.example/ok.png", property: "background", declaration: 0, imageSet: false },
     ]);
   });
 });

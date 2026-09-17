@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type http from "node:http";
 import path from "node:path";
@@ -20,6 +21,21 @@ const html = (body: string): http.RequestListener => (_req, res) => {
 
 let server: FixtureServer;
 let browser: Browser;
+let noisePng: Buffer;
+let bigPng: Buffer;
+
+const css = (text: string): http.RequestListener => (_req, res) => {
+  res.writeHead(200, { "content-type": "text/css" });
+  res.end(text);
+};
+const withEnv = async <T>(env: Record<string, string>, run: () => Promise<T>): Promise<T> => {
+  Object.assign(process.env, env);
+  try {
+    return await run();
+  } finally {
+    for (const name of Object.keys(env)) delete process.env[name];
+  }
+};
 
 /** A Next.js-style image optimizer: serves a 64 px wide PNG of `url`, cropped square when `crop=1`. */
 const nextImage: http.RequestListener = async (req, res) => {
@@ -49,6 +65,9 @@ async function scan(pathname: string, siteName = "Pages"): Promise<AssetsOutput>
 }
 
 beforeAll(async () => {
+  const noise = (width: number, height: number) => sharp(randomBytes(width * height * 3), { raw: { width, height, channels: 3 } }).png().toBuffer();
+  noisePng = await noise(2, 2);
+  bigPng = await noise(96, 96);
   server = await serveAssetsFixture({
     "/_next/image": nextImage,
     "/originals.html": html(`</head><body>
@@ -70,6 +89,39 @@ beforeAll(async () => {
       res.end(".card { background-image: url(/assets/bg.png); width: 40px; height: 40px } .card:hover { background-image: url(/assets/hover.png) }");
     },
     "/bare.html": html(`</head><body><img src="/assets/poster.jpg" alt="Poster"></body></html>`),
+    "/sheets.html": (req, res) => {
+      const other = `http://localhost:${server.port}`;
+      html(`<link rel="stylesheet" href="${other}/parent.css"><link rel="stylesheet" href="/moved.css"></head><body><p>Nothing rendered</p></body></html>`)(req, res);
+    },
+    "/parent.css": css(`@import url("/child.css");
+      .hero { background-image: image-set("/assets/imgset-1x.png" 1x, "/assets/imgset-2x.png" 2x) }
+      .card { background-image: image-set("/assets/poster.jpg" 1x, "/assets/noscript.jpg" 2x) }`),
+    "/child.css": css(".child:hover { background-image: url(/assets/pseudo.png) }"),
+    "/moved.css": (_req, res) => {
+      res.writeHead(302, { location: `http://localhost:${server.port}/moved-target.css` });
+      res.end();
+    },
+    "/moved-target.css": css(".moved:hover { background-image: url(/assets/iframe.png) }"),
+    "/slow.html": html(`<style>.later:hover { background-image: url(/slow.png) }</style></head><body>
+      <header><a href="/" aria-label="Pages home"><svg width="120" height="40" viewBox="0 0 120 40"><circle cx="20" cy="20" r="18" fill="#fff"/></svg></a></header>
+    </body></html>`),
+    "/slow.png": (_req, res) => {
+      setTimeout(() => {
+        res.writeHead(200, { "content-type": "image/png" });
+        res.end(bigPng);
+      }, 800);
+    },
+    "/noise.html": (req, res) => {
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><path d="${"M0 0h40v40H0z ".repeat(200)}"/></svg>`;
+      html(`<style>.later:hover { background-image: url(/tiny.png) }</style></head><body>
+        <img src="data:image/svg+xml,${encodeURIComponent(svg)}" alt="Big vector">
+        <img src="data:image/png;base64,${bigPng.toString("base64")}" alt="Big raster">
+      </body></html>`)(req, res);
+    },
+    "/tiny.png": (_req, res) => {
+      res.writeHead(200, { "content-type": "image/png" });
+      res.end(noisePng);
+    },
     "/favicon.ico": (_req, res) => {
       res.writeHead(200, { "content-type": "image/x-icon" });
       res.end(readFileSync(path.join(import.meta.dirname, "../../../src/app/favicon.ico")));
@@ -126,5 +178,35 @@ describe("assembleAssets on purpose-built pages", () => {
     const favicon = assets.find((a) => a.original?.url === `${server.origin}/favicon.ico`);
     expect(favicon).toMatchObject({ role: "favicon", format: "ico", foundIn: ["icon-link"], width: expect.any(Number) });
     expect(favicon?.filename).toBe("site-favicon.ico");
+  });
+
+  it("reads captured stylesheets the page could not walk and keeps image-set declarations apart", async () => {
+    const { assets } = await scan("/sheets.html");
+    const other = `http://localhost:${server.port}`;
+    const declared = (name: string) => assets.filter((a) => a.original?.url === `${other}/assets/${name}`);
+    const sets = [[...declared("imgset-1x.png"), ...declared("imgset-2x.png")], [...declared("poster.jpg"), ...declared("noscript.jpg")]];
+    expect(sets).toEqual([
+      [expect.objectContaining({ declaredOnly: true, foundIn: ["stylesheet"] })],
+      [expect.objectContaining({ declaredOnly: true, foundIn: ["stylesheet"] })],
+    ]);
+    expect(declared("pseudo.png")).toEqual([expect.objectContaining({ declaredOnly: true })]);
+    expect(declared("iframe.png")).toEqual([expect.objectContaining({ declaredOnly: true })]);
+  });
+
+  it("tones inline SVGs within the tone budget however long verification took", async () => {
+    const { assets } = await withEnv({ TONE_BUDGET_MS: "300" }, () => scan("/slow.html"));
+    const logo = assets.find((a) => a.role === "site-logo");
+    expect(logo).toMatchObject({ kind: "svg", tone: "light" });
+    expect(assets.find((a) => a.original?.url.endsWith("/slow.png"))).toMatchObject({ declaredOnly: true });
+  });
+
+  it("applies the noise rules to probed files and caps inline bytes", async () => {
+    const { assets, hidden, warnings } = await withEnv({ SVG_MAX_BYTES: "2000", BLOB_MAX_BYTES: "1000" }, () => scan("/noise.html"));
+    expect(assets.some((a) => a.original?.url.endsWith("/tiny.png"))).toBe(false);
+    expect(hidden.pixel).toBe(1);
+    expect(hidden["probe-failed"]).toBeUndefined();
+    expect(assets.filter((a) => a.inline)).toEqual([]);
+    expect(hidden["svg-too-large"]).toBe(1);
+    expect(warnings).toContain("truncated");
   });
 });

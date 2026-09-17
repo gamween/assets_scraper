@@ -2,20 +2,21 @@ import { createHash } from "node:crypto";
 import sharp from "sharp";
 import type { Asset, AssetFormat, AssetKind, AssetSource, FoundIn, HiddenReason, Tone, WarningCode } from "@/lib/contract";
 import { limits } from "@/server/config/limits";
+import { SignLimitError } from "@/server/security/sign";
 import type { AssetsOutput, CapturedImage, CandidateContext, PostInput, RawCandidate } from "../types";
 import { originalCandidates, variantKey } from "./cdn";
 import { extensionFor, formatFromContentType, formatFromUrl, sniffFormat } from "./format";
 import { createFilenamer, displayName } from "./naming";
 import { noiseReason, svgNoiseReason } from "./noise";
 import { decodeDataUri, extractStylesheetUrls } from "./parse";
-import { assignRole, logoScore, relevanceScore } from "./roles";
-import { createToneBudget, type ToneBudget } from "./tone";
+import { assignRole, isSpriteSheet, logoScore, relevanceScore } from "./roles";
+import { createToneBudget } from "./tone";
 import { groupVariants, pickBest, sizeScore, type SizeHints, type VariantMember } from "./variants";
 import { BROWSER_USER_AGENT, createLimiter, verifyUrl, type Limiter } from "./verify";
 
 /**
  * Builds the final `Asset[]` from the collector output and the captured network (spec 8.1 to 8.8): URL records, noise,
- * size variants, CDN originals and probes within the deadline, roles and scores, inline SVGs, names, signing, caps.
+ * size variants, CDN originals and probes within the deadline, roles and scores, inline SVGs, caps, tones, names, signing.
  */
 
 const ELEMENT_SOURCES = new Set<FoundIn>([
@@ -48,9 +49,16 @@ interface UrlRecord extends VariantMember, SizeHints {
 
 type Resolved =
   | { kind: "inline"; member: UrlRecord }
-  | { kind: "remote"; url: string; format: AssetFormat; width?: number; height?: number; bytes?: number; tone?: Tone; body?: Buffer; contentType: string }
+  | {
+      kind: "remote"; url: string; format: AssetFormat; width?: number; height?: number; bytes?: number; tone?: Tone; body?: Buffer;
+      markup?: string; contentType: string;
+    }
+  | { kind: "noise"; reason: HiddenReason }
   | { kind: "failed" }
   | { kind: "skipped" };
+
+/** Bytes to tone once every asset is known; `fallback` replaces an `unknown` result. */
+type ToneJob = { svg: string } | { raster: Buffer; contentType: string; fallback?: Tone };
 
 interface Draft {
   asset: Asset;
@@ -58,6 +66,8 @@ interface Draft {
   label?: string;
   linkText?: string;
   jsonLd: boolean;
+  toneJob?: ToneJob;
+  inlineRasterBytes: number;  // raster bytes sent to the client as base64
 }
 
 const sha1 = (value: string | Buffer) => createHash("sha1").update(value).digest("hex");
@@ -104,7 +114,6 @@ export async function assembleAssets(input: PostInput): Promise<AssetsOutput> {
       return !reason;
     });
 
-    const tone = createToneBudget();
     let probes = 0;
     const resolve = async (members: UrlRecord[], best: UrlRecord): Promise<Resolved> => {
       const byUrl = new Map(members.map((member) => [member.url, member]));
@@ -113,13 +122,14 @@ export async function assembleAssets(input: PostInput): Promise<AssetsOutput> {
       for (const member of [...members].sort((a, b) => sizeScore(b) - sizeScore(a))) attempts.add(member.url);
       let skipped = false;
       let failed = false;
+      let noise: HiddenReason | undefined;
       for (const url of attempts) {
         const member = byUrl.get(url);
         if (member?.inline) return { kind: "inline", member };
         if (member?.capture) {
           return {
             kind: "remote", url, format: formatOf(member), contentType: member.contentType ?? "", tone: member.capture.tone,
-            bytes: member.bytes, ...sizeOf(member),
+            bytes: member.bytes, markup: member.capture.svgText, ...sizeOf(member),
           };
         }
         if (member && member.scheme !== "http") continue;
@@ -133,13 +143,26 @@ export async function assembleAssets(input: PostInput): Promise<AssetsOutput> {
         }
         const result = await limiter.run((signal) => verifyUrl(url, { fetch: input.fetch, pageUrl, signal, deadline: verifyDeadline }));
         if (result.ok) {
-          return { kind: "remote", url, format: result.format, contentType: result.contentType, width: result.width, height: result.height, bytes: result.bytes, body: result.body };
+          // The noise rules again, with the size and type the request found (spec 8.2): a 2x2 file is noise wherever it was declared.
+          const reason = noiseReason({ url, contentType: result.contentType, width: result.width, height: result.height, bytes: result.bytes });
+          if (reason) {
+            noise ??= reason;
+            continue;
+          }
+          return {
+            kind: "remote", url, format: result.format, contentType: result.contentType, width: result.width, height: result.height,
+            bytes: result.bytes, body: result.body,
+          };
         }
         if (result.reason === "verify-skipped") skipped = true;
         else failed = true;
       }
-      if (skipped) warnings.add("verify-skipped");
-      return failed && !skipped ? { kind: "failed" } : { kind: "skipped" };
+      if (skipped) {
+        warnings.add("verify-skipped");
+        return { kind: "skipped" };
+      }
+      if (noise) return { kind: "noise", reason: noise };
+      return failed ? { kind: "failed" } : { kind: "skipped" };
     };
 
     const groups = groupVariants(kept)
@@ -153,22 +176,24 @@ export async function assembleAssets(input: PostInput): Promise<AssetsOutput> {
       groups.map(async ({ members, best }) => {
         const resolved = await resolve(members, best);
         if (resolved.kind === "failed") hide("probe-failed");
-        if (resolved.kind === "failed" || resolved.kind === "skipped") return null;
-        return fileAsset(members, best, resolved, tone);
+        if (resolved.kind === "noise") hide(resolved.reason);
+        if (resolved.kind !== "inline" && resolved.kind !== "remote") return null;
+        return fileAsset(members, best, resolved);
       }),
     );
     // A skipped check that fell back to the page's own version drops nothing but is still partial work.
     if (limiter.skipped > 0) warnings.add("verify-skipped");
 
-    const svgDrafts = await inlineSvgAssets(input, tone, hide);
-    const drafts = [...fileDrafts.filter((draft): draft is Draft => draft !== null), ...svgDrafts];
-    return finish(drafts, input, hidden, warnings);
+    const drafts = rank([...fileDrafts.filter((draft): draft is Draft => draft !== null), ...inlineSvgAssets(input, hide)], warnings);
+    // Tones last, in relevance order: the time budget only counts tone work, never the fetches above.
+    await applyTones(drafts);
+    return { assets: finish(drafts, input, warnings), hidden, warnings: [...warnings] };
   } finally {
     limiter.close();
   }
 }
 
-/** Candidates, stylesheet URLs of unreadable sheets, manifest icons, /favicon.ico and network-only images, by URL. */
+/** Candidates, URLs of captured stylesheets, manifest icons, /favicon.ico and network-only images, by URL. */
 async function buildRecords(input: PostInput, baseUrl: string, limiter: Limiter, deadline: number): Promise<Map<string, UrlRecord>> {
   const { collector, network, page } = input;
   const pageUrl = page.finalUrl;
@@ -239,14 +264,21 @@ async function buildRecords(input: PostInput, baseUrl: string, limiter: Limiter,
 
   for (const candidate of collector.candidates) add(candidate);
 
-  // Stylesheets the page could not read through CSSOM, from their captured text
-  const unreadable = new Set(collector.unreadableSheets);
+  // Captured stylesheet text (spec 8.1). The CSSOM walk already declared every URL of the sheets it could read, so this
+  // adds what it could not reach: cross-origin sheets, their @import children, sheets whose response URL differs from
+  // their href after a redirect, and sheets no longer in the document. The URLs of one image-set() declaration share a group.
+  const parsedSheets = new Set<string>();
   for (const sheet of network.sheets) {
-    if (!unreadable.has(sheet.url) || sheet.status >= 400) continue;
-    let previous = null as { property: string; group: number } | null;
+    if (sheet.status < 200 || sheet.status >= 400 || parsedSheets.has(sheet.url) || !/url\(|image-set\(/i.test(sheet.cssText)) continue;
+    parsedSheets.add(sheet.url);
+    const setGroups = new Map<number, number>();
     for (const item of extractStylesheetUrls(sheet.cssText, sheet.url)) {
-      const group: number = item.imageSet && previous?.property === item.property ? previous.group : nextGroup++;
-      previous = item.imageSet ? { property: item.property, group } : null;
+      if (records.get(item.url)?.foundIn.includes("stylesheet")) continue;
+      let group = item.imageSet ? setGroups.get(item.declaration) : undefined;
+      if (group === undefined) {
+        group = nextGroup++;
+        if (item.imageSet) setGroups.set(item.declaration, group);
+      }
       add(synthetic(item.url, "stylesheet", { group }));
     }
   }
@@ -373,6 +405,8 @@ function sizeOf(record: UrlRecord): { width?: number; height?: number } {
 function recordNoise(record: UrlRecord): HiddenReason | null {
   if (record.capture && (record.capture.status < 200 || record.capture.status >= 400)) return "not-image";
   if (record.scheme === "data" && !record.inline) return "not-image";
+  // SVG markup sent inline has the same cap as inline SVGs (spec 8.2).
+  if (record.inline && record.kind === "svg" && record.inline.buffer.length > limits.svgMaxBytes) return "svg-too-large";
   return noiseReason({
     url: record.url,
     contentType: record.contentType,
@@ -413,7 +447,7 @@ function provisionalScore(members: UrlRecord[], best: UrlRecord): number {
   return relevanceScore({ role, visible: facts.visible, renderedWidth: facts.rendered?.width, renderedHeight: facts.rendered?.height, order: facts.order });
 }
 
-async function fileAsset(members: UrlRecord[], best: UrlRecord, resolved: Extract<Resolved, { kind: "inline" | "remote" }>, tone: ToneBudget): Promise<Draft> {
+function fileAsset(members: UrlRecord[], best: UrlRecord, resolved: Extract<Resolved, { kind: "inline" | "remote" }>): Draft {
   const facts = groupFacts(members);
   const base = {
     foundIn: facts.foundIn,
@@ -430,6 +464,9 @@ async function fileAsset(members: UrlRecord[], best: UrlRecord, resolved: Extrac
   let size: { width?: number; height?: number };
   let asset: Omit<Asset, "role" | "score" | "name" | "filename">;
   let url: string | undefined;
+  let markup: string | undefined;
+  let toneJob: ToneJob | undefined;
+  let inlineRasterBytes = 0;
 
   if (resolved.kind === "inline") {
     const { member } = resolved;
@@ -437,7 +474,10 @@ async function fileAsset(members: UrlRecord[], best: UrlRecord, resolved: Extrac
     format = formatOf(member);
     kind = format === "svg" ? "svg" : "image";
     const text = kind === "svg" ? buffer.toString("utf8") : undefined;
+    markup = text;
     size = text ? svgSize(text) : sizeOf(member);
+    toneJob = text ? { svg: text } : { raster: buffer, contentType: member.inline!.mime };
+    if (!text) inlineRasterBytes = buffer.length;
     asset = defined({
       ...base,
       id: sha1(`inline:${member.sha1 ?? sha1(buffer)}`),
@@ -445,7 +485,7 @@ async function fileAsset(members: UrlRecord[], best: UrlRecord, resolved: Extrac
       format,
       ...size,
       bytes: buffer.length,
-      tone: text ? await tone.svg(text) : await tone.raster(buffer, member.inline!.mime),
+      tone: "unknown" as const,
       display: null,
       original: null,
       inline: text ? { mime: "image/svg+xml" as const, text } : { mime: member.inline!.mime || "application/octet-stream", base64: buffer.toString("base64") },
@@ -469,7 +509,9 @@ async function fileAsset(members: UrlRecord[], best: UrlRecord, resolved: Extrac
         if (Math.abs(size.width / size.height - ratio) / ratio > 0.03) aspectChanged = true;
       }
     }
-    const probedTone = resolved.body ? await tone.raster(resolved.body, resolved.contentType) : undefined;
+    markup = kind === "svg" ? (resolved.markup ?? resolved.body?.toString("utf8")) : undefined;
+    const shownTone = shown?.capture?.tone;
+    if (!resolved.tone && resolved.body) toneJob = { raster: resolved.body, contentType: resolved.contentType, fallback: shownTone };
     asset = defined({
       ...base,
       id: sha1(best.key ?? best.url),
@@ -477,19 +519,23 @@ async function fileAsset(members: UrlRecord[], best: UrlRecord, resolved: Extrac
       format,
       ...size,
       bytes: resolved.bytes,
-      tone: resolved.tone ?? probedTone ?? shown?.capture?.tone ?? "unknown",
+      tone: resolved.tone ?? shownTone ?? "unknown",
       display,
       original,
       aspectChanged,
     });
   }
 
-  const role = assignRole({ kind, ...facts, intrinsic: size });
+  // A file that only defines symbols (an external sprite sheet) draws nothing on a tile: it ranks with sprite symbols.
+  const role = assignRole({ kind, ...facts, intrinsic: size, spriteSymbol: !!markup && isSpriteSheet(markup) });
   const score = relevanceScore({ role, visible: facts.visible, renderedWidth: facts.rendered?.width, renderedHeight: facts.rendered?.height, order: facts.order });
-  return { asset: { ...asset, role, score, name: "", filename: "" }, url, label: facts.label, linkText: facts.linkText, jsonLd: facts.jsonLd };
+  return {
+    asset: { ...asset, role, score, name: "", filename: "" }, url, label: facts.label, linkText: facts.linkText, jsonLd: facts.jsonLd, toneJob,
+    inlineRasterBytes,
+  };
 }
 
-async function inlineSvgAssets(input: PostInput, tone: ToneBudget, hide: (reason: HiddenReason) => void): Promise<Draft[]> {
+function inlineSvgAssets(input: PostInput, hide: (reason: HiddenReason) => void): Draft[] {
   const seen = new Set<string>();
   const svgs = input.collector.svgs.filter((svg) => {
     const reason = svgNoiseReason(svg, limits.svgMaxBytes);
@@ -498,55 +544,82 @@ async function inlineSvgAssets(input: PostInput, tone: ToneBudget, hide: (reason
     seen.add(svg.hash);
     return true;
   });
-  return Promise.all(
-    svgs.map(async (svg): Promise<Draft> => {
-      const symbol = svg.source === "sprite-symbol";
-      const foundIn: FoundIn[] = [symbol ? "sprite-symbol" : "inline-svg"];
-      if (svg.context.shadowRoot) foundIn.push("shadow-dom");
-      if (svg.context.iframe) foundIn.push("iframe");
-      const rendered = svg.visible && svg.rect ? { width: svg.rect.width, height: svg.rect.height } : undefined;
-      const size = svgSize(svg.markup);
-      const score = logoScore(svg.context, svg.visible, svg.rect);
-      const role = assignRole({
-        kind: "svg", foundIn, logoScore: score, logoWord: svg.context.logoWord, logoWall: svg.context.logoWall, label: svg.label,
-        rendered, intrinsic: size, spriteSymbol: symbol,
-      });
-      const asset: Asset = defined({
-        id: sha1(`svg:${svg.hash}`),
-        kind: "svg" as const,
-        role,
-        name: "",
-        filename: "",
-        format: "svg" as const,
-        foundIn,
-        visible: svg.visible,
-        declaredOnly: false,
-        order: svg.order,
-        score: relevanceScore({ role, visible: svg.visible, renderedWidth: rendered?.width, renderedHeight: rendered?.height, order: svg.order }),
-        usedCount: Math.max(1, svg.usedCount),
-        ...size,
-        renderedWidth: rendered?.width,
-        renderedHeight: rendered?.height,
-        bytes: Buffer.byteLength(svg.markup),
-        tone: await tone.svg(svg.markup),
-        display: null,
-        original: null,
-        inline: { mime: "image/svg+xml" as const, text: svg.markup },
-        hasLiveText: svg.hasLiveText || undefined,
-      });
-      return { asset, label: svg.label, linkText: svg.linkText, jsonLd: false };
+  return svgs.map((svg): Draft => {
+    const symbol = svg.source === "sprite-symbol";
+    const foundIn: FoundIn[] = [symbol ? "sprite-symbol" : "inline-svg"];
+    if (svg.context.shadowRoot) foundIn.push("shadow-dom");
+    if (svg.context.iframe) foundIn.push("iframe");
+    const rendered = svg.visible && svg.rect ? { width: svg.rect.width, height: svg.rect.height } : undefined;
+    const size = svgSize(svg.markup);
+    const score = logoScore(svg.context, svg.visible, svg.rect);
+    const role = assignRole({
+      kind: "svg", foundIn, logoScore: score, logoWord: svg.context.logoWord, logoWall: svg.context.logoWall, label: svg.label,
+      rendered, intrinsic: size, spriteSymbol: symbol,
+    });
+    const asset: Asset = defined({
+      id: sha1(`svg:${svg.hash}`),
+      kind: "svg" as const,
+      role,
+      name: "",
+      filename: "",
+      format: "svg" as const,
+      foundIn,
+      visible: svg.visible,
+      declaredOnly: false,
+      order: svg.order,
+      score: relevanceScore({ role, visible: svg.visible, renderedWidth: rendered?.width, renderedHeight: rendered?.height, order: svg.order }),
+      usedCount: Math.max(1, svg.usedCount),
+      ...size,
+      renderedWidth: rendered?.width,
+      renderedHeight: rendered?.height,
+      bytes: Buffer.byteLength(svg.markup),
+      tone: "unknown" as const,
+      display: null,
+      original: null,
+      inline: { mime: "image/svg+xml" as const, text: svg.markup },
+      hasLiveText: svg.hasLiveText || undefined,
+    });
+    return { asset, label: svg.label, linkText: svg.linkText, jsonLd: false, toneJob: { svg: svg.markup }, inlineRasterBytes: 0 };
+  });
+}
+
+/**
+ * Sorts by relevance and applies the result caps: inline raster bytes within the blob caps (2 MB each, 16 MB in total,
+ * spec 7.4 and 14), then `maxAssets`. Anything cut gives the `truncated` warning.
+ */
+function rank(drafts: Draft[], warnings: Set<WarningCode>): Draft[] {
+  drafts.sort((a, b) => b.asset.score - a.asset.score || a.asset.order - b.asset.order || (a.asset.id < b.asset.id ? -1 : 1));
+  let inlineBytes = 0;
+  const kept = drafts.filter((draft) => {
+    if (!draft.inlineRasterBytes) return true;
+    if (draft.inlineRasterBytes <= limits.blobMaxBytes && inlineBytes + draft.inlineRasterBytes <= limits.blobTotalBytes) {
+      inlineBytes += draft.inlineRasterBytes;
+      return true;
+    }
+    warnings.add("truncated");
+    return false;
+  });
+  if (kept.length > limits.maxAssets) {
+    kept.length = limits.maxAssets;
+    warnings.add("truncated");
+  }
+  return kept;
+}
+
+/** Tones in the order of `drafts` (relevance) within the scan tone budget (spec 8.8). */
+async function applyTones(drafts: Draft[]): Promise<void> {
+  const budget = createToneBudget();
+  await Promise.all(
+    drafts.map(async ({ asset, toneJob: job }) => {
+      if (!job) return;
+      const tone = "svg" in job ? await budget.svg(job.svg) : await budget.raster(job.raster, job.contentType);
+      asset.tone = tone === "unknown" && "fallback" in job && job.fallback ? job.fallback : tone;
     }),
   );
 }
 
-/** Sorts by relevance, caps the count, names, makes filenames unique and signs remote sources. */
-function finish(drafts: Draft[], input: PostInput, hidden: Partial<Record<HiddenReason, number>>, warnings: Set<WarningCode>): AssetsOutput {
-  drafts.sort((a, b) => b.asset.score - a.asset.score || a.asset.order - b.asset.order || (a.asset.id < b.asset.id ? -1 : 1));
-  if (drafts.length > limits.maxAssets) {
-    drafts.length = limits.maxAssets;
-    warnings.add("truncated");
-  }
-
+/** Names, makes filenames unique and signs remote sources, most relevant first. */
+function finish(drafts: Draft[], input: PostInput, warnings: Set<WarningCode>): Asset[] {
   const index = new Map<Draft, number>();
   const counters: Record<AssetKind, number> = { svg: 0, image: 0 };
   for (const draft of [...drafts].sort((a, b) => a.asset.order - b.asset.order)) index.set(draft, ++counters[draft.asset.kind]);
@@ -556,20 +629,23 @@ function finish(drafts: Draft[], input: PostInput, hidden: Partial<Record<Hidden
   const signed = new Map<string, string>();
   const sign = (source: AssetSource | null) => {
     if (!source) return;
-    if (!signed.has(source.url)) {
-      let proxy = "";
+    let proxy = signed.get(source.url);
+    if (proxy === undefined) {
       try {
         proxy = input.signer.sign(source.url);
-      } catch {
-        // over the per-scan signing cap: the client uses the direct URL only
+      } catch (error) {
+        if (!(error instanceof SignLimitError)) throw error;
+        // Over the per-scan signing cap (spec 11.2): the less relevant sources keep no proxy.
+        proxy = "";
+        warnings.add("truncated");
       }
       signed.set(source.url, proxy);
     }
-    source.proxy = signed.get(source.url)!;
+    source.proxy = proxy;
   };
 
   const ids = new Set<string>();
-  const assets = drafts.map((draft) => {
+  return drafts.map((draft) => {
     const asset = draft.asset;
     while (ids.has(asset.id)) asset.id = sha1(`${asset.id}:dup`);
     ids.add(asset.id);
@@ -588,5 +664,4 @@ function finish(drafts: Draft[], input: PostInput, hidden: Partial<Record<Hidden
     sign(asset.original);
     return asset;
   });
-  return { assets, hidden, warnings: [...warnings] };
 }

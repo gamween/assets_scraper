@@ -69,7 +69,8 @@ export function extractCssUrls(value: string | null | undefined): string[] {
 export interface StylesheetUrl {
   url: string;
   property: string;
-  imageSet: boolean;       // the URLs of one image-set() value are variants of one image
+  declaration: number;     // which declaration, counted over the declarations with image URLs in sheet order
+  imageSet: boolean;       // the URLs of one image-set() declaration are variants of one image
 }
 
 /** Properties whose `url()` never points at an image asset. */
@@ -81,6 +82,7 @@ const NON_IMAGE_PROPERTY = /^(?:cursor|behavior|clip-path|filter|marker(?:-start
  */
 export function extractStylesheetUrls(cssText: string, baseUrl: string): StylesheetUrl[] {
   const out: StylesheetUrl[] = [];
+  let declaration = 0;
   let ast: csstree.CssNode;
   try {
     ast = csstree.parse(cssText, {
@@ -104,11 +106,12 @@ export function extractStylesheetUrls(cssText: string, baseUrl: string): Stylesh
       const imageSet = /image-set\(/i.test(value);
       for (const raw of extractCssUrls(value)) {
         try {
-          out.push({ url: new URL(raw, baseUrl).href, property, imageSet });
+          out.push({ url: new URL(raw, baseUrl).href, property, declaration, imageSet });
         } catch {
           // not a URL
         }
       }
+      declaration++;
     },
   });
   return out;
