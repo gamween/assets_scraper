@@ -13,11 +13,11 @@ import { startCapture, type CaptureHandle } from "./capture";
 import { buildFallback, directAsset } from "./fallback";
 import { buildFontFamilies } from "./fonts";
 import { COLLECTOR_SOURCE } from "./inpage/generated/collector";
-import { InPageTimeoutError, JSON_ESCAPE_FACTOR, runInPage } from "./inpage/run";
-import { loadAndScroll, openPage, prepareForCollection, readPageFacts, type NavigationResult } from "./navigate";
+import { InPageTimeoutError, runInPage } from "./inpage/run";
+import { loadAndScroll, MAX_TITLE_CHARS, openPage, prepareForCollection, readPageFacts, type NavigationResult } from "./navigate";
 import { extractPalette } from "./palette";
 import { assembleAssets } from "./post/assemble";
-import { preflight, type PreflightResult } from "./preflight";
+import { cutText, MAX_SITE_NAME_CHARS, preflight, type PreflightResult } from "./preflight";
 import type { AssetsOutput, CapturedNetwork, CollectorOptions, FontsOutput, PageContext, PostInput, RawCollectorOutput, SafeFetch, ScanBackend, Signer } from "./types";
 
 export interface ScanEngineDeps {
@@ -58,8 +58,8 @@ const PALETTE_CAP_MS = PALETTE_BUDGET_MS + 1_000;
  */
 const PALETTE_STOP_MS = 1_000;
 /**
- * CPU time post-processing gets after its network deadline. Page work stops this long before the scan deadline, so
- * that what it gathered still turns into results by the deadline.
+ * CPU time post-processing gets at least, after its network deadline. Page work stops this long before the scan
+ * deadline, so that what it gathered still turns into results by the deadline.
  */
 const POST_GRACE_MS = 5_000;
 /** How long a cancelled scan waits for its cleanup (browser kill, proxy close) before the stream ends anyway. */
@@ -73,10 +73,62 @@ const EGRESS_CLOSE_MS = 1_000;
 const MB = 1024 * 1024;
 
 /**
- * Largest collector result in characters of JSON: its byte caps (blob bytes as base64, which JSON never escapes, and
- * inline SVG markup with every character escaped at worst) plus room for candidates, font rules and links.
+ * Characters of JSON the collector output is fitted in (see FIT_COLLECTOR_OUTPUT). Node holds the result several times
+ * while Playwright and the engine parse it, so this bounds the memory a page can make the scan use. It holds the blob
+ * bytes at their cap as base64 (which JSON never escapes), inline SVG markup at its cap with every character escaped
+ * the way ordinary markup can be (quotes, backslashes and line breaks take 2 characters), and room for candidates, font
+ * rules and links.
  */
-const collectorResultChars = () => Math.ceil((limits.blobTotalBytes * 4) / 3) + JSON_ESCAPE_FACTOR * limits.svgTotalBytes + 16 * MB;
+const collectorBudgetChars = () => Math.ceil((limits.blobTotalBytes * 4) / 3) + 2 * limits.svgTotalBytes + 8 * MB;
+/** The fitted output can differ from the budget by a few characters (see FIT_COLLECTOR_OUTPUT). */
+const COLLECTOR_RESULT_SLACK_CHARS = 1_024;
+const COLLECTOR_LISTS = ["candidates", "svgs", "fontFaces", "fontStatuses", "fontUsage", "unreadableSheets", "blobs", "brandLinks"] as const;
+
+/**
+ * In-page code (a function of the collector output and a budget) that runs right after the collector, in its world.
+ * It cuts the title and the site name to one character over their caps (the engine cuts them in Node, see
+ * `pageContextFor`), then fits the output in `budget` characters of JSON: over it, list items go until it fits, first
+ * the candidates that repeat the URL of an earlier candidate (they only add a use of an asset that stays), then the
+ * largest items, and `stats.truncated` is set. The collector caps SVG and blob bytes, but not candidates: a page that
+ * uses a large data: URI on hundreds of elements would otherwise lose the whole collector output.
+ *
+ * Measured sizes count a comma per item, one too many for a list that ends up empty, so the loop keeps a character
+ * of margin per list it touched and the result never goes over the budget.
+ */
+export const FIT_COLLECTOR_OUTPUT = `(output, budget) => {
+  if (!output || typeof output !== "object") return output;
+  const page = output.page;
+  if (page && typeof page === "object") {
+    if (typeof page.title === "string") page.title = page.title.slice(0, ${MAX_TITLE_CHARS + 1});
+    if (typeof page.siteName === "string") page.siteName = page.siteName.slice(0, ${MAX_SITE_NAME_CHARS + 1});
+  }
+  let total = JSON.stringify(output).length;
+  if (total <= budget) return output;
+  const items = [];
+  const urls = new Set();
+  for (const key of ${JSON.stringify(COLLECTOR_LISTS)}) {
+    const list = output[key];
+    if (!Array.isArray(list)) continue;
+    for (let index = 0; index < list.length; index += 1) {
+      const item = list[index];
+      const url = key === "candidates" && item && typeof item.url === "string" ? item.url : undefined;
+      const repeat = url !== undefined && urls.has(url);
+      if (url !== undefined) urls.add(url);
+      items.push({ key, index, repeat, size: (JSON.stringify(item) ?? "null").length + 1 });
+    }
+  }
+  items.sort((a, b) => Number(b.repeat) - Number(a.repeat) || b.size - a.size);
+  const dropped = new Map();
+  for (const item of items) {
+    if (total + dropped.size <= budget) break;
+    if (!dropped.has(item.key)) dropped.set(item.key, new Set());
+    dropped.get(item.key).add(item.index);
+    total -= item.size;
+  }
+  for (const [key, indexes] of dropped) output[key] = output[key].filter((_, index) => !indexes.has(index));
+  if (output.stats && typeof output.stats === "object") output.stats.truncated = true;
+  return output;
+}`;
 
 class DeadlineReached extends Error {
   constructor() {
@@ -128,7 +180,6 @@ function emptyCollectorOutput(nav: NavigationResult, network: CapturedNetwork): 
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
-const COLLECTOR_LISTS = ["candidates", "svgs", "fontFaces", "fontStatuses", "fontUsage", "unreadableSheets", "blobs", "brandLinks"] as const;
 
 /** The top-level shape of collector output. A main-world page can overwrite the collector, and a bug can return nothing. */
 function isCollectorOutput(value: unknown): value is RawCollectorOutput {
@@ -166,11 +217,28 @@ export function safeBrandLinks(links: unknown): PageInfo["brandLinks"] {
       continue;
     }
     if ((url.protocol !== "http:" && url.protocol !== "https:") || url.href.length > MAX_BRAND_LINK_URL_CHARS) continue;
-    // Never half of a surrogate pair at the cut.
-    const text = link.text.trim().slice(0, MAX_BRAND_LINK_TEXT_CHARS).replace(/[\uD800-\uDBFF]$/, "");
+    const text = cutText(link.text.trim(), MAX_BRAND_LINK_TEXT_CHARS);
     kept.push({ href: url.href, text });
   }
   return kept;
+}
+
+/**
+ * The page as post-processing and the final `page` event see it (spec 7.2 phase 10). The collector's title and site
+ * name are cut like the early `page` event's title and the preflight's site name: a page can have a title of megabytes,
+ * and a main-world page can replace the collector.
+ */
+export function pageContextFor(input: { requestedUrl: string; finalUrl: string; collected: RawCollectorOutput["page"]; earlyTitle: string; headSiteName?: string }): PageContext {
+  const { collected } = input;
+  const title = typeof collected.title === "string" ? cutText(collected.title, MAX_TITLE_CHARS).trim() : "";
+  const siteName = typeof collected.siteName === "string" ? cutText(collected.siteName.trim(), MAX_SITE_NAME_CHARS) : "";
+  return {
+    requestedUrl: input.requestedUrl,
+    finalUrl: input.finalUrl,
+    host: new URL(input.finalUrl).hostname,
+    siteName: siteName || input.headSiteName || "",
+    title: title || input.earlyTitle,
+  };
 }
 
 function mergeCounts(...sources: Partial<Record<string, number>>[]): Record<string, number> {
@@ -196,15 +264,16 @@ export function pageWorkMs(deadlineMs: number): number {
 }
 
 /**
- * When post-processing (spec 7.2 phase 10) must end. Network work gets up to `limits.verifyMs`, then CPU work gets
- * POST_GRACE_MS. Network time is cut so that both end by the scan deadline; a scan whose page work was stopped by its
- * deadline gets no network time. Nothing runs past the scan deadline.
+ * When post-processing (spec 7.2 phase 10) must end. Network work gets up to `limits.verifyMs`, cut so that CPU work
+ * still gets POST_GRACE_MS before the scan deadline; a scan whose page work was stopped by its deadline gets no network
+ * time. CPU work (tone, SVG and font parsing) may use the rest of the scan: only the scan deadline stops it, so a slow
+ * instance still gives whole results while time is left. Nothing runs past the scan deadline.
  */
 export function postProcessingWindow(input: { startedAt: number; now: number; deadlineMs: number; verifyMs: number }): { networkDeadline: number; endsAt: number } {
   const { startedAt, now, deadlineMs, verifyMs } = input;
   const scanEnds = startedAt + deadlineMs;
   const networkDeadline = Math.max(now, Math.min(now + verifyMs, scanEnds - POST_GRACE_MS));
-  return { networkDeadline, endsAt: Math.min(networkDeadline + POST_GRACE_MS, scanEnds) };
+  return { networkDeadline, endsAt: scanEnds };
 }
 
 /** Internal errors reach the client without their message, which can hold paths or URLs; the server log keeps it. */
@@ -297,9 +366,7 @@ async function runScan({ url, deps, cancel, emit }: ScanContext): Promise<void> 
 
     // Phase 10: post-processing.
     step("process", "start");
-    const finalUrl = nav.finalUrl;
-    const host = new URL(finalUrl).hostname;
-    const context: PageContext = { requestedUrl: url, finalUrl, host, siteName: collector.page.siteName ?? pre.head?.siteName ?? "", title: collector.page.title || nav.title };
+    const context = pageContextFor({ requestedUrl: url, finalUrl: nav.finalUrl, collected: collector.page, earlyTitle: nav.title, headSiteName: pre.head?.siteName });
     const now = Date.now();
     const postWindow = postProcessingWindow({ startedAt, now, deadlineMs, verifyMs: limits.verifyMs });
     const postTimeout = new AbortController();
@@ -570,19 +637,29 @@ async function runBrowserStage(input: ScanContext & {
           maxBlobBytes: limits.blobMaxBytes,
           maxBlobTotalBytes: limits.blobTotalBytes,
         };
+        const budget = collectorBudgetChars();
+        const expression = `(${FIT_COLLECTOR_OUTPUT})(await globalThis.__assetsScraper.collect(${JSON.stringify(options)}), ${budget})`;
+        let world: "isolated" | "main" | undefined;
         try {
           const result = await timed("collect", () =>
-            runInPage<unknown>(page, deps.collectorSource, `globalThis.__assetsScraper.collect(${JSON.stringify(options)})`, { timeoutMs, signal, maxResultChars: collectorResultChars() }),
+            runInPage<unknown>(page, deps.collectorSource, expression, {
+              timeoutMs,
+              signal,
+              maxResultChars: budget + COLLECTOR_RESULT_SLACK_CHARS,
+              // Recorded as soon as the collector starts, so diagnostics tell the world of a collector that fails too.
+              onWorld: (started) => (world = diagnostics.collector = started),
+            }),
           );
           signal.throwIfAborted();
           if (!isCollectorOutput(result.value)) throw new Error("The collector returned something other than collector output");
           collector = result.value;
-          diagnostics.collector = result.world;
         } catch (error) {
           if (signal.aborted) throw error;
           // Spec 7.3: the collector ran out of time, broke, or lost its page (a crash, an out-of-memory kill, a page
           // that reloads itself). The network capture still holds the page's images, fonts and stylesheets.
-          if (!(error instanceof InPageTimeoutError)) console.error(`Scan ${diagnostics.scanId} collector failed`, error);
+          const where = world ? `in the ${world} world` : "before it started";
+          if (error instanceof InPageTimeoutError) console.warn(`Scan ${diagnostics.scanId} collector timed out ${where}`);
+          else console.error(`Scan ${diagnostics.scanId} collector failed ${where}`, error);
           partial = true;
         }
 

@@ -2,6 +2,7 @@ import type { Page } from "playwright-core";
 import { limits } from "@/server/config/limits";
 import { ScanFailure } from "@/server/errors";
 import { JSON_ESCAPE_FACTOR, runInPage } from "./inpage/run";
+import { cutText } from "./preflight";
 
 export interface NavigationResult {
   status: number;
@@ -20,7 +21,8 @@ export interface PageFacts {
 
 /** Enough markup for block detection (spec 8.9). */
 const HTML_SAMPLE_CHARS = 200_000;
-const MAX_TITLE_CHARS = 2_048;
+/** Longest page title kept, in the early `page` event and the final one. */
+export const MAX_TITLE_CHARS = 2_048;
 /** Cap for the small reads after navigation (title, element count, markup sample). */
 const READ_MS = 3_000;
 const MAX_SCROLL_STEPS = 40;
@@ -48,7 +50,7 @@ const pageFacts = (maxChars: number) => `(() => {
     if (!/^(script|style|noscript|title)$/.test(element.localName)) continue;
     for (let node = element.firstChild; node && html.length < max; node = node.nextSibling) if (node.nodeType === 3) add(node.substringData(0, max - html.length));
   }
-  return { title: String(document.title).slice(0, ${MAX_TITLE_CHARS}), elementCount: all.length, htmlSample: html };
+  return { title: String(document.title).slice(0, ${MAX_TITLE_CHARS + 1}), elementCount: all.length, htmlSample: html };
 })()`;
 const EAGER_IMAGES = `(() => { for (const img of document.querySelectorAll('img[loading="lazy"]')) img.loading = "eager"; })()`;
 const SCROLL_STEP = `(() => {
@@ -139,9 +141,9 @@ export async function readPageFacts(page: Page, options: { signal: AbortSignal; 
   try {
     // The sample and the title in JSON, every character escaped at worst, plus the element count and the keys. A page
     // over this cap would give no facts, and so no markup rules: the cap must hold for any sample.
-    const maxResultChars = JSON_ESCAPE_FACTOR * (sampleChars + MAX_TITLE_CHARS) + 1_024;
+    const maxResultChars = JSON_ESCAPE_FACTOR * (sampleChars + MAX_TITLE_CHARS + 1) + 1_024;
     const { value } = await runInPage<unknown>(page, "", pageFacts(sampleChars), { timeoutMs: READ_MS, signal, maxResultChars });
-    return isPageFacts(value) ? { ...value, title: value.title.trim() } : null;
+    return isPageFacts(value) ? { ...value, title: cutText(value.title, MAX_TITLE_CHARS).trim() } : null;
   } catch {
     if (signal.aborted) throw signal.reason;
     return null;

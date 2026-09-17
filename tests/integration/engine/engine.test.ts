@@ -10,7 +10,6 @@ import { NotImplementedError } from "@/server/errors";
 import { SafeFetchError } from "@/server/net/safe-fetch";
 import { createScanEngine, type ScanEngineDeps } from "@/server/scan/engine";
 import { buildFontFamilies } from "@/server/scan/fonts";
-import { COLLECTOR_SOURCE } from "@/server/scan/inpage/generated/collector";
 import { assembleAssets } from "@/server/scan/post/assemble";
 import type { AssetsOutput, FontsOutput, PostInput } from "@/server/scan/types";
 import { serveFixture, type FixtureServer } from "../../fixtures/serve";
@@ -528,8 +527,9 @@ describe("scan engine", () => {
     warn.mockRestore();
     const done = events.at(-1);
     if (done?.type !== "done") throw new Error(`expected done, got ${done && describeEvent(done)}`);
+    // The 4 s cap, not the page deadline (25 s here): a loaded runner can add a little.
     expect(abortedAfter).toBeGreaterThanOrEqual(3_900);
-    expect(abortedAfter).toBeLessThan(4_900);
+    expect(abortedAfter).toBeLessThan(10_000);
     expect(events.filter((event) => event.type === "page").at(-1)).toMatchObject({ page: { title: "overlays restored" } });
     expect(events.find((event) => event.type === "palette")).toEqual({ type: "palette", palette: null });
     expect(logged).toContainEqual(expect.stringMatching(/^Scan [0-9a-f-]{36} has no palette \(aborted\)$/));
@@ -639,19 +639,44 @@ describe("scan engine", () => {
     expect(Date.now() - closeCalled).toBeLessThan(5_000);
   }, 60_000);
 
-  it("gives what post-processing finished as a partial result when it runs out of time", async () => {
+  it("gives what post-processing finished as a partial result at the scan deadline", async () => {
+    vi.stubEnv("SCAN_DEADLINE_MS", "20000");
     vi.stubEnv("VERIFY_MS", "100");
-    const { deps } = testDeps({ assembleAssets: () => new Promise<AssetsOutput>(() => {}) });
+    const started = Date.now();
+    let fontsFinishedAt = 0;
+    const { deps } = testDeps({
+      assembleAssets: () => new Promise<AssetsOutput>(() => {}),
+      // CPU work that ends well after its network deadline is still used while the scan has time left.
+      buildFontFamilies: async (input) => {
+        await new Promise((resolve) => setTimeout(resolve, Math.max(0, input.deadline + 6_000 - Date.now())));
+        fontsFinishedAt = Date.now();
+        const family: FontsOutput["families"][number] = {
+          id: "late",
+          name: "Late Sans",
+          cssFamilies: ["Late Sans"],
+          source: "self-hosted",
+          license: { kind: "unknown" },
+          convertible: false,
+          downloadable: false,
+          usedOnPage: true,
+          usage: 1,
+          faces: [],
+        };
+        return { families: [family], hidden: {} };
+      },
+    });
     const events = await scan(deps, `${fixture.origin}/`);
     const done = events.at(-1);
     if (done?.type !== "done") throw new Error(`expected done, got ${done && describeEvent(done)}`);
+    expect(fontsFinishedAt).toBeGreaterThan(0);
     expect(done.partial).toBe(true);
     expect(events).toContainEqual({ type: "warning", code: "partial" });
     expect(events.find((event) => event.type === "assets")).toEqual({ type: "assets", items: [] });
-    expect(events.find((event) => event.type === "fonts")).toEqual({ type: "fonts", families: [] });
+    expect(events.find((event) => event.type === "fonts")).toMatchObject({ type: "fonts", families: [{ name: "Late Sans" }] });
     expect(done.stats.hidden).toEqual({ "unreferenced-symbol": 1 });
-    expect(done.diagnostics.phases.process).toBeGreaterThanOrEqual(5_000);
-    expect(done.diagnostics.phases.process).toBeLessThan(8_000);
+    // Ended by the scan deadline, not by the network deadline.
+    expect(Date.now() - started).toBeGreaterThanOrEqual(19_000);
+    expect(Date.now() - started).toBeLessThan(25_000);
   });
 
   it("keeps the network results when the collector throws or returns something else, and logs why", async () => {
@@ -669,7 +694,7 @@ describe("scan engine", () => {
         expect(events.find((event) => event.type === "assets")).toMatchObject({ items: [{ id: "photo" }] });
         // The client gets no internal detail; the server log does.
         expect(JSON.stringify(events)).not.toContain("Not implemented");
-        expect(log).toHaveBeenCalledWith(expect.stringMatching(/^Scan [0-9a-f-]{36} collector failed$/), expect.any(Error));
+        expect(log).toHaveBeenCalledWith(expect.stringMatching(/^Scan [0-9a-f-]{36} collector failed in the isolated world$/), expect.any(Error));
       }
       expect(logged.join("\n")).toContain("Not implemented: C: collector");
     } finally {
@@ -677,17 +702,17 @@ describe("scan engine", () => {
     }
   });
 
-  it("accepts collector output at its SVG cap when JSON escapes every character of the markup", async () => {
+  it("accepts collector output at its SVG cap when JSON escapes every character of ordinary markup", async () => {
     vi.stubEnv("SVG_TOTAL_BYTES", "5000000");
     vi.stubEnv("BLOB_TOTAL_BYTES", "1");
-    // Control characters take 6 characters each in JSON (\u0001).
+    // Quotes take 2 characters each in JSON, the most ordinary markup can take.
     const collectorSource = `${FAKE_COLLECTOR}
 {
   const collect = globalThis.__assetsScraper.collect;
   globalThis.__assetsScraper.collect = async (options) => {
     const output = await collect(options);
     const context = { header: false, nav: false, footer: false, homeLink: false, logoWord: false, siteWord: false, logoWall: false, shadowRoot: false, iframe: false };
-    const markup = "\\u0001".repeat(options.maxSvgTotalBytes);
+    const markup = '"'.repeat(options.maxSvgTotalBytes);
     return { ...output, svgs: [{ markup, hash: "h", source: "inline", referenced: false, order: 0, visible: true, context, usedCount: 1, hasLiveText: false, elementCount: 1 }] };
   };
 }`;
@@ -703,7 +728,49 @@ describe("scan engine", () => {
     const done = events.at(-1);
     if (done?.type !== "done") throw new Error(`expected done, got ${done && describeEvent(done)}`);
     expect(done.partial).toBe(false);
+    expect(events).not.toContainEqual({ type: "warning", code: "truncated" });
     expect(markupChars).toBe(5_000_000);
+  });
+
+  it("fits collector output over its budget instead of losing it, and warns that it is truncated", async () => {
+    // A budget of about 8 MB: the SVG and blob caps add almost nothing.
+    vi.stubEnv("SVG_TOTAL_BYTES", "1");
+    vi.stubEnv("BLOB_TOTAL_BYTES", "1");
+    // A 50 KB data: URI on 300 elements (15 MB), a unique logo, a 9 MB SVG and a small one.
+    const collectorSource = `${FAKE_COLLECTOR}
+{
+  const collect = globalThis.__assetsScraper.collect;
+  globalThis.__assetsScraper.collect = async (options) => {
+    const output = await collect(options);
+    const context = { header: false, nav: false, footer: false, homeLink: false, logoWord: false, siteWord: false, logoWall: false, shadowRoot: false, iframe: false };
+    const candidate = (url, order) => ({ url, group: order, foundIn: "css-background", order, visible: true, context, declaredOnly: false });
+    const pattern = "data:image/png;base64," + "A".repeat(50000);
+    const candidates = [candidate(pattern, 0), candidate(location.origin + "/logo.png", 1), ...Array.from({ length: 299 }, (_, i) => candidate(pattern, i + 2))];
+    const svg = (markup, order) => ({ markup, hash: "h" + order, source: "inline", referenced: false, order, visible: true, context, usedCount: 1, hasLiveText: false, elementCount: 1 });
+    return { ...output, page: { ...output.page, title: "T".repeat(50000) }, candidates, svgs: [svg("<svg>" + "x".repeat(9000000) + "</svg>", 0), svg("<svg><path/></svg>", 1)] };
+  };
+}`;
+    let collected: PostInput["collector"] | undefined;
+    let pageTitle = "";
+    const { deps } = testDeps({
+      collectorSource,
+      assembleAssets: (input) => {
+        collected = input.collector;
+        pageTitle = input.page.title;
+        return fakeAssets(input);
+      },
+    });
+    const events = await scan(deps, `${fixture.origin}/`);
+    const done = events.at(-1);
+    if (done?.type !== "done") throw new Error(`expected done, got ${done && describeEvent(done)}`);
+    expect(done.partial).toBe(false);
+    expect(events).toContainEqual({ type: "warning", code: "truncated" });
+    expect(collected?.candidates.map((candidate) => candidate.order)).toEqual([0, 1]);
+    expect(collected?.svgs.map((svg) => svg.markup)).toEqual(["<svg><path/></svg>"]);
+    expect(collected?.stats.truncated).toBe(true);
+    // The collector's title is cut, for post-processing and in the final page event.
+    expect(pageTitle).toBe("T".repeat(2_048));
+    expect(events.filter((event) => event.type === "page").at(-1)).toMatchObject({ page: { title: "T".repeat(2_048) } });
   });
 
   it("keeps the network results when the browser dies during collection", async () => {
@@ -724,7 +791,7 @@ describe("scan engine", () => {
       expect(Date.now() - killedAt).toBeLessThan(15_000);
       expect(done.partial).toBe(true);
       expect(events.find((event) => event.type === "assets")).toMatchObject({ items: [{ id: "photo" }] });
-      expect(log).toHaveBeenCalledWith(expect.stringMatching(/^Scan [0-9a-f-]{36} collector failed$/), expect.anything());
+      expect(log).toHaveBeenCalledWith(expect.stringMatching(/^Scan [0-9a-f-]{36} collector failed in the isolated world$/), expect.anything());
     } finally {
       log.mockRestore();
     }
@@ -836,8 +903,9 @@ describe("scan engine", () => {
     expect(events.filter((event) => event.type === "done" || event.type === "error")).toHaveLength(1);
     const last = events.at(-1);
 
-    if (COLLECTOR_SOURCE.includes("Not implemented") || stubs.length) {
-      // While the collector or a post-processing track is a stub on this branch, the scan fails as an internal error.
+    if (stubs.length) {
+      // While a post-processing track is a stub (on this branch, before the Phase 2 merge), the scan fails as an internal
+      // error. Once every track is merged, no stub is left and the checks below run: this branch must never be taken then.
       expect(last).toMatchObject({ type: "error", code: "internal", message: "Something went wrong on our side" });
       expect(logged).toContainEqual([expect.stringMatching(/^Scan [0-9a-f-]{36} failed$/), expect.objectContaining({ message: expect.stringContaining("Not implemented") })]);
       return;

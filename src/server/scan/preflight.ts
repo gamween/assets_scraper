@@ -36,7 +36,7 @@ const MAX_HEAD_ENTRIES = 32;
 /** Longer URLs are skipped, so they never take a slot: the fallback cannot use them (they would not fit its line). */
 export const MAX_HEAD_URL_CHARS = 2_048;
 /** Enough for any real site name; `og:site_name` goes into the name of every fallback asset. */
-const MAX_SITE_NAME_CHARS = 200;
+export const MAX_SITE_NAME_CHARS = 200;
 
 const ICON_RELS = new Set(["icon", "apple-touch-icon", "apple-touch-icon-precomposed", "mask-icon", "fluid-icon", "image_src"]);
 const SOCIAL_IMAGE_KEYS = new Set(["og:image", "og:image:url", "og:image:secure_url", "twitter:image", "twitter:image:src"]);
@@ -168,7 +168,7 @@ function* headTags(source: string): Generator<HeadTag> {
 }
 
 /** Cuts `value` to `max` characters without leaving half of a surrogate pair. */
-const cut = (value: string, max: number) => (value.length <= max ? value : value.slice(0, max).replace(/[\uD800-\uDBFF]$/, ""));
+export const cutText = (value: string, max: number) => (value.length <= max ? value : value.slice(0, max).replace(/[\uD800-\uDBFF]$/, ""));
 
 /**
  * Reads what the fallback needs from raw HTML (spec 8.9): title, `og:site_name`, icon links, social images, JSON-LD
@@ -217,7 +217,7 @@ export function parseHead(html: string, baseUrl: string): PageHead {
     } else if (name === "meta") {
       const key = (attributes.get("property") ?? attributes.get("name") ?? "").trim().toLowerCase();
       const value = attributes.get("content")?.trim();
-      if (key === "og:site_name" && value) head.siteName ??= cut(value, MAX_SITE_NAME_CHARS);
+      if (key === "og:site_name" && value) head.siteName ??= cutText(value, MAX_SITE_NAME_CHARS);
       const url = SOCIAL_IMAGE_KEYS.has(key) && !isFull("ogImages") ? fresh("ogImages", value) : undefined;
       if (url) head.ogImages.push(url);
     } else if (name === "script" && !isFull("jsonLdLogos") && attributes.get("type")?.trim().toLowerCase() === "application/ld+json") {
