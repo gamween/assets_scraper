@@ -138,23 +138,62 @@ export async function takeProxyBytes(bytes: number, now: Date = new Date()): Pro
 }
 
 /**
- * Takes `bytes` from today's budget, like `takeProxyBytes`, for work whose served size is only known once it is done.
- * Resolves with `settle(served)`, which keeps at most the reserved bytes and hands the rest back to the day the
- * reservation was taken from (only its first call counts), or with null when the reservation does not fit.
+ * The least a body of unknown length takes from the budget at a time while it streams. Every body in flight holds at
+ * most one partly used block, so concurrent bodies overshoot a store without atomic increments by at most one block
+ * each, instead of by everything they stream before being counted.
  */
-export async function reserveProxyBytes(bytes: number, now: Date = new Date()): Promise<((served: number) => Promise<void>) | null> {
-  const reserved = byteCount(bytes);
-  if (!(await takeProxyBytes(reserved, now))) return null;
-  let settled = false;
-  return async (served) => {
-    if (settled) return;
-    settled = true;
-    const unused = reserved - Math.min(byteCount(served), reserved);
-    if (unused > 0) await incr(proxyKey(now), -unused, PROXY_DAY_TTL);
-  };
+export const PROXY_BYTES_BLOCK = 1024 * 1024;
+
+/** Today's proxied bytes for one body or one piece of work, taken before they are used; see `meterProxyBytes`. */
+export interface ProxyBytesMeter {
+  /** Takes exactly `bytes` more ahead of use (a known length, a first block, the largest possible output). False when they do not fit. */
+  reserve(bytes: number): Promise<boolean>;
+  /**
+   * Counts `bytes` about to be used. When the reservation does not cover them, first reserves the difference, and at
+   * least `PROXY_BYTES_BLOCK`. False when that does not fit, and then nothing is counted.
+   */
+  take(bytes: number): Promise<boolean>;
+  /** Hands back the reserved bytes that were not used, once. Later reservations and takes are refused. */
+  settle(): Promise<void>;
 }
 
-/** Counts bytes already served (a body of unknown length, counted once it ends), even past the limit. */
-export async function countProxyBytes(bytes: number, now: Date = new Date()): Promise<void> {
-  await incr(proxyKey(now), byteCount(bytes), PROXY_DAY_TTL);
+/**
+ * Meters bytes against today's `PROXY_BYTES_PER_DAY` (the day of `now`, also for what is handed back later): bytes are
+ * reserved before they are used, refusals go through `takeProxyBytes` (nothing counted), and `settle` hands back the
+ * unused part. A reservation granted after `settle` is handed back at once.
+ */
+export function meterProxyBytes(now: Date = new Date()): ProxyBytesMeter {
+  let reserved = 0;
+  let used = 0;
+  let settled = false;
+  const handBack = async (bytes: number) => {
+    if (bytes > 0) await incr(proxyKey(now), -bytes, PROXY_DAY_TTL);
+  };
+  const reserve = async (bytes: number) => {
+    const amount = byteCount(bytes);
+    if (settled || !(await takeProxyBytes(amount, now))) return false;
+    if (settled) {
+      await handBack(amount);
+      return false;
+    }
+    reserved += amount;
+    return true;
+  };
+  return {
+    reserve,
+    async take(bytes) {
+      const amount = byteCount(bytes);
+      const shortfall = used + amount - reserved;
+      if (shortfall > 0 && !(await reserve(Math.max(PROXY_BYTES_BLOCK, shortfall)))) return false;
+      // a settle that ran while the block was being granted already handed it back
+      if (settled) return false;
+      used += amount;
+      return true;
+    },
+    async settle() {
+      if (settled) return;
+      settled = true;
+      await handBack(reserved - used);
+    },
+  };
 }

@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import type http from "node:http";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { serveFixture, type FixtureServer } from "../../fixtures/serve";
@@ -8,6 +9,8 @@ const fonts = vi.hoisted(() => ({
   isConvertibleFont: vi.fn(async () => true),
 }));
 vi.mock("@/server/scan/fonts/index", () => fonts);
+const functions = vi.hoisted(() => ({ waitUntil: vi.fn() }));
+vi.mock("@vercel/functions", async (importOriginal) => ({ ...(await importOriginal<typeof import("@vercel/functions")>()), waitUntil: functions.waitUntil }));
 
 import { handleAssetRequest } from "@/server/security/asset-proxy";
 import { MemoryBudgetStore, setBudgetStoreForTests, takeProxyBytes } from "@/server/security/budget";
@@ -19,6 +22,31 @@ const jpg = readFileSync(path.join(SITE, "assets/hero.jpg"));
 const gif = readFileSync(path.join(SITE, "assets/pixel.gif"));
 const woff2 = readFileSync(path.join(SITE, "assets/__inter.woff2"));
 const CSP = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; sandbox";
+const MiB = 1024 * 1024;
+
+/** An upstream that streams `total` bytes in 64 KiB chunks, with a `content-length` only when `sized`. */
+function streamed(total: number, { sized = false, cutAfter }: { sized?: boolean; cutAfter?: number } = {}): http.RequestListener {
+  return (_q, s) => {
+    s.writeHead(200, { "content-type": "image/png", ...(sized && { "content-length": String(total) }) });
+    let sent = 0;
+    const pump = () => {
+      while (sent < total) {
+        if (cutAfter !== undefined && sent >= cutAfter) {
+          s.destroy();
+          return;
+        }
+        const size = Math.min(64 * 1024, total - sent);
+        sent += size;
+        if (!s.write(Buffer.alloc(size))) {
+          s.once("drain", pump);
+          return;
+        }
+      }
+      s.end();
+    };
+    pump();
+  };
+}
 
 const MAGIC: Record<string, [string, Buffer]> = {
   png: ["image/png", png],
@@ -74,6 +102,9 @@ beforeAll(async () => {
     "/sized.png": (_q, s) => { s.writeHead(200, { "content-type": "image/png", "content-length": String(png.length) }); s.end(png); },
     "/not-a-png": (_q, s) => { s.writeHead(200, { "content-type": "image/png" }); s.end("MZ\x90\x00 this is not a png"); },
     "/png-then-stall": (_q, s) => { s.writeHead(200, { "content-type": "font/woff2" }); s.write(png.subarray(0, 64)); },
+    "/chunked-2mib": streamed(2 * MiB),
+    "/chunked-cut": streamed(2 * MiB, { cutAfter: 256 * 1024 }),
+    "/sized-2mib": streamed(2 * MiB, { sized: true }),
     "/referer": (q, s) => { s.writeHead(200, { "content-type": "image/svg+xml" }); s.end(`<svg xmlns="http://www.w3.org/2000/svg"><title>${q.headers.referer}</title></svg>`); },
   };
   for (const [name, [, bytes]] of Object.entries(MAGIC)) {
@@ -91,6 +122,7 @@ afterAll(async () => {
 
 beforeEach(() => {
   setBudgetStoreForTests(new MemoryBudgetStore());
+  functions.waitUntil.mockClear();
   fonts.parseFontBinary.mockClear();
   fonts.isConvertibleFont.mockClear();
   fonts.isConvertibleFont.mockResolvedValue(true);
@@ -110,6 +142,25 @@ const spentIn = (store: MemoryBudgetStore) => store.incr(`proxy:d:${new Date().t
 function proxied(assetPath: string, extra = "", site: string | null = "same-origin"): Request {
   const signed = createSigner().sign(`${upstream.origin}${assetPath}`);
   return new Request(`https://app.local${signed}${extra}`, { headers: site === null ? {} : { "sec-fetch-site": site } });
+}
+
+/** Reads a whole body and returns how many bytes arrived before it ended or failed; 0 for a response that is not 200. */
+async function bytesServed(response: Response): Promise<number> {
+  if (response.status !== 200) {
+    await response.body?.cancel();
+    return 0;
+  }
+  const reader = response.body!.getReader();
+  let size = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return size;
+      size += value.byteLength;
+    }
+  } catch {
+    return size;
+  }
 }
 
 async function errorOf(response: Response): Promise<{ status: number; code: string }> {
@@ -323,13 +374,58 @@ describe("handleAssetRequest", () => {
     expect((await handleAssetRequest(proxied("/sized.png"))).status).toBe(200);
     expect(await errorOf(await handleAssetRequest(proxied("/sized.png")))).toMatchObject({ status: 429 });
 
-    setBudgetStoreForTests(new MemoryBudgetStore());
-    vi.stubEnv("PROXY_BYTES_PER_DAY", "100");
-    const streamed = await handleAssetRequest(proxied("/assets/bg.png"));
-    expect(Buffer.from(await streamed.arrayBuffer())).toEqual(png);
-    // bytes of unknown length are counted once the body ends, without holding the response
-    await vi.waitFor(async () => expect(await takeProxyBytes(0)).toBe(false));
-    expect(await errorOf(await handleAssetRequest(proxied("/assets/logo.svg")))).toMatchObject({ status: 429 });
+    // a body of unknown length needs a whole block before its status: the last block of the day serves known lengths only
+    const store = new MemoryBudgetStore();
+    setBudgetStoreForTests(store);
+    vi.stubEnv("PROXY_BYTES_PER_DAY", String(MiB));
+    const chunked = await handleAssetRequest(proxied("/assets/bg.png"));
+    expect(Buffer.from(await chunked.arrayBuffer())).toEqual(png);
+    await vi.waitFor(async () => expect(await spentIn(store)).toBe(png.length));
+    expect(await errorOf(await handleAssetRequest(proxied("/assets/logo.svg")))).toMatchObject({ status: 429, code: "budget" });
+    expect((await handleAssetRequest(proxied("/sized.png"))).status).toBe(200);
+    expect(await takeProxyBytes(0)).toBe(true);
+  });
+
+  it("keeps concurrent bodies of unknown length within the daily budget plus one block each", async () => {
+    // the upstream is the attacker's: chunked bodies skip the up-front take a content-length gets
+    const budget = 3 * MiB;
+    vi.stubEnv("PROXY_BYTES_PER_DAY", String(budget));
+    const store = new MemoryBudgetStore();
+    setBudgetStoreForTests(store);
+    const responses = await Promise.all(Array.from({ length: 10 }, () => handleAssetRequest(proxied("/chunked-2mib"))));
+    const served = await Promise.all(responses.map(bytesServed));
+    const total = served.reduce((sum, size) => sum + size, 0);
+    expect(total).toBeGreaterThan(0);
+    expect(total).toBeLessThanOrEqual(budget + 10 * MiB);
+    expect(served.filter((size) => size === 2 * MiB).length).toBeLessThan(10);
+    // refused blocks and the unserved part of the last block of each body are handed back
+    await vi.waitFor(async () => expect(await spentIn(store)).toBe(total));
+  });
+
+  it("hands back reserved bytes a body did not serve when it ends, fails or is cancelled, after the response", async () => {
+    const store = new MemoryBudgetStore();
+    setBudgetStoreForTests(store);
+    let expected = 0;
+    const settled = async (bytes: number) => {
+      expected += bytes;
+      await vi.waitFor(async () => expect(await spentIn(store)).toBe(expected));
+      // accounting that runs once the response is out is kept alive past it on Vercel
+      expect(functions.waitUntil).toHaveBeenCalledTimes(1);
+      expect(functions.waitUntil).toHaveBeenCalledWith(expect.any(Promise));
+      functions.waitUntil.mockClear();
+    };
+
+    await settled(await bytesServed(await handleAssetRequest(proxied("/chunked-2mib"))));
+    const failed = await bytesServed(await handleAssetRequest(proxied("/chunked-cut")));
+    expect(failed).toBeLessThan(2 * MiB);
+    await settled(failed);
+
+    for (const source of ["/chunked-2mib", "/sized-2mib"]) {
+      const reader = (await handleAssetRequest(proxied(source))).body!.getReader();
+      const first = await reader.read();
+      await reader.cancel();
+      await settled(first.value!.byteLength);
+    }
   });
 
   it("counts every source byte a conversion downloads, whatever the outcome", async () => {
@@ -352,6 +448,17 @@ describe("handleAssetRequest", () => {
     expect(ttf.status).toBe(200);
     const served = (await ttf.arrayBuffer()).byteLength;
     expect(await spentIn(store)).toBe(before + woff2.length + served);
+  });
+
+  it("stops downloading a conversion source once the budget refuses its next block", async () => {
+    vi.stubEnv("PROXY_BYTES_PER_DAY", String(2 * MiB));
+    const store = new MemoryBudgetStore();
+    setBudgetStoreForTests(store);
+    expect(await errorOf(await handleAssetRequest(proxied("/big.woff2", "&fmt=ttf")))).toMatchObject({ status: 429, code: "budget" });
+    expect(fonts.isConvertibleFont).not.toHaveBeenCalled();
+    const spent = await spentIn(store);
+    expect(spent).toBeGreaterThan(0);
+    expect(spent).toBeLessThanOrEqual(2 * MiB);
   });
 
   it("converts only once the budget covers the largest output woff2 can return", async () => {

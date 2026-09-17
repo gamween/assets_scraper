@@ -1,8 +1,9 @@
+import { waitUntil } from "@vercel/functions";
 import { limits } from "@/server/config/limits";
 import { HttpError } from "@/server/errors";
 import { safeFetch, SafeFetchError, type SafeFetchErrorCode } from "@/server/net/safe-fetch";
 import type { SafeResponse } from "@/server/scan/types";
-import { countProxyBytes, reserveProxyBytes, takeProxyBytes } from "./budget";
+import { meterProxyBytes, PROXY_BYTES_BLOCK, takeProxyBytes } from "./budget";
 import { contentDisposition } from "./download-name";
 import { convertWoff2, takeConversionSlot, WOFF2_MAX_OUTPUT_BYTES, WOFF2_MAX_SOURCE_BYTES } from "./font-convert";
 import { verifyAssetParams } from "./sign";
@@ -46,6 +47,9 @@ function errorResponse(status: number, code: AssetProxyErrorCode, message: strin
   return Response.json({ error: { code, message } }, { status, headers: { ...SAFETY_HEADERS, "cache-control": "no-store", ...headers } });
 }
 
+const BUDGET_MESSAGE = "Daily download limit reached.";
+const budgetExhausted = () => errorResponse(429, "budget", BUDGET_MESSAGE);
+
 /** The upstream response, or the error response for a status outside 2xx. */
 async function fetchAsset(url: string, signal: AbortSignal, maxBytes: number, timeoutMs: number): Promise<SafeResponse | Response> {
   const upstream = await safeFetch(url, {
@@ -81,19 +85,26 @@ async function peek(
   return { head: Buffer.concat(chunks), rest: reader };
 }
 
-/** `head` and the rest of the body in one buffer. Every byte read is counted against the budget, also when the read fails. */
-async function readCounted(reader: ReadableStreamDefaultReader<Uint8Array>, head: Uint8Array): Promise<Buffer> {
-  const chunks = [head];
-  let size = head.byteLength;
+/**
+ * `head` and the rest of the body in one buffer. Every byte read is taken from the budget before it is kept, in blocks,
+ * and stays counted when the download then fails; a block the budget refuses stops the download with 429.
+ */
+async function readBudgeted(reader: ReadableStreamDefaultReader<Uint8Array>, head: Uint8Array): Promise<Buffer> {
+  const budget = meterProxyBytes();
+  const chunks: Uint8Array[] = [];
   try {
-    for (;;) {
+    for (let chunk = head; ; ) {
+      if (!(await budget.take(chunk.byteLength))) {
+        await reader.cancel().catch(() => {});
+        throw new HttpError(429, "budget", BUDGET_MESSAGE);
+      }
+      chunks.push(chunk);
       const { done, value } = await reader.read();
       if (done) return Buffer.concat(chunks);
-      chunks.push(value);
-      size += value.byteLength;
+      chunk = value;
     }
   } finally {
-    await countProxyBytes(size);
+    await budget.settle();
   }
 }
 
@@ -102,10 +113,11 @@ async function readCounted(reader: ReadableStreamDefaultReader<Uint8Array>, head
  * licence allows (`convertWoff2`), so callers name the file from the content type. Other sources get 415 from their
  * first bytes, before the rest is downloaded: TTF and OTF files are served as they are without `fmt`.
  *
- * Budget: every source byte downloaded is counted whatever happens next (a source over the cap, a licence refusal,
- * bytes woff2 refuses), so repeated failures spend the budget like any download instead of costing CPU for free. The
- * conversion then runs only once the most woff2 can return (`WOFF2_MAX_OUTPUT_BYTES`) is reserved, and the part not
- * served is handed back, so the work is never done for an output the budget then refuses.
+ * Budget: every source byte is taken before it is kept and stays counted whatever happens next (a source over the cap,
+ * a licence refusal, bytes woff2 refuses), so repeated failures spend the budget like any download instead of costing
+ * CPU for free; a source the budget stops covering gets 429. The conversion then runs only once the most woff2 can
+ * return (`WOFF2_MAX_OUTPUT_BYTES`) is reserved, and the part not served is handed back, so the work is never done for
+ * an output the budget then refuses.
  *
  * The whole exchange, waiting for a conversion slot and the licence check included, stays within `timeoutMs` (504 past
  * it), so a slot is never held longer; no free slot in time gives 503.
@@ -131,12 +143,11 @@ async function convertFont(
       await rest.cancel().catch(() => {});
       return errorResponse(415, "not-convertible", "Only WOFF2 fonts can be converted.");
     }
-    const source = await readCounted(rest, head);
+    const source = await readBudgeted(rest, head);
 
-    const settle = await reserveProxyBytes(WOFF2_MAX_OUTPUT_BYTES);
-    if (!settle) return errorResponse(429, "budget", "Daily download limit reached.");
-    let served = 0;
+    const output = meterProxyBytes();
     try {
+      if (!(await output.reserve(WOFF2_MAX_OUTPUT_BYTES))) return budgetExhausted();
       const converted = await convertWoff2(source, deadline);
       if (!converted.ok) {
         return converted.reason === "license"
@@ -144,7 +155,7 @@ async function convertFont(
           : errorResponse(415, "not-convertible", "The font could not be converted.");
       }
       const { bytes, contentType } = converted;
-      served = bytes.byteLength;
+      if (!(await output.take(bytes.byteLength))) return budgetExhausted();
       // one chunk of a stream, because Response copies a typed array body: the converted bytes are never copied again
       const body = new ReadableStream<Uint8Array>({
         start(controller) {
@@ -161,7 +172,7 @@ async function convertFont(
         },
       });
     } finally {
-      await settle(served);
+      await output.settle();
     }
   } finally {
     release();
@@ -171,8 +182,13 @@ async function convertFont(
 /**
  * Signed byte proxy behind `GET /api/asset` (spec 11.2): GET only, same-origin callers only, HMAC-checked URL, SSRF-safe
  * fetch with size and time caps, image and font types only (untyped bytes by magic number), sandboxed and not
- * sniffable, cached on the CDN, and counted against the daily proxied bytes budget. `fmt=ttf` decompresses an
- * open-licence WOFF2.
+ * sniffable, cached on the CDN, and taken from the daily proxied bytes budget before it is served. `fmt=ttf`
+ * decompresses an open-licence WOFF2.
+ *
+ * Budget: a body with a known length takes it before its status, a body of unknown length takes `PROXY_BYTES_BLOCK`
+ * (429 when that does not fit, so the last block of a day serves known lengths only), then another block whenever the
+ * next chunk passes what it holds, and errors when the budget refuses one. The part of its last block a body did not
+ * serve goes back when it ends, fails or is cancelled. That runs after the response, through `waitUntil`.
  */
 export async function handleAssetRequest(request: Request, options: AssetProxyOptions = {}): Promise<Response> {
   const maxBytes = options.maxBytes ?? limits.proxyMaxBytes;
@@ -187,7 +203,7 @@ export async function handleAssetRequest(request: Request, options: AssetProxyOp
     if (site !== "same-origin" && site !== "none") return errorResponse(403, "cross-site", "Only this app can load proxied assets.");
 
     const { url, dl, fmt } = verifyAssetParams(new URL(request.url).searchParams);
-    if (!(await takeProxyBytes(0))) return errorResponse(429, "budget", "Daily download limit reached.");
+    if (!(await takeProxyBytes(0))) return budgetExhausted();
     if (fmt === "ttf") return await convertFont(url, dl, request.signal, { maxBytes, timeoutMs });
 
     const upstream = await fetchAsset(url, request.signal, maxBytes, timeoutMs);
@@ -214,17 +230,19 @@ export async function handleAssetRequest(request: Request, options: AssetProxyOp
       await rest.cancel().catch(() => {});
       return errorResponse(415, "unsupported-type", "Only images and fonts can be downloaded.");
     }
-    if (knownLength !== undefined && !(await takeProxyBytes(knownLength))) {
+
+    const budget = meterProxyBytes();
+    if (!(await budget.reserve(knownLength ?? PROXY_BYTES_BLOCK)) || !(await budget.take(head.byteLength))) {
       await rest.cancel().catch(() => {});
-      return errorResponse(429, "budget", "Daily download limit reached.");
+      await budget.settle();
+      return budgetExhausted();
     }
 
-    let served = head.byteLength;
-    let accounted = knownLength !== undefined;
-    const account = () => {
-      if (accounted) return;
-      accounted = true;
-      countProxyBytes(served).catch(() => {});
+    let settled = false;
+    const settle = () => {
+      if (settled) return;
+      settled = true;
+      waitUntil(budget.settle());
     };
     const body = new ReadableStream<Uint8Array>(
       {
@@ -235,19 +253,24 @@ export async function handleAssetRequest(request: Request, options: AssetProxyOp
           try {
             const { done, value } = await rest.read();
             if (done) {
-              account();
+              settle();
               controller.close();
               return;
             }
-            served += value.byteLength;
+            if (!(await budget.take(value.byteLength))) {
+              settle();
+              await rest.cancel().catch(() => {});
+              controller.error(new Error(BUDGET_MESSAGE));
+              return;
+            }
             controller.enqueue(value);
           } catch (error) {
-            account();
+            settle();
             controller.error(error);
           }
         },
         cancel(reason) {
-          account();
+          settle();
           return rest.cancel(reason);
         },
       },
