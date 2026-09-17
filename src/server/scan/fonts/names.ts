@@ -134,8 +134,16 @@ export function binaryFamilyName(meta: NameMeta | null | undefined): string | nu
  * Garbage binary names (".", "false", copyright notices, hashes) are rejected.
  */
 export function resolveFamilyName(meta: NameMeta | null | undefined, cssFamily: string | null | undefined): ResolvedFamilyName {
+  return resolveFamilyNameOf(binaryFamilyName(meta), cssFamily);
+}
+
+/**
+ * `resolveFamilyName` for a binary family name already read with `binaryFamilyName`, so matching one file against many
+ * CSS families reads its name records once. Passing the name as `{ typoFamily: name }` is not the same: the style word
+ * strip of a legacy family name can leave a name too short to be valid on its own.
+ */
+export function resolveFamilyNameOf(bin: string | null, cssFamily: string | null | undefined): ResolvedFamilyName {
   const css = cssFamily ? stripTrailingWord(cleanCssFamily(cssFamily), PLACEHOLDER, "placeholder".length) : null;
-  const bin = binaryFamilyName(meta);
   if (!css || GENERIC_FAMILIES.has(css.toLowerCase())) return { name: bin || css || "(unknown)", basis: "binary" };
   if (!bin) return { name: css, basis: "css" };
   if (isMangledCssFamily(cssFamily)) return { name: bin, basis: "binary (css mangled)" };

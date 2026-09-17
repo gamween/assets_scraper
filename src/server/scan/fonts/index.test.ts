@@ -3,12 +3,12 @@ import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { FontFamily } from "@/lib/contract";
 import { SignLimitError } from "@/server/security/sign";
-import type { CapturedFont, CapturedSheet, PostInput, RawCollectorOutput, Signer } from "../types";
+import type { CapturedFont, CapturedSheet, FontBinaryMeta, PostInput, RawCollectorOutput, Signer } from "../types";
 import { parseFontBinary } from "./binary";
 import { MAX_INLINE_BYTES, MAX_INLINE_FONTS } from "./files";
 import { clearGoogleFontsCache } from "./google";
 import { buildFontFamilies, isConvertibleFont } from "./index";
-import { fakeGoogleFetch, growthFactor, LINEAR_GROWTH_BOUND } from "./testing";
+import { fakeGoogleFetch, fastestMs, growthFactor, LINEAR_GROWTH_BOUND } from "./testing";
 
 vi.mock("./binary", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./binary")>();
@@ -329,6 +329,44 @@ describe("buildFontFamilies", () => {
       expect.soft(factor, name).toBeLessThan(LINEAR_GROWTH_BOUND);
     }
   }, 60_000);
+
+  it("groups and names fonts in time that barely grows with the length of names", async () => {
+    // Each pair of a binary name and a registered family read the file's name records again, in time that also grew
+    // with the family's length: 128 names against 128 families of 50 KB took seconds, where no deadline can stop it
+    const inputs = (length: number) => {
+      const long = "x".repeat(length);
+      // typoFamily, wwsFamily and postscriptName are too long to be names, so each file is named by nameId1
+      const meta = (index: number, records: string): FontBinaryMeta => ({ format: "woff2", nameId1: `Name ${index} Sans`, typoFamily: records, wwsFamily: records, postscriptName: records });
+      const undeclared = (records: string) => Array.from({ length: 128 }, (_, index) => captured(`${PAGE}u${index}.woff2`, meta(index, records)));
+      const sheet = Array.from({ length: 5_000 }, (_, index) => `@font-face{font-family:Sheet${index};src:url(/one.woff2)}`).join("");
+      return [
+        // families registered without a rule
+        inputOf({ fonts: undeclared("x".repeat(60)), fontStatuses: Array.from({ length: 128 }, (_, index) => loaded(`${long}Registered ${index}`)) }),
+        // name records of files without a rule
+        inputOf({ fonts: undeclared(long), fontStatuses: Array.from({ length: 128 }, (_, index) => loaded(`Registered ${index}`)) }),
+        // name records of one file under 10,000 rules of distinct families, from the CSSOM and a captured sheet
+        inputOf({
+          fontFaces: Array.from({ length: 5_000 }, (_, index) => rule(`Face ${index}`, [`${PAGE}one.woff2`])),
+          sheets: [{ url: `${PAGE}a.css`, status: 200, cssText: sheet }],
+          fonts: [captured(`${PAGE}one.woff2`, meta(0, long))],
+        }),
+      ];
+    };
+    const short = inputs(60);
+    const long = inputs(60_000);
+    const results = [];
+    for (const input of long) results.push(await buildFontFamilies(input));
+    expect(results.map(({ families }) => families.length)).toEqual([128, 128, 10_000]);
+    // A family longer than any font name is not matched
+    expect(results[0].families.flatMap((family) => family.cssFamilies)).toEqual([]);
+
+    const run = (batch: PostInput[]) => async () => {
+      for (const input of batch) await buildFontFamilies(input);
+    };
+    await run(short)();
+    // About 1.5 here, and 15 to 90 with any part of the fix undone: 1,000 times longer names cost the time of reading them
+    expect((await fastestMs(run(long))) / (await fastestMs(run(short)))).toBeLessThan(5);
+  }, 120_000);
 
   it("lists the loaded source of a rule, else its best declared format, and skips local() only rules", async () => {
     const base = "https://www.site.example/f/";

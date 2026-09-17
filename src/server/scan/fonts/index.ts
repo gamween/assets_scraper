@@ -6,7 +6,7 @@ import { normalizeStretch, normalizeStyle, normalizeWeight, parseFontFaceCss } f
 import { createFileLookup, isDataUri, remoteUrl, type FileRecord } from "./files";
 import { matchGoogleFamilies } from "./google";
 import { classifyLicense } from "./license";
-import { binaryFamilyName, cleanCssFamily, GENERIC_FAMILIES, resolveFamilyName, splitFamilies } from "./names";
+import { binaryFamilyName, cleanCssFamily, GENERIC_FAMILIES, resolveFamilyName, resolveFamilyNameOf, splitFamilies } from "./names";
 import { coversBasicLatin } from "./unicode";
 
 export { parseFontBinary } from "./binary";
@@ -19,11 +19,13 @@ export { parseFontFaceCss } from "./css";
  * - `@font-face` rules read from the CSSOM, and again from captured stylesheets. Pages with the most rules, CJK fonts
  *   split in about 100 `unicode-range` subsets per weight, have a few thousand.
  * - Families `document.fonts` registered without a rule, and binary names of captured files without a rule: each name
- *   is matched against each family.
+ *   is matched against each family, in time that grows with the family's length. Binary names have 48 characters at
+ *   most, so a registered family longer than `MAX_MATCHED_FAMILY_LENGTH` is not matched.
  */
 const MAX_RULES_PER_SOURCE = 5_000;
 const MAX_REGISTERED_FAMILIES = 128;
 const MAX_UNDECLARED_NAMES = 128;
+const MAX_MATCHED_FAMILY_LENGTH = 256;
 
 /**
  * Whether a font file may be converted to TTF (the asset proxy `fmt=ttf`, spec 9 and 11.2): an open licence in its
@@ -80,6 +82,20 @@ const unquote = (family: string) => family.trim().replace(/^(["'])(.*)\1$/, "$2"
 const isOk = (status: number) => status >= 200 && status < 300;
 const faceKey = (cssFamily: string, face: { weight: string; style: string; stretch?: string }) =>
   JSON.stringify([cssFamily, face.weight, face.style, face.stretch ?? ""]);
+
+/**
+ * `binaryFamilyName` read once per metadata object in a scan: it cleans every name record, which can be 65 KB long, and
+ * many rules and groups can share one file.
+ */
+function createBinaryNames(): (meta: FontBinaryMeta | null) => string | null {
+  const names = new Map<FontBinaryMeta, string | null>();
+  return (meta) => {
+    if (!meta) return null;
+    let name = names.get(meta);
+    if (name === undefined) names.set(meta, (name = binaryFamilyName(meta)));
+    return name;
+  };
+}
 
 function pageHostOf(page: PostInput["page"]): string {
   for (const url of [page.finalUrl, page.requestedUrl]) {
@@ -157,11 +173,18 @@ function addUndeclared(groups: Map<string, Group>, key: string, cssFamilies: str
  * font budget. A face is loaded when a file of it was captured or `document.fonts` says so. Captured files that no rule
  * declares (fonts added with the `FontFace` API, or declared in a stylesheet that was not captured) are grouped by
  * binary name, and take as CSS families the loaded `document.fonts` families without a rule that resolve to that name
- * (`MyInter` for Inter), checking at most `MAX_UNDECLARED_NAMES` names against `MAX_REGISTERED_FAMILIES` families. Such
- * files without a binary name (unreadable bodies) take the one registered family left, and are dropped when there is
- * not exactly one. Also returns the lowercase family names that have a loaded face, for usage.
+ * (`MyInter` for Inter), checking at most `MAX_UNDECLARED_NAMES` names against `MAX_REGISTERED_FAMILIES` families of
+ * `MAX_MATCHED_FAMILY_LENGTH` characters at most. Such files without a binary name (unreadable bodies) take the one
+ * registered family left, and are dropped when there is not exactly one. Also returns the lowercase family names that
+ * have a loaded face, for usage.
  */
-function groupFiles(input: PostInput, rules: RawFontFaceRule[], declaredFamilies: Set<string>, captured: Map<string, CapturedFont>) {
+function groupFiles(
+  input: PostInput,
+  rules: RawFontFaceRule[],
+  declaredFamilies: Set<string>,
+  captured: Map<string, CapturedFont>,
+  binaryName: (meta: FontBinaryMeta | null) => string | null,
+) {
   const files = createFileLookup(captured, pageHostOf(input.page));
   const statuses = input.collector.fontStatuses.map((status) => ({
     name: unquote(status.family),
@@ -221,15 +244,16 @@ function groupFiles(input: PostInput, rules: RawFontFaceRule[], declaredFamilies
         .map((status) => [status.family, status.name]),
     ).values(),
   ];
-  const checkedFamilies = registered.slice(0, MAX_REGISTERED_FAMILIES);
+  const matched = registered.filter((family) => family.length <= MAX_MATCHED_FAMILY_LENGTH);
+  const checkedFamilies = matched.slice(0, MAX_REGISTERED_FAMILIES);
   const aliasesByName = new Map<string, string[]>();
-  let allChecked = registered.length <= MAX_REGISTERED_FAMILIES;
+  let allChecked = matched.length <= MAX_REGISTERED_FAMILIES;
   const named = new Set<string>();
   const unnamed: FileRecord[] = [];
   for (const [url, font] of captured) {
     if (declared.has(url)) continue;
     const file = files.file(url)!;
-    const name = binaryFamilyName(font.meta);
+    const name = binaryName(font.meta);
     if (!name) {
       unnamed.push(file);
       continue;
@@ -238,7 +262,8 @@ function groupFiles(input: PostInput, rules: RawFontFaceRule[], declaredFamilies
     if (!aliases) {
       // `resolveFamilyName` reads a binary only through its family name, so files that share a name share aliases
       const check = aliasesByName.size < MAX_UNDECLARED_NAMES;
-      aliases = check ? checkedFamilies.filter((family) => resolveFamilyName(font.meta, family).name.toLowerCase() === name.toLowerCase()) : [];
+      const lower = name.toLowerCase();
+      aliases = check ? checkedFamilies.filter((family) => resolveFamilyNameOf(name, family).name.toLowerCase() === lower) : [];
       allChecked &&= check;
       aliasesByName.set(name, aliases);
     }
@@ -246,7 +271,8 @@ function groupFiles(input: PostInput, rules: RawFontFaceRule[], declaredFamilies
     loadedFamilies.add(name.toLowerCase());
     addUndeclared(groups, `bin:${name.toLowerCase()}`, aliases, file);
   }
-  // Past either cap, a family could belong to a name that was not checked, so none is known to be left over
+  // Past either cap, a family could belong to a name that was not checked, so none is known to be left over. A family
+  // too long to be matched is left over.
   const unclaimed = allChecked ? registered.filter((family) => !named.has(family)) : [];
   if (unclaimed.length === 1) for (const file of unnamed) addUndeclared(groups, `registered:${unclaimed[0].toLowerCase()}`, unclaimed, file);
   return { groups, loadedFamilies };
@@ -263,13 +289,13 @@ function representative(files: FaceFile[]): FaceFile {
 }
 
 /** Stages 2 and 3: name each group from its representative file, merge groups that share a display name. */
-function nameFamilies(groups: Map<string, Group>) {
+function nameFamilies(groups: Map<string, Group>, binaryName: (meta: FontBinaryMeta | null) => string | null) {
   const families = new Map<string, FamilyRecord>();
   const byCssFamily = new Map<string, FamilyRecord>();
   for (const [groupKey, group] of groups) {
     const rep = representative([...group.faces.values()].flatMap((face) => face.files));
     const [firstCssFamily] = group.cssFamilies;
-    const resolved = resolveFamilyName(rep.file.meta, rep.cssFamily ?? firstCssFamily);
+    const resolved = resolveFamilyNameOf(binaryName(rep.file.meta), rep.cssFamily ?? firstCssFamily);
     const key = resolved.name.toLowerCase();
     let family = families.get(key);
     if (!family) families.set(key, (family = { name: resolved.name, cssFamilies: new Set(), embeddedNames: new Set(), faces: new Map(), chars: 0 }));
@@ -362,8 +388,9 @@ export async function buildFontFamilies(input: PostInput): Promise<FontsOutput> 
     if (url && isOk(font.status) && !captured.has(url)) captured.set(url, font);
   }
   const { rules, declaredFamilies } = collectRules(input);
-  const { groups, loadedFamilies } = groupFiles(input, rules, declaredFamilies, captured);
-  const { families, byCssFamily } = nameFamilies(groups);
+  const binaryName = createBinaryNames();
+  const { groups, loadedFamilies } = groupFiles(input, rules, declaredFamilies, captured, binaryName);
+  const { families, byCssFamily } = nameFamilies(groups, binaryName);
   const totalChars = countUsage(input.collector.fontUsage, loadedFamilies, byCssFamily);
 
   const summaries = families.map((family) => {
