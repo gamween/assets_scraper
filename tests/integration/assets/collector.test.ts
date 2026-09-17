@@ -231,7 +231,7 @@ describe("collector sources", () => {
 });
 
 describe("collector brand links", () => {
-  it("keeps the registrable domain under co.uk-like suffixes and reads camelCase words", async () => {
+  it("keeps the registrable domain under co.uk-like suffixes for brand links and site words, and reads camelCase words", async () => {
     const context = await browser.newContext();
     const page = await context.newPage();
     await page.route("**/*", (route) =>
@@ -240,13 +240,16 @@ describe("collector brand links", () => {
             contentType: "text/html",
             body: `<!doctype html><title>Shop</title>
               <a href="https://assets.shop.co.uk/press">Press</a> <a href="https://www.other.co.uk/brand">Their brand</a>
-              <a href="https://shop.com.au/brand">Australia</a> <a href="/OurBrand">Resources</a> <a href="/about">OurLogos</a>`,
+              <a href="https://shop.com.au/brand">Australia</a> <a href="/OurBrand">Resources</a> <a href="/about">OurLogos</a>
+              <header><a href="/" class="shop-mark"><svg width="80" height="20"><rect width="80" height="20"/></svg></a></header>`,
           })
         : route.fulfill({ status: 404 }),
     );
     await page.goto("https://www.shop.co.uk/");
-    const shop = await runCollector(page, collectorOptions("www.shop.co.uk", "Shop"));
+    // No site name: the site word can only come from the host.
+    const shop = await runCollector(page, collectorOptions("www.shop.co.uk", ""));
     await context.close();
+    expect(shop.svgs.find((svg) => svg.context.homeLink)?.context.siteWord).toBe(true);
     expect(shop.brandLinks).toEqual([
       { href: "https://assets.shop.co.uk/press", text: "Press" },
       { href: "https://www.shop.co.uk/OurBrand", text: "Resources" },

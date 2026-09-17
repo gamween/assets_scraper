@@ -292,7 +292,10 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
   const hostname = location.hostname.replace(/^www\./, "");
   const siteTokens = new Set<string>();
   {
-    const label = hostname.split(".").slice(-2, -1)[0] ?? "";
+    // The label before the public suffix: "shop" for shop.com and for shop.co.uk.
+    const labels = hostname.split(".");
+    const suffix = labels.length > 2 && labels[labels.length - 1].length === 2 && SECOND_LEVEL_LABELS.test(labels[labels.length - 2]) ? 2 : 1;
+    const label = labels[labels.length - 1 - suffix] ?? "";
     if (label.length > 2 && !/^\d+$/.test(label)) siteTokens.add(label.toLowerCase());
     const ogSite = document.querySelector('meta[property="og:site_name"]')?.getAttribute("content");
     const appName = document.querySelector('meta[name="application-name"]')?.getAttribute("content");
