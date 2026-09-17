@@ -235,6 +235,18 @@ describe("assembleAssets on URL-heavy stylesheets", () => {
     expect(warnings).toContain("truncated");
   });
 
+  it("counts the declared URLs the probe budget stopped, instead of dropping them silently", async () => {
+    vi.stubEnv("MAX_STYLESHEET_URLS", "10");
+    vi.stubEnv("MAX_DECLARED_PROBES", "4");
+    const declared = Array.from({ length: 10 }, (_, i) => `${PAGE}img/${i}.png`);
+    const { assets, hidden, warnings } = await run(collectorOutput({}), [], undefined, [sheet(declared)]);
+    expect(assets).toEqual([]);
+    // Four probes run: the implicit /favicon.ico takes one slot and is not counted, three declared URLs take the rest
+    // and fail. The other seven never get a probe, and used to vanish with no hidden entry at all.
+    expect(hidden).toEqual({ "probe-failed": 3, "probe-skipped": 7 });
+    expect(warnings).toContain("verify-skipped");
+  });
+
   it("reads a 15 MB sheet of 370,000 URLs quickly, keeping only the capped records", async () => {
     const urls = Array.from({ length: 370_000 }, (_, i) => `/img/i${i}.png`);
     const started = performance.now();

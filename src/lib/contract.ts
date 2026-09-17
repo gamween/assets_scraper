@@ -172,6 +172,7 @@ export const HiddenReason = z.enum([
   "consent",             // consent manager host
   "widget",              // third-party widget host (reCAPTCHA, hCaptcha, Intercom, maps)
   "probe-failed",        // declared URL whose probe failed
+  "probe-skipped",       // declared URL the scan ran out of probe budget to check
   "blob-unavailable",    // blob: URL without bytes
   "lottie-frame",        // SVG frame of a Lottie animation
   "tiny-svg",            // visible SVG under 6 px

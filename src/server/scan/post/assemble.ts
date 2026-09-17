@@ -190,6 +190,9 @@ export async function assembleAssets(input: PostInput): Promise<AssetsOutput> {
         // A missing or unusable /favicon.ico was never declared by the page, so it is not counted (spec 8.2).
         const declared = members.some((member) => !member.implicit);
         if (declared && resolved.kind === "failed") hide("probe-failed");
+        // The probe budget is a defence, but a group it stops is still a file the page declared and the run dropped:
+        // count it, so the footer accounts for every asset that did not make it (spec 12.2) instead of losing it.
+        if (declared && resolved.kind === "skipped") hide("probe-skipped");
         if (declared && resolved.kind === "noise") hide(resolved.reason);
         if (resolved.kind !== "inline" && resolved.kind !== "remote") return null;
         return fileAsset(members, best, resolved);

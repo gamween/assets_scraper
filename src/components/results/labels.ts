@@ -62,6 +62,7 @@ const HIDDEN_PHRASES: Record<HiddenReason, string> = {
   consent: "consent banners",
   widget: "third-party widgets",
   "probe-failed": "unreachable files",
+  "probe-skipped": "unchecked files",
   "blob-unavailable": "unreadable images",
   "lottie-frame": "animation frames",
   "tiny-svg": "tiny SVGs",
