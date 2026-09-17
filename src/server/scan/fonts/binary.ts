@@ -1,0 +1,307 @@
+import { brotliDecompressSync, inflateRawSync } from "node:zlib";
+import * as fontkit from "fontkit";
+import type { FontFormat } from "@/lib/contract";
+import type { FontBinaryMeta } from "../types";
+import { CONTROL_CHARS } from "./names";
+
+type NameRecords = Partial<Record<string, Partial<Record<string, unknown>>>>;
+
+const KIB = 1024;
+const MIB = 1024 * KIB;
+
+// fontkit decodes synchronously in JavaScript, where neither the scan deadline nor an abort signal can stop it, and an
+// out-of-memory crash cannot be caught. So the bytes are checked before fontkit sees them, with the bounds below.
+
+/**
+ * Signatures of the files fontkit may open: WOFF2, WOFF, OpenType and TrueType. fontkit reads other formats eagerly: a
+ * TrueType collection builds a font for each offset its header lists, and bytes without a known signature are probed as
+ * a DFont resource map, which decodes every type and reference it declares.
+ */
+const PARSED_SIGNATURES = new Set(["wOF2", "wOFF", "OTTO", "true", "\x00\x01\x00\x00"]);
+
+/**
+ * Bounds on what fontkit may decompress for one WOFF or WOFF2 file. fontkit allocates the table sizes a file declares,
+ * and its brotli decoder grows its output past them: a WOFF2 file of 265 bytes can declare 256 MiB, or declare 1 KB and
+ * hold 256 MiB. Web fonts decompress to less than 4 times their file size, and woff2, which converts fonts to TTF for
+ * the asset proxy, returns 30 MiB at most.
+ */
+const MAX_DECOMPRESSED_BYTES = 30 * MIB;
+const MAX_EXPANSION = 16;
+const MIN_DECOMPRESSED_ALLOWANCE = 16 * KIB;
+
+/**
+ * Bounds on the tables `parseFontBinary` has fontkit decode. fontkit decodes every record they declare, and records can
+ * share bytes: a 96 KB `name` table of 8,000 records over one 65,535-byte string takes 600 MB, and 525 KB of `cmap`
+ * records over one subtable take a second and 300 MB. Of 937 macOS system fonts, the largest have 1,263 name records
+ * with 53 KB of strings, 10 `cmap` subtables, 4 axes and 369 named instances.
+ */
+const MAX_NAME_RECORDS = 4_096;
+const MAX_NAME_STRING_BYTES = 256 * KIB;
+const MAX_CMAP_SUBTABLES = 64;
+const MAX_AXES = 64;
+const MAX_NAMED_INSTANCES = 1_024;
+const CHECKED_TABLES = new Set(["name", "cmap", "fvar"]);
+
+const SFNT_HEADER_BYTES = 12;
+const SFNT_TABLE_ENTRY_BYTES = 16;
+const WOFF_HEADER_BYTES = 44;
+const WOFF_TABLE_ENTRY_BYTES = 20;
+const WOFF2_HEADER_BYTES = 48;
+/** The known table tags of WOFF2, 4 characters each, by the index in a table directory entry's flags. */
+const WOFF2_KNOWN_TAGS =
+  "cmapheadhheahmtxmaxpnameOS/2postcvt fpgmglyflocaprepCFF VORGEBDTEBLCgasphdmxkernLTSHPCLTVDMXvheavmtxBASEGDEFGPOSGSUB" +
+  "EBSCJSTFMATHCBDTCBLCCOLRCPALSVG sbixacntavarbdatblocbslncvarfdscfeatfmtxfvargvarhstyjustlcarmortmorxopbdproptrakZapf" +
+  "SilfGlatGlocFeatSill";
+/** The index of an explicit tag, which follows the flags. */
+const WOFF2_CUSTOM_TAG = 0x3f;
+
+/** Font format from the file signature, whatever the URL or content type says. */
+export function sniffFontFormat(buffer: Buffer): FontFormat {
+  if (buffer.length >= 4) {
+    const tag = buffer.toString("latin1", 0, 4);
+    if (tag === "wOF2") return "woff2";
+    if (tag === "wOFF") return "woff";
+    if (tag === "OTTO") return "otf";
+    if (tag === "true" || tag === "typ1" || buffer.readUInt32BE(0) === 0x00010000) return "ttf";
+  }
+  // EOT: MagicNumber 0x504C at offset 34, little-endian
+  if (buffer.length >= 36 && buffer.readUInt16LE(34) === 0x504c) return "eot";
+  return "other";
+}
+
+/**
+ * Whether fontkit may open the file and read what `parseFontBinary` reads in bounded time and memory:
+ * - a WOFF2, WOFF, OpenType or TrueType signature (not a TrueType collection, EOT or anything else);
+ * - no table tag listed twice, since fontkit keeps the last one;
+ * - for WOFF and WOFF2, at most 16 times the file size of decompressed tables (16 KiB for tiny files) and 30 MiB, as the
+ *   header, the table directory and the compressed streams themselves say;
+ * - a `name` table, and `name`, `cmap` and `fvar` tables within the bounds above, read from the bytes fontkit decodes.
+ */
+export function withinParseLimits(buffer: Buffer): boolean {
+  const tables = readCheckedTables(buffer);
+  const name = tables?.get("name");
+  const cmap = tables?.get("cmap");
+  const fvar = tables?.get("fvar");
+  return !!name && withinNameLimits(name) && (!cmap || withinCmapLimits(cmap)) && (!fvar || withinFvarLimits(fvar));
+}
+
+/**
+ * The bytes fontkit decodes the checked tables of a file from, by tag, for tables of a positive length (fontkit skips the
+ * others). Null when the file breaks the signature, directory or decompression rules of `withinParseLimits`.
+ */
+function readCheckedTables(buffer: Buffer): Map<string, Buffer> | null {
+  const signature = buffer.toString("latin1", 0, 4);
+  if (!PARSED_SIGNATURES.has(signature)) return null;
+  if (signature !== "wOF2" && signature !== "wOFF") return sfntTables(buffer);
+  const allowance = Math.min(MAX_DECOMPRESSED_BYTES, Math.max(MIN_DECOMPRESSED_ALLOWANCE, buffer.length * MAX_EXPANSION));
+  return signature === "wOF2" ? woff2Tables(buffer, allowance) : woffTables(buffer, allowance);
+}
+
+/** OpenType and TrueType: fontkit reads each table in place, at the offset of its directory entry. */
+function sfntTables(buffer: Buffer): Map<string, Buffer> | null {
+  if (buffer.length < SFNT_HEADER_BYTES) return null;
+  const count = buffer.readUInt16BE(4);
+  if (buffer.length < SFNT_HEADER_BYTES + count * SFNT_TABLE_ENTRY_BYTES) return null;
+  const tables = new Map<string, Buffer>();
+  const tags = new Set<string>();
+  for (let index = 0; index < count; index += 1) {
+    const entry = SFNT_HEADER_BYTES + index * SFNT_TABLE_ENTRY_BYTES;
+    const tag = buffer.toString("latin1", entry, entry + 4);
+    const offset = buffer.readUInt32BE(entry + 8);
+    const length = buffer.readUInt32BE(entry + 12);
+    if (tags.has(tag)) return null;
+    tags.add(tag);
+    if (length > 0 && CHECKED_TABLES.has(tag)) tables.set(tag, buffer.subarray(offset, offset + length));
+  }
+  return tables;
+}
+
+/**
+ * WOFF: `totalSfntSize` and the sum of `origLength` within the allowance, and each zlib-compressed table inflating
+ * completely within its `origLength`. Native zlib checks that, because fontkit's JavaScript inflate keeps decoding past
+ * the output it allocated and never returns on a truncated stream.
+ */
+function woffTables(buffer: Buffer, allowance: number): Map<string, Buffer> | null {
+  if (buffer.length < WOFF_HEADER_BYTES || buffer.readUInt32BE(16) > allowance) return null;
+  const count = buffer.readUInt16BE(12);
+  if (buffer.length < WOFF_HEADER_BYTES + count * WOFF_TABLE_ENTRY_BYTES) return null;
+  const tables = new Map<string, Buffer>();
+  const tags = new Set<string>();
+  let total = 0;
+  for (let index = 0; index < count; index += 1) {
+    const entry = WOFF_HEADER_BYTES + index * WOFF_TABLE_ENTRY_BYTES;
+    const tag = buffer.toString("latin1", entry, entry + 4);
+    const offset = buffer.readUInt32BE(entry + 4);
+    const compLength = buffer.readUInt32BE(entry + 8);
+    const origLength = buffer.readUInt32BE(entry + 12);
+    total += origLength;
+    if (tags.has(tag) || total > allowance) return null;
+    tags.add(tag);
+    let bytes: Buffer;
+    if (compLength >= origLength) {
+      // fontkit reads a table stored uncompressed in place
+      bytes = buffer.subarray(offset, offset + origLength);
+    } else {
+      try {
+        // fontkit skips the 2-byte zlib header and inflates the rest of `compLength` bytes into `origLength` bytes
+        bytes = inflateRawSync(buffer.subarray(offset + 2, offset + compLength), { maxOutputLength: origLength });
+      } catch {
+        return null;
+      }
+    }
+    if (origLength > 0 && CHECKED_TABLES.has(tag)) tables.set(tag, bytes);
+  }
+  return tables;
+}
+
+/**
+ * WOFF2: `totalSfntSize` and the sum fontkit decompresses (each table's `transformLength`, else its `origLength`) within
+ * the allowance, then the brotli stream decompressed natively into at most that sum. fontkit finds each table in the
+ * decompressed data by adding up the sizes of the tables before it, in the key order of an object keyed by tag, which
+ * puts integer-like tags such as `1234` first.
+ */
+function woff2Tables(buffer: Buffer, allowance: number): Map<string, Buffer> | null {
+  if (buffer.length < WOFF2_HEADER_BYTES || buffer.readUInt32BE(16) > allowance) return null;
+  let pos = WOFF2_HEADER_BYTES;
+  // UIntBase128 with fontkit's 32-bit arithmetic, so a length reads as the same number. -1 when fontkit throws.
+  const readBase128 = (): number => {
+    let result = 0;
+    for (let i = 0; i < 5 && pos < buffer.length; i += 1) {
+      const code = buffer[pos++];
+      if (result & 0xe0000000) return -1;
+      result = (result << 7) | (code & 0x7f);
+      if (!(code & 0x80)) return result;
+    }
+    return -1;
+  };
+  const entries: Record<string, { origLength: number; size: number }> = {};
+  let total = 0;
+  for (let count = buffer.readUInt16BE(12); count > 0; count -= 1) {
+    if (pos >= buffer.length) return null;
+    const flags = buffer[pos++];
+    const index = flags & 0x3f;
+    let tag = WOFF2_KNOWN_TAGS.slice(index * 4, index * 4 + 4);
+    if (index === WOFF2_CUSTOM_TAG) {
+      tag = buffer.toString("latin1", pos, pos + 4);
+      pos += 4;
+    }
+    const origLength = readBase128();
+    // `glyf` and `loca` are transformed with transform version 0, other tables with any other version
+    const transformed = tag === "glyf" || tag === "loca" ? flags >>> 6 === 0 : flags >>> 6 !== 0;
+    const size = transformed ? readBase128() : origLength;
+    if (origLength < 0 || size < 0 || Object.hasOwn(entries, tag)) return null;
+    total += size;
+    if (total > allowance) return null;
+    entries[tag] = { origLength, size };
+  }
+  let data: Buffer;
+  try {
+    data = brotliDecompressSync(buffer.subarray(pos, pos + buffer.readUInt32BE(20)), { maxOutputLength: total });
+  } catch {
+    return null;
+  }
+  const tables = new Map<string, Buffer>();
+  let offset = 0;
+  for (const tag in entries) {
+    const { origLength, size } = entries[tag];
+    if (origLength > 0 && CHECKED_TABLES.has(tag)) tables.set(tag, data.subarray(offset, offset + size));
+    offset += size;
+  }
+  return tables;
+}
+
+/**
+ * `name`: at most `MAX_NAME_RECORDS` name records and language tags, each string inside the table, and at most
+ * `MAX_NAME_STRING_BYTES` of strings counted per record, since fontkit decodes the string of each record on its own.
+ */
+function withinNameLimits(table: Buffer): boolean {
+  if (table.length < 6) return false;
+  const version = table.readUInt16BE(0);
+  const records = table.readUInt16BE(2);
+  const storage = table.readUInt16BE(4);
+  const recordsEnd = 6 + records * 12;
+  // Version 1 lists language tags after the name records, each a string in the storage area too
+  const langTags = version === 1 && recordsEnd + 2 <= table.length ? table.readUInt16BE(recordsEnd) : 0;
+  const end = version === 1 ? recordsEnd + 2 + langTags * 4 : recordsEnd;
+  if (version > 1 || end > table.length || records + langTags > MAX_NAME_RECORDS) return false;
+  let total = 0;
+  // The length and offset of a string: 8 bytes into a name record, and first in a language tag
+  const stringFits = (at: number) => {
+    const length = table.readUInt16BE(at);
+    total += length;
+    return total <= MAX_NAME_STRING_BYTES && storage + table.readUInt16BE(at + 2) + length <= table.length;
+  };
+  for (let record = 0; record < records; record += 1) if (!stringFits(6 + record * 12 + 8)) return false;
+  for (let tag = 0; tag < langTags; tag += 1) if (!stringFits(recordsEnd + 2 + tag * 4)) return false;
+  return true;
+}
+
+/** `cmap`: at most `MAX_CMAP_SUBTABLES` subtables. Without a Unicode subtable, fontkit decodes the subtable of each record. */
+function withinCmapLimits(table: Buffer): boolean {
+  return table.length >= 4 && table.readUInt16BE(2) <= MAX_CMAP_SUBTABLES;
+}
+
+/** `fvar`: at most `MAX_AXES` axes and `MAX_NAMED_INSTANCES` named instances, each with a coordinate per axis. */
+function withinFvarLimits(table: Buffer): boolean {
+  return table.length >= 16 && table.readUInt16BE(8) <= MAX_AXES && table.readUInt16BE(12) <= MAX_NAMED_INSTANCES;
+}
+
+const safely = <T>(read: () => T): T | undefined => {
+  try {
+    return read();
+  } catch {
+    return undefined;
+  }
+};
+
+/**
+ * Reads what the scan needs from a font file with fontkit: name records 0, 1, 2, 4, 6, 13, 14, 16, 17 and 21,
+ * `fvar` axes, `OS/2` weight class and whether "A" and "a" have glyphs. Returns null when the bytes are not a font
+ * fontkit can read (EOT, truncated or corrupt files, anything else), and for files `withinParseLimits` refuses
+ * (TrueType collections, decompression bombs, tables that make fontkit's decoding grow).
+ */
+export function parseFontBinary(buffer: Buffer): FontBinaryMeta | null {
+  try {
+    if (!withinParseLimits(buffer)) return null;
+    const font = fontkit.create(buffer);
+    if ("fonts" in font) return null;
+    // `name` and `maxp` are required tables. fontkit swallows some decoding errors (a truncated WOFF2 gives a font
+    // without tables), so a file where either cannot be read is not a font. `name` is not in the fontkit typings.
+    const nameTable = (font as unknown as { name?: { records?: NameRecords } }).name;
+    if (!nameTable || !(font.numGlyphs > 0)) return null;
+    const records: NameRecords = nameTable.records ?? {};
+    const pick = (key: string): string | undefined => {
+      const record = records[key];
+      if (!record) return undefined;
+      const value = record.en ?? record["en-US"] ?? Object.values(record)[0];
+      if (typeof value !== "string") return undefined;
+      return value.replace(CONTROL_CHARS, "").trim() || undefined;
+    };
+    const axes = Object.entries(safely(() => font.variationAxes) ?? {}).flatMap(([tag, axis]) =>
+      axis ? [{ tag, min: axis.min, max: axis.max, default: axis.default }] : [],
+    );
+    const weightClass = safely(() => font["OS/2"]?.usWeightClass);
+    const coversLatin = safely(() => font.hasGlyphForCodePoint(0x41) && font.hasGlyphForCodePoint(0x61));
+    const typoFamily = pick("preferredFamily");
+    const nameId1 = pick("fontFamily");
+    const meta: FontBinaryMeta = {
+      format: sniffFontFormat(buffer),
+      familyName: typoFamily ?? nameId1,
+      subfamilyName: pick("preferredSubfamily") ?? pick("fontSubfamily"),
+      fullName: pick("fullName"),
+      postscriptName: pick("postscriptName"),
+      typoFamily,
+      wwsFamily: pick("wwsFamilyName"),
+      nameId1,
+      copyright: pick("copyright"),
+      licenseDescription: pick("license"),
+      licenseUrl: pick("licenseURL"),
+      axes: axes.length ? axes : undefined,
+      weightClass: typeof weightClass === "number" ? weightClass : undefined,
+      coversLatin,
+    };
+    return Object.fromEntries(Object.entries(meta).filter(([, value]) => value !== undefined)) as unknown as FontBinaryMeta;
+  } catch {
+    return null;
+  }
+}
