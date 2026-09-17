@@ -69,6 +69,22 @@ describe("isFailure", () => {
   });
 });
 
+describe("summarize", () => {
+  it("falls back to the collected events when a done event carries no stats", () => {
+    const row = summarize(result({
+      events: ["assets", "fonts", "done"],
+      assets: [{ kind: "svg", role: "other" }, { kind: "image", role: "other" }],
+      fonts: [{ usedOnPage: true }],
+      done: { type: "done", partial: false },
+    }));
+    expect(row.status).toBe("done");
+    expect(row.durationMs).toBe(null);
+    expect(row.counts).toMatchObject({ assets: 2, svg: 1, images: 1, fonts: 1 });
+    expect(row.hidden).toEqual({});
+    expect(row.hiddenTotal).toBe(0);
+  });
+});
+
 describe("shouldRetry", () => {
   it("retries a stream that died before the done event", () => {
     const truncated = summarize(result({ events: ["assets"], assets: [{ kind: "svg", role: "other" }] }));
