@@ -48,5 +48,7 @@ describe("fontFileEntries", () => {
       ["inter-variable-100-900-italic.woff", undefined],
     ]);
     expect(hasTtf({ convertible: false }, remote)).toBe(false);
+    // Past the signing cap (proxy "") the server cannot convert the file
+    expect(hasTtf({ convertible: true }, { ...remote, proxy: "" })).toBe(false);
   });
 });

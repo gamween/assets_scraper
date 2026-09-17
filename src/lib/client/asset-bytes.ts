@@ -37,7 +37,8 @@ const isAbort = (error: unknown, signal?: AbortSignal) =>
 
 /**
  * Critic G3: direct CORS fetch first (no cookies, no referrer), then the signed proxy. Many CDNs allow any origin,
- * which saves proxy bytes; the rest (Sanity-style 403 on a foreign Origin, no CORS headers) fall back.
+ * which saves proxy bytes; the rest (Sanity-style 403 on a foreign Origin, no CORS headers) fall back. A source past
+ * the per-scan signing cap has `proxy: ""` (spec 11.2): it loads directly only, and is unavailable when that fails.
  */
 export async function fetchSourceBlob(source: Pick<AssetSource, "url" | "proxy">, id: string, options: BytesOptions = {}): Promise<Blob> {
   const { signal } = options;

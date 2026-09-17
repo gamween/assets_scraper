@@ -54,7 +54,8 @@ type StillState = "pending" | "ready" | "unavailable";
 
 /**
  * The preview image of an asset. Inline SVG and inline bytes load from object URLs; remote files load directly with no
- * referrer, then through the signed proxy when that fails; `http:` goes through the proxy from the start.
+ * referrer, then through the signed proxy when that fails; `http:` goes through the proxy from the start. A source
+ * past the signing cap (`proxy: ""`) only loads directly and shows `No preview` when that fails.
  * Remount with `key={asset.id}` to reset the fallback state for another asset.
  *
  * GIF tiles draw their first frame on a canvas once the image has loaded, then unmount the image: it only mounts again

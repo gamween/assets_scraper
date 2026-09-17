@@ -85,6 +85,28 @@ describe("getAssetBlob", () => {
     await expect(getAssetBlob(makeAsset({ id: "nothing" }), "original")).rejects.toBeInstanceOf(AssetUnavailableError);
   });
 
+  it("fetches a source past the signing cap (proxy \"\") directly only, and marks it unavailable when that fails", async () => {
+    const capped = remoteSource("https://cdn.test/capped.png", { proxy: "" });
+    const ok = vi.fn(async () => new Response(png));
+    vi.stubGlobal("fetch", ok);
+    expect((await getAssetBlob(makeAsset({ id: "capped", original: capped }), "original")).size).toBe(4);
+    expect(ok.mock.calls.map((call) => (call as unknown[])[0])).toEqual([capped.url]);
+
+    for (const failure of [vi.fn().mockRejectedValue(new TypeError("CORS")), vi.fn(async () => new Response("no", { status: 403 }))]) {
+      vi.stubGlobal("fetch", failure);
+      await expect(getAssetBlob(makeAsset({ id: "capped", original: capped }), "original")).rejects.toBeInstanceOf(AssetUnavailableError);
+      expect(failure.mock.calls.map((call) => (call as unknown[])[0])).toEqual([capped.url]);
+    }
+
+    // An http: source cannot load directly from the app (mixed content), so without a proxy it is unavailable at once.
+    const insecure = remoteSource("http://old.test/capped.png", { proxy: "" });
+    const none = vi.fn();
+    vi.stubGlobal("fetch", none);
+    await expect(getAssetBlob(makeAsset({ id: "insecure", original: insecure }), "original")).rejects.toBeInstanceOf(AssetUnavailableError);
+    expect(none).not.toHaveBeenCalled();
+    expect(previewSrc(capped)).toBe(capped.url);
+  });
+
   it("does not fall back to the proxy once aborted", async () => {
     const controller = new AbortController();
     const fetchMock = vi.fn(async () => {
@@ -108,6 +130,14 @@ describe("getFontFileBlob", () => {
     expect(new Uint8Array(await blob.arrayBuffer())).toEqual(bytes);
     expect(blob.type).toBe("font/woff2");
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("fetches a font file past the signing cap directly only, and marks it unavailable when that fails", async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new TypeError("CORS"));
+    vi.stubGlobal("fetch", fetchMock);
+    const file = makeFontFile({ url: "https://fonts.test/capped.woff2", proxy: "" });
+    await expect(getFontFileBlob(file)).rejects.toBeInstanceOf(AssetUnavailableError);
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual(["https://fonts.test/capped.woff2"]);
   });
 
   it("fetches remote font files like assets", async () => {
