@@ -56,6 +56,13 @@ beforeAll(async () => {
     "/counted.png": (q, s) => { hits.set(q.url ?? "", (hits.get(q.url ?? "") ?? 0) + 1); s.writeHead(200, { "content-type": "image/png" }); s.end(png); },
     // a typed image that sends its first bytes, then nothing for a long time
     "/png-slow": (_q, s) => { s.writeHead(200, { "content-type": "image/png" }); s.write(png.subarray(0, 64)); },
+    "/big.woff2": (_q, s) => {
+      s.writeHead(200, { "content-type": "font/woff2" });
+      s.write(woff2.subarray(0, 64));
+      for (let i = 0; i < 11; i++) s.write(Buffer.alloc(1024 * 1024));
+      s.end();
+    },
+    "/woff2-stall": (_q, s) => { s.writeHead(200, { "content-type": "font/woff2" }); s.write(woff2.subarray(0, 64)); },
     "/chunked-late": (_q, s) => {
       s.writeHead(200, { "content-type": "image/png" });
       s.write(Buffer.concat([png.subarray(0, 8), Buffer.alloc(4088)]));
@@ -258,6 +265,38 @@ describe("handleAssetRequest", () => {
     expect(await errorOf(await handleAssetRequest(proxied("/png-then-stall", "&fmt=ttf"), { timeoutMs: 10_000 }))).toMatchObject({ status: 415, code: "not-convertible" });
     expect(performance.now() - start).toBeLessThan(5_000);
     expect(await errorOf(await handleAssetRequest(proxied("/assets/__inter.woff2", "&fmt=ttf"), { maxBytes: 1024 }))).toMatchObject({ status: 413 });
+  });
+
+  it("caps font conversion sources at 10 MB, below the proxy cap", async () => {
+    expect(await errorOf(await handleAssetRequest(proxied("/big.woff2", "&fmt=ttf")))).toMatchObject({ status: 413, code: "too-large" });
+    // the same bytes without conversion are within the 25 MB proxy cap
+    const plain = await handleAssetRequest(proxied("/big.woff2"));
+    expect(plain.status).toBe(200);
+    expect((await plain.arrayBuffer()).byteLength).toBe(64 + 11 * 1024 * 1024);
+  });
+
+  it("runs at most two conversions at once and answers 503 when no slot frees in time", async () => {
+    const holders = [new AbortController(), new AbortController()];
+    const held = holders.map((controller) => {
+      const request = proxied("/woff2-stall", "&fmt=ttf");
+      return handleAssetRequest(new Request(request.url, { headers: SAME_ORIGIN, signal: controller.signal }), { timeoutMs: 60_000 });
+    });
+    try {
+      // a conversion that gets a slot before both holders do still succeeds, so retry until both slots are taken
+      await vi.waitFor(async () => {
+        const response = await handleAssetRequest(proxied("/assets/__inter.woff2", "&fmt=ttf"), { timeoutMs: 300 });
+        expect(await errorOf(response)).toMatchObject({ status: 503, code: "busy" });
+        expect(response.headers.get("retry-after")).toBe("5");
+      }, { timeout: 10_000, interval: 50 });
+      // a waiter takes the first slot that frees
+      const waiting = handleAssetRequest(proxied("/assets/__inter.woff2", "&fmt=ttf"), { timeoutMs: 10_000 });
+      holders[0].abort();
+      expect((await waiting).status).toBe(200);
+    } finally {
+      for (const controller of holders) controller.abort();
+      await Promise.all(held);
+    }
+    expect((await handleAssetRequest(proxied("/assets/__inter.woff2", "&fmt=ttf"))).status).toBe(200);
   });
 
   it("answers 429 once the daily proxied bytes are spent", async () => {

@@ -29,6 +29,13 @@ const RESPONSE_HEADERS = {
 const MEDIA_TYPE = /^[a-z0-9][a-z0-9.+-]*\/[a-z0-9][a-z0-9.+-]*$/;
 const UNTYPED = new Set(["", "application/octet-stream", "binary/octet-stream"]);
 const WOFF2_SIGNATURE_BYTES = 4;
+/**
+ * `fmt=ttf` buffers the source and decompresses it on the main thread into a WebAssembly heap that never shrinks, so
+ * sources are capped well below the proxy cap (web fonts are rarely over a few MB) and at most this many conversions,
+ * download included, run at once per instance.
+ */
+const CONVERT_MAX_BYTES = 10 * 1024 * 1024;
+const CONVERT_SLOTS = 2;
 const FETCH_STATUS: Record<SafeFetchErrorCode, number> = {
   "invalid-url": 403, "blocked-address": 403, "own-host": 403, "unsupported-port": 403,
   dns: 502, connect: 502, "too-many-redirects": 502, aborted: 502, timeout: 504, "too-large": 413,
@@ -40,10 +47,64 @@ const FETCH_STATUS: Record<SafeFetchErrorCode, number> = {
  */
 export type AssetProxyErrorCode =
   | "method" | "cross-site" | "invalid-params" | "bad-signature" | "expired" | "budget" | "upstream-status" | "too-large"
-  | "unsupported-type" | "not-convertible" | "license" | "internal" | SafeFetchErrorCode;
+  | "unsupported-type" | "not-convertible" | "license" | "busy" | "internal" | SafeFetchErrorCode;
 
 function errorResponse(status: number, code: AssetProxyErrorCode, message: string, headers: Record<string, string> = {}): Response {
   return Response.json({ error: { code, message } }, { status, headers: { ...SAFETY_HEADERS, "cache-control": "no-store", ...headers } });
+}
+
+let conversions = 0;
+const conversionQueue: (() => void)[] = [];
+
+/**
+ * Takes one of the `CONVERT_SLOTS` conversion slots, waiting in order for a free one. Resolves with the slot's
+ * idempotent release, or null when `signal` aborts first.
+ */
+function takeConversionSlot(signal: AbortSignal): Promise<(() => void) | null> {
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    const next = conversionQueue.shift();
+    if (next) next();
+    else conversions -= 1;
+  };
+  return new Promise((resolve) => {
+    if (conversions < CONVERT_SLOTS) {
+      conversions += 1;
+      resolve(release);
+      return;
+    }
+    if (signal.aborted) {
+      resolve(null);
+      return;
+    }
+    const grant = () => {
+      signal.removeEventListener("abort", giveUp);
+      resolve(release);
+    };
+    const giveUp = () => {
+      const index = conversionQueue.indexOf(grant);
+      if (index !== -1) conversionQueue.splice(index, 1);
+      resolve(null);
+    };
+    conversionQueue.push(grant);
+    signal.addEventListener("abort", giveUp, { once: true });
+  });
+}
+
+/** The upstream response, or the error response for a status outside 2xx. */
+async function fetchAsset(url: string, signal: AbortSignal, maxBytes: number, timeoutMs: number): Promise<SafeResponse | Response> {
+  const upstream = await safeFetch(url, {
+    headers: { referer: `${new URL(url).origin}/` },
+    maxBytes,
+    timeoutMs,
+    maxRedirects: limits.proxyMaxRedirects,
+    signal,
+  });
+  if (upstream.status >= 200 && upstream.status <= 299) return upstream;
+  await upstream.cancel();
+  return errorResponse(502, "upstream-status", `The asset host answered ${upstream.status}.`);
 }
 
 function allowedDeclaredType(mediaType: string): boolean {
@@ -77,12 +138,34 @@ async function readAll(reader: ReadableStreamDefaultReader<Uint8Array>, head: Ui
 }
 
 /**
- * `fmt=ttf`: an open-licence WOFF2, buffered whole, decompressed to the sfnt it wraps. That is `font/ttf` for TrueType
- * outlines and `font/otf` for CFF outlines (`OTTO`), which cannot become TrueType without re-drawing the glyphs, so
- * callers name the file from the content type. Other sources get 415 from their first bytes, before the rest is
- * downloaded: TTF and OTF files are served as they are without `fmt`.
+ * `fmt=ttf`: an open-licence WOFF2 of at most `CONVERT_MAX_BYTES`, buffered whole, decompressed to the sfnt it wraps.
+ * That is `font/ttf` for TrueType outlines and `font/otf` for CFF outlines (`OTTO`), which cannot become TrueType
+ * without re-drawing the glyphs, so callers name the file from the content type. Other sources get 415 from their first
+ * bytes, before the rest is downloaded: TTF and OTF files are served as they are without `fmt`. The whole exchange,
+ * waiting for a conversion slot included, stays within `timeoutMs`; no free slot in time gives 503.
  */
-async function convertFont(upstream: SafeResponse, signal: AbortSignal, dl: string | undefined): Promise<Response> {
+async function convertFont(
+  url: string,
+  dl: string | undefined,
+  signal: AbortSignal,
+  { maxBytes, timeoutMs }: { maxBytes: number; timeoutMs: number },
+): Promise<Response> {
+  const busy = () => errorResponse(503, "busy", "Too many fonts are being converted. Try again in a moment.", { "retry-after": "5" });
+  const started = Date.now();
+  const release = await takeConversionSlot(AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]));
+  if (!release) return busy();
+  try {
+    const remainingMs = timeoutMs - (Date.now() - started);
+    if (remainingMs <= 0) return busy();
+    const upstream = await fetchAsset(url, signal, Math.min(maxBytes, CONVERT_MAX_BYTES), remainingMs);
+    if (upstream instanceof Response) return upstream;
+    return await decompressFont(upstream, signal, dl);
+  } finally {
+    release();
+  }
+}
+
+async function decompressFont(upstream: SafeResponse, signal: AbortSignal, dl: string | undefined): Promise<Response> {
   const { head, rest } = await peek(upstream.stream(), WOFF2_SIGNATURE_BYTES);
   if (sniffContentType(head) !== "font/woff2") {
     await rest.cancel().catch(() => {});
@@ -136,20 +219,10 @@ export async function handleAssetRequest(request: Request, options: AssetProxyOp
 
     const { url, dl, fmt } = verifyAssetParams(new URL(request.url).searchParams);
     if (!(await takeProxyBytes(0))) return errorResponse(429, "budget", "Daily download limit reached.");
+    if (fmt === "ttf") return await convertFont(url, dl, request.signal, { maxBytes, timeoutMs });
 
-    const upstream = await safeFetch(url, {
-      headers: { referer: `${new URL(url).origin}/` },
-      maxBytes,
-      timeoutMs,
-      maxRedirects: limits.proxyMaxRedirects,
-      signal: request.signal,
-    });
-    if (upstream.status < 200 || upstream.status > 299) {
-      await upstream.cancel();
-      return errorResponse(502, "upstream-status", `The asset host answered ${upstream.status}.`);
-    }
-
-    if (fmt === "ttf") return await convertFont(upstream, request.signal, dl);
+    const upstream = await fetchAsset(url, request.signal, maxBytes, timeoutMs);
+    if (upstream instanceof Response) return upstream;
 
     const declared = (upstream.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
     const encoded = upstream.headers.has("content-encoding");
