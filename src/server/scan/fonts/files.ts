@@ -78,18 +78,26 @@ export function decodeDataUri(uri: string): { mime: string; bytes: Buffer } | nu
   return bytes.length ? { mime, bytes } : null;
 }
 
+const isHexDigit = (code: number) => (code >= 0x30 && code <= 0x39) || ((code | 0x20) >= 0x61 && (code | 0x20) <= 0x66);
+
 /**
- * The bytes a `data:` URI decodes to, estimated from its length without decoding it: one per character less 2 per `%`,
- * since an escape (`%41`) encodes one byte in 3 characters, then for base64 3 bytes per 4 characters less the padding,
- * which may be escaped too (`%3D`). Line breaks in base64 make the estimate a little high. Otherwise it is never above
- * the decoded size, whichever characters are escaped.
+ * The bytes a `data:` URI decodes to, estimated from its length without decoding it: one per character less 2 per
+ * escape, since an escape (`%41`) encodes one byte in 3 characters, then for base64 3 bytes per 4 characters less the
+ * padding, which may be escaped too (`%3D`). Escapes are counted as `percentDecode` reads them: a `%` without 2 hex
+ * digits after it is one character, which base64 skips. Line breaks and other characters base64 skips make the
+ * estimate high. Otherwise it is never above the decoded size, whichever characters are escaped.
  */
 function estimateDataUriBytes(uri: string): number {
   const parts = readDataUri(uri);
   if (!parts) return 0;
   const { base64, payload } = parts;
   let escapes = 0;
-  for (let index = payload.indexOf("%"); index >= 0; index = payload.indexOf("%", index + 1)) escapes += 1;
+  for (let index = payload.indexOf("%"); index >= 0; index = payload.indexOf("%", index + 1)) {
+    if (isHexDigit(payload.charCodeAt(index + 1)) && isHexDigit(payload.charCodeAt(index + 2))) {
+      escapes += 1;
+      index += 2;
+    }
+  }
   const chars = Math.max(0, payload.length - 2 * escapes);
   if (!base64) return chars;
   const tail = payload.slice(-6).replace(/%3d/gi, "=");

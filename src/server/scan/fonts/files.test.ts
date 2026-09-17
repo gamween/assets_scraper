@@ -59,6 +59,34 @@ describe("createFileLookup", () => {
       from.mockRestore();
     }
   });
+
+  it("counts as escapes only the percent signs that 2 hex digits follow, as decoding does", () => {
+    const from = vi.spyOn(Buffer, "from");
+    const longestDecoded = () => Math.max(0, ...from.mock.calls.map(([value]: unknown[]) => (typeof value === "string" ? value.length : 0)));
+    const woff2 = font.subarray(0, font.length - (font.length % 3)).toString("base64");
+    const escaped = [...font].map((byte) => `%${byte.toString(16).padStart(2, "0")}`).join("");
+    // Percent-encoded bytes after a WOFF2 signature, with stray percent signs kept as bytes: `bytes` in all
+    const stray = (bytes: number) => {
+      const rest = bytes - font.length;
+      return `data:font/woff2,${escaped}${"%zz".repeat(Math.floor(rest / 3))}${"%".repeat(rest % 3)}`;
+    };
+    try {
+      // Base64 skips a stray `%`, so each `QUFB%%` decodes to 3 bytes: counted as escapes, these 9 MiB of payload were
+      // estimated at 2.25 MiB, under the 4 MiB budget, and decoded in full to be refused after
+      const lookup = createFileLookup(new Map(), "www.site.example");
+      const files = [`data:font/woff2;base64,${woff2}${"QUFB%%".repeat(1.5 * MIB)}`, stray(MAX_INLINE_BYTES + 1)].map((uri) => lookup.file(uri)!);
+      from.mockClear();
+      for (const file of files) expect(lookup.take(file)).toBe(false);
+      expect(longestDecoded()).toBeLessThan(8_000);
+      // an estimate never refuses what fits
+      const exact = createFileLookup(new Map(), "www.site.example");
+      const fits = exact.file(stray(MAX_INLINE_BYTES))!;
+      expect(exact.take(fits)).toBe(true);
+      expect(fits.bytes).toBe(MAX_INLINE_BYTES);
+    } finally {
+      from.mockRestore();
+    }
+  });
 });
 
 describe("classifySource", () => {
