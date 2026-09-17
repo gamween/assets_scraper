@@ -45,6 +45,10 @@ beforeAll(async () => {
       res.writeHead(302, { location: "/assets/touch.png" });
       res.end();
     },
+    "/flood.html": (_req, res) => {
+      res.writeHead(200, { "content-type": "text/html" });
+      res.end(`<!doctype html><title>Flood</title><link rel="stylesheet" href="/assets/style.css"><script>for (let i = 0; i < 60; i += 1) new Image().src = "/assets/pixel.gif?" + i;</script>`);
+    },
     "/many.html": (_req, res) => {
       res.writeHead(200, { "content-type": "text/html" });
       res.end(`<!doctype html><title>Many</title>${Array.from({ length: 8 }, (_, i) => `<img src="/slow/${i}.png">`).join("")}`);
@@ -233,5 +237,17 @@ describe("startCapture", () => {
       expect(network.images.find((image) => image.url.endsWith("/photo-small.png"))?.sha1).toBeDefined();
       expect(network.images.some((image) => image.url.endsWith("after-abort"))).toBe(false);
     });
+  });
+
+  it("stops recording new URLs past the record cap and counts what it dropped", async () => {
+    const network = await onBrowser(async (page) => {
+      const capture = startCapture(page, { signal: new AbortController().signal, maxRecords: 10, toneFromBytes: async () => "unknown" });
+      await page.goto(`${fixture.origin}/flood.html`, { waitUntil: "networkidle" });
+      return capture.settle(5000);
+    });
+    const records = network.images.length + network.fonts.length + network.sheets.length;
+    expect(records).toBe(10);
+    expect(network.sheets.map((sheet) => sheet.url)).toEqual([`${fixture.origin}/assets/style.css`]);
+    expect(network.skippedBodies).toBeGreaterThanOrEqual(60 + 1 - 10);
   });
 });

@@ -16,10 +16,17 @@ export interface CaptureOptions {
   signal: AbortSignal;
   /** Per-read timeout, `limits.bodyReadMs` by default. */
   bodyReadMs?: number;
+  /** Most URLs recorded, images, fonts and stylesheets together; `MAX_RECORDS` by default. */
+  maxRecords?: number;
   toneFromBytes?: (buffer: Buffer, contentType: string) => Promise<Tone>;
   parseFontBinary?: (buffer: Buffer) => FontBinaryMeta | null;
 }
 
+/**
+ * Far more URLs than a real page loads (post-processing keeps at most `limits.maxAssets` assets). A page that requests
+ * endless distinct URLs would otherwise grow the records and the queue of pending reads without limit.
+ */
+const MAX_RECORDS = 4_000;
 const FONT_TYPE = /font|woff|opentype|truetype|sfnt/i;
 const FONT_EXTENSION = /\.(woff2?|ttf|otf|eot)(?:[?#]|$)/i;
 const SVG = (url: string, contentType: string) => /image\/svg/i.test(contentType) || /\.svgz?(?:[?#]|$)/i.test(url);
@@ -44,8 +51,8 @@ const timeoutAfter = <T>(promise: Promise<T>, ms: number): Promise<T> =>
   });
 
 /**
- * Network capture (spec 7.4), attached before navigation. Images, fonts and stylesheets are recorded once per URL;
- * 3xx responses are skipped. Bodies are read with caps (size, time, concurrency, total bytes), then hashed, measured,
+ * Network capture (spec 7.4), attached before navigation. Images, fonts and stylesheets are recorded once per URL, up
+ * to `maxRecords` URLs (responses past that count as skipped bodies); 3xx responses are skipped. Bodies are read with caps (size, time, concurrency, total bytes), then hashed, measured,
  * toned or parsed and dropped. Only SVG text, CSS text and `blob:` bytes are kept.
  *
  * Playwright hands over a body only whole, so the total cap works by reservation: a read starts only when its declared
@@ -56,6 +63,7 @@ export function startCapture(page: Page, options: CaptureOptions): CaptureHandle
   const tone = options.toneFromBytes ?? toneFromBytes;
   const parseFont = options.parseFontBinary ?? parseFontBinary;
   const readMs = options.bodyReadMs ?? limits.bodyReadMs;
+  const maxRecords = options.maxRecords ?? MAX_RECORDS;
 
   const images = new Map<string, CapturedImage>();
   const fonts = new Map<string, CapturedFont>();
@@ -212,20 +220,25 @@ export function startCapture(page: Page, options: CaptureOptions): CaptureHandle
     const contentType = headers["content-type"] ?? "";
     const resourceType = response.request().resourceType();
     const readable = status < 400;
+    const full = () => {
+      if (images.size + fonts.size + sheets.size < maxRecords) return false;
+      skippedBodies += 1;
+      return true;
+    };
 
     if (resourceType === "font" || FONT_TYPE.test(contentType) || FONT_EXTENSION.test(url)) {
-      if (fonts.has(url)) return;
+      if (fonts.has(url) || full()) return;
       const record: CapturedFont = { url, status, contentType, meta: null };
       fonts.set(url, record);
       if (readable) schedule(response, (body) => captureFont(record, body));
     } else if (resourceType === "image" || /^image\//i.test(contentType)) {
-      if (images.has(url)) return;
+      if (images.has(url) || full()) return;
       const record: CapturedImage = { url, status, contentType, tone: "unknown" };
       if (headers.server) record.server = headers.server;
       images.set(url, record);
       if (readable) schedule(response, (body) => captureImage(record, body));
     } else if (resourceType === "stylesheet" || /^text\/css/i.test(contentType)) {
-      if (sheets.has(url)) return;
+      if (sheets.has(url) || full()) return;
       const record: CapturedSheet = { url, status, cssText: "" };
       sheets.set(url, record);
       if (readable) schedule(response, (body) => captureSheet(record, body));
