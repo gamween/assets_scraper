@@ -316,7 +316,8 @@ export default withBotId(nextConfig);
   "fluid": true,
   "regions": ["iad1"],
   "functions": {
-    "src/app/api/scan/route.ts": { "maxDuration": 120, "supportsCancellation": true }
+    "src/app/api/scan/route.ts": { "maxDuration": 120, "supportsCancellation": true },
+    "src/app/api/asset/route.ts": { "maxDuration": 30, "supportsCancellation": true }
   }
 }
 ```

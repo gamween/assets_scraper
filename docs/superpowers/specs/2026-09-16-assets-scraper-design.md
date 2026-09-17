@@ -621,7 +621,7 @@ All in `src/server/config/limits.ts`, env-overridable.
 
 - Vercel project `assets-scraper` (existing), framework Next.js, Node 24.x, Fluid on, region `iad1`. Deploys through the Vercel CLI (remote builds on x64; never `--prebuilt` from Apple Silicon).
 - `next.config.ts`: `outputFileTracingIncludes` for `/api/scan` with the real (symlink-resolved) paths of `@sparticuz/chromium/bin/**` and `playwright-core/browsers.json`; security headers; `typedRoutes`; React Compiler.
-- `vercel.json`: `{ "fluid": true, "regions": ["iad1"], "functions": { "src/app/api/scan/route.ts": { "maxDuration": 120, "supportsCancellation": true } } }`.
+- `vercel.json`: `{ "fluid": true, "regions": ["iad1"], "functions": { "src/app/api/scan/route.ts": { "maxDuration": 120, "supportsCancellation": true }, "src/app/api/asset/route.ts": { "maxDuration": 30, "supportsCancellation": true } } }`.
 - Env: `ASSET_URL_SECRET` (required in production), optional `SCAN_DISABLED`, `ACCESS_CODE`, `SCANS_PER_DAY`, `SCANS_PER_MONTH`, `PROXY_BYTES_PER_DAY`, `APP_HOSTS`, `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`.
 - Firewall: one rate-limit rule (section 7.1), BotID enabled.
 - Diagnostics travel in `done` and `error` events because Hobby keeps runtime logs for one hour. `GET /api/health` returns the build SHA and flags, never URLs.
