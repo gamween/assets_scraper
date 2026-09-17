@@ -255,7 +255,8 @@ describe("scan engine", () => {
     expect(launches).toHaveBeenCalledTimes(1);
     // The status rule counts elements, so it waits for the page to load.
     expect(events.map(describeEvent)).toEqual(["accepted", "step open start", "page", "step open done", "step load start", "step load done", "error blocked"]);
-    expect(events.at(-1)).toMatchObject({ diagnostics: { blockReason: "http-403" } });
+    // The page was blocked before collection: diagnostics say the collector never ran.
+    expect(events.at(-1)).toMatchObject({ diagnostics: { blockReason: "http-403", collector: "none" } });
   });
 
   it("never mistakes an app shell for a bot wall: the markup and captcha rules wait for the page to load", async () => {
@@ -752,6 +753,8 @@ describe("scan engine", () => {
         const done = events.at(-1);
         if (done?.type !== "done") throw new Error(`expected done, got ${done && describeEvent(done)}`);
         expect(done.partial).toBe(true);
+        // It started, then failed: diagnostics keep the world it ran in.
+        expect(done.diagnostics.collector).toBe("isolated");
         expect(events).toContainEqual({ type: "warning", code: "partial" });
         expect(events.find((event) => event.type === "assets")).toMatchObject({ items: [{ id: "photo" }] });
         // The client gets no internal detail; the server log does.

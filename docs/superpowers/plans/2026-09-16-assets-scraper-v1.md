@@ -545,7 +545,7 @@ export const Diagnostics = z.object({
   egress: z.object({ bytes: z.number(), blocked: z.number() }),
   bodyTimeouts: z.number(),
   blockReason: z.string().optional(),
-  collector: z.enum(["isolated", "main"]),
+  collector: z.enum(["isolated", "main", "none"]),
   version: z.string(),
 });
 export type Diagnostics = z.infer<typeof Diagnostics>;

@@ -246,7 +246,7 @@ export interface Diagnostics {
   egress: { bytes: number; blocked: number };
   bodyTimeouts: number;
   blockReason?: string;
-  collector: "isolated" | "main";
+  collector: "isolated" | "main" | "none";   // none: the collector never ran
   version: string;                  // git SHA
 }
 

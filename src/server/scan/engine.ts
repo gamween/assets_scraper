@@ -286,7 +286,8 @@ async function runScan({ url, deps, cancel, emit }: ScanContext): Promise<void> 
     queueMs: 0,
     egress: { bytes: 0, blocked: 0 },
     bodyTimeouts: 0,
-    collector: "isolated",
+    // Set by the collector when it starts in a world (see onWorld below).
+    collector: "none",
     version: process.env.VERCEL_GIT_COMMIT_SHA ?? "dev",
   };
   const deadlineMs = limits.scanDeadlineMs;
