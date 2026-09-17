@@ -1,11 +1,31 @@
 import http from "node:http";
 import net from "node:net";
 import { limits } from "@/server/config/limits";
-import { isTestAllowed, resolvePublicHost } from "./ip";
+import { isTestAllowed, pinnedConnectOptions, resolvePublicAddresses } from "./ip";
+
+export interface EgressProxyOptions {
+  maxBytes?: number;
+  maxSockets?: number;
+  /** Time to open an upstream connection, across every address of the host. */
+  connectTimeoutMs?: number;
+  /** Time an open upstream connection may stay silent. */
+  idleTimeoutMs?: number;
+}
+
+export interface EgressProxyStats {
+  /** Bytes relayed in both directions. */
+  bytes: number;
+  /** Requests refused by policy: malformed targets, other ports, own hosts, private or unresolvable addresses. */
+  blocked: number;
+  /** The first distinct hosts behind `blocked`. */
+  blockedHosts: string[];
+  /** Allowed requests turned away for capacity: the socket cap, the byte cap or a closed proxy. Not in `blocked`. */
+  refused: number;
+}
 
 export interface EgressProxy {
   port: number;
-  stats(): { bytes: number; blocked: number; blockedHosts: string[] };
+  stats(): EgressProxyStats;
   close(): Promise<void>;
 }
 
@@ -17,6 +37,7 @@ const CONNECT_TARGET = /^(\[[0-9a-f:.]+\]|[^\s:[\]/@]+):(\d{1,5})$/i;
 const MAX_BLOCKED_HOSTS = 50;
 const UPSTREAM_CONNECT_MS = 10_000;
 const UPSTREAM_IDLE_MS = 30_000;
+const EMPTY_REPLY = "\r\nContent-Length: 0\r\n\r\n";
 
 /** Removes hop-by-hop headers, every header named in `Connection` and `extra` names from a raw header list. */
 function endToEndHeaders(raw: string[], extra: string[] = []): string[] {
@@ -35,15 +56,20 @@ function endToEndHeaders(raw: string[], extra: string[] = []): string[] {
 /**
  * Per-scan forward proxy for Chromium (spec 11.1). Plain HTTP arrives in absolute form, everything else (HTTPS,
  * WebSocket) as CONNECT. Each target must use port 80 or 443 (or an exact test allowlist entry), must not be an own
- * host, and must resolve only to public addresses; the upstream socket connects to the checked address, so DNS
- * rebinding cannot redirect it. Blocked CONNECTs get 403 and blocked plain requests lose their connection, so Chromium
- * sees a network error rather than a page. Sockets and bytes are capped per proxy; `close()` destroys everything.
+ * host, and must resolve only to public addresses; the upstream socket connects only to the checked addresses, trying
+ * the next one when a connection fails, so DNS rebinding cannot redirect it. Blocked CONNECTs get 403, CONNECTs over
+ * capacity 503, and a tunnel whose upstream cannot be reached 502 (refused, unreachable) or 504 (connect timeout).
+ * Plain requests lose their connection in all these cases, so Chromium sees a network error rather than a page.
+ * Sockets and bytes are capped per proxy; `close()` destroys everything.
  */
-export async function startEgressProxy(options: { maxBytes?: number; maxSockets?: number } = {}): Promise<EgressProxy> {
+export async function startEgressProxy(options: EgressProxyOptions = {}): Promise<EgressProxy> {
   const maxBytes = options.maxBytes ?? limits.egressMaxBytes;
   const maxSockets = options.maxSockets ?? limits.egressMaxSockets;
+  const connectTimeoutMs = options.connectTimeoutMs ?? UPSTREAM_CONNECT_MS;
+  const idleTimeoutMs = options.idleTimeoutMs ?? UPSTREAM_IDLE_MS;
   let bytes = 0;
   let blocked = 0;
+  let refused = 0;
   let active = 0;
   let closed = false;
   const blockedHosts = new Set<string>();
@@ -64,9 +90,15 @@ export async function startEgressProxy(options: { maxBytes?: number; maxSockets?
     blocked += 1;
     if (blockedHosts.size < MAX_BLOCKED_HOSTS) blockedHosts.add(host.slice(0, 255));
   };
-  /** Checks that need no DNS; the caller reserves a socket slot when it returns true. */
-  const admit = (host: string, port: number) =>
-    !closed && bytes <= maxBytes && active < maxSockets && port >= 1 && port <= 65_535 && (port === 80 || port === 443 || isTestAllowed(host, port));
+  /**
+   * Checks that need no DNS: `blocked` for a port outside policy, `refused` when the proxy is closed or a cap is reached
+   * (counted apart, so a heavy page past the byte cap does not look like blocked requests), `ok` when the caller may
+   * reserve a socket slot. Policy comes first, so a target outside it counts as blocked even at capacity.
+   */
+  const admit = (host: string, port: number): "ok" | "blocked" | "refused" => {
+    if (port !== 80 && port !== 443 && !isTestAllowed(host, port)) return "blocked";
+    return closed || bytes > maxBytes || active >= maxSockets ? "refused" : "ok";
+  };
   /** Reserves a socket slot and returns its idempotent release. */
   const reserve = () => {
     active += 1;
@@ -89,15 +121,17 @@ export async function startEgressProxy(options: { maxBytes?: number; maxSockets?
       target = new URL(req.url ?? "");
     } catch {}
     const port = target ? Number(target.port || 80) : 0;
-    if (!target || target.protocol !== "http:" || !admit(target.hostname, port)) {
-      block(target?.hostname || (req.url ?? "").slice(0, 100));
+    const admission = target?.protocol === "http:" ? admit(target.hostname, port) : "blocked";
+    if (!target || admission !== "ok") {
+      if (admission === "refused") refused += 1;
+      else block(target?.hostname || (req.url ?? "").slice(0, 100));
       res.destroy();
       return;
     }
     const url = target;
     const release = reserve();
-    resolvePublicHost(url.hostname, port).then(
-      (address) => {
+    resolvePublicAddresses(url.hostname, port).then(
+      (addresses) => {
         if (closed || res.destroyed) {
           release();
           res.destroy();
@@ -106,14 +140,13 @@ export async function startEgressProxy(options: { maxBytes?: number; maxSockets?
         let upstream: http.ClientRequest;
         try {
           upstream = http.request({
-            host: address,
+            ...pinnedConnectOptions(url.hostname, addresses),
             port,
             method: req.method,
             path: `${url.pathname}${url.search}`,
             headers: [...endToEndHeaders(req.rawHeaders, ["host"]), "Host", url.host],
             setHost: false,
             agent: false,
-            timeout: UPSTREAM_IDLE_MS,
           });
         } catch {
           release();
@@ -122,6 +155,11 @@ export async function startEgressProxy(options: { maxBytes?: number; maxSockets?
         }
         upstream.on("socket", (socket) => {
           track(socket);
+          // Not the `timeout` request option: Node applies it to the connect too, so a host that drops SYNs would hold
+          // the request for the idle time instead of the connect time.
+          socket.setTimeout(socket.connecting ? connectTimeoutMs : idleTimeoutMs);
+          socket.once("connect", () => socket.setTimeout(idleTimeoutMs));
+          socket.on("timeout", () => upstream.destroy());
           socket.on("data", (chunk: Buffer) => count(chunk.length));
         });
         upstream.on("response", (response) => {
@@ -145,7 +183,6 @@ export async function startEgressProxy(options: { maxBytes?: number; maxSockets?
           response.pipe(res);
           response.on("error", () => res.destroy());
         });
-        upstream.on("timeout", () => upstream.destroy());
         upstream.on("error", () => res.destroy());
         upstream.on("close", () => {
           release();
@@ -172,24 +209,34 @@ export async function startEgressProxy(options: { maxBytes?: number; maxSockets?
     const port = match ? Number(match[2]) : 0;
     const deny = () => {
       block(host);
-      client.end("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n");
+      client.end(`HTTP/1.1 403 Forbidden${EMPTY_REPLY}`);
     };
-    if (!match || !admit(host, port)) return deny();
+    const admission = match ? admit(host, port) : "blocked";
+    if (admission === "blocked") return deny();
+    if (admission === "refused") {
+      refused += 1;
+      client.end(`HTTP/1.1 503 Service Unavailable${EMPTY_REPLY}`);
+      return;
+    }
     const release = reserve();
-    resolvePublicHost(host, port).then(
-      (address) => {
+    resolvePublicAddresses(host, port).then(
+      (addresses) => {
         if (closed || client.destroyed) {
           release();
           client.destroy();
           return;
         }
         let established = false;
-        const upstream = net.connect({ host: address, port });
+        /** Answers a tunnel that never opened, once; Chromium then fails the request instead of waiting on it. */
+        const fail = (status: string) => {
+          if (!established && !client.destroyed && !client.writableEnded) client.end(`HTTP/1.1 ${status}${EMPTY_REPLY}`);
+        };
+        const upstream = net.connect({ ...pinnedConnectOptions(host, addresses), port });
         track(upstream);
-        upstream.setTimeout(UPSTREAM_CONNECT_MS);
+        upstream.setTimeout(connectTimeoutMs);
         upstream.once("connect", () => {
           established = true;
-          upstream.setTimeout(UPSTREAM_IDLE_MS);
+          upstream.setTimeout(idleTimeoutMs);
           client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
           upstream.on("data", (chunk: Buffer) => count(chunk.length));
           client.on("data", (chunk: Buffer) => count(chunk.length));
@@ -200,13 +247,16 @@ export async function startEgressProxy(options: { maxBytes?: number; maxSockets?
           upstream.pipe(client);
           client.pipe(upstream);
         });
-        upstream.on("timeout", () => upstream.destroy());
-        upstream.on("error", () => {
-          if (!established && !client.destroyed) client.end("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n");
+        upstream.on("timeout", () => {
+          fail("504 Gateway Timeout");
+          upstream.destroy();
         });
+        upstream.on("error", () => fail("502 Bad Gateway"));
         upstream.on("close", () => {
           release();
+          // a destroy without an error (the proxy closing) still answers a tunnel that never opened
           if (established) client.destroy();
+          else fail("502 Bad Gateway");
         });
         client.on("close", () => upstream.destroy());
       },
@@ -225,7 +275,7 @@ export async function startEgressProxy(options: { maxBytes?: number; maxSockets?
 
   return {
     port,
-    stats: () => ({ bytes, blocked, blockedHosts: [...blockedHosts] }),
+    stats: () => ({ bytes, blocked, blockedHosts: [...blockedHosts], refused }),
     close: async () => {
       if (closed) return;
       closed = true;

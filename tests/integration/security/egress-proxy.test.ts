@@ -1,8 +1,22 @@
+import type { LookupAllOptions } from "node:dns";
 import http from "node:http";
 import net from "node:net";
+import { Worker } from "node:worker_threads";
 import { chromium, type Browser } from "playwright-core";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { serveFixture, type FixtureServer } from "../../fixtures/serve";
+
+/** Fixed answers for chosen names; every other name goes to the real resolver. */
+const dns = vi.hoisted(() => ({ answers: new Map<string, string[]>() }));
+vi.mock("node:dns/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:dns/promises")>();
+  const lookup = async (hostname: string, options: LookupAllOptions) => {
+    const addresses = dns.answers.get(hostname);
+    return addresses === undefined ? actual.lookup(hostname, options) : addresses.map((address) => ({ address, family: net.isIP(address) }));
+  };
+  return { ...actual, default: { ...actual, lookup }, lookup };
+});
+
 import { startEgressProxy, type EgressProxy } from "@/server/net/egress-proxy";
 
 const CHROME = process.env.CHROME_EXECUTABLE_PATH ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -111,6 +125,49 @@ function openTunnel(port: number, target: string): Promise<{ status: string; soc
   });
 }
 
+/**
+ * A loopback port whose connects never complete, standing in for a host that drops SYNs: a listener with a backlog of 1
+ * on a worker thread that blocks its own event loop, so it never accepts, and filler connections that fill its accept
+ * queue, after which the kernel drops new SYNs.
+ */
+async function listenBlackhole(): Promise<{ host: string; port: number; close(): Promise<void> }> {
+  const release = new Int32Array(new SharedArrayBuffer(4));
+  const worker = new Worker(
+    `const { parentPort, workerData } = require("node:worker_threads");
+    const server = require("node:net").createServer();
+    server.listen({ port: 0, host: "127.0.0.1", backlog: 1 }, () => {
+      parentPort.postMessage(server.address().port);
+      const flag = new Int32Array(workerData);
+      while (Atomics.load(flag, 0) === 0) Atomics.wait(flag, 0, 0, 50);
+      process.exit(0);
+    });`,
+    { eval: true, workerData: release.buffer },
+  );
+  const port = await new Promise<number>((resolve, reject) => worker.once("message", resolve).once("error", reject));
+  const fillers = Array.from({ length: 8 }, () => net.connect(port, "127.0.0.1").on("error", () => {}));
+  await new Promise((resolve) => fillers[0].once("connect", resolve));
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  return {
+    host: `127.0.0.1:${port}`,
+    port,
+    close: async () => {
+      for (const filler of fillers) filler.destroy();
+      Atomics.store(release, 0, 1);
+      await worker.terminate();
+    },
+  };
+}
+
+/** Resolves with the milliseconds until `socket` closes, or "open" when it is still open after `waitMs`. */
+function closesWithin(socket: net.Socket, waitMs: number): Promise<number | "open"> {
+  const start = performance.now();
+  return new Promise((resolve) => {
+    if (socket.destroyed) return resolve(0);
+    const timer = setTimeout(() => resolve("open"), waitMs);
+    socket.once("close", () => { clearTimeout(timer); resolve(performance.now() - start); });
+  });
+}
+
 function getVia(proxyPort: number, url: string, headers: Record<string, string> = {}): Promise<{ status: number; body: string } | "closed"> {
   return new Promise((resolve) => {
     const req = http.request({ host: "127.0.0.1", port: proxyPort, path: url, headers: { host: new URL(url).host, ...headers }, agent: false }, (res) => {
@@ -215,6 +272,8 @@ describe("egress proxy guard", () => {
 
   afterEach(async () => {
     delete process.env.APP_HOSTS;
+    process.env.SCAN_TEST_ALLOW_HOSTS = allowed.host;
+    dns.answers.clear();
     await proxy?.close();
   });
 
@@ -273,11 +332,15 @@ describe("egress proxy guard", () => {
     expect(proxy.stats().blocked).toBe(0);
   });
 
-  it("caps concurrent sockets and total bytes", async () => {
+  it("caps concurrent sockets and total bytes, counting refusals apart from blocks", async () => {
     proxy = await startEgressProxy({ maxSockets: 1 });
     const first = await openTunnel(proxy.port, allowed.host);
     expect(first.status).toBe("HTTP/1.1 200 Connection Established");
-    expect((await openTunnel(proxy.port, allowed.host)).status).toMatch(/^HTTP\/1\.1 403 /);
+    expect((await openTunnel(proxy.port, allowed.host)).status).toBe("HTTP/1.1 503 Service Unavailable");
+    expect(await getVia(proxy.port, `${allowed.origin}/control.html`)).toBe("closed");
+    // a target outside policy is still a block when the proxy is full
+    expect((await openTunnel(proxy.port, "example.com:22")).status).toMatch(/^HTTP\/1\.1 403 /);
+    expect(proxy.stats()).toMatchObject({ refused: 2, blocked: 1, blockedHosts: ["example.com"] });
     await new Promise((resolve) => first.socket.once("close", resolve).destroy());
     // the proxy frees the slot once it sees the close, which can come a little after the client socket closed
     const again = await vi.waitFor(
@@ -298,7 +361,79 @@ describe("egress proxy guard", () => {
     const big = await getVia(proxy.port, `${allowed.origin}/big`);
     expect(big === "closed" || big.body.length < 512 * 1024).toBe(true);
     expect(proxy.stats().bytes).toBeGreaterThan(64 * 1024);
-    expect((await openTunnel(proxy.port, allowed.host)).status).toMatch(/^HTTP\/1\.1 403 /);
+    // past the byte cap every later request is refused, and none of them looks like a blocked host
+    expect((await openTunnel(proxy.port, allowed.host)).status).toBe("HTTP/1.1 503 Service Unavailable");
+    expect(await getVia(proxy.port, `${allowed.origin}/control.html`)).toBe("closed");
+    expect(proxy.stats()).toMatchObject({ refused: 2, blocked: 0, blockedHosts: [] });
+  });
+
+  it("answers a tunnel whose upstream refuses the connection with 502", async () => {
+    const closed = await serveFixture();
+    process.env.SCAN_TEST_ALLOW_HOSTS = `${allowed.host},${closed.host}`;
+    await closed.close();
+    proxy = await startEgressProxy({ maxSockets: 1 });
+    const tunnel = await openTunnel(proxy.port, closed.host);
+    expect(tunnel.status).toBe("HTTP/1.1 502 Bad Gateway");
+    expect(await closesWithin(tunnel.socket, 5_000)).not.toBe("open");
+    expect(await getVia(proxy.port, `${closed.origin}/`)).toBe("closed");
+    // both slots were released
+    expect((await openTunnel(proxy.port, allowed.host)).status).toBe("HTTP/1.1 200 Connection Established");
+    expect(proxy.stats()).toMatchObject({ blocked: 0, refused: 0 });
+  });
+
+  it("answers a tunnel whose upstream never completes the connect with 504 and frees its slot", async () => {
+    const blackhole = await listenBlackhole();
+    process.env.SCAN_TEST_ALLOW_HOSTS = `${allowed.host},${blackhole.host}`;
+    try {
+      proxy = await startEgressProxy({ maxSockets: 1, connectTimeoutMs: 500 });
+      const start = performance.now();
+      const tunnel = await openTunnel(proxy.port, blackhole.host);
+      expect(tunnel.status).toBe("HTTP/1.1 504 Gateway Timeout");
+      expect(performance.now() - start).toBeLessThan(5_000);
+      expect(await closesWithin(tunnel.socket, 5_000)).not.toBe("open");
+      expect((await openTunnel(proxy.port, allowed.host)).status).toBe("HTTP/1.1 200 Connection Established");
+    } finally {
+      await blackhole.close();
+    }
+  });
+
+  it("applies the connect timeout to plain requests too, then the idle timeout once connected", async () => {
+    const blackhole = await listenBlackhole();
+    const silent = net.createServer((socket) => socket.on("error", () => {}));
+    await new Promise<void>((resolve) => silent.listen(0, "127.0.0.1", resolve));
+    const silentHost = `127.0.0.1:${(silent.address() as net.AddressInfo).port}`;
+    process.env.SCAN_TEST_ALLOW_HOSTS = `${allowed.host},${blackhole.host},${silentHost}`;
+    try {
+      proxy = await startEgressProxy({ connectTimeoutMs: 500, idleTimeoutMs: 3_000 });
+      const start = performance.now();
+      expect(await getVia(proxy.port, `http://${blackhole.host}/`)).toBe("closed");
+      expect(performance.now() - start).toBeLessThan(2_500);
+
+      // connected upstreams that stay silent get the idle timeout, not the connect timeout
+      const tunnel = await openTunnel(proxy.port, silentHost);
+      expect(tunnel.status).toBe("HTTP/1.1 200 Connection Established");
+      const plain = net.connect(proxy.port, "127.0.0.1", () => plain.write(`GET http://${silentHost}/ HTTP/1.1\r\nHost: ${silentHost}\r\n\r\n`));
+      plain.on("error", () => {});
+      const [tunnelClosed, plainClosed] = await Promise.all([closesWithin(tunnel.socket, 10_000), closesWithin(plain, 10_000)]);
+      for (const elapsed of [tunnelClosed, plainClosed]) {
+        expect(elapsed).not.toBe("open");
+        expect(elapsed).toBeGreaterThan(2_000);
+      }
+    } finally {
+      silent.close();
+      await blackhole.close();
+    }
+  });
+
+  it("falls back to the next checked address when the first one fails", async () => {
+    // `::1` has no listener on this port (or no IPv6 at all), 127.0.0.1 has the fixture server
+    dns.answers.set("dual.test", ["::1", "127.0.0.1"]);
+    process.env.SCAN_TEST_ALLOW_HOSTS = `${allowed.host},dual.test:${allowed.port}`;
+    proxy = await startEgressProxy();
+    const tunnel = await openTunnel(proxy.port, `dual.test:${allowed.port}`);
+    expect(tunnel.status).toBe("HTTP/1.1 200 Connection Established");
+    tunnel.socket.destroy();
+    expect(await getVia(proxy.port, `http://dual.test:${allowed.port}/control.html`)).toMatchObject({ status: 200, body: expect.stringContaining("Control page") });
   });
 
   it("relays odd upstream status lines without crashing or hanging", async () => {
