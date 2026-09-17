@@ -38,7 +38,10 @@ function hostKey(value: string): string {
   host = host.slice(host.lastIndexOf("@") + 1);
   if (host.startsWith("[")) host = host.slice(1, host.includes("]") ? host.indexOf("]") : undefined);
   else if (!net.isIPv6(host)) host = host.replace(/:\d*$/, "");
-  host = host.replace(/\.+$/, "");
+  // A loop, not `/\.+$/`: that pattern backtracks quadratically on a long run of dots followed by another character.
+  let end = host.length;
+  while (end > 0 && host.charCodeAt(end - 1) === 0x2e) end -= 1;
+  host = host.slice(0, end);
   if (!host || ipaddr.isValid(host)) return host;
   return domainToASCII(host) || host;
 }

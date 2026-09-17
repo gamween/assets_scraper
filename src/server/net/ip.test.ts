@@ -49,6 +49,17 @@ describe("own hosts and test allowlist", () => {
     expect(isOwnHost("other.example")).toBe(true);
   });
 
+  it("strips long runs of dots in linear time", async () => {
+    // A CONNECT target is attacker-chosen: a backtracking `/\.+$/` took over a second on this host.
+    const dots = `${".".repeat(32_000)}x`;
+    const start = performance.now();
+    expect(isOwnHost(dots)).toBe(false);
+    await expect(resolvePublicHost(dots, 443)).rejects.toMatchObject({ reason: "invalid-host" });
+    expect(performance.now() - start).toBeLessThan(100);
+    vi.stubEnv("APP_HOSTS", "scraper.example.com");
+    expect(isOwnHost(`scraper.example.com${".".repeat(32_000)}`)).toBe(true);
+  });
+
   it("reads VERCEL_URL and VERCEL_BRANCH_URL, strips ports and schemes, and never matches an empty host", () => {
     vi.stubEnv("VERCEL_URL", "assets-scraper-abc123.vercel.app");
     vi.stubEnv("VERCEL_BRANCH_URL", "assets-scraper-git-main.vercel.app");
