@@ -10,10 +10,6 @@ import type {
   MediaKind, MediaRect, PaletteInPage, PaletteSignalOptions, PaletteSource, RawPaletteSignals, RectTuple,
 } from "../palette/signals";
 
-declare global {
-  var __assetsScraperPalette: PaletteInPage | undefined;
-}
-
 /**
  * Set on every hidden element: "-" when it had no `style` attribute, else "=" followed by that attribute, which
  * `restore` puts back as it was.
@@ -611,4 +607,5 @@ function restore(): void {
   }
 }
 
-globalThis.__assetsScraperPalette = { collect, restore, decodeIconColors };
+// Not a global of the app: this lands on the object that shadows `globalThis` in the evaluated expression.
+(globalThis as { __assetsScraperPalette?: PaletteInPage }).__assetsScraperPalette = { collect, restore, decodeIconColors };
