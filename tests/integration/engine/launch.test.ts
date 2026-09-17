@@ -260,13 +260,17 @@ describe("withBrowser", () => {
     const pidfile = path.join(stateDir, `chromium-${deadOwner}-0.pid`);
     await writeFile(wrapper, wrapperScript(binary));
     await chmod(wrapper, 0o755);
-    const orphan = spawn(wrapper, ["--headless", "--no-sandbox", "--no-first-run", `--user-data-dir=${path.join(scratch, "profile")}`, pidfileMarker(pidfile), "about:blank"], {
+    // With a debugging port, the browser writes DevToolsActivePort to its profile once it is up.
+    const orphan = spawn(wrapper, ["--headless", "--no-sandbox", "--no-first-run", "--remote-debugging-port=0", `--user-data-dir=${path.join(scratch, "profile")}`, pidfileMarker(pidfile), "about:blank"], {
       detached: true,
       stdio: "ignore",
       env: { PATH: process.env.PATH, HOME: process.env.HOME, [PIDFILE_ENV]: pidfile } as unknown as NodeJS.ProcessEnv,
     });
     try {
-      await expect.poll(() => isProcessAlive(orphan.pid ?? 0) && spawnSync("cat", [pidfile]).stdout.toString().trim(), { timeout: 10_000 }).toBe(String(orphan.pid));
+      // The wrapper writes the pidfile before it execs the browser, and the command line is not the browser's until the
+      // exec is done (it reads empty in between): wait until the browser is up, as one left behind by a dead scan is.
+      await expect.poll(() => existsSync(path.join(scratch, "profile", "DevToolsActivePort")), { timeout: 10_000 }).toBe(true);
+      expect(spawnSync("cat", [pidfile]).stdout.toString().trim()).toBe(String(orphan.pid));
       await withBrowser(open(), async () => {});
       await expect.poll(() => isProcessAlive(orphan.pid ?? 0), { timeout: 5000 }).toBe(false);
     } finally {
