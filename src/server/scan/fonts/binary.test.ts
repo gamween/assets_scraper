@@ -1,9 +1,9 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { brotliDecompressSync, deflateSync } from "node:zlib";
+import { brotliCompressSync, brotliDecompressSync, constants, deflateSync } from "node:zlib";
 import * as fontkit from "fontkit";
-import { describe, expect, it, vi } from "vitest";
-import { parseFontBinary, sniffFontFormat, withinDecompressionLimits } from "./binary";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { parseFontBinary, sniffFontFormat, withinParseLimits } from "./binary";
 
 vi.mock("fontkit", async (importOriginal) => {
   const actual = await importOriginal<typeof import("fontkit")>();
@@ -11,13 +11,29 @@ vi.mock("fontkit", async (importOriginal) => {
 });
 
 const asset = (name: string) => readFileSync(path.join(process.cwd(), "tests/fixtures/site/assets", name));
-const MIB = 1024 * 1024;
+const KIB = 1024;
+const MIB = 1024 * KIB;
+const create = vi.mocked(fontkit.create);
+
+beforeEach(() => {
+  create.mockClear();
+});
+
+/** Whether `parseFontBinary` refuses the file before fontkit sees it. */
+const refusedBeforeFontkit = (file: Buffer) => {
+  create.mockClear();
+  const meta = parseFontBinary(file);
+  return meta === null && create.mock.calls.length === 0 && !withinParseLimits(file);
+};
 
 /** 256 MiB of zeros in 211 bytes: `brotliCompressSync(Buffer.alloc(2 ** 28))` with a 24-bit window. */
 const BROTLI_256_MIB_OF_ZEROS = Buffer.from(
   "z///f/gnAOKxQCD3/p/////wTwDEYQGA7v0/////4Z8AiMMiAN37f/7//8M/ARCHBQC69//8//+HfwIgDgsAdO//+f//D/8EQBwWAOje//P//x/+CYA4LADQvf/n//8//BMAcVgAoHv/z///f/gnAOKwAED3/p/////wTwDEYQGA7v0/////4Z8AiMMCAN37f/7//8M/ARCHBQC69//8//+HfwIgDgsAdO//+f//D/8EQBwWAOje//P//x/+CYA4LADQvf/P//9//BMAcVgAoHv/Dw==",
   "base64",
 );
+
+const u16 = (value: number) => Buffer.from([value >> 8, value & 0xff]);
+const u32 = (value: number) => Buffer.from([value >>> 24, (value >> 16) & 0xff, (value >> 8) & 0xff, value & 0xff]);
 
 const base128 = (value: number): number[] => {
   const digits = [value % 128];
@@ -71,6 +87,31 @@ function readWoff2(woff2: Buffer): Sfnt {
   return { flavor: woff2.readUInt32BE(4), totalSfntSize: woff2.readUInt32BE(16), tables };
 }
 
+/** `font` with the table `tag` replaced, or added last. */
+function withTable(font: Sfnt, tag: string, data: Buffer): Sfnt {
+  const tables = font.tables.some((table) => table.tag === tag)
+    ? font.tables.map((table) => (table.tag === tag ? { tag, data } : table))
+    : [...font.tables, { tag, data }];
+  return { ...font, tables };
+}
+
+/** An OpenType or TrueType file of `font`, its table offsets counted from `base` (for a collection header before it). */
+function toSfnt(font: Sfnt, base = 0): Buffer {
+  const directory = Buffer.alloc(12 + font.tables.length * 16);
+  directory.writeUInt32BE(font.flavor, 0);
+  directory.writeUInt16BE(font.tables.length, 4);
+  const bodies: Buffer[] = [];
+  let offset = base + directory.length;
+  font.tables.forEach(({ tag, data }, index) => {
+    directory.write(tag, 12 + index * 16, "latin1");
+    directory.writeUInt32BE(offset, 12 + index * 16 + 8);
+    directory.writeUInt32BE(data.length, 12 + index * 16 + 12);
+    bodies.push(data, Buffer.alloc(-data.length & 3));
+    offset += data.length + (-data.length & 3);
+  });
+  return Buffer.concat([directory, ...bodies]);
+}
+
 interface TableEdit {
   origLength?: (length: number) => number;
   stream?: (compressed: Buffer) => Buffer;
@@ -100,6 +141,56 @@ function toWoff(font: Sfnt, edits: Record<string, TableEdit> = {}): Buffer {
   header.writeUInt32BE(font.totalSfntSize, 16);
   header.writeUInt16BE(1, 20);
   return Buffer.concat([header, directory, ...bodies]);
+}
+
+/** A WOFF2 file of `font` with untransformed tables and an explicit tag where no index is known, padded to `fileBytes`. */
+function toWoff2(font: Sfnt, fileBytes = 0): Buffer {
+  const directory = Buffer.concat(
+    font.tables.map(({ tag, data }) => {
+      const index = KNOWN_WOFF2_TAGS.indexOf(tag);
+      return Buffer.from([...(index >= 0 ? [index] : [0x3f, ...Buffer.from(tag, "latin1")]), ...base128(data.length)]);
+    }),
+  );
+  const stream = brotliCompressSync(Buffer.concat(font.tables.map(({ data }) => data)), { params: { [constants.BROTLI_PARAM_QUALITY]: 4 } });
+  const header = Buffer.alloc(48);
+  header.write("wOF2", 0, "latin1");
+  header.writeUInt32BE(font.flavor, 4);
+  header.writeUInt16BE(font.tables.length, 12);
+  header.writeUInt32BE(font.totalSfntSize, 16);
+  header.writeUInt32BE(stream.length, 20);
+  const file = Buffer.concat([header, directory, stream, Buffer.alloc(Math.max(0, fileBytes - header.length - directory.length - stream.length))]);
+  file.writeUInt32BE(file.length, 8);
+  return file;
+}
+
+interface StringRecord {
+  length: number;
+  offset: number;
+}
+
+/**
+ * A `name` table of Windows English records (name ID 1 unless given) over `storage`, with `stringOffset` right after
+ * the records by default, and version 1 when it has language tags.
+ */
+function nameTable(records: (StringRecord & { nameId?: number })[], storage: Buffer, options: { stringOffset?: number; langTags?: StringRecord[] } = {}): Buffer {
+  const { langTags } = options;
+  const tagBytes = langTags ? [u16(langTags.length), ...langTags.flatMap(({ length, offset }) => [u16(length), u16(offset)])] : [];
+  const headerLength = 6 + records.length * 12 + tagBytes.reduce((sum, bytes) => sum + bytes.length, 0);
+  return Buffer.concat([
+    u16(langTags ? 1 : 0),
+    u16(records.length),
+    u16(options.stringOffset ?? headerLength),
+    ...records.flatMap(({ nameId = 1, length, offset }) => [u16(3), u16(1), u16(0x409), u16(nameId), u16(length), u16(offset)]),
+    ...tagBytes,
+    storage,
+  ]);
+}
+
+/** A `name` table giving `family` as name ID 1, its storage padded with zeros to `tableBytes`. */
+function familyNameTable(family: string, tableBytes = 0): Buffer {
+  const string = Buffer.from(family, "utf16le").swap16();
+  const table = nameTable([{ length: string.length, offset: 0 }], string);
+  return Buffer.concat([table, Buffer.alloc(Math.max(0, tableBytes - table.length))]);
 }
 
 describe("parseFontBinary", () => {
@@ -149,61 +240,132 @@ describe("parseFontBinary", () => {
   });
 });
 
-describe("decompression limits", () => {
+describe("parse limits", () => {
   const ss3 = readWoff2(asset("ss3.woff2"));
+  const ss3Meta = parseFontBinary(asset("ss3.woff2"));
 
-  it("reads a WOFF file whose tables inflate within their declared sizes", () => {
-    const woff = toWoff(ss3);
-    expect(withinDecompressionLimits(woff)).toBe(true);
-    expect(parseFontBinary(woff)).toEqual({ ...parseFontBinary(asset("ss3.woff2")), format: "woff" });
+  it("reads OpenType, TrueType and WOFF files", () => {
+    expect(ss3Meta).not.toBeNull();
+    expect(parseFontBinary(toSfnt(ss3))).toEqual({ ...ss3Meta, format: "otf" });
+    for (const flavor of [0x00010000, 0x74727565]) expect(parseFontBinary(toSfnt({ ...ss3, flavor }))).toEqual({ ...ss3Meta, format: "ttf" });
+    expect(parseFontBinary(toWoff(ss3))).toEqual({ ...ss3Meta, format: "woff" });
+    expect(parseFontBinary(toWoff2(ss3))).toEqual(ss3Meta);
+    expect(create).toHaveBeenCalledTimes(5);
+  });
+
+  it("never hands fontkit a TrueType collection or another format", () => {
+    // fontkit builds a font for each offset a collection lists, and probes unknown bytes as a DFont resource map
+    const collection = Buffer.concat([Buffer.from("ttcf"), u32(0x00010000), u32(1), u32(16), toSfnt(ss3, 16)]);
+    expect("fonts" in fontkit.create(collection)).toBe(true);
+    const eot = Buffer.alloc(40);
+    eot.writeUInt16LE(0x504c, 34);
+    for (const file of [collection, toSfnt({ ...ss3, flavor: 0x74797031 }), eot, Buffer.concat([u32(256), u32(512), toSfnt(ss3)])]) {
+      expect(refusedBeforeFontkit(file)).toBe(true);
+    }
+  });
+
+  it("refuses files without a name table or with a table listed twice", () => {
+    expect(refusedBeforeFontkit(toSfnt({ ...ss3, tables: ss3.tables.filter((table) => table.tag !== "name") }))).toBe(true);
+    const name = ss3.tables.find((table) => table.tag === "name")!;
+    const twice = { ...ss3, tables: [...ss3.tables, name] };
+    for (const file of [toSfnt(twice), toWoff(twice), toWoff2(twice)]) expect(refusedBeforeFontkit(file)).toBe(true);
   });
 
   it("rejects a WOFF2 decompression bomb without handing it to fontkit", () => {
-    // fontkit alone allocates 256 MiB and spends about half a second decoding either file
-    const bombs = [woff2Declaring(2 ** 28, BROTLI_256_MIB_OF_ZEROS), woff2Declaring(2 ** 28, BROTLI_256_MIB_OF_ZEROS, 1_000)];
-    const create = vi.mocked(fontkit.create);
+    // fontkit alone allocates 256 MiB and spends about half a second decoding each file: its brotli decoder grows its
+    // output past the declared size, so declaring 1,000 bytes does not stop it either
+    const bombs = [
+      woff2Declaring(2 ** 28, BROTLI_256_MIB_OF_ZEROS),
+      woff2Declaring(2 ** 28, BROTLI_256_MIB_OF_ZEROS, 1_000),
+      woff2Declaring(1_000, BROTLI_256_MIB_OF_ZEROS),
+    ];
     for (const bomb of bombs) {
       expect(bomb.length).toBeLessThan(300);
-      create.mockClear();
-      expect(parseFontBinary(bomb)).toBeNull();
-      expect(create).not.toHaveBeenCalled();
-      expect(withinDecompressionLimits(bomb)).toBe(false);
+      expect(refusedBeforeFontkit(bomb)).toBe(true);
     }
-    create.mockClear();
-    expect(parseFontBinary(asset("ss3.woff2"))).not.toBeNull();
-    expect(create).toHaveBeenCalledOnce();
   });
 
   it("allows 16 times the file size, at least 16 KiB and at most 32 MiB", () => {
-    const sized = (length: number, fileBytes: number) => woff2Declaring(length, Buffer.alloc(fileBytes - woff2Declaring(length, Buffer.alloc(0)).length));
-    expect(withinDecompressionLimits(sized(16 * 1024, 100))).toBe(true);
-    expect(withinDecompressionLimits(sized(16 * 1024 + 1, 100))).toBe(false);
-    expect(withinDecompressionLimits(sized(160_000, 10_000))).toBe(true);
-    expect(withinDecompressionLimits(sized(160_001, 10_000))).toBe(false);
-    expect(withinDecompressionLimits(sized(32 * MIB, 3 * MIB))).toBe(true);
-    expect(withinDecompressionLimits(sized(32 * MIB + 1, 3 * MIB))).toBe(false);
-    expect(withinDecompressionLimits(asset("ss3.woff2").subarray(0, 40))).toBe(false);
+    // A WOFF2 file of `fileBytes` whose one table, an empty `name` table, declares and decompresses to `length` bytes
+    const sized = (length: number, fileBytes: number) =>
+      toWoff2({ flavor: 0x00010000, totalSfntSize: length, tables: [{ tag: "name", data: nameTable([], Buffer.alloc(length - 6)) }] }, fileBytes);
+    expect(withinParseLimits(sized(16 * KIB, 100))).toBe(true);
+    expect(withinParseLimits(sized(16 * KIB + 1, 100))).toBe(false);
+    expect(withinParseLimits(sized(160_000, 10_000))).toBe(true);
+    expect(withinParseLimits(sized(160_001, 10_000))).toBe(false);
+    expect(withinParseLimits(sized(32 * MIB, 3 * MIB))).toBe(true);
+    expect(withinParseLimits(sized(32 * MIB + 1, 3 * MIB))).toBe(false);
+    expect(withinParseLimits(asset("ss3.woff2").subarray(0, 40))).toBe(false);
   });
 
   it("rejects WOFF tables that declare more than the file can hold", () => {
     // fontkit alone allocates the 64 MiB and reads the names
-    const woff = toWoff(ss3, { name: { origLength: () => 64 * MIB } });
-    expect(withinDecompressionLimits(woff)).toBe(false);
-    expect(parseFontBinary(woff)).toBeNull();
+    expect(refusedBeforeFontkit(toWoff(ss3, { name: { origLength: () => 64 * MIB } }))).toBe(true);
   });
 
   it("rejects WOFF tables whose zlib stream does not end within the declared size", () => {
-    const truncated = toWoff(ss3, { name: { stream: (compressed) => compressed.subarray(0, -8) } });
-    const overflowing = toWoff(ss3, { name: { origLength: (length) => length - 1 } });
-    // fontkit's inflate never returns on the truncated stream, so only the limits are checked for it here
-    expect(withinDecompressionLimits(truncated)).toBe(false);
-    expect(withinDecompressionLimits(overflowing)).toBe(false);
-    expect(parseFontBinary(overflowing)).toBeNull();
+    // fontkit's inflate never returns on the truncated stream
+    expect(refusedBeforeFontkit(toWoff(ss3, { name: { stream: (compressed) => compressed.subarray(0, -8) } }))).toBe(true);
+    expect(refusedBeforeFontkit(toWoff(ss3, { name: { origLength: (length) => length - 1 } }))).toBe(true);
   });
 
-  it("does not limit uncompressed formats", () => {
-    expect(withinDecompressionLimits(Buffer.from("OTTO0000"))).toBe(true);
-    expect(withinDecompressionLimits(Buffer.from("not a font"))).toBe(true);
+  it("allows 4,096 name records with 256 KiB of strings inside the name table", () => {
+    const records = (count: number, length = 0) => Array.from({ length: count }, () => ({ length, offset: 0 }));
+    const storage = Buffer.alloc(65_535);
+    const within = (table: Buffer) => withinParseLimits(toSfnt(withTable(ss3, "name", table)));
+    expect(within(nameTable(records(4_096), storage))).toBe(true);
+    expect(within(nameTable(records(4_097), storage))).toBe(false);
+    expect(within(nameTable([...records(4, 65_535), { length: 4, offset: 0 }], storage))).toBe(true);
+    expect(within(nameTable([...records(4, 65_535), { length: 5, offset: 0 }], storage))).toBe(false);
+    // strings past the end of the table
+    expect(within(nameTable([{ length: 10, offset: 65_530 }], storage))).toBe(false);
+    expect(within(nameTable([{ length: 10, offset: 0 }], Buffer.alloc(100), { stringOffset: 18 + 90 }))).toBe(true);
+    expect(within(nameTable([{ length: 10, offset: 0 }], Buffer.alloc(100), { stringOffset: 18 + 91 }))).toBe(false);
+    expect(within(nameTable([], Buffer.alloc(0)).subarray(0, 5))).toBe(false);
+    // language tags of a version 1 table count as records
+    expect(within(nameTable(records(4_000), storage, { langTags: records(96) }))).toBe(true);
+    expect(within(nameTable(records(4_000), storage, { langTags: records(97) }))).toBe(false);
+    expect(within(nameTable([], storage, { langTags: [{ length: 10, offset: 65_530 }] }))).toBe(false);
+  });
+
+  it("refuses a name table whose records all decode the same long string, in every format", () => {
+    // fontkit alone decodes 8,000 strings of 32,767 characters from this 96 KB table and takes 600 MB
+    const table = nameTable(Array.from({ length: 8_000 }, () => ({ length: 65_535, offset: 0 })), Buffer.alloc(0), { stringOffset: 0 });
+    expect(table.length).toBeLessThan(100 * KIB);
+    const bomb = withTable(ss3, "name", table);
+    for (const file of [toSfnt(bomb), toWoff(bomb), toWoff2(bomb)]) expect(refusedBeforeFontkit(file)).toBe(true);
+  });
+
+  it("checks the name table fontkit decodes, where WOFF2 puts integer-like tags first", () => {
+    // Directory order: `name` naming Direct, then `1234` of the same size. fontkit lays tables out with `1234` first.
+    const size = 2 * KIB;
+    const swapped = (other: Buffer) => {
+      const [first, ...rest] = withTable(ss3, "name", familyNameTable("Direct", size)).tables.sort((a, b) => Number(b.tag === "name") - Number(a.tag === "name"));
+      return toWoff2({ ...ss3, tables: [first, { tag: "1234", data: other }, ...rest] });
+    };
+    const meta = parseFontBinary(swapped(familyNameTable("Swapped", size)));
+    expect(meta).toMatchObject({ familyName: "Swapped" });
+    const bomb = nameTable(Array.from({ length: 150 }, () => ({ length: 1_900, offset: 0 })), Buffer.alloc(0), { stringOffset: 0 });
+    expect(bomb.length).toBeLessThanOrEqual(size);
+    expect(refusedBeforeFontkit(swapped(Buffer.concat([bomb, Buffer.alloc(size - bomb.length)])))).toBe(true);
+  });
+
+  it("allows 64 cmap subtables", () => {
+    // Mac Roman records, not Unicode ones, all over one format 0 subtable: fontkit decodes it once per record
+    const cmap = (count: number) =>
+      Buffer.concat([u16(0), u16(count), ...Array.from({ length: count }, () => Buffer.concat([u16(1), u16(0), u32(4 + count * 8)])), u16(0), u16(262), u16(0), Buffer.alloc(256)]);
+    expect(parseFontBinary(toSfnt(withTable(ss3, "cmap", cmap(64))))).toMatchObject({ familyName: "Source Sans 3", coversLatin: false });
+    expect(refusedBeforeFontkit(toSfnt(withTable(ss3, "cmap", cmap(65))))).toBe(true);
+    // fontkit alone takes a second and 300 MB for these 525 KB
+    expect(refusedBeforeFontkit(toSfnt(withTable(ss3, "cmap", cmap(65_535))))).toBe(true);
+  });
+
+  it("allows 64 variation axes and 1,024 named instances", () => {
+    const fvar = (axes: number, instances: number) =>
+      Buffer.concat([u32(0x00010000), u16(16), u16(2), u16(axes), u16(20), u16(instances), u16(axes * 4 + 4), Buffer.alloc(axes * 20 + instances * (axes * 4 + 4))]);
+    expect(parseFontBinary(toSfnt(withTable(ss3, "fvar", fvar(64, 1_024))))).toMatchObject({ familyName: "Source Sans 3" });
+    expect(refusedBeforeFontkit(toSfnt(withTable(ss3, "fvar", fvar(65, 1))))).toBe(true);
+    expect(refusedBeforeFontkit(toSfnt(withTable(ss3, "fvar", fvar(1, 1_025))))).toBe(true);
   });
 });
 
