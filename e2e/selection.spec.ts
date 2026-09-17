@@ -140,11 +140,14 @@ test.describe("selection and ZIP", () => {
     expect(downloaded).toBe(false);
   });
 
-  test("Download all zips the current tab without collapsed small icons", async ({ page }) => {
+  test("Download all zips the current tab whatever the search, without collapsed small icons", async ({ page }) => {
     await openResults(page);
     await page.getByRole("tab", { name: /^SVG/ }).click();
     const filenames = await page.getByTestId("asset-card").evaluateAll((cards) => cards.map((card) => card.getAttribute("data-filename")!));
-    expect(filenames.length).toBeGreaterThan(0);
+    expect(filenames.length).toBeGreaterThan(1);
+    // Spec 12.4: the search narrows the grid and select-all, not Download all.
+    await page.getByRole("searchbox", { name: "Filter by name or URL" }).fill(siteLogo.filename);
+    await expect(page.getByTestId("asset-card")).not.toHaveCount(filenames.length);
     const zip = await zipEntries(page, () => page.getByRole("button", { name: "Download all" }).click());
     expect(zip.name).toBe("linear.app-assets.zip");
     expect(zip.entries.sort()).toEqual(filenames.map((name) => `linear.app-assets/svg/${name}`).sort());

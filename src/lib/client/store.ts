@@ -62,6 +62,11 @@ export interface AppState {
   anchor: string | null;
   selectionMode: boolean;
   detailId: string | null;
+  /**
+   * A collapsed section whose asset opened in detail (through `&asset=<id>`). Detail navigation walks it until the
+   * dialog closes; the grid, select-all and Download all keep treating it as collapsed.
+   */
+  revealed: SectionId | null;
   zip: ZipProgress | null;
   /** Entries a finished ZIP had to skip, listed by the toast's `Show` action. */
   zipFailures: ZipFailure[] | null;
@@ -120,6 +125,7 @@ const scanReset = {
   anchor: null,
   selectionMode: false,
   detailId: null,
+  revealed: null,
   zip: null,
   zipFailures: null,
 } satisfies Partial<AppState>;
@@ -247,10 +253,10 @@ export function createAppStore() {
       set((state) => {
         if (!findAsset(state, id)) return {};
         const section = getSections(state).find((item) => item.kind === "assets" && item.items.some((asset) => asset.id === id));
-        const expand = section?.collapsible && !state.expanded.includes(section.id);
-        return { detailId: id, expanded: expand ? [...state.expanded, section.id] : state.expanded };
+        const collapsed = section?.collapsible && !state.expanded.includes(section.id);
+        return { detailId: id, revealed: collapsed ? section.id : null };
       }),
-    closeDetail: () => set({ detailId: null }),
+    closeDetail: () => set({ detailId: null, revealed: null }),
     nextDetail: () => set((state) => ({ detailId: stepDetail(state, 1) })),
     previousDetail: () => set((state) => ({ detailId: stepDetail(state, -1) })),
 
@@ -285,32 +291,45 @@ export function getSections(state: AppState): Section[] {
   return value;
 }
 
-/** Collapsed sections open while a search is active, so matching small icons and declared files show up. */
-export const isSearching = (state: Pick<AppState, "query">) => state.query.trim().length > 0;
+let visibleCache: { sections: Section[]; expanded: SectionId[]; value: Item[] } | null = null;
 
-let visibleCache: { sections: Section[]; expanded: SectionId[]; searching: boolean; value: Item[] } | null = null;
-
+/**
+ * Items of the current tab and search in visual order, as the grid renders them (spec 12.4). Collapsed sections stay
+ * out until the user expands them, whether or not a search is active.
+ */
 export function getVisibleItems(state: AppState): Item[] {
   const sections = getSections(state);
-  const searching = isSearching(state);
-  if (visibleCache && visibleCache.sections === sections && visibleCache.expanded === state.expanded && visibleCache.searching === searching) {
-    return visibleCache.value;
-  }
-  const expanded = searching ? new Set(sections.map((section) => section.id)) : new Set(state.expanded);
-  const value = visibleItems(sections, expanded);
-  visibleCache = { sections, expanded: state.expanded, searching, value };
+  if (visibleCache && visibleCache.sections === sections && visibleCache.expanded === state.expanded) return visibleCache.value;
+  const value = visibleItems(sections, new Set(state.expanded));
+  visibleCache = { sections, expanded: state.expanded, value };
   return value;
 }
 
-let detailCache: { items: Item[]; value: Asset[] } | null = null;
+let detailCache: { items: Item[]; revealed: SectionId | null; value: Asset[] } | null = null;
 
-/** Assets that detail navigation walks through: the visible assets of the current tab and search. */
+/**
+ * Assets that detail navigation walks through: the visible assets of the current tab and search, plus the collapsed
+ * section of an asset opened from the address bar while its dialog is open.
+ */
 export function getDetailList(state: AppState): Asset[] {
-  const items = getVisibleItems(state);
-  if (detailCache?.items === items) return detailCache.value;
+  const visible = getVisibleItems(state);
+  if (detailCache && detailCache.items === visible && detailCache.revealed === state.revealed) return detailCache.value;
+  const items = state.revealed ? visibleItems(getSections(state), new Set([...state.expanded, state.revealed])) : visible;
   const value = items.flatMap((item) => (item.kind === "asset" ? [item.asset] : []));
-  detailCache = { items, value };
+  detailCache = { items: visible, revealed: state.revealed, value };
   return value;
+}
+
+/**
+ * Spec 12.4 `Download all`: every item of the current tab, whatever the search, in visual order. Collapsed sections
+ * (small icons, stylesheet-only files, unused fonts) are included only when expanded.
+ */
+export function getDownloadAllItems(state: AppState): Item[] {
+  const fallback = state.phase === "error" && !state.assets.length ? (state.error?.fallback ?? []) : [];
+  const sections = fallback.length
+    ? publicSourcesSection(fallback, { query: "", sort: state.sort })
+    : sectionize(state.assets, state.fonts, { tab: state.tab, query: "", sort: state.sort });
+  return visibleItems(sections, new Set(state.expanded));
 }
 
 export function findAsset(state: AppState, id: string | null): Asset | null {

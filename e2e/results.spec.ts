@@ -105,6 +105,11 @@ test.describe("results", () => {
     const search = page.getByRole("searchbox", { name: "Filter by name or URL" });
     await expect(search).toBeFocused();
     await search.fill("avatar of karri");
+    // The match is a small icon: its section stays collapsed until Show, like without a search.
+    const small = section(page, "Small icons");
+    await expect(small.getByRole("heading", { level: 2 })).toHaveText("Small icons");
+    await expect(page.getByTestId("asset-card")).toHaveCount(0);
+    await small.getByRole("button", { name: "Show" }).click();
     await expect(page.getByTestId("asset-card")).toHaveCount(1);
 
     await search.fill("zzz");
@@ -140,6 +145,27 @@ test.describe("results", () => {
     await control.getByRole("radio", { name: "Light" }).click();
     await expect(well).toHaveAttribute("data-background", "light");
     await expect(well).toHaveCSS("background-color", "rgb(255, 255, 255)");
+  });
+
+  test("a search keeps collapsed sections collapsed, and Cmd+A takes only what shows", async ({ page }) => {
+    await openResults(page, linear);
+    const icon = findAsset(linear, (a) => a.kind === "svg" && a.role === "icon");
+    const search = page.getByRole("searchbox", { name: "Filter by name or URL" });
+    await search.fill(icon.filename);
+    const small = section(page, "Small icons");
+    await expect(small.getByRole("button", { name: "Show" })).toHaveAttribute("aria-expanded", "false");
+    await expect(page.locator(`[data-asset-id="${icon.id}"]`)).toHaveCount(0);
+
+    await search.blur();
+    await page.keyboard.press("ControlOrMeta+a");
+    const shown = await page.getByTestId("asset-card").count();
+    await expect(page.locator("[data-testid=asset-card][data-selected]")).toHaveCount(shown);
+    await page.keyboard.press("Escape");
+
+    await small.getByRole("button", { name: "Show" }).click();
+    await expect(page.locator(`[data-asset-id="${icon.id}"]`)).toBeVisible();
+    await page.keyboard.press("ControlOrMeta+a");
+    await expect(page.locator(`[data-asset-id="${icon.id}"]`)).toHaveAttribute("data-selected", "true");
   });
 
   test("tiles show the file name and a mono meta line", async ({ page }) => {

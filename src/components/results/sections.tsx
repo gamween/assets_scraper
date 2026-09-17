@@ -2,7 +2,7 @@
 
 import { useId } from "react";
 import type { Section } from "@/lib/client/filters";
-import { isSearching, useApp } from "@/lib/client/store";
+import { useApp } from "@/lib/client/store";
 import { formatCount } from "@/lib/format";
 import { AssetCard } from "./asset-card";
 import { FontRow } from "./font-row";
@@ -10,9 +10,9 @@ import { FontRow } from "./font-row";
 function SectionBlock({ section }: { section: Section }) {
   const id = useId();
   const expanded = useApp((s) => s.expanded.includes(section.id));
-  const searching = useApp(isSearching);
   const toggleSection = useApp((s) => s.toggleSection);
-  const collapsed = section.collapsible && !expanded && !searching;
+  // Spec 12.4: a collapsed section stays collapsed during a search too, so what shows is what select-all takes.
+  const collapsed = section.collapsible && !expanded;
 
   return (
     <section aria-labelledby={`${id}-title`} className={collapsed ? "pt-8" : "section-auto pt-8"}>
@@ -21,7 +21,7 @@ function SectionBlock({ section }: { section: Section }) {
           {section.title}
         </h2>
         <span className="font-mono text-mono text-text-3 tabular-nums">{formatCount(section.items.length)}</span>
-        {section.collapsible && !searching ? (
+        {section.collapsible ? (
           <button
             type="button"
             aria-expanded={expanded}

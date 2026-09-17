@@ -115,6 +115,18 @@ test.describe("detail view", () => {
     await expect(page).toHaveURL(new RegExp(`&asset=${siteLogo.id}$`));
   });
 
+  test("&asset= for a small icon walks its collapsed section without expanding it for good", async ({ page }) => {
+    const icon = findAsset(linear, (a) => a.kind === "svg" && a.role === "icon");
+    await openResults(page, linear, `&asset=${icon.id}`);
+    await expect(dialog(page).getByRole("heading", { level: 2 })).toHaveText(icon.name);
+    await expect(dialog(page).getByTestId("detail-counter")).toHaveText(/^\d+ of \d+$/);
+    await page.keyboard.press("Escape");
+    await expect(dialog(page)).toHaveCount(0);
+    const small = page.getByRole("region", { name: "Small icons", exact: true });
+    await expect(small.getByRole("button", { name: "Show" })).toHaveAttribute("aria-expanded", "false");
+    await expect(page.locator(`[data-asset-id="${icon.id}"]`)).toHaveCount(0);
+  });
+
   test("Download as displayed appears only when the framing changed", async ({ page }) => {
     const other = findAsset(linear, (a) => a.kind === "image" && a.role === "image" && a.id !== photo.id && !!a.original);
     const events = mapAssets(linear, (asset) => (asset.id === photo.id ? { ...asset, aspectChanged: true } : asset));

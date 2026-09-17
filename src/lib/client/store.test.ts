@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Diagnostics } from "@/lib/contract";
 import type { StreamEvent } from "./scan-client";
-import { createAppStore, getDetailList, getVisibleItems } from "./store";
+import { createAppStore, getDetailList, getDownloadAllItems, getVisibleItems } from "./store";
 import { makeAsset, makeFont } from "./testing";
 
 const diagnostics: Diagnostics = {
@@ -103,12 +103,26 @@ describe("app store", () => {
     expect(keys(store)).toContain("asset:icon");
   });
 
-  it("opens collapsed sections while a search is active", () => {
+  it("keeps collapsed sections out of a search until they are expanded", () => {
     const store = loadedStore();
     store.getState().setQuery("icon");
-    expect(getVisibleItems(store.getState()).map((item) => item.key)).toEqual(["asset:icon"]);
+    expect(getVisibleItems(store.getState())).toEqual([]);
+    store.getState().selectAllVisible();
+    expect(keys(store)).toEqual([]);
+    store.getState().toggleSection("small-icons");
     store.getState().selectAllVisible();
     expect(keys(store)).toEqual(["asset:icon"]);
+  });
+
+  it("downloads every item of the current tab whatever the search, collapsed sections only when expanded", () => {
+    const store = loadedStore();
+    store.getState().setQuery("hero");
+    const all = () => getDownloadAllItems(store.getState()).map((item) => item.key);
+    expect(all()).toEqual(["asset:logo", "asset:illu", "asset:hero", "asset:photo", "font:inter"]);
+    store.getState().setTab("svg");
+    expect(all()).toEqual(["asset:logo", "asset:illu"]);
+    store.getState().toggleSection("small-icons");
+    expect(all()).toEqual(["asset:logo", "asset:illu", "asset:icon"]);
   });
 
   it("keeps the selection across tab changes", () => {
@@ -142,11 +156,33 @@ describe("app store", () => {
     expect(store.getState().detailId).toBeNull();
   });
 
-  it("expands a collapsed section when its asset opens in detail", () => {
+  it("walks the collapsed section of an asset opened in detail only while the dialog is open", () => {
     const store = loadedStore();
     store.getState().openDetail("icon");
-    expect(store.getState().expanded).toContain("small-icons");
-    expect(getDetailList(store.getState()).map((a) => a.id)).toContain("icon");
+    expect(getDetailList(store.getState()).map((a) => a.id)).toEqual(["logo", "illu", "hero", "photo", "icon"]);
+    store.getState().nextDetail();
+    expect(store.getState().detailId).toBe("logo");
+    store.getState().previousDetail();
+    expect(store.getState().detailId).toBe("icon");
+    // The grid, select-all and Download all still see the section as collapsed.
+    expect(store.getState().expanded).toEqual([]);
+    expect(getVisibleItems(store.getState()).map((item) => item.key)).not.toContain("asset:icon");
+
+    store.getState().closeDetail();
+    expect(store.getState().revealed).toBeNull();
+    expect(getDetailList(store.getState()).map((a) => a.id)).not.toContain("icon");
+    store.getState().selectAllVisible();
+    expect(keys(store)).not.toContain("asset:icon");
+    expect(getDownloadAllItems(store.getState()).map((item) => item.key)).not.toContain("asset:icon");
+  });
+
+  it("does not reveal a section the user already expanded", () => {
+    const store = loadedStore();
+    store.getState().toggleSection("small-icons");
+    store.getState().openDetail("icon");
+    expect(store.getState().revealed).toBeNull();
+    store.getState().closeDetail();
+    expect(store.getState().expanded).toEqual(["small-icons"]);
   });
 
   it("shows fallback assets on a blocked error", () => {

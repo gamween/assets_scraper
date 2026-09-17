@@ -4,14 +4,14 @@ import { notify } from "@/components/results/asset-actions";
 import { toast } from "@/components/ui/toast";
 import { formatBytes, formatCount } from "@/lib/format";
 import { assetBytes, assetKey, fontBytes, fontKey } from "@/lib/client/filters";
-import { appStore, getVisibleItems, type AppState, type ZipProgress } from "@/lib/client/store";
+import { appStore, getDownloadAllItems, type AppState, type ZipProgress } from "@/lib/client/store";
 import { planZip, saveZip, type ZipFailure, type ZipItem } from "@/lib/client/zip";
 
 const LARGE_ZIP_BYTES = 300 * 1024 * 1024;
 
 let controller: AbortController | null = null;
 
-const toZipItem = (item: ReturnType<typeof getVisibleItems>[number]): ZipItem =>
+const toZipItem = (item: ReturnType<typeof getDownloadAllItems>[number]): ZipItem =>
   item.kind === "asset" ? { type: "asset", asset: item.asset } : { type: "font", font: item.font };
 
 /** Selected items in page order, across tabs and searches (the selection survives both). */
@@ -74,9 +74,9 @@ function startZip(items: ZipItem[], source: ZipProgress["source"]) {
     });
 }
 
-/** `Download all`: every item of the current tab and search; collapsed sections stay out. */
+/** `Download all`: every item of the current tab, whatever the search; collapsed sections stay out until expanded. */
 export function downloadAll() {
-  startZip(getVisibleItems(appStore.getState()).map(toZipItem), "all");
+  startZip(getDownloadAllItems(appStore.getState()).map(toZipItem), "all");
 }
 
 export function downloadSelection() {
