@@ -17,6 +17,8 @@ const HTML_SAMPLE_CHARS = 200_000;
 const READ_MS = 3_000;
 const MAX_SCROLL_STEPS = 40;
 const BACK_TO_TOP_WAIT_MS = 300;
+/** Scrolling back is instant on a healthy page; a page stuck in a script should not cost more than this. */
+const BACK_TO_TOP_MS = 1_000;
 
 // In-page snippets are strings, not functions: bundlers can rewrite a function body with helpers that do not exist
 // in the page (critic R13).
@@ -142,7 +144,7 @@ export async function loadAndScroll(page: Page, options: { signal: AbortSignal; 
     if (atBottom) break;
   }
   await capped(page.waitForLoadState("networkidle", { timeout: limits.scrollIdleMs }), limits.scrollIdleMs, undefined, signal);
-  await capped(page.evaluate(BACK_TO_TOP), READ_MS, undefined, signal);
+  await capped(page.evaluate(BACK_TO_TOP), BACK_TO_TOP_MS, undefined, signal);
   await sleep(BACK_TO_TOP_WAIT_MS, signal);
   onStep("scroll", "done");
 }

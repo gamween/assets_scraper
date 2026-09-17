@@ -1,7 +1,7 @@
 import type { Page } from "playwright-core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { withBrowser } from "@/server/browser/launch";
-import { runInPage } from "@/server/scan/inpage/run";
+import { InPageTimeoutError, runInPage } from "@/server/scan/inpage/run";
 import { serveFixture, type FixtureServer } from "../../fixtures/serve";
 import { startTestProxy, type TestProxy } from "./helpers";
 
@@ -60,8 +60,12 @@ describe("runInPage", () => {
   it("rejects after timeoutMs when the expression never resolves", async () => {
     await onPage("/", async (page) => {
       const started = Date.now();
-      await expect(runInPage(page, "", "new Promise(() => {})", { timeoutMs: 500 })).rejects.toThrow(/500 ms/);
+      await expect(runInPage(page, "", "new Promise(() => {})", { timeoutMs: 500 })).rejects.toBeInstanceOf(InPageTimeoutError);
       expect(Date.now() - started).toBeLessThan(2000);
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(new Error("scan cancelled")), 100);
+      await expect(runInPage(page, "", "new Promise(() => {})", { timeoutMs: 5000, signal: controller.signal })).rejects.toThrow("scan cancelled");
+      expect(Date.now() - started).toBeLessThan(3000);
       expect(await runInPage(page, "", "1 + 1", { timeoutMs: 2000 })).toEqual({ value: 2, world: "isolated" });
     });
   });

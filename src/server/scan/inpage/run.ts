@@ -5,8 +5,17 @@ type Protocol = {
   result: { value?: unknown };
 };
 
+export class InPageTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`In-page code did not finish within ${timeoutMs} ms`);
+    this.name = "InPageTimeoutError";
+  }
+}
+
 export interface RunInPageOptions {
   timeoutMs: number;
+  /** Rejects with the abort reason as soon as it aborts. */
+  signal?: AbortSignal;
   /** Tests inject a broken session to exercise the main-world fallback. */
   createSession?: (page: Page) => Promise<CDPSession>;
 }
@@ -17,7 +26,7 @@ const WORLD_NAME = "assets-scraper";
  * Evaluates `${source};${expression}` in a fresh CDP isolated world of the main frame (spec 7.5): same DOM, but its
  * own globals, so pages that patch built-ins cannot break the bundled code, and page scripts cannot see it. When the
  * isolated world cannot be created, runs in the main world and reports `world: "main"`. An exception thrown by the
- * code itself rejects without a retry. Rejects after `timeoutMs` in every case.
+ * code itself rejects without a retry. Rejects with `InPageTimeoutError` after `timeoutMs` in every case.
  */
 export async function runInPage<T>(page: Page, source: string, expression: string, options: RunInPageOptions): Promise<{ value: T; world: "isolated" | "main" }> {
   const script = `${source};\n${expression}`;
@@ -43,13 +52,19 @@ export async function runInPage<T>(page: Page, source: string, expression: strin
     return { value: response.result.value as T, world: "isolated" };
   };
 
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`In-page code did not finish within ${options.timeoutMs} ms`)), options.timeoutMs);
+  const { signal } = options;
+  let onAbort: (() => void) | undefined;
+  const stop = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new InPageTimeoutError(options.timeoutMs)), options.timeoutMs);
+    onAbort = () => reject(signal?.reason);
+    signal?.addEventListener("abort", onAbort, { once: true });
   });
   try {
-    return await Promise.race([run(), timeout]);
+    signal?.throwIfAborted();
+    return await Promise.race([run(), stop]);
   } finally {
     clearTimeout(timer);
+    if (onAbort) signal?.removeEventListener("abort", onAbort);
     detach(session);
   }
 }
