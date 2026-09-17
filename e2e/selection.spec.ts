@@ -104,12 +104,24 @@ test.describe("selection and ZIP", () => {
     await cardOf(page, siteLogo.id).getByRole("checkbox").click();
     await cardOf(page, photo.id).locator("[data-card-main]").click();
 
-    const zip = await zipEntries(page, () => selectionBar(page).getByRole("button", { name: "Download ZIP" }).click());
+    // Started from the keyboard: focus stays on the button while it zips.
+    const downloadZip = selectionBar(page).getByRole("button", { name: "Download ZIP" });
+    await downloadZip.focus();
+    const zip = await zipEntries(page, () => page.keyboard.press("Enter"));
     expect(zip.entries).toEqual([`linear.app-assets/svg/${siteLogo.filename}`]);
     const toast = page.getByTestId("toast");
     await expect(toast).toContainText("1 file couldn't be downloaded");
-    // Base UI keeps toasts aria-hidden until the toast viewport has focus; it announces them through its own live region.
-    await toast.locator("button", { hasText: "Show" }).click();
+    await expect(downloadZip).toBeFocused();
+    // Base UI keeps urgent toasts aria-hidden until the toast region has focus and announces them in its own alert,
+    // which carries the hint. The toast stays until dismissed, and F6 then Tab reaches Show.
+    await expect(page.getByRole("alert").filter({ hasText: "1 file couldn't be downloaded" })).toContainText("Press F6 to reach Show.");
+    await page.waitForTimeout(2500);
+    await expect(toast).toBeVisible();
+    await page.keyboard.press("F6");
+    await page.keyboard.press("Tab");
+    await page.keyboard.press("Tab");
+    await expect(toast.getByRole("button", { name: "Show" })).toBeFocused();
+    await page.keyboard.press("Enter");
     const failures = page.getByRole("dialog", { name: "Files that couldn't be downloaded" });
     await expect(failures.getByRole("listitem")).toHaveText([photo.name]);
   });

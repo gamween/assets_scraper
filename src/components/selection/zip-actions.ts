@@ -1,7 +1,7 @@
 "use client";
 
 import { notify } from "@/components/results/asset-actions";
-import { toast } from "@/components/ui/toast";
+import { toast, toastKeyboardHint } from "@/components/ui/toast";
 import { formatBytes, formatCount } from "@/lib/format";
 import { assetBytes, assetKey, fontBytes, fontKey } from "@/lib/client/filters";
 import { appStore, getDownloadAllItems, type AppState, type ZipProgress } from "@/lib/client/store";
@@ -27,10 +27,12 @@ export function itemsBytes(items: ZipItem[]): number {
   return items.reduce((sum, item) => sum + (item.type === "asset" ? assetBytes(item.asset) : fontBytes(item.font)), 0);
 }
 
+/** Stays until dismissed or replaced, so a keyboard user has the time to reach `Show` (F6, then Tab). */
 function showFailures(failed: ZipFailure[]) {
   toast.add({
     title: `${formatCount(failed.length, "file")} couldn't be downloaded`,
-    timeout: 8000,
+    description: toastKeyboardHint("Show"),
+    timeout: 0,
     priority: "high",
     actionProps: { children: "Show", onClick: () => appStore.getState().setZipFailures(failed) },
   });

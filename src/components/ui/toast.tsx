@@ -43,6 +43,14 @@ function ToastList() {
   ));
 }
 
+/**
+ * Base UI hides an urgent toast from assistive technology until the toast region has focus, and announces its title and
+ * description instead. This description adds the key that reaches the region (F6) to that announcement without showing it.
+ */
+function toastKeyboardHint(action: string): React.ReactNode {
+  return <span className="sr-only">Press F6 to reach {action}.</span>;
+}
+
 function Toaster({ children }: { children?: React.ReactNode }) {
   return (
     <ToastPrimitive.Provider toastManager={toast} limit={1} timeout={2000}>
@@ -56,4 +64,4 @@ function Toaster({ children }: { children?: React.ReactNode }) {
   );
 }
 
-export { Toaster, toast };
+export { Toaster, toast, toastKeyboardHint };

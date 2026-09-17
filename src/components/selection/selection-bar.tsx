@@ -49,7 +49,15 @@ export function SelectionBar() {
             Clear
           </Button>
         )}
-        <Button variant="primary" onClick={downloadSelection} disabled={zipping || count === 0} aria-label={zipping ? undefined : "Download ZIP"} className="shrink-0 sm:min-w-[132px]">
+        {/* Stays focusable while zipping: a keyboard user who started the ZIP keeps focus here instead of on the page. */}
+        <Button
+          variant="primary"
+          onClick={downloadSelection}
+          disabled={zipping || count === 0}
+          focusableWhenDisabled
+          aria-label={zipping ? undefined : "Download ZIP"}
+          className="shrink-0 sm:min-w-[132px]"
+        >
           {zipping ? <LoaderCircle className="spinner" aria-hidden="true" /> : <Download aria-hidden="true" />}
           {zipping ? (
             <span className="tabular-nums">{`Zipping ${zip.done} of ${zip.total}`}</span>
