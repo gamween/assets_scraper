@@ -6,8 +6,11 @@ export interface BlockInput {
   elementCount: number;
 }
 
+/**
+ * The spec 8.9 title phrases, matched as whole words: "Security CheckUp" is a product page, not "Security check".
+ */
 const CHALLENGE_TITLE =
-  /just a moment|attention required|access denied|access to this page has been denied|are you a robot|verify you are (a )?human|please verify you are a human|pardon our interruption|request unsuccessful|security check|one more step|checking your browser/i;
+  /\b(?:just a moment|attention required|access denied|access to this page has been denied|are you a robot|verify you are (a )?human|please verify you are a human|pardon our interruption|request unsuccessful|security check|one more step|checking your browser)\b/i;
 
 const CHALLENGE_MARKUP = /cf-chl-|\/cdn-cgi\/challenge-platform\/|captcha-delivery\.com|px-captcha|_Incapsula_Resource|perimeterx\.net|_pxAppId|ak-challenge|sec-cpt/i;
 

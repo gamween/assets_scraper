@@ -14,6 +14,9 @@ describe("detectBlock", () => {
     (title) => expect(detectBlock({ ...base, title })).toBe("challenge-title"),
   );
 
+  it.each(["Security CheckUp | Check Point Software", "Access Deniedness: a novel", "Just a momentum trader"])("reads the title phrases as whole words, so %s is not a wall", (title) =>
+    expect(detectBlock({ ...base, title })).toBeNull());
+
   it("flags challenge markup on small or failed pages only", () => {
     const html = '<script src="/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1"></script>';
     expect(detectBlock({ ...base, html, elementCount: 40 })).toBe("challenge-markup");
