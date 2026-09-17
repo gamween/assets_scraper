@@ -71,6 +71,7 @@ const CSS_PROPS: [string, FoundIn][] = [
   ["-webkit-mask-box-image-source", "css-mask"],
   ["border-image-source", "css-other"],
   ["list-style-image", "css-other"],
+  ["content", "css-other"],           // an element replaced by an image; on ::before and ::after it is css-pseudo
 ];
 const NON_IMAGE_DECLARATION = /^(?:cursor|behavior|clip-path|filter|marker(?:-start|-mid|-end)?|mask|src)$/;
 
@@ -598,8 +599,7 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
           continue;
         }
       }
-      const properties: [string, FoundIn][] = pseudo ? [...CSS_PROPS, ["content", "css-pseudo"]] : CSS_PROPS;
-      for (const [property, where] of properties) {
+      for (const [property, where] of CSS_PROPS) {
         const value = style.getPropertyValue(property);
         if (!value || value === "none" || !/url\(|image-set\(/i.test(value)) continue;
         const setGroup = /image-set\(/i.test(value) ? newGroup() : 0;
@@ -693,6 +693,11 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
     if (/^og:image(?::url|:secure_url)?$|^image$|^thumbnail$/.test(key)) addMeta(meta, content, "og-image");
     else if (/^twitter:image(?::src)?$/.test(key)) addMeta(meta, content, "twitter-image");
     else if (key === "msapplication-tileimage") addMeta(meta, content, "icon-link");
+  }
+  // Microdata image as a link, the other metadata form of itemprop=image. Body links and images that carry it are
+  // content, collected (or not) as such, never social images.
+  for (const link of document.querySelectorAll("link[itemprop][href]")) {
+    if (/(?:^|\s)image(?:\s|$)/i.test(link.getAttribute("itemprop") ?? "")) addMeta(link, link.getAttribute("href"), "og-image");
   }
   for (const script of document.querySelectorAll('script[type="application/ld+json"]')) {
     try {

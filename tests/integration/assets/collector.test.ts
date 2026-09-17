@@ -27,6 +27,13 @@ beforeAll(async () => {
         <a href="/brand-assets">Assets</a> <a href="/brand-assets#top">Assets again</a> <a href="/brandassets">Downloads</a> <a href="/logopack">Pack</a>
       </body></html>`);
     },
+    "/sources.html": (_req, res) => {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(`<!doctype html><html><head><title>Sources</title><link itemprop="image" href="/assets/og.png"></head><body>
+        <div style="content: url(/assets/bg.png); width: 40px; height: 40px"></div>
+        <a itemprop="image" href="/assets/hero.jpg">Product</a>
+      </body></html>`);
+    },
     "/labels.html": (_req, res) => {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       res.end(`<!doctype html><html><head><title>Labels</title></head><body>
@@ -205,6 +212,19 @@ describe("collector noise and edge cases", () => {
       { href: `${server.origin}/logopack`, text: "Pack" },
     ]);
     expect(edge.manifestUrl).toBe(`${server.origin}/site.webmanifest`);
+  });
+});
+
+describe("collector sources", () => {
+  it("reads content: url() on an element and itemprop=image links", async () => {
+    const { context, page } = await openPage(browser, `${server.origin}/sources.html`);
+    const sources = await runCollector(page, collectorOptions(server.host, "Fixture"));
+    await context.close();
+    const found = (name: string) => sources.candidates.filter((c) => c.url === asset(name) && !c.declaredOnly).map((c) => c.foundIn);
+    expect(found("bg.png")).toEqual(["css-other"]);
+    expect(sources.candidates.find((c) => c.url === asset("bg.png"))).toMatchObject({ visible: true, rect: { width: 40, height: 40 } });
+    expect(found("og.png")).toEqual(["og-image"]);
+    expect(found("hero.jpg")).toEqual([]);
   });
 });
 
