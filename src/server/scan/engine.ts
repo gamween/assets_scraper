@@ -64,6 +64,10 @@ const COLLECTOR_LISTS = ["candidates", "svgs", "fontFaces", "fontStatuses", "fon
  * same budget and order (`CollectorOptions.maxOutputChars`), so this is a safety net for a collector a main-world page
  * replaced or broke: without it, output over the budget would lose the whole collector result.
  *
+ * It never stringifies the whole output, which could pass V8's maximum string length and throw: it sums the size of
+ * each list item and of the rest, and an item that cannot be stringified (too long, or a cycle) counts as over the
+ * budget, so it goes.
+ *
  * Measured sizes count a comma per item, one too many for a list that ends up empty, so the loop keeps a character
  * of margin per list it touched and the result never goes over the budget.
  */
@@ -74,21 +78,34 @@ export const FIT_COLLECTOR_OUTPUT = `(output, budget) => {
     if (typeof page.title === "string") page.title = page.title.slice(0, ${MAX_TITLE_CHARS + 1});
     if (typeof page.siteName === "string") page.siteName = page.siteName.slice(0, ${MAX_SITE_NAME_CHARS + 1});
   }
-  let total = JSON.stringify(output).length;
-  if (total <= budget) return output;
+  const sizeOf = (value) => {
+    try {
+      return (JSON.stringify(value) ?? "null").length;
+    } catch {
+      return budget + 1;
+    }
+  };
+  const shell = { ...output };
   const items = [];
   const urls = new Set();
+  let total = 0;
   for (const key of ${JSON.stringify(COLLECTOR_LISTS)}) {
     const list = output[key];
     if (!Array.isArray(list)) continue;
+    shell[key] = [];
+    if (list.length > 0) total -= 1;
     for (let index = 0; index < list.length; index += 1) {
       const item = list[index];
       const url = key === "candidates" && item && typeof item.url === "string" ? item.url : undefined;
       const repeat = url !== undefined && urls.has(url);
       if (url !== undefined) urls.add(url);
-      items.push({ key, index, repeat, size: (JSON.stringify(item) ?? "null").length + 1 });
+      const size = sizeOf(item) + 1;
+      items.push({ key, index, repeat, size });
+      total += size;
     }
   }
+  total += sizeOf(shell);
+  if (total <= budget) return output;
   items.sort((a, b) => Number(b.repeat) - Number(a.repeat) || b.size - a.size || b.index - a.index);
   const dropped = new Map();
   for (const item of items) {

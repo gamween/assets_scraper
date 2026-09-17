@@ -120,6 +120,16 @@ describe("FIT_COLLECTOR_OUTPUT", () => {
     expect(fitted.svgs.map((svg) => svg.markup[5])).toEqual(["a", "b"]);
   });
 
+  it("drops an item that cannot be stringified instead of throwing, and keeps the rest", () => {
+    // Stands for an item past V8's maximum string length, which a replaced collector can return
+    const huge = { toJSON: () => { throw new RangeError("Invalid string length"); } };
+    const candidates = [{ url: "https://example.com/logo.png", order: 0 }];
+    const fitted = fit(output({ candidates, blobs: [huge, "small"] }), 10_000);
+    expect(fitted.blobs).toEqual(["small"]);
+    expect(fitted.candidates).toEqual(candidates);
+    expect(fitted.stats.truncated).toBe(true);
+  });
+
   it("never goes over a budget that the output can fit, lists that end up empty included", () => {
     const bare = JSON.stringify(output({ stats: { truncated: true } })).length;
     for (let budget = bare; budget < bare + 120; budget += 1) {
