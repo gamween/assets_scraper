@@ -1,3 +1,4 @@
+import type { LookupAllOptions } from "node:dns";
 import net from "node:net";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { serveFixture, type FixtureServer } from "../../fixtures/serve";
@@ -6,7 +7,7 @@ import { serveFixture, type FixtureServer } from "../../fixtures/serve";
 const dns = vi.hoisted(() => ({ answers: new Map<string, string>(), lookup: vi.fn() }));
 vi.mock("node:dns/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:dns/promises")>();
-  dns.lookup.mockImplementation(async (hostname: string, options: Parameters<typeof actual.lookup>[1]) => {
+  dns.lookup.mockImplementation(async (hostname: string, options: LookupAllOptions) => {
     const address = dns.answers.get(hostname);
     return address === undefined ? actual.lookup(hostname, options) : [{ address, family: net.isIP(address) }];
   });
