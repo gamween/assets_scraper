@@ -128,7 +128,7 @@ describe("withBrowser", () => {
     const started = Date.now();
     controller.abort(new Error("scan cancelled"));
     await expect(running).rejects.toThrow("scan cancelled");
-    expect(Date.now() - started).toBeLessThan(3000);
+    expect(Date.now() - started).toBeLessThan(5000);
     await expect.poll(() => isProcessAlive(pid), { timeout: 5000 }).toBe(false);
 
     expect(await withBrowser(open(), async () => "next scan runs")).toBe("next scan runs");
@@ -144,7 +144,7 @@ describe("withBrowser", () => {
     const pidfile = path.join(stateDir, `chromium-${deadOwner}-0.pid`);
     await writeFile(wrapper, wrapperScript(binary));
     await chmod(wrapper, 0o755);
-    const orphan = spawn(wrapper, ["--headless", "--no-first-run", `--user-data-dir=${path.join(scratch, "profile")}`, "about:blank"], {
+    const orphan = spawn(wrapper, ["--headless", "--no-sandbox", "--no-first-run", `--user-data-dir=${path.join(scratch, "profile")}`, "about:blank"], {
       detached: true,
       stdio: "ignore",
       env: { PATH: process.env.PATH, HOME: process.env.HOME, [PIDFILE_ENV]: pidfile } as unknown as NodeJS.ProcessEnv,

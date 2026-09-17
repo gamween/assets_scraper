@@ -264,8 +264,9 @@ function acquireSlot(signal: AbortSignal, onQueued?: () => void): Promise<{ slot
   });
 }
 
-/** Rejects with the abort reason as soon as the signal aborts. */
+/** Rejects with the abort reason as soon as the signal aborts. A later rejection of `promise` is ignored. */
 function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  promise.catch(() => {});
   if (signal.aborted) return Promise.reject(signal.reason);
   return new Promise<T>((resolve, reject) => {
     const onAbort = () => reject(signal.reason);

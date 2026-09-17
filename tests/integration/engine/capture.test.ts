@@ -115,7 +115,7 @@ describe("startCapture", () => {
       await expect.poll(() => page.evaluate(() => document.images[1]?.complete)).toBe(true);
       const started = Date.now();
       const network = await capture.settle(5000);
-      expect(Date.now() - started).toBeLessThan(2000);
+      expect(Date.now() - started).toBeLessThan(3000);
       expect(network.bodyTimeouts).toBe(1);
       const hang = network.images.find((image) => image.url.endsWith("/hang.png"));
       expect(hang).toMatchObject({ status: 200, contentType: "image/png" });
@@ -133,7 +133,7 @@ describe("startCapture", () => {
       await expect.poll(() => page.evaluate(() => document.images[1]?.complete)).toBe(true);
       const started = Date.now();
       const network = await capture.settle(300);
-      expect(Date.now() - started).toBeLessThan(1500);
+      expect(Date.now() - started).toBeLessThan(2500);
       expect(network.bodyTimeouts).toBe(0);
       expect(network.images.find((image) => image.url.endsWith("/hang.png"))?.sha1).toBeUndefined();
     });

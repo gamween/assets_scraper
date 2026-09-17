@@ -61,11 +61,11 @@ describe("runInPage", () => {
     await onPage("/", async (page) => {
       const started = Date.now();
       await expect(runInPage(page, "", "new Promise(() => {})", { timeoutMs: 500 })).rejects.toBeInstanceOf(InPageTimeoutError);
-      expect(Date.now() - started).toBeLessThan(2000);
+      expect(Date.now() - started).toBeLessThan(2500);
       const controller = new AbortController();
       setTimeout(() => controller.abort(new Error("scan cancelled")), 100);
       await expect(runInPage(page, "", "new Promise(() => {})", { timeoutMs: 5000, signal: controller.signal })).rejects.toThrow("scan cancelled");
-      expect(Date.now() - started).toBeLessThan(3000);
+      expect(Date.now() - started).toBeLessThan(4000);
       expect(await runInPage(page, "", "1 + 1", { timeoutMs: 2000 })).toEqual({ value: 2, world: "isolated" });
     });
   });

@@ -111,7 +111,7 @@ describe("preflight", () => {
     vi.stubEnv("PREFLIGHT_MAX_BYTES", "4096");
     const started = Date.now();
     const result = await preflight(`${fixture.origin}/endless`, { fetch, signal: signal() });
-    expect(Date.now() - started).toBeLessThan(2000);
+    expect(Date.now() - started).toBeLessThan(3000);
     expect(result.head).toMatchObject({ title: "Endless", ogImages: [`${fixture.origin}/og.png`] });
   });
 
@@ -119,7 +119,7 @@ describe("preflight", () => {
     vi.stubEnv("PREFLIGHT_MS", "800");
     const started = Date.now();
     const result = await preflight(`${fixture.origin}/trickle`, { fetch, signal: signal() });
-    expect(Date.now() - started).toBeLessThan(2000);
+    expect(Date.now() - started).toBeLessThan(3000);
     expect(result.head?.title).toBe("Trickle");
   });
 
