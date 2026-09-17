@@ -166,6 +166,11 @@ function DetailBody({ asset }: { asset: Asset }) {
         <div className="grid h-full w-full place-items-center overflow-hidden p-6 pt-14">
           <div className="relative grid size-full place-items-center">
             <AssetPreview key={asset.id} asset={asset} variant="detail" />
+            {/*
+             * Spec 11.4: a blob: URL of a scraped SVG is never opened in a tab. This layer takes the pointer, so the
+             * context menu, long press and drag act on the page, not on the preview image ("Open image in new tab").
+             */}
+            <div aria-hidden="true" data-testid="detail-preview-shield" className="absolute inset-0" />
           </div>
         </div>
         {list.length > 1 ? (

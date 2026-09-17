@@ -49,6 +49,27 @@ test.describe("detail view", () => {
     await expect(detail.getByTestId("detail-counter")).toHaveText(`1 of ${total}`);
   });
 
+  test("preview images never take the pointer, so their blob: URL can't be opened in a tab", async ({ page }) => {
+    await openResults(page);
+    // The element under the center of an image: what a context menu, a long press or a drag would act on.
+    const hitAtCenter = (image: ReturnType<Page["locator"]>) =>
+      image.evaluate((element) => {
+        const box = element.getBoundingClientRect();
+        const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+        return hit ? (hit.getAttribute("data-testid") ?? (hit.hasAttribute("data-card-main") ? "card-main" : hit.tagName.toLowerCase())) : null;
+      });
+
+    const tileImage = page.locator(`[data-asset-id="${siteLogo.id}"] img`);
+    await expect(tileImage).toHaveAttribute("src", /^blob:/);
+    expect(await hitAtCenter(tileImage)).toBe("card-main");
+
+    await card(page, siteLogo.id).click();
+    const detailImage = dialog(page).getByTestId("detail-well").locator("img");
+    await expect(detailImage).toHaveAttribute("src", /^blob:/);
+    await expect(detailImage).toHaveCSS("opacity", "1");
+    expect(await hitAtCenter(detailImage)).toBe("detail-preview-shield");
+  });
+
   test("counts within the current search", async ({ page }) => {
     await openResults(page);
     await page.getByRole("searchbox", { name: "Filter by name or URL" }).fill("linear-logo");
