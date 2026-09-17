@@ -65,6 +65,15 @@ describe("extractStylesheetUrls", () => {
     ]);
   });
 
+  it("reads a declaration after a comment that contains a colon", () => {
+    const css = ".hero{color:#fff;\n /* retina: 2x */\n background-image:url(hero@2x.png)} .b{/* Hero: banner */ background-image:url(hero.jpg)} .c{/* a: */ /* b: */ --i/* x: */:url(i.svg)}";
+    expect(extractStylesheetUrls(css, "https://s.example/").map((u) => [u.property, u.url])).toEqual([
+      ["background-image", "https://s.example/hero@2x.png"],
+      ["background-image", "https://s.example/hero.jpg"],
+      ["--i", "https://s.example/i.svg"],
+    ]);
+  });
+
   it("stops when the visitor asks", () => {
     const seen: string[] = [];
     forEachStylesheetUrl(".a{background:url(1.png)} .b{background:url(2.png)} .c{background:url(3.png)}", "https://s.example/", (item) => {

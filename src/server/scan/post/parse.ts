@@ -89,6 +89,19 @@ const FONT_FACE = 0x80;
 const PROPERTY = /^(?:--[\w-]*|-?[A-Za-z_][\w-]*)$/;
 const COMMENT = /\/\*[\s\S]*?(?:\*\/|$)/g;
 
+/** The index of the first `:` of `text` outside CSS comments, or -1. */
+function colonOutsideComments(text: string): number {
+  let from = 0;
+  for (;;) {
+    const colon = text.indexOf(":", from);
+    const comment = text.indexOf("/*", from);
+    if (colon < 0 || comment < 0 || colon < comment) return colon;
+    const close = text.indexOf("*/", comment + 2);
+    if (close < 0) return -1;
+    from = close + 2;
+  }
+}
+
 /** Whether `visit` asked to stop. */
 class Stop extends Error {}
 
@@ -117,7 +130,7 @@ export function forEachStylesheetUrl(cssText: string, baseUrl: string, visit: (i
     if (top < 0 || (top & ~FONT_FACE) !== T.RightCurlyBracket || top & FONT_FACE) return;
     const text = cssText.slice(segmentStart, end);
     if (!/url\(|image-set\(/i.test(text)) return;
-    const colon = text.indexOf(":");
+    const colon = colonOutsideComments(text);
     if (colon < 0) return;
     let property = text.slice(0, colon).replace(COMMENT, "").trim();
     if (!PROPERTY.test(property)) return;
