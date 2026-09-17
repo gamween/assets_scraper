@@ -52,21 +52,48 @@ describe("toneFromSvg", () => {
 });
 
 describe("createToneBudget", () => {
-  it("gives unknown past the count caps, the byte cap and the time budget", async () => {
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"><rect width="4" height="4"/></svg>';
+  /** An SVG that takes a while to render: `circles` translucent circles on a 2000 px canvas. */
+  const heavy = (circles: number) =>
+    `<svg xmlns="http://www.w3.org/2000/svg" width="2000" height="2000">${Array.from(
+      { length: circles },
+      (_, i) => `<circle cx="${(i * 37) % 2000}" cy="${(i * 53) % 2000}" r="30" fill="#fff" fill-opacity="0.5"/>`,
+    ).join("")}</svg>`;
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  it("gives unknown past the count caps and the byte cap", async () => {
     const white = await png(() => [255, 255, 255, 255]);
-    const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"><rect width="4" height="4"/></svg>';
     const budget = createToneBudget({ maxRasters: 1, maxSvgs: 1, maxBytes: 10_000, budgetMs: 60_000 });
     expect(await budget.raster(white, "image/png")).toBe("opaque");
     expect(await budget.raster(white, "image/png")).toBe("unknown");
     expect(await budget.svg(svg)).toBe("opaque");
     expect(await budget.svg(svg)).toBe("unknown");
+    expect(await budget.raster(Buffer.from([0xff, 0xd8, 0xff, 0xe0]), "image/jpeg")).toBe("opaque");
     expect(await createToneBudget({ maxBytes: 10 }).raster(white, "image/png")).toBe("unknown");
+  });
 
-    let now = 0;
-    const timed = createToneBudget({ budgetMs: 100, now: () => now });
-    expect(await timed.svg(svg)).toBe("opaque");
-    now = 101;
-    expect(await timed.svg(svg)).toBe("unknown");
-    expect(await timed.raster(white, "image/png")).toBe("unknown");
+  it("only counts time spent rendering", async () => {
+    const budget = createToneBudget({ budgetMs: 100 });
+    await sleep(150);
+    expect(await budget.svg(svg)).toBe("opaque");
+    await sleep(150);
+    expect(await budget.svg(svg)).toBe("opaque");
+  });
+
+  it("gives unknown when a render outlives the budget", async () => {
+    const started = performance.now();
+    expect(await createToneBudget({ budgetMs: 50 }).svg(heavy(20_000))).toBe("unknown");
+    expect(performance.now() - started).toBeLessThan(1_000);
+  });
+
+  it("stops starting renders once the budget is spent, however many were asked for at once", async () => {
+    const budget = createToneBudget({ budgetMs: 400 });
+    expect(await budget.svg(svg)).toBe("opaque");
+    const markup = heavy(2_000);
+    const started = performance.now();
+    const tones = await Promise.all(Array.from({ length: 80 }, () => budget.svg(markup)));
+    expect(performance.now() - started).toBeLessThan(1_000);
+    expect(tones.at(-1)).toBe("unknown");
+    expect(tones.filter((tone) => tone === "unknown").length).toBeGreaterThan(40);
   });
 });

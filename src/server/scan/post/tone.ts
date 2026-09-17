@@ -13,6 +13,8 @@ import { formatFromContentType, sniffFormat } from "./format";
 const RASTER_SIZE = 32;
 const SVG_SIZE = 64;
 const MAX_INPUT_PIXELS = 8192 * 8192;
+/** Renders in flight at once. sharp runs them on the libuv thread pool, which has 4 threads by default. */
+const CONCURRENCY = 4;
 
 async function toneOf(image: ReturnType<typeof sharp>, size: number): Promise<Tone> {
   const { data, info } = await image
@@ -56,10 +58,7 @@ export async function toneFromSvg(markup: string): Promise<Tone> {
   }
 }
 
-export async function toneFromBytes(buffer: Buffer, contentType: string): Promise<Tone> {
-  if (!buffer.length) return "unknown";
-  if (isJpeg(buffer, contentType)) return "opaque";
-  if (isSvg(buffer, contentType)) return toneFromSvg(buffer.toString("utf8"));
+async function toneFromRaster(buffer: Buffer): Promise<Tone> {
   try {
     return await toneOf(sharp(buffer, { limitInputPixels: MAX_INPUT_PIXELS, failOn: "error", animated: false }), RASTER_SIZE);
   } catch {
@@ -67,35 +66,85 @@ export async function toneFromBytes(buffer: Buffer, contentType: string): Promis
   }
 }
 
+export async function toneFromBytes(buffer: Buffer, contentType: string): Promise<Tone> {
+  if (!buffer.length) return "unknown";
+  if (isJpeg(buffer, contentType)) return "opaque";
+  if (isSvg(buffer, contentType)) return toneFromSvg(buffer.toString("utf8"));
+  return toneFromRaster(buffer);
+}
+
 export interface ToneBudget {
   raster(buffer: Buffer, contentType: string): Promise<Tone>;
   svg(markup: string): Promise<Tone>;
 }
 
-/** Tone with the scan caps: at most `maxRasters` rasters, `maxSvgs` SVGs, `maxBytes` per input and `budgetMs` in total. */
+/**
+ * Tone with the scan caps (spec 8.8): at most `maxRasters` rasters and `maxSvgs` SVGs, `maxBytes` per input, and
+ * `budgetMs` of tone work in total, then `unknown`.
+ *
+ * Renders run a few at a time, in call order, so a caller that asks in relevance order tones the most relevant
+ * assets first. The clock only runs while renders are in flight, so the time spent before the first render (fetches,
+ * verification) never counts. Once the budget is spent, renders in flight resolve `unknown` and queued ones never start.
+ * JPEG needs no render and is always `opaque`.
+ */
 export function createToneBudget(
-  options: { maxRasters?: number; maxSvgs?: number; maxBytes?: number; budgetMs?: number; now?: () => number } = {},
+  options: { maxRasters?: number; maxSvgs?: number; maxBytes?: number; budgetMs?: number } = {},
 ): ToneBudget {
-  const now = options.now ?? Date.now;
   const maxRasters = options.maxRasters ?? limits.toneMaxRasters;
   const maxSvgs = options.maxSvgs ?? limits.toneMaxSvgs;
   const maxBytes = options.maxBytes ?? limits.toneMaxBytes;
-  const deadline = now() + (options.budgetMs ?? limits.toneBudgetMs);
+  const budgetMs = options.budgetMs ?? limits.toneBudgetMs;
   let rasters = 0;
   let svgs = 0;
+
+  const queue: (() => void)[] = [];
+  let active = 0;
+  let spentMs = 0;
+  let busySince = 0;
+  const spent = () => spentMs + (active > 0 ? performance.now() - busySince : 0);
+  const pump = () => {
+    while (active < CONCURRENCY && queue.length) queue.shift()!();
+  };
+
+  const run = (render: () => Promise<Tone>) =>
+    new Promise<Tone>((resolve) => {
+      queue.push(() => {
+        const remaining = budgetMs - spent();
+        if (remaining <= 0) {
+          resolve("unknown");
+          return;
+        }
+        if (active++ === 0) busySince = performance.now();
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const timeout = new Promise<Tone>((settle) => {
+          timer = setTimeout(() => settle("unknown"), remaining);
+        });
+        // A render that outlives the budget is left to finish on its own; its result is ignored.
+        void Promise.race([render().catch((): Tone => "unknown"), timeout]).then((tone) => {
+          clearTimeout(timer);
+          if (--active === 0) spentMs += performance.now() - busySince;
+          resolve(tone);
+          pump();
+        });
+      });
+      pump();
+    });
+
+  const svg = async (markup: string): Promise<Tone> => {
+    if (svgs >= maxSvgs || Buffer.byteLength(markup) > maxBytes) return "unknown";
+    svgs++;
+    return run(() => toneFromSvg(markup));
+  };
+
   return {
+    svg,
     async raster(buffer, contentType) {
-      if (!buffer.length || buffer.length > maxBytes || now() > deadline) return "unknown";
+      if (!buffer.length || buffer.length > maxBytes) return "unknown";
       if (isJpeg(buffer, contentType)) return "opaque";
-      if (isSvg(buffer, contentType)) return this.svg(buffer.toString("utf8"));
+      if (isSvg(buffer, contentType)) return svg(buffer.toString("utf8"));
       if (rasters >= maxRasters) return "unknown";
       rasters++;
-      return toneFromBytes(buffer, contentType);
-    },
-    async svg(markup) {
-      if (svgs >= maxSvgs || Buffer.byteLength(markup) > maxBytes || now() > deadline) return "unknown";
-      svgs++;
-      return toneFromSvg(markup);
+      return run(() => toneFromRaster(buffer));
     },
   };
 }
