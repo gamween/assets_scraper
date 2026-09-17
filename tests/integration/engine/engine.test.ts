@@ -6,10 +6,11 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { Asset, ScanEvent, type Palette } from "@/lib/contract";
 import { BusyError, withBrowser } from "@/server/browser/launch";
 import { NotImplementedError } from "@/server/errors";
+import { SafeFetchError } from "@/server/net/safe-fetch";
 import { createScanEngine, type ScanEngineDeps } from "@/server/scan/engine";
 import type { AssetsOutput, FontsOutput, PostInput } from "@/server/scan/types";
 import { serveFixture, type FixtureServer } from "../../fixtures/serve";
-import { createFakeFetch, createFakeSigner, isProcessAlive, startTestProxy } from "./helpers";
+import { createFakeFetch, createFakeSigner, isProcessAlive, startTestProxy, type TestProxy } from "./helpers";
 
 const FAKE_COLLECTOR = `globalThis.__assetsScraper = {
   async collect(options) {
@@ -48,6 +49,17 @@ beforeAll(async () => {
     "/challenge": html(403, '<!doctype html><html><head><title>Just a moment...</title><link rel="icon" href="/assets/touch.png"></head><body><div id="challenge"></div></body></html>'),
     "/loop.html": html(200, '<!doctype html><title>Busy</title><div style="height:4000px">Busy</div><img src="/assets/photo-small.png"><script>setTimeout(() => { for (;;) {} }, 500)</script>'),
     "/download.html": html(200, `<!doctype html><title>Download</title><a id="file" href="/download.bin" download="${downloadName}">file</a><script>document.getElementById("file").click()</script>`),
+    "/wall": (_req, res) => {
+      res.writeHead(403, { "content-type": "text/plain" });
+      res.end("error code: 1010");
+    },
+    "/cookie-loop": (req, res) => {
+      if (!req.headers.cookie?.includes("seen=1")) {
+        res.writeHead(302, { location: "/cookie-loop", "set-cookie": "seen=1; Path=/" });
+        return res.end();
+      }
+      html(200, "<!doctype html><title>Welcome back</title><p>Hello</p>")(req, res);
+    },
     "/download.bin": (_req, res) => {
       downloadHits += 1;
       res.writeHead(200, { "content-type": "application/octet-stream", "content-disposition": `attachment; filename=${downloadName}` });
@@ -79,7 +91,8 @@ const fakeAssets = async (input: PostInput): Promise<AssetsOutput> => {
     id: "photo", kind: "image", role: "image", name: "Photo", filename: "fixture-photo.png", format: "png", foundIn: ["network"], visible: true, declaredOnly: false,
     order: 0, score: 100, usedCount: 1, tone: photo?.tone ?? "unknown", display: source, original: source,
   };
-  return { assets: [asset], hidden: { spacer: 2 }, warnings: [] };
+  // Like the real assembleAssets, the hidden counts start from the collector's noise.
+  return { assets: [asset], hidden: { ...input.collector.noise, spacer: 2 }, warnings: [] };
 };
 const fakeFonts = async (): Promise<FontsOutput> => ({ families: [], hidden: {} });
 
@@ -172,6 +185,30 @@ describe("scan engine", () => {
     expect(launches).not.toHaveBeenCalled();
   });
 
+  it("lets the browser try a bot wall that answers the preflight in plain text", async () => {
+    const { deps, launches } = testDeps();
+    const events = await scan(deps, `${fixture.origin}/wall`);
+    expect(launches).toHaveBeenCalledTimes(1);
+    expect(events.map(describeEvent)).toEqual(["accepted", "step open start", "error blocked"]);
+    expect(events.at(-1)).toMatchObject({ diagnostics: { blockReason: "http-403" } });
+  });
+
+  it("lets the browser open a page the preflight gave up on after too many redirects", async () => {
+    const { deps, launches } = testDeps({
+      fetch: createFakeFetch({
+        routes: {
+          [`${fixture.origin}/cookie-loop`]: () => {
+            throw new SafeFetchError("too-many-redirects", "More than 5 redirects");
+          },
+        },
+      }),
+    });
+    const events = await scan(deps, `${fixture.origin}/cookie-loop`);
+    expect(launches).toHaveBeenCalledTimes(1);
+    expect(events.at(-1)).toMatchObject({ type: "done", partial: false });
+    expect(events.find((event) => event.type === "page")).toMatchObject({ page: { title: "Welcome back", status: 200 } });
+  });
+
   it("reports a bot wall as blocked with public-source assets", async () => {
     const icon = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
     const { deps } = testDeps({
@@ -260,17 +297,81 @@ describe("scan engine", () => {
     const { deps } = testDeps({
       withBrowser: async (options) => {
         options.onQueued?.();
+        await new Promise((resolve) => setTimeout(resolve, 200));
         throw new BusyError();
       },
     });
     const events = await scan(deps, `${fixture.origin}/`);
     expect(events.map(describeEvent)).toEqual(["accepted", "step open start", "step queue start", "error busy"]);
+    const last = events.at(-1);
+    expect(last?.type === "error" && last.diagnostics?.queueMs).toBeGreaterThanOrEqual(150);
+  });
+
+  it("ends the queue step when the slot is granted, even when the launch then fails", async () => {
+    let proxy: TestProxy | undefined;
+    let holding = false;
+    let release = () => {};
+    try {
+      // Another scan holds the only browser slot.
+      proxy = await startTestProxy({ allow: [fixture.host] });
+      const held = withBrowser({ egressPort: proxy.port, signal: new AbortController().signal }, () => {
+        holding = true;
+        return new Promise<void>((resolve) => (release = resolve));
+      });
+      await expect.poll(() => holding, { timeout: 20_000 }).toBe(true);
+      // The next browser launch fails its health gate.
+      vi.stubEnv("MIN_TMP_FREE_MB", String(2 ** 40));
+      const { deps } = testDeps();
+      const events = await scan(deps, `${fixture.origin}/`, {
+        onEvent: (event) => {
+          if (event.type === "step" && event.step === "queue" && event.state === "start") setTimeout(() => release(), 300);
+        },
+      });
+      await held;
+      expect(events.map(describeEvent)).toEqual(["accepted", "step open start", "step queue start", "step queue done", "error busy"]);
+      const last = events.at(-1);
+      expect(last?.type === "error" && last.diagnostics?.queueMs).toBeGreaterThanOrEqual(250);
+    } finally {
+      release();
+      await proxy?.close();
+    }
+  });
+
+  it("caps the palette phase when extractPalette never answers", async () => {
+    vi.stubEnv("SCAN_DEADLINE_MS", "30000");
+    const { deps } = testDeps({ extractPalette: () => new Promise<Palette | null>(() => {}) });
+    const events = await scan(deps, `${fixture.origin}/`);
+    const done = events.at(-1);
+    if (done?.type !== "done") throw new Error(`expected done, got ${done && describeEvent(done)}`);
+    expect(done.partial).toBe(false);
+    expect(events.find((event) => event.type === "palette")).toEqual({ type: "palette", palette: null });
+    expect(done.diagnostics.phases.palette).toBeGreaterThanOrEqual(3_900);
+    expect(done.diagnostics.phases.palette).toBeLessThan(6_000);
+  });
+
+  it("gives what post-processing finished as a partial result when it runs out of time", async () => {
+    vi.stubEnv("VERIFY_MS", "100");
+    const { deps } = testDeps({ assembleAssets: () => new Promise<AssetsOutput>(() => {}) });
+    const events = await scan(deps, `${fixture.origin}/`);
+    const done = events.at(-1);
+    if (done?.type !== "done") throw new Error(`expected done, got ${done && describeEvent(done)}`);
+    expect(done.partial).toBe(true);
+    expect(events).toContainEqual({ type: "warning", code: "partial" });
+    expect(events.find((event) => event.type === "assets")).toEqual({ type: "assets", items: [] });
+    expect(events.find((event) => event.type === "fonts")).toEqual({ type: "fonts", families: [] });
+    expect(done.stats.hidden).toEqual({ "unreferenced-symbol": 1 });
+    expect(done.diagnostics.phases.process).toBeGreaterThanOrEqual(5_000);
+    expect(done.diagnostics.phases.process).toBeLessThan(7_000);
   });
 
   it("turns collector and post-processing failures into internal errors with diagnostics", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
     const collectorFails = await scan(testDeps({ collectorSource: THROWING_COLLECTOR }).deps, `${fixture.origin}/`);
-    expect(collectorFails.at(-1)).toMatchObject({ type: "error", code: "internal", diagnostics: { collector: "isolated" } });
+    expect(collectorFails.at(-1)).toMatchObject({ type: "error", code: "internal", message: "Something went wrong on our side", diagnostics: { collector: "isolated" } });
     expect(collectorFails.some((event) => event.type === "done")).toBe(false);
+    // The client gets no internal detail; the server log does.
+    expect(JSON.stringify(collectorFails.at(-1))).not.toContain("Not implemented");
+    expect(log).toHaveBeenCalledWith(expect.stringMatching(/^Scan [0-9a-f-]{36} failed$/), expect.objectContaining({ message: expect.stringContaining("Not implemented: C: collector") }));
 
     const postFails = await scan(
       testDeps({
@@ -280,15 +381,18 @@ describe("scan engine", () => {
       }).deps,
       `${fixture.origin}/`,
     );
-    expect(postFails.at(-1)).toMatchObject({ type: "error", code: "internal" });
+    expect(postFails.at(-1)).toMatchObject({ type: "error", code: "internal", message: "Something went wrong on our side" });
+    log.mockRestore();
   });
 
   it("runs the default in-page and post-processing modules end to end", async () => {
     // Only the network, proxy and signer are faked here. While the asset, font and palette tracks are stubs this ends
     // with an internal error; with the real modules it ends with done. Either way it never throws or hangs.
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
     const { deps } = testDeps();
     const { fetch, startEgressProxy, withBrowser: browser, createSigner } = deps;
     const events = await scan({ fetch, startEgressProxy, withBrowser: browser, createSigner }, `${fixture.origin}/`);
+    log.mockRestore();
     const last = events.at(-1);
     expect(last?.type === "done" || (last?.type === "error" && last.code === "internal")).toBe(true);
     expect(events.filter((event) => event.type === "done" || event.type === "error")).toHaveLength(1);

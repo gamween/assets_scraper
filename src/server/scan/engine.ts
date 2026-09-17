@@ -45,7 +45,9 @@ const defaultDeps: ScanEngineDeps = {
 
 /** Palette signals take about 200 ms (spec 10); this is its share of the 15 s collection cap. */
 const PALETTE_BUDGET_MS = 3_000;
-/** CPU time post-processing still gets once its network deadline has passed, before the scan gives up. */
+/** The engine's own stop for the palette phase, in case extractPalette overruns its budget. */
+const PALETTE_CAP_MS = PALETTE_BUDGET_MS + 1_000;
+/** CPU time post-processing gets after its network deadline. */
 const POST_GRACE_MS = 5_000;
 /** How long a cancelled scan waits for its cleanup (browser kill, proxy close) before the stream ends anyway. */
 const CANCEL_CLEANUP_MS = 10_000;
@@ -107,7 +109,33 @@ function mergeCounts(...sources: Partial<Record<string, number>>[]): Record<stri
   return total;
 }
 
-const firstLine = (error: unknown) => (error instanceof Error ? error.message : String(error)).split("\n")[0].slice(0, 300);
+/** Resolves like `promise`, or with `fallback` once `ms` have passed. */
+function orAfter<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<T>((resolve) => (timer = setTimeout(() => resolve(fallback), ms)));
+  return Promise.race([promise, late]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * When post-processing (spec 7.2 phase 10) must end. Network work gets up to `limits.verifyMs`, then CPU work always
+ * gets POST_GRACE_MS. Network time is cut so that both end by the scan deadline. Only a scan whose page work reached
+ * the deadline (`partial`), or left less than POST_GRACE_MS before it, ends past it: with no network time, and
+ * POST_GRACE_MS to turn what was collected into results (spec 7.2: at the deadline, emit what is ready).
+ */
+export function postProcessingWindow(input: { startedAt: number; now: number; partial: boolean; deadlineMs: number; verifyMs: number }): { networkDeadline: number; endsAt: number } {
+  const { startedAt, now, partial, deadlineMs, verifyMs } = input;
+  const scanEnds = startedAt + deadlineMs;
+  if (partial || now + POST_GRACE_MS > scanEnds) return { networkDeadline: now, endsAt: now + POST_GRACE_MS };
+  const networkDeadline = Math.min(now + verifyMs, scanEnds - POST_GRACE_MS);
+  return { networkDeadline, endsAt: networkDeadline + POST_GRACE_MS };
+}
+
+/** Internal errors reach the client without their message, which can hold paths or URLs; the server log keeps it. */
+function logInternal(error: unknown, scanId?: string): void {
+  console.error(scanId ? `Scan ${scanId} failed` : "Scan failed", error);
+}
+
+const INTERNAL_MESSAGE = "Something went wrong on our side";
 
 /** Async queue behind the iterator: the pipeline pushes, the consumer pulls. */
 function createEventQueue() {
@@ -178,7 +206,7 @@ async function runScan({ url, deps, cancel, emit }: ScanContext): Promise<void> 
 
     // Phase 1: preflight.
     pre = await timed("preflight", () => preflight(url, { fetch: deps.fetch, signal: AbortSignal.any([cancel, deadline.signal]) }));
-    if (pre.head === null && pre.contentType) {
+    if (pre.file) {
       throw new ScanFailure("not-html", "This URL is a file, not a page", { fallback: [directAsset({ url: pre.finalUrl, contentType: pre.contentType, signer: getSigner() })] });
     }
 
@@ -195,17 +223,33 @@ async function runScan({ url, deps, cancel, emit }: ScanContext): Promise<void> 
     const finalUrl = nav.finalUrl;
     const host = new URL(finalUrl).hostname;
     const context: PageContext = { requestedUrl: url, finalUrl, host, siteName: collector.page.siteName ?? pre.head?.siteName ?? "", title: collector.page.title || nav.title };
-    const networkDeadline = partial ? Date.now() : Math.min(Date.now() + limits.verifyMs, startedAt + limits.scanDeadlineMs);
-    const postSignal = AbortSignal.any([cancel, AbortSignal.timeout(Math.max(0, networkDeadline - Date.now()) + POST_GRACE_MS)]);
-    const postInput: PostInput = { collector, network, page: context, signer: getSigner(), fetch: deps.fetch, signal: postSignal, deadline: networkDeadline };
-    let assetsOut: AssetsOutput;
-    let fontsOut: FontsOutput;
+    const now = Date.now();
+    const postWindow = postProcessingWindow({ startedAt, now, partial, deadlineMs: limits.scanDeadlineMs, verifyMs: limits.verifyMs });
+    const postTimeout = new AbortController();
+    const postTimer = setTimeout(() => postTimeout.abort(new DeadlineReached()), postWindow.endsAt - now);
+    const postSignal = AbortSignal.any([cancel, postTimeout.signal]);
+    const postInput: PostInput = { collector, network, page: context, signer: getSigner(), fetch: deps.fetch, signal: postSignal, deadline: postWindow.networkDeadline };
+    /** The output of a task, or undefined when post-processing ran out of time before it finished. */
+    const ready = <T>(task: Promise<T>) =>
+      untilAborted(task, postSignal).then(
+        (value): { value: T } => ({ value }),
+        (error: unknown) => {
+          if (cancel.aborted || !postTimeout.signal.aborted) throw error;
+          return undefined;
+        },
+      );
+    let outputs: [{ value: AssetsOutput } | undefined, { value: FontsOutput } | undefined];
     try {
-      [assetsOut, fontsOut] = await timed("process", () => untilAborted(Promise.all([deps.assembleAssets(postInput), deps.buildFontFamilies(postInput)]), postSignal));
-    } catch (error) {
-      if (!cancel.aborted && postSignal.aborted) throw new ScanFailure("timeout", "Processing the page took too long");
-      throw error;
+      outputs = await timed("process", () => Promise.all([ready(deps.assembleAssets(postInput)), ready(deps.buildFontFamilies(postInput))]));
+    } finally {
+      clearTimeout(postTimer);
     }
+    // Out of time, the scan still gives what is ready, as a partial result. With neither assets nor fonts, it is a timeout.
+    const [assetsResult, fontsResult] = outputs;
+    if (!assetsResult && !fontsResult) throw new ScanFailure("timeout", "Processing the page took too long");
+    const processedPartly = !assetsResult || !fontsResult;
+    const assetsOut: AssetsOutput = assetsResult?.value ?? { assets: [], hidden: collector.noise, warnings: [] };
+    const fontsOut: FontsOutput = fontsResult?.value ?? { families: [], hidden: {} };
     step("process", "done");
 
     // Phase 11: results.
@@ -232,7 +276,8 @@ async function runScan({ url, deps, cancel, emit }: ScanContext): Promise<void> 
     for (const items of batches.length ? batches : [[]]) emit({ type: "assets", items });
     emit({ type: "fonts", families: fontsOut.families });
 
-    if (partial) warnings.add("partial");
+    const isPartial = partial || processedPartly;
+    if (isPartial) warnings.add("partial");
     if (collector.stats.truncated && !partial) warnings.add("truncated");
     if (network.bodyTimeouts > 0) warnings.add("body-timeout");
     if (diagnostics.collector === "main") warnings.add("collector-fallback");
@@ -240,13 +285,15 @@ async function runScan({ url, deps, cancel, emit }: ScanContext): Promise<void> 
 
     emit({
       type: "done",
-      partial,
+      partial: isPartial,
       stats: {
         assets: assets.length,
         svg: assets.filter((asset) => asset.kind === "svg").length,
         images: assets.filter((asset) => asset.kind === "image").length,
         fonts: fontsOut.families.length,
-        hidden: mergeCounts(collector.noise, assetsOut.hidden, fontsOut.hidden),
+        // assembleAssets reports the collector's noise with its own (spec 8.2): adding `collector.noise` again would
+        // count it twice.
+        hidden: mergeCounts(assetsOut.hidden, fontsOut.hidden),
         durationMs: Date.now() - startedAt,
       },
       diagnostics: snapshot(),
@@ -266,7 +313,8 @@ async function runScan({ url, deps, cancel, emit }: ScanContext): Promise<void> 
     } else if (error instanceof DeadlineReached || deadline.signal.aborted) {
       emit({ type: "error", code: "timeout", message: "The page took too long to load", diagnostics: snapshot() });
     } else {
-      emit({ type: "error", code: "internal", message: `Something went wrong: ${firstLine(error)}`, diagnostics: snapshot() });
+      logInternal(error, scanId);
+      emit({ type: "error", code: "internal", message: INTERNAL_MESSAGE, diagnostics: snapshot() });
     }
   } finally {
     clearTimeout(deadlineTimer);
@@ -304,7 +352,7 @@ async function runBrowserStage(input: ScanContext & {
   let collector: RawCollectorOutput | undefined;
   let network: CapturedNetwork | undefined;
   let partial = false;
-  let queued = false;
+  let queuedAt: number | undefined;
 
   const egress = await deps.startEgressProxy({ maxBytes: limits.egressMaxBytes, maxSockets: limits.egressMaxSockets });
   const watchdogTimer = process.platform === "linux" ? setInterval(() => void checkMemory(), WATCHDOG_INTERVAL_MS) : undefined;
@@ -319,12 +367,16 @@ async function runBrowserStage(input: ScanContext & {
         egressPort: egress.port,
         signal,
         onQueued: () => {
-          queued = true;
+          queuedAt = performance.now();
           step("queue", "start");
+        },
+        onDequeued: (queueMs) => {
+          queuedAt = undefined;
+          diagnostics.queueMs = queueMs;
+          step("queue", "done");
         },
       },
       async (session) => {
-        if (queued) step("queue", "done");
         Object.assign(diagnostics, { cold: session.cold, queueMs: session.queueMs, ...session.health });
         diagnostics.phases.launch = session.launchMs;
         const { page } = session;
@@ -356,7 +408,7 @@ async function runBrowserStage(input: ScanContext & {
         await timed("prepare", () => prepareForCollection(page, { signal }));
         const collectEnds = Date.now() + limits.collectMs;
         const extracted = await timed("palette", () =>
-          untilAborted(deps.extractPalette(page, { fetch: deps.fetch, signal, timeBudgetMs: PALETTE_BUDGET_MS }), signal).catch((error: unknown) => {
+          untilAborted(orAfter(deps.extractPalette(page, { fetch: deps.fetch, signal, timeBudgetMs: PALETTE_BUDGET_MS }), PALETTE_CAP_MS, null), signal).catch((error: unknown) => {
             if (signal.aborted) throw error;
             return null;
           }),
@@ -394,6 +446,8 @@ async function runBrowserStage(input: ScanContext & {
       },
     );
   } catch (error) {
+    // Still waiting for a slot: the queue timed out, or the scan stopped while queued.
+    if (queuedAt !== undefined) diagnostics.queueMs = Math.max(1, Math.round(performance.now() - queuedAt));
     if (cancel.aborted) throw cancel.reason;
     if (error instanceof BlockedPage || error instanceof BusyError) throw error;
     const interrupted = input.deadline.aborted || watchdog.signal.aborted;
@@ -430,7 +484,9 @@ export function createScanEngine(overrides: Partial<ScanEngineDeps> = {}): ScanB
           const start = () =>
             (running ??= runScan({ url: input.url, deps, cancel, emit: (event) => !cancel.aborted && queue.push(event) })
               .catch((error: unknown) => {
-                if (!cancel.aborted) queue.push({ type: "error", code: "internal", message: `Something went wrong: ${firstLine(error)}` });
+                if (cancel.aborted) return;
+                logInternal(error);
+                queue.push({ type: "error", code: "internal", message: INTERNAL_MESSAGE });
               })
               .finally(() => queue.close()));
           const cleanup = async () => {
