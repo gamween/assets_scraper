@@ -14,6 +14,12 @@ test.describe("landing", () => {
     await expect(input).toHaveAttribute("placeholder", "linear.app");
     await expect(input).not.toHaveAttribute("type", "url");
     await expect(page.getByRole("button", { name: "Scan", exact: true })).toBeVisible();
+    // Spec 12.2: the input itself is 560 px wide at the reference viewport, the Scan button sits beside it.
+    const inputBox = (await input.boundingBox())!;
+    const buttonBox = (await page.getByRole("button", { name: "Scan", exact: true }).boundingBox())!;
+    expect(inputBox.width).toBe(560);
+    expect(buttonBox.x).toBeGreaterThan(inputBox.x + inputBox.width);
+    expect(Math.abs(buttonBox.y + buttonBox.height / 2 - (inputBox.y + inputBox.height / 2))).toBeLessThanOrEqual(1);
 
     await expect(page.getByRole("group", { name: "Try" }).getByRole("button")).toHaveText(["stripe.com", "linear.app", "framer.com"]);
     await expect(page.getByRole("group", { name: "Recent" })).toHaveCount(0);

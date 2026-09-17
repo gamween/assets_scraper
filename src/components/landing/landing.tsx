@@ -38,7 +38,8 @@ export function Landing() {
       </header>
 
       <main className="page-x w-full flex-1">
-        <div className="mx-auto w-full max-w-[560px] pt-[max(40px,calc(38dvh-172px))] pb-20">
+        {/* Spec 12.2: a 560 px input beside the Scan button, so the block is 560 + 8 gap + 80 button wide. */}
+        <div className="mx-auto w-full max-w-[648px] pt-[max(40px,calc(38dvh-172px))] pb-20">
           <h1 className="text-[26px] leading-[32px] font-semibold tracking-[-0.02em] text-balance text-text sm:text-display">
             Every SVG, image and font on a page.
           </h1>
@@ -66,9 +67,9 @@ export function Landing() {
               enterKeyHint="go"
               aria-invalid={inputError ? true : undefined}
               aria-describedby={inputError ? errorId : undefined}
-              className="h-12 flex-1 px-3.5 text-input-lg sm:h-10"
+              className="h-12 min-w-0 flex-1 px-3.5 text-input-lg sm:h-10"
             />
-            <Button type="submit" variant="primary" size="lg" className="h-12 px-5 sm:h-10">
+            <Button type="submit" variant="primary" size="lg" className="h-12 w-20 px-0 sm:h-10">
               Scan
             </Button>
           </form>
