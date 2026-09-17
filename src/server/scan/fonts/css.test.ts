@@ -48,13 +48,13 @@ describe("parseFontFaceCss", () => {
     expect(parseFontFaceCss(css, BASE).map((rule) => rule.family)).toEqual(["top", "container", "upper", "escaped", "media"]);
   });
 
-  it("reads a family as one string or identifiers, with CSS escapes decoded, and drops other values", () => {
+  it("reads a family as one string or identifiers and other names with CSS escapes decoded, and drops other families", () => {
     const families = (values: string[]) => values.flatMap((value) => parseFontFaceCss(`@font-face{font-family:${value};src:url(a.woff2)}`, BASE)).map((rule) => rule.family);
     // Microsoft YaHei written with escapes, as Chinese sites do, quoted and not
     expect(families([`"\\5FAE\\8F6F\\96C5\\9ED1"`, `\\5FAE\\8F6F\\96C5\\9ED1`])).toEqual(["\u5fae\u8f6f\u96c5\u9ed1", "\u5fae\u8f6f\u96c5\u9ed1"]);
     expect(families([`'Brand \\'Serif\\''`, `Brand\\ Sans  Text`, `\\31 23 Grotesk`, `" Spaced  Out "`])).toEqual(["Brand 'Serif'", "Brand Sans Text", "123 Grotesk", " Spaced  Out "]);
     expect(families([`"Brand" Sans`, `Brand "Sans"`, `"a" "b"`, `3M Sans`, `Brand, Sans`, `"broken\nstring"`, `""`])).toEqual([]);
-    expect(parseFontFaceCss(`@font-face{font\\-family:Escaped;s\\72 c:url(a.woff2);font-weight:bold !IMPOR\\54 ANT}`, BASE)).toMatchObject([{ family: "Escaped", weight: "700" }]);
+    expect(parseFontFaceCss(`@f\\6f nt-face{font\\-family:Escaped;s\\72 c:url(a.woff2);font-weight:bold !IMPOR\\54 ANT}`, BASE)).toMatchObject([{ family: "Escaped", weight: "700" }]);
   });
 
   it("reads comments as spaces, drops !important and keeps the last of repeated descriptors", () => {

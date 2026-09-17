@@ -213,7 +213,8 @@ class EnoughRules extends Error {}
 export function parseFontFaceCss(cssText: string, baseUrl: string, options: { maxRules?: number } = {}): RawFontFaceRule[] {
   const maxRules = options.maxRules ?? Infinity;
   const rules: RawFontFaceRule[] = [];
-  if (!(maxRules > 0) || !/@font-face/i.test(cssText)) return rules;
+  // Sheets without an `@font-face` keyword, plain or escaped, are not tokenized
+  if (!(maxRules > 0) || !/@font-face|@[\w-]*\\/i.test(cssText)) return rules;
   const stack = new ByteStack();
   let fontFace: FontFaceBlock | null = null;
   // At the top level or in a group rule block: whether the next token starts a statement, the at-rule it started, and
