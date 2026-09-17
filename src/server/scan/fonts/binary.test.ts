@@ -324,6 +324,41 @@ describe("parse limits", () => {
     expect(refusedBeforeFontkit(declaring([], 30 * MIB + 1))).toBe(true);
   });
 
+  it("refuses a WOFF whose table directory or header declares more than 30 MiB, whatever its streams hold", () => {
+    // fontkit allocates the declared size of each compressed table before inflating it. At 2 MiB, 16 times the file size
+    // is over 30 MiB, so the 30 MiB ceiling decides.
+    const name = familyNameTable("Declared");
+    const empty = deflateSync(Buffer.alloc(0));
+    /** A 2 MiB WOFF file with `name` stored uncompressed, then `post` and `gasp` tables declaring `padding` bytes over empty streams. */
+    const declaring = (padding: number[], totalSfntSize = name.length) => {
+      const tables = [{ tag: "name", data: name, origLength: name.length }, ...padding.map((origLength, index) => ({ tag: ["post", "gasp"][index], data: empty, origLength }))];
+      const directory = Buffer.alloc(tables.length * 20);
+      const bodies: Buffer[] = [];
+      let offset = 44 + directory.length;
+      tables.forEach(({ tag, data, origLength }, index) => {
+        directory.write(tag, index * 20, "latin1");
+        directory.writeUInt32BE(offset, index * 20 + 4);
+        directory.writeUInt32BE(data.length, index * 20 + 8);
+        directory.writeUInt32BE(origLength, index * 20 + 12);
+        bodies.push(data, Buffer.alloc(-data.length & 3));
+        offset += data.length + (-data.length & 3);
+      });
+      const header = Buffer.alloc(44);
+      header.write("wOFF", 0, "latin1");
+      header.writeUInt32BE(0x00010000, 4);
+      header.writeUInt32BE(2 * MIB, 8);
+      header.writeUInt16BE(tables.length, 12);
+      header.writeUInt32BE(totalSfntSize, 16);
+      return Buffer.concat([header, directory, ...bodies], 2 * MIB);
+    };
+    const rest = 30 * MIB - name.length;
+    expect(withinParseLimits(declaring([rest]))).toBe(true);
+    expect(withinParseLimits(declaring([rest / 2, rest / 2], 30 * MIB))).toBe(true);
+    expect(refusedBeforeFontkit(declaring([rest + 1]))).toBe(true);
+    expect(refusedBeforeFontkit(declaring([rest / 2, rest / 2 + 1]))).toBe(true);
+    expect(refusedBeforeFontkit(declaring([], 30 * MIB + 1))).toBe(true);
+  });
+
   it("rejects WOFF tables that declare more than the file can hold", () => {
     // fontkit alone allocates the 64 MiB and reads the names
     expect(refusedBeforeFontkit(toWoff(ss3, { name: { origLength: () => 64 * MIB } }))).toBe(true);
