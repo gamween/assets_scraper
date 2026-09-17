@@ -12,7 +12,7 @@ import { BackgroundControl } from "@/components/results/filter-bar";
 import { foundInLabel, roleBadge } from "@/components/results/labels";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { Asset } from "@/lib/contract";
-import { formatBytes, formatDimensions } from "@/lib/format";
+import { formatBytes, formatCount, formatDimensions } from "@/lib/format";
 import { assetBytes, type Background } from "@/lib/client/filters";
 import { syncDetailToLocation, takePendingDetail } from "@/lib/client/scan-session";
 import { appStore, findAsset, getDetailList, useApp } from "@/lib/client/store";
@@ -53,8 +53,8 @@ function Metadata({ asset }: { asset: Asset }) {
     ["Dimensions", formatDimensions(asset.original?.width ?? asset.width, asset.original?.height ?? asset.height) || "Unknown"],
     ["File size", bytes ? formatBytes(bytes) : "Unknown"],
     ["Found in", foundInLabel(asset.foundIn)],
+    ["Used", asset.usedCount === 1 ? "Once" : formatCount(asset.usedCount, "time")],
   ];
-  if (asset.usedCount > 1) rows.push(["Used", `${asset.usedCount} times`]);
   rows.push([
     "Source",
     source ? (

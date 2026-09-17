@@ -32,7 +32,8 @@ test.describe("detail view", () => {
     await expect(detail.getByTestId("detail-badge")).toHaveText("Logo");
     await expect(detail.getByTestId("detail-counter")).toHaveText(`1 of ${total}`);
     const meta = detail.getByTestId("detail-meta");
-    await expect(meta.getByText("Format")).toBeVisible();
+    await expect(meta.locator("dt")).toHaveText(["Format", "Dimensions", "File size", "Found in", "Used", "Source"]);
+    await expect(meta.locator("dd").nth(4)).toHaveText(siteLogo.usedCount === 1 ? "Once" : `${siteLogo.usedCount} times`);
     await expect(meta).toContainText("SVG");
     await expect(meta).toContainText("88×22");
     await expect(meta).toContainText("Inline <svg>");
