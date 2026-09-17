@@ -85,9 +85,12 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
-function proxied(assetPath: string, extra = "", headers: Record<string, string> = {}): Request {
+const SAME_ORIGIN = { "sec-fetch-site": "same-origin" };
+
+/** A request for the signed proxy path of an upstream asset, from this app's own pages unless `site` says otherwise. */
+function proxied(assetPath: string, extra = "", site: string | null = "same-origin"): Request {
   const signed = createSigner().sign(`${upstream.origin}${assetPath}`);
-  return new Request(`https://app.local${signed}${extra}`, { headers });
+  return new Request(`https://app.local${signed}${extra}`, { headers: site === null ? {} : { "sec-fetch-site": site } });
 }
 
 async function errorOf(response: Response): Promise<{ status: number; code: string }> {
@@ -101,7 +104,7 @@ async function errorOf(response: Response): Promise<{ status: number; code: stri
 
 describe("handleAssetRequest", () => {
   it("streams a signed asset with the safety and cache headers", async () => {
-    const response = await handleAssetRequest(proxied("/assets/logo.svg", "", { "sec-fetch-site": "same-origin" }));
+    const response = await handleAssetRequest(proxied("/assets/logo.svg"));
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toBe("image/svg+xml");
     expect(response.headers.get("x-content-type-options")).toBe("nosniff");
@@ -113,24 +116,27 @@ describe("handleAssetRequest", () => {
     expect(response.headers.get("content-disposition")).toBe("inline");
     expect(Buffer.from(await response.arrayBuffer())).toEqual(readFileSync(path.join(SITE, "assets/logo.svg")));
 
-    const sized = await handleAssetRequest(proxied("/sized.png", "", { "sec-fetch-site": "none" }));
+    const sized = await handleAssetRequest(proxied("/sized.png", "", "none"));
     expect(sized.status).toBe(200);
     expect(sized.headers.get("content-length")).toBe(String(png.length));
     expect(Buffer.from(await sized.arrayBuffer())).toEqual(png);
   });
 
-  it("refuses cross-site and same-site fetches", async () => {
-    expect(await errorOf(await handleAssetRequest(proxied("/assets/logo.svg", "", { "sec-fetch-site": "cross-site" })))).toMatchObject({ status: 403 });
-    const sameSite = await handleAssetRequest(proxied("/assets/logo.svg", "", { "sec-fetch-site": "same-site" }));
+  it("refuses cross-site, same-site and header-less requests", async () => {
+    expect(await errorOf(await handleAssetRequest(proxied("/assets/logo.svg", "", "cross-site")))).toMatchObject({ status: 403 });
+    const sameSite = await handleAssetRequest(proxied("/assets/logo.svg", "", "same-site"));
     expect(sameSite.status).toBe(403);
     expect(sameSite.headers.get("vary")).toBe("Sec-Fetch-Site");
+    // spec 11.2: same-origin or none only, so scripts and old clients without Fetch Metadata are refused too
+    expect(await errorOf(await handleAssetRequest(proxied("/assets/logo.svg", "", null)))).toMatchObject({ status: 403, code: "cross-site" });
+    expect(await errorOf(await handleAssetRequest(proxied("/assets/logo.svg", "", "")))).toMatchObject({ status: 403 });
   });
 
   it("checks the signature and params", async () => {
     const bad = proxied("/assets/logo.svg").url.replace(/s=[^&]+/, `s=${"A".repeat(32)}`);
-    expect(await errorOf(await handleAssetRequest(new Request(bad)))).toMatchObject({ status: 403 });
+    expect(await errorOf(await handleAssetRequest(new Request(bad, { headers: SAME_ORIGIN })))).toMatchObject({ status: 403, code: "bad-signature" });
     expect(await errorOf(await handleAssetRequest(proxied("/assets/logo.svg", "&x=1")))).toMatchObject({ status: 400 });
-    expect(await errorOf(await handleAssetRequest(new Request("https://app.local/api/asset")))).toMatchObject({ status: 400 });
+    expect(await errorOf(await handleAssetRequest(new Request("https://app.local/api/asset", { headers: SAME_ORIGIN })))).toMatchObject({ status: 400 });
   });
 
   it("refuses HTML and unknown bytes", async () => {
@@ -217,7 +223,7 @@ describe("handleAssetRequest", () => {
     expect(await errorOf(await handleAssetRequest(proxied("/missing.png")))).toMatchObject({ status: 502 });
     expect(await errorOf(await handleAssetRequest(proxied("/redirect-private")))).toMatchObject({ status: 403, code: "blocked-address" });
     const direct = createSigner().sign(`${victim.origin}/secret.png`);
-    expect(await errorOf(await handleAssetRequest(new Request(`https://app.local${direct}`)))).toMatchObject({ status: 403 });
+    expect(await errorOf(await handleAssetRequest(new Request(`https://app.local${direct}`, { headers: SAME_ORIGIN })))).toMatchObject({ status: 403, code: "blocked-address" });
     expect(victimHits).toBe(0);
   });
 

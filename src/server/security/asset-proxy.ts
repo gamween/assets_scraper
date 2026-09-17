@@ -162,8 +162,10 @@ export async function handleAssetRequest(request: Request, options: AssetProxyOp
   const maxBytes = options.maxBytes ?? limits.proxyMaxBytes;
   const timeoutMs = options.timeoutMs ?? limits.proxyTimeoutMs;
   try {
+    // Spec 11.2: only this app's pages (same-origin) or a link opened directly (none). A missing header is refused
+    // too, so every browser with Fetch Metadata is covered; scripts can forge the header, the byte budget bounds them.
     const site = request.headers.get("sec-fetch-site");
-    if (site !== null && site !== "same-origin" && site !== "none") return errorResponse(403, "cross-site", "Cross-site requests are not allowed.");
+    if (site !== "same-origin" && site !== "none") return errorResponse(403, "cross-site", "Only this app can load proxied assets.");
 
     const { url, dl, fmt } = verifyAssetParams(new URL(request.url).searchParams);
     if (!(await takeProxyBytes(0))) return errorResponse(429, "budget", "Daily download limit reached.");
