@@ -129,6 +129,16 @@ beforeAll(async () => {
       res.writeHead(200, { "content-type": "image/png" });
       res.write(Buffer.from([0x89, 0x50, 0x4e, 0x47]));
     },
+    // An MJPEG webcam: a multipart image stream whose body never ends.
+    "/cam.mjpg": (_req, res) => {
+      res.writeHead(200, { "content-type": "multipart/x-mixed-replace; boundary=frame" });
+      res.write("--frame\r\ncontent-type: image/jpeg\r\n\r\n");
+      held.push(res);
+    },
+    "/cam.html": (_req, res) => {
+      res.writeHead(200, { "content-type": "text/html" });
+      res.end('<!doctype html><title>Cam</title><img src="/cam.mjpg">');
+    },
     "/moved.png": (_req, res) => {
       res.writeHead(302, { location: "/assets/touch.png" });
       res.end();
@@ -475,6 +485,17 @@ describe("startCapture", () => {
       expect(network.images.some((image) => image.url.endsWith("/moved.png"))).toBe(false);
       expect(network.images.find((image) => image.url.endsWith("/assets/touch.png"))?.sha1).toBeDefined();
       for (const image of network.images) expect(Tone.options).toContain(image.tone);
+    });
+  });
+
+  it("never reads a multipart stream, whose body does not end by design", async () => {
+    await onBrowser(async (page) => {
+      const capture = startCapture(page, { signal: new AbortController().signal, bodyReadMs: 500 });
+      await Promise.all([page.waitForResponse((response) => response.url().endsWith("/cam.mjpg")), page.goto(`${fixture.origin}/cam.html`, { waitUntil: "domcontentloaded" })]);
+      await delay(1000);
+      const network = await capture.settle(5000);
+      expect(network.bodyTimeouts).toBe(0);
+      expect(network.skippedBodies).toBe(1);
     });
   });
 

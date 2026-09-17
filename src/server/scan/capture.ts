@@ -96,6 +96,12 @@ export function startCapture(page: Page, options: CaptureOptions): CaptureHandle
    */
   const schedule = (response: Response, read: (body: Buffer) => Promise<void> | void) => {
     const headers = response.headers();
+    // A multipart response (an MJPEG webcam) is a stream by design: its body never ends and would hold a slot and a
+    // reservation until the browser closes.
+    if (headers["content-type"]?.trim().toLowerCase().startsWith("multipart/")) {
+      skippedBodies += 1;
+      return;
+    }
     // Undefined gives NaN: no declared length. With an encoding, the declared length is only a lower bound of the body.
     const declared = Number(headers["content-length"]);
     const known = Number.isFinite(declared);
