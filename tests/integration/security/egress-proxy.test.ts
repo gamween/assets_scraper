@@ -6,11 +6,12 @@ import { chromium, type Browser } from "playwright-core";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { serveFixture, type FixtureServer } from "../../fixtures/serve";
 
-/** Fixed answers for chosen names; every other name goes to the real resolver. */
-const dns = vi.hoisted(() => ({ answers: new Map<string, string[]>() }));
+/** Fixed answers for chosen names, names whose lookup never answers; every other name goes to the real resolver. */
+const dns = vi.hoisted(() => ({ answers: new Map<string, string[]>(), silent: new Set<string>() }));
 vi.mock("node:dns/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:dns/promises")>();
   const lookup = async (hostname: string, options: LookupAllOptions) => {
+    if (dns.silent.has(hostname)) return new Promise<never>(() => {});
     const addresses = dns.answers.get(hostname);
     return addresses === undefined ? actual.lookup(hostname, options) : addresses.map((address) => ({ address, family: net.isIP(address) }));
   };
@@ -286,6 +287,7 @@ describe("egress proxy guard", () => {
     delete process.env.APP_HOSTS;
     process.env.SCAN_TEST_ALLOW_HOSTS = allowed.host;
     dns.answers.clear();
+    dns.silent.clear();
     await proxy?.close();
   });
 
@@ -442,6 +444,23 @@ describe("egress proxy guard", () => {
       silent.close();
       await blackhole.close();
     }
+  });
+
+  it("gives up on a name whose DNS never answers after the connect timeout and frees its slot", async () => {
+    dns.silent.add("silent-dns.test");
+    proxy = await startEgressProxy({ maxSockets: 1, connectTimeoutMs: 500 });
+    const start = performance.now();
+    const tunnel = await rawReply(proxy.port, "CONNECT silent-dns.test:443 HTTP/1.1\r\nHost: silent-dns.test:443\r\n\r\n");
+    expect(tunnel.data).toMatch(/^HTTP\/1\.1 504 Gateway Timeout\r\n/);
+    expect(tunnel.closed).toBe(true);
+    // a plain request loses its connection, like one whose connect times out
+    expect(await rawReply(proxy.port, "GET http://silent-dns.test/ HTTP/1.1\r\nHost: silent-dns.test\r\n\r\n")).toEqual({ data: "", closed: true });
+    expect(performance.now() - start).toBeLessThan(4_000);
+    // each gave back the only slot before its answer, and neither counts as blocked
+    const next = await openTunnel(proxy.port, allowed.host);
+    expect(next.status).toBe("HTTP/1.1 200 Connection Established");
+    next.socket.destroy();
+    expect(proxy.stats()).toMatchObject({ blocked: 0, refused: 0 });
   });
 
   it("falls back to the next checked address when the first one fails", async () => {

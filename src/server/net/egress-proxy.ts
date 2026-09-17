@@ -6,7 +6,10 @@ import { isTestAllowed, pinnedConnectOptions, resolvePublicAddresses } from "./i
 export interface EgressProxyOptions {
   maxBytes?: number;
   maxSockets?: number;
-  /** Time to open an upstream connection, across every address of the host. */
+  /**
+   * Time to resolve an upstream host, then again to open a connection across every address it resolved to. A lookup
+   * past it is abandoned (the resolver thread still finishes it) and answered like a connect timeout.
+   */
   connectTimeoutMs?: number;
   /** Time an open upstream connection may stay silent. */
   idleTimeoutMs?: number;
@@ -38,6 +41,8 @@ const MAX_BLOCKED_HOSTS = 50;
 const UPSTREAM_CONNECT_MS = 10_000;
 const UPSTREAM_IDLE_MS = 30_000;
 const EMPTY_REPLY = "\r\nContent-Length: 0\r\n\r\n";
+/** The rejection of `resolveWithin` when the lookup outlasts its deadline, apart from the policy refusals of the resolver. */
+const DNS_TIMEOUT = Symbol("dns-timeout");
 
 /** Removes hop-by-hop headers, every header named in `Connection` and `extra` names from a raw header list. */
 function endToEndHeaders(raw: string[], extra: string[] = []): string[] {
@@ -58,7 +63,7 @@ function endToEndHeaders(raw: string[], extra: string[] = []): string[] {
  * WebSocket) as CONNECT. Each target must use port 80 or 443 (or an exact test allowlist entry), must not be an own
  * host, and must resolve only to public addresses; the upstream socket connects only to the checked addresses, trying
  * the next one when a connection fails, so DNS rebinding cannot redirect it. Blocked CONNECTs get 403, CONNECTs over
- * capacity 503, and a tunnel whose upstream cannot be reached 502 (refused, unreachable) or 504 (connect timeout).
+ * capacity 503, and a tunnel whose upstream cannot be reached 502 (refused, unreachable) or 504 (DNS or connect timeout).
  * Plain requests lose their connection in all these cases, so Chromium sees a network error rather than a page.
  * Sockets and bytes are capped per proxy; `close()` destroys everything.
  */
@@ -99,6 +104,17 @@ export async function startEgressProxy(options: EgressProxyOptions = {}): Promis
     if (port !== 80 && port !== 443 && !isTestAllowed(host, port)) return "blocked";
     return closed || bytes > maxBytes || active >= maxSockets ? "refused" : "ok";
   };
+  /**
+   * `resolvePublicAddresses`, or a rejection with `DNS_TIMEOUT` once `connectTimeoutMs` passes: a name whose DNS never
+   * answers must not hold a socket slot, or leave Chromium waiting, for as long as the system resolver keeps trying.
+   */
+  const resolveWithin = (host: string, port: number) =>
+    new Promise<string[]>((resolve, reject) => {
+      const timer = setTimeout(() => reject(DNS_TIMEOUT), connectTimeoutMs);
+      resolvePublicAddresses(host, port)
+        .then(resolve, reject)
+        .finally(() => clearTimeout(timer));
+    });
   /** Reserves a socket slot and returns its idempotent release. */
   const reserve = () => {
     active += 1;
@@ -130,7 +146,7 @@ export async function startEgressProxy(options: EgressProxyOptions = {}): Promis
     }
     const url = target;
     const release = reserve();
-    resolvePublicAddresses(url.hostname, port).then(
+    resolveWithin(url.hostname, port).then(
       (addresses) => {
         if (closed || res.destroyed) {
           release();
@@ -193,9 +209,9 @@ export async function startEgressProxy(options: EgressProxyOptions = {}): Promis
         res.on("close", () => upstream.destroy());
         req.pipe(upstream);
       },
-      () => {
+      (error: unknown) => {
         release();
-        block(url.hostname);
+        if (error !== DNS_TIMEOUT) block(url.hostname);
         res.destroy();
       },
     );
@@ -219,7 +235,7 @@ export async function startEgressProxy(options: EgressProxyOptions = {}): Promis
       return;
     }
     const release = reserve();
-    resolvePublicAddresses(host, port).then(
+    resolveWithin(host, port).then(
       (addresses) => {
         if (closed || client.destroyed) {
           release();
@@ -260,9 +276,10 @@ export async function startEgressProxy(options: EgressProxyOptions = {}): Promis
         });
         client.on("close", () => upstream.destroy());
       },
-      () => {
+      (error: unknown) => {
         release();
-        deny();
+        if (error !== DNS_TIMEOUT) deny();
+        else if (!client.destroyed && !client.writableEnded) client.end(`HTTP/1.1 504 Gateway Timeout${EMPTY_REPLY}`);
       },
     );
   });
