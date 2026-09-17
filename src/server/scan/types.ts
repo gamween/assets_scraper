@@ -231,5 +231,10 @@ export interface OriginalProbes {
 }
 export interface FontsOutput { families: FontFamily[]; hidden: Partial<Record<HiddenReason, number>> }
 
-/** No probe ran: post-processing did not finish, so nothing is known about the originals. */
-export const NO_ORIGINAL_PROBES: OriginalProbes = { attempted: 0, adopted: 0, captured: 0, failed: 0, noise: 0, skipped: 0 };
+/**
+ * No probe ran: post-processing did not finish, so nothing is known about the originals. Frozen, because it is
+ * assigned straight into per-scan state and one module-level object is shared by every scan the process handles.
+ */
+export const NO_ORIGINAL_PROBES: Readonly<OriginalProbes> = Object.freeze({
+  attempted: 0, adopted: 0, captured: 0, failed: 0, noise: 0, skipped: 0,
+});
