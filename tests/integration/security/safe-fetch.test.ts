@@ -1,10 +1,24 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import net from "node:net";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { serveFixture, type FixtureServer } from "../../fixtures/serve";
+
+/** Fixed answers for chosen names; every other name goes to the real resolver. */
+const dns = vi.hoisted(() => ({ answers: new Map<string, string>(), lookup: vi.fn() }));
+vi.mock("node:dns/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:dns/promises")>();
+  dns.lookup.mockImplementation(async (hostname: string, options: Parameters<typeof actual.lookup>[1]) => {
+    const address = dns.answers.get(hostname);
+    return address === undefined ? actual.lookup(hostname, options) : [{ address, family: net.isIP(address) }];
+  });
+  return { ...actual, default: { ...actual, lookup: dns.lookup }, lookup: dns.lookup };
+});
+
 import { safeFetch, SafeFetchError } from "@/server/net/safe-fetch";
 
 let allowed: FixtureServer;
 let victim: FixtureServer;
 let victimHits = 0;
+let endlessClosed: () => void = () => {};
 
 beforeAll(async () => {
   victim = await serveFixture({ "/secret": (_q, s) => { victimHits++; s.end("SECRET"); } });
@@ -24,11 +38,17 @@ beforeAll(async () => {
     "/redirect-mapped": (_q, s) => { s.writeHead(302, { location: `http://[::ffff:127.0.0.1]:${victim.port}/secret` }); s.end(); },
     "/redirect-file": (_q, s) => { s.writeHead(302, { location: "file:///etc/passwd" }); s.end(); },
     "/redirect-own": (_q, s) => { s.writeHead(302, { location: "https://scraper.example.com/" }); s.end(); },
+    "/redirect-name": (_q, s) => { s.writeHead(302, { location: "http://victim.test/secret" }); s.end(); },
     "/redirect-port": (_q, s) => { s.writeHead(302, { location: "http://example.com:8080/" }); s.end(); },
     "/trickle": (_q, s) => {
       s.writeHead(200, { "content-type": "image/png" });
       const timer = setInterval(() => s.write("x"), 50);
       s.on("close", () => clearInterval(timer));
+    },
+    "/endless": (_q, s) => {
+      s.writeHead(200, { "content-type": "application/octet-stream" });
+      const timer = setInterval(() => s.write(Buffer.alloc(1024)), 10);
+      s.on("close", () => { clearInterval(timer); endlessClosed(); });
     },
     "/declared-large": (_q, s) => { s.writeHead(200, { "content-type": "image/png", "content-length": String(10 * 1024) }); s.end(Buffer.alloc(10 * 1024)); },
   });
@@ -41,7 +61,20 @@ afterAll(async () => {
   await victim.close();
 });
 
+/** Resolves with "settled" when `promise` settles first, "pending" when `ms` pass before. */
+function within(promise: Promise<unknown>, ms: number): Promise<"settled" | "pending"> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve("pending"), ms);
+    promise.finally(() => { clearTimeout(timer); resolve("settled"); }).catch(() => {});
+  });
+}
+
 describe("safeFetch", () => {
+  afterEach(() => {
+    dns.answers.clear();
+    dns.lookup.mockClear();
+  });
+
   it("fetches an allowed URL", async () => {
     const res = await safeFetch(`${allowed.origin}/`);
     expect(res.status).toBe(200);
@@ -51,8 +84,37 @@ describe("safeFetch", () => {
   it("blocks private addresses directly and through redirects", async () => {
     await expect(safeFetch(`${victim.origin}/secret`)).rejects.toMatchObject({ code: "blocked-address" });
     await expect(safeFetch(`${allowed.origin}/redirect-victim`)).rejects.toMatchObject({ code: "blocked-address" });
-    await expect(safeFetch("http://127.0.0.1.nip.io/")).rejects.toBeInstanceOf(SafeFetchError);
+    // public DNS may be unreachable from CI: either way the request must never go out
+    const nip = await safeFetch("http://127.0.0.1.nip.io/").then(() => null, (error: unknown) => error);
+    expect(nip).toBeInstanceOf(SafeFetchError);
+    expect(["blocked-address", "dns"]).toContain((nip as SafeFetchError).code);
     expect(victimHits).toBe(0);
+  });
+
+  it("resolves every DNS name through the checked lookup", async () => {
+    // Without the checked dispatcher undici would resolve with its own lookup: `dns`, or `connect` on a real answer.
+    dns.answers.set("rebind.test", "127.0.0.1");
+    dns.answers.set("rebind-v6.test", "::ffff:169.254.169.254");
+    await expect(safeFetch("http://rebind.test/secret")).rejects.toMatchObject({ code: "blocked-address" });
+    await expect(safeFetch("https://rebind-v6.test/secret")).rejects.toMatchObject({ code: "blocked-address" });
+    expect(dns.lookup).toHaveBeenCalledWith("rebind.test", expect.objectContaining({ all: true }));
+    expect(dns.lookup).toHaveBeenCalledWith("rebind-v6.test", expect.objectContaining({ all: true }));
+    // a redirect to such a name takes the same path
+    dns.answers.set("victim.test", "127.0.0.1");
+    await expect(safeFetch(`${allowed.origin}/redirect-name`)).rejects.toMatchObject({ code: "blocked-address" });
+    expect(dns.lookup).toHaveBeenCalledWith("victim.test", expect.anything());
+    expect(victimHits).toBe(0);
+  });
+
+  it("closes the connection on cancel() after stream() was taken", async () => {
+    const closed = new Promise<void>((resolve) => { endlessClosed = resolve; });
+    const res = await safeFetch(`${allowed.origin}/endless`, { timeoutMs: 20_000 });
+    const reader = res.stream().getReader();
+    expect((await reader.read()).done).toBe(false);
+    await res.cancel();
+    // well before the 20 s timeout that would otherwise close it
+    expect(await within(closed, 5_000)).toBe("settled");
+    expect((await reader.read()).done).toBe(true);
   });
 
   it("enforces redirects, size and time caps", async () => {

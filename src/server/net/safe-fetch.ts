@@ -95,12 +95,15 @@ function wrapResponse(
   response.headers.forEach((value, key) => headers.append(key, value));
   const body = response.body;
   let used = false;
+  /** Reader of the undici body once `stream()` took it, so `cancel()` can still release the connection. */
+  let bodyReader: ReadableStreamDefaultReader<Uint8Array> | undefined;
 
   const stream = (): ReadableStream<Uint8Array> => {
     if (used) throw new TypeError("Body already used");
     used = true;
     if (!body) return new ReadableStream<Uint8Array>({ start: (controller) => controller.close() });
     const reader = body.getReader();
+    bodyReader = reader;
     let total = 0;
     return new ReadableStream<Uint8Array>(
       {
@@ -160,7 +163,12 @@ function wrapResponse(
     buffer,
     text,
     json: async <T = unknown>() => JSON.parse(await text()) as T,
+    /** Releases the connection, also after `stream()`: a stream taken from it then ends early. */
     cancel: async () => {
+      if (bodyReader) {
+        await bodyReader.cancel().catch(() => {});
+        return;
+      }
       if (used || !body) return;
       used = true;
       await body.cancel().catch(() => {});
