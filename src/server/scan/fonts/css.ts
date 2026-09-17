@@ -42,8 +42,6 @@ class ByteStack {
   }
 }
 
-const unescapeCss = (value: string) => value.replace(/\\(.)/g, "$1");
-
 function absoluteUrl(value: string, baseUrl: string): FontSrc | null {
   if (!value) return null;
   try {
@@ -115,7 +113,7 @@ export function parseFontSrc(src: string, baseUrl: string): FontSrc[] {
       } else if (!current && type === T.Url) {
         addSource(absoluteUrl(cssUrl.decode(src.slice(start, end)).trim(), baseUrl));
       } else if (type === T.Function) {
-        const name = src.slice(start, end - 1).toLowerCase();
+        const name = ident.decode(src.slice(start, end - 1)).toLowerCase();
         if (!current && (name === "url" || name === "local")) fn = { kind: name, texts: [], other: false };
         else if (current?.url && !current.format && name === "format") fn = { kind: "format", texts: [], other: false };
       }
@@ -129,12 +127,27 @@ export function parseFontSrc(src: string, baseUrl: string): FontSrc[] {
 
 const collapse = (value: string) => value.trim().replace(/\s+/g, " ");
 
-/** `"__Inter_d65c78"`, `'Brand Serif'` or `Mona   Sans` to the family name. */
-export function unquoteFamily(value: string): string {
-  const trimmed = value.trim();
-  const quote = trimmed[0];
-  if ((quote === '"' || quote === "'") && trimmed.length >= 2 && trimmed.endsWith(quote)) return unescapeCss(trimmed.slice(1, -1)).trim();
-  return collapse(unescapeCss(trimmed));
+/**
+ * The `font-family` descriptor as browsers read it: one string, or identifiers joined by one space (`Mona   Sans` gives
+ * "Mona Sans"), with CSS escapes decoded (`"\5FAE\8F6F\96C5\9ED1"` gives its four CJK characters). Empty for any other
+ * value, which browsers drop.
+ */
+function readFamilyName(value: string): string {
+  const names: string[] = [];
+  let quoted = false;
+  let invalid = false;
+  tokenize(value, (type, start, end) => {
+    if (invalid || isBlank(type)) return;
+    if (type === T.String && !names.length) {
+      names.push(string.decode(value.slice(start, end)));
+      quoted = true;
+    } else if (type === T.Ident && !quoted) {
+      names.push(ident.decode(value.slice(start, end)));
+    } else {
+      invalid = true;
+    }
+  });
+  return invalid ? "" : names.join(" ");
 }
 
 const WEIGHT_KEYWORDS: Record<string, string> = { normal: "400", bold: "700" };
@@ -190,10 +203,12 @@ class EnoughRules extends Error {}
 
 /**
  * Collects `@font-face` rules from stylesheet text, at the top level and in `@media`, `@supports`, `@layer` and the
- * other conditional group rules, in one pass over css-tree tokens. As in browsers, a rule starts a statement: an
- * `@font-face` inside a declaration value or a style rule is not a rule. Relative URLs resolve against `baseUrl` (the
- * stylesheet URL). Stops after `maxRules` rules. Broken CSS never throws: invalid declarations are skipped and blocks
- * left open at the end are closed. In a descriptor value a comment reads as a space and `!important` is dropped.
+ * other conditional group rules, in one pass over css-tree tokens. As in browsers, a rule starts a statement and has
+ * no prelude: an `@font-face` inside a declaration value or a style rule, or followed by anything but whitespace and
+ * comments before its block, is not a rule. Names are read with their CSS escapes decoded. Relative URLs resolve
+ * against `baseUrl` (the stylesheet URL). Stops after `maxRules` rules. Broken CSS never throws: invalid declarations
+ * are skipped and blocks left open at the end are closed. In a descriptor value a comment reads as a space and
+ * `!important` is dropped.
  */
 export function parseFontFaceCss(cssText: string, baseUrl: string, options: { maxRules?: number } = {}): RawFontFaceRule[] {
   const maxRules = options.maxRules ?? Infinity;
@@ -201,9 +216,11 @@ export function parseFontFaceCss(cssText: string, baseUrl: string, options: { ma
   if (!(maxRules > 0) || !/@font-face/i.test(cssText)) return rules;
   const stack = new ByteStack();
   let fontFace: FontFaceBlock | null = null;
-  // At the top level or in a group rule block: whether the next token starts a statement, and the at-rule it started
+  // At the top level or in a group rule block: whether the next token starts a statement, the at-rule it started, and
+  // whether that at-rule has a prelude
   let statementStart = true;
   let atRule: string | null = null;
+  let prelude = false;
 
   const endDeclaration = (block: FontFaceBlock, end: number) => {
     if (block.name && block.valueStart >= 0 && !block.invalid) {
@@ -227,13 +244,13 @@ export function parseFontFaceCss(cssText: string, baseUrl: string, options: { ma
     if (type === T.Semicolon) {
       endDeclaration(block, start);
     } else if (block.valueStart < 0) {
-      if (type === T.Ident && block.name === null) block.name = cssText.slice(start, end).toLowerCase();
+      if (type === T.Ident && block.name === null) block.name = ident.decode(cssText.slice(start, end)).toLowerCase();
       else if (type === T.Colon && block.name !== null) block.valueStart = end;
       else if (type !== T.WhiteSpace) block.invalid = true;
     } else if (type === T.Delim && cssText[start] === "!") {
       block.bang = start;
       block.important = -1;
-    } else if (type === T.Ident && block.bang >= 0 && cssText.slice(start, end).toLowerCase() === "important") {
+    } else if (type === T.Ident && block.bang >= 0 && ident.decode(cssText.slice(start, end)).toLowerCase() === "important") {
       block.important = block.bang;
       block.bang = -1;
     } else if (type !== T.WhiteSpace) {
@@ -272,17 +289,20 @@ export function parseFontFaceCss(cssText: string, baseUrl: string, options: { ma
         statementStart = true;
         atRule = null;
       } else if (type === T.AtKeyword && statementStart) {
-        atRule = cssText.slice(start + 1, end).toLowerCase();
+        atRule = ident.decode(cssText.slice(start + 1, end)).toLowerCase();
         statementStart = false;
-      } else if (!isBlank(type) && type !== T.CDO && type !== T.CDC) {
-        statementStart = false;
+        prelude = false;
+      } else if (!isBlank(type)) {
+        // `<!--` and `-->` are skipped between statements, not in a prelude
+        if (type !== T.CDO && type !== T.CDC) statementStart = false;
+        if (type !== T.LeftCurlyBracket) prelude = true;
       }
     }
     const closer = CLOSERS[type];
     if (closer === undefined) return;
     const ruleBlock = type === T.LeftCurlyBracket && atRules && !fontFace;
     stack.push(ruleBlock && GROUP_RULES.has(atRule ?? "") ? closer | HOLDS_RULES : closer);
-    if (ruleBlock && atRule === "font-face") {
+    if (ruleBlock && atRule === "font-face" && !prelude) {
       fontFace = { depth: stack.length, descriptors: {}, name: null, valueStart: -1, parts: [], important: -1, bang: -1, invalid: false };
     }
     if (ruleBlock) {
@@ -301,7 +321,7 @@ export function parseFontFaceCss(cssText: string, baseUrl: string, options: { ma
 }
 
 function toRule(descriptors: Record<string, string>, baseUrl: string): RawFontFaceRule | null {
-  const family = unquoteFamily(descriptors["font-family"] ?? "");
+  const family = readFamilyName(descriptors["font-family"] ?? "");
   const src = parseFontSrc(descriptors.src ?? "", baseUrl);
   if (!family || !src.length) return null;
   const rule: RawFontFaceRule = {

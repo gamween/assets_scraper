@@ -35,16 +35,26 @@ describe("parseFontFaceCss", () => {
     ]);
   });
 
-  it("reads rules only where browsers do: at the start of a statement, at the top level or in group rules", () => {
+  it("reads rules only where browsers do: at the start of a statement without a prelude, at the top level or in group rules", () => {
     const face = (family: string) => `@font-face{font-family:${family};src:url(${family}.woff2)}`;
     const css = [
       `@charset "utf-8";@import url(x.css);<!-- ${face("top")} -->`,
       `@container card (min-width:1px){@layer{.a[title="}"]{content:"{"}${face("container")}}}`,
-      `@FONT-FACE{font-family:upper;src:url(upper.woff2)}@font-face;@font-face junk{font-family:prelude;src:url(prelude.woff2)}`,
+      `@FONT-FACE{font-family:upper;src:url(upper.woff2)}@font-face;@font\\-face /* a comment */ {font-family:escaped;src:url(e.woff2)}`,
+      `@font-face junk{font-family:prelude;src:url(p.woff2)}@font-face (x){font-family:parens;src:url(p.woff2)}@font-face <!--{font-family:cdo;src:url(c.woff2)}`,
       `.style{${face("nested")}}.value{--x:${face("custom")};color:red}@keyframes k{from{opacity:0}}a ${face("selector")}`,
       `@media screen{.a{b:c}${face("media")}}/* ${face("comment")} */`,
     ].join("\n");
-    expect(parseFontFaceCss(css, BASE).map((rule) => rule.family)).toEqual(["top", "container", "upper", "prelude", "media"]);
+    expect(parseFontFaceCss(css, BASE).map((rule) => rule.family)).toEqual(["top", "container", "upper", "escaped", "media"]);
+  });
+
+  it("reads a family as one string or identifiers, with CSS escapes decoded, and drops other values", () => {
+    const families = (values: string[]) => values.flatMap((value) => parseFontFaceCss(`@font-face{font-family:${value};src:url(a.woff2)}`, BASE)).map((rule) => rule.family);
+    // Microsoft YaHei written with escapes, as Chinese sites do, quoted and not
+    expect(families([`"\\5FAE\\8F6F\\96C5\\9ED1"`, `\\5FAE\\8F6F\\96C5\\9ED1`])).toEqual(["\u5fae\u8f6f\u96c5\u9ed1", "\u5fae\u8f6f\u96c5\u9ed1"]);
+    expect(families([`'Brand \\'Serif\\''`, `Brand\\ Sans  Text`, `\\31 23 Grotesk`, `" Spaced  Out "`])).toEqual(["Brand 'Serif'", "Brand Sans Text", "123 Grotesk", " Spaced  Out "]);
+    expect(families([`"Brand" Sans`, `Brand "Sans"`, `"a" "b"`, `3M Sans`, `Brand, Sans`, `"broken\nstring"`, `""`])).toEqual([]);
+    expect(parseFontFaceCss(`@font-face{font\\-family:Escaped;s\\72 c:url(a.woff2);font-weight:bold !IMPOR\\54 ANT}`, BASE)).toMatchObject([{ family: "Escaped", weight: "700" }]);
   });
 
   it("reads comments as spaces, drops !important and keeps the last of repeated descriptors", () => {
@@ -109,11 +119,12 @@ describe("parseFontSrc", () => {
   });
 
   it("stays linear on hostile values", async () => {
-    const hostile = (size: number) => ["url(" + " ".repeat(size), "url(".repeat(size / 4), `url("${"a".repeat(size)}`, "local(".repeat(size / 6), "(".repeat(size), `url(a.woff2)${" format(".repeat(size / 8)}`];
+    const hostile = (size: number) => ["url(" + " ".repeat(size), "url(".repeat(size / 4), `url("${"a".repeat(size)}`, "local(".repeat(size / 6), "(".repeat(size), `url(a.woff2)${" format(".repeat(size / 8)}`, "\\31 a".repeat(size / 4), `"${"\\".repeat(size)}`];
     const factor = await growthFactor((size) => {
       for (const value of hostile(size)) {
         parseFontSrc(value, BASE);
         parseFontFaceCss(`@font-face{font-family:X;src:${value}}`, BASE);
+        parseFontFaceCss(`@font-face{font-family:${value};src:url(a.woff2)}`, BASE);
         parseFontFaceCss(`@media x{${value}{@font-face{font-family:X;src:url(a.woff2)`, BASE);
       }
     }, 20_000);
