@@ -6,7 +6,6 @@ import type { Page } from "playwright-core";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { Asset, ScanEvent, type Palette } from "@/lib/contract";
 import { BusyError, withBrowser } from "@/server/browser/launch";
-import { NotImplementedError } from "@/server/errors";
 import { SafeFetchError } from "@/server/net/safe-fetch";
 import { createScanEngine, type ScanEngineDeps } from "@/server/scan/engine";
 import { buildFontFamilies } from "@/server/scan/fonts";
@@ -30,7 +29,7 @@ const FAKE_COLLECTOR = `globalThis.__assetsScraper = {
 };`;
 
 const HANGING_COLLECTOR = "globalThis.__assetsScraper = { collect: () => new Promise(() => {}) };";
-const THROWING_COLLECTOR = 'globalThis.__assetsScraper = { async collect() { throw new Error("Not implemented: C: collector"); } };';
+const THROWING_COLLECTOR = 'globalThis.__assetsScraper = { async collect() { throw new Error("collector bug in the page"); } };';
 /** Tells the test it runs (through the fixture route `/collector-started`), then never answers. */
 const REPORTING_COLLECTOR = 'globalThis.__assetsScraper = { collect: () => { fetch("/collector-started"); return new Promise(() => {}); } };';
 
@@ -764,10 +763,10 @@ describe("scan engine", () => {
         expect(events).toContainEqual({ type: "warning", code: "partial" });
         expect(events.find((event) => event.type === "assets")).toMatchObject({ items: [{ id: "photo" }] });
         // The client gets no internal detail; the server log does.
-        expect(JSON.stringify(events)).not.toContain("Not implemented");
+        expect(JSON.stringify(events)).not.toContain("collector bug");
         expect(log).toHaveBeenCalledWith(expect.stringMatching(/^Scan [0-9a-f-]{36} collector failed in the isolated world$/), expect.any(Error));
       }
-      expect(logged.join("\n")).toContain("Not implemented: C: collector");
+      expect(logged.join("\n")).toContain("collector bug in the page");
     } finally {
       log.mockRestore();
     }
@@ -885,7 +884,7 @@ describe("scan engine", () => {
     const postFails = await scan(
       testDeps({
         assembleAssets: async () => {
-          throw new NotImplementedError("C: assembleAssets");
+          throw new Error("assemble bug");
         },
       }).deps,
       `${fixture.origin}/`,
@@ -919,11 +918,6 @@ describe("scan engine", () => {
     const log = vi.spyOn(console, "error").mockImplementation(() => {});
     const { deps } = testDeps();
     const { fetch, startEgressProxy, withBrowser: browser, createSigner } = deps;
-    const stubs: string[] = [];
-    const recordStub = (error: unknown) => {
-      if (error instanceof NotImplementedError) stubs.push(error.message);
-      throw error;
-    };
     let collectorNoise: PostInput["collector"]["noise"] = {};
     let assetsOut: AssetsOutput | undefined;
     let fontsOut: FontsOutput | undefined;
@@ -935,26 +929,19 @@ describe("scan engine", () => {
         createSigner,
         assembleAssets: async (input) => {
           collectorNoise = input.collector.noise;
-          return (assetsOut = await assembleAssets(input).catch(recordStub));
+          return (assetsOut = await assembleAssets(input));
         },
-        buildFontFamilies: async (input) => (fontsOut = await buildFontFamilies(input).catch(recordStub)),
+        buildFontFamilies: async (input) => (fontsOut = await buildFontFamilies(input)),
       },
       `${fixture.origin}/sprites.html`,
     );
     const logged = log.mock.calls;
     log.mockRestore();
     expect(events.filter((event) => event.type === "done" || event.type === "error")).toHaveLength(1);
+    expect(logged).toEqual([]);
     const last = events.at(-1);
 
-    if (stubs.length) {
-      // While a post-processing track is a stub (on this branch, before the Phase 2 merge), the scan fails as an internal
-      // error. Once every track is merged, no stub is left and the checks below run: this branch must never be taken then.
-      expect(last).toMatchObject({ type: "error", code: "internal", message: "Something went wrong on our side" });
-      expect(logged).toContainEqual([expect.stringMatching(/^Scan [0-9a-f-]{36} failed$/), expect.objectContaining({ message: expect.stringContaining("Not implemented") })]);
-      return;
-    }
-
-    // With the real modules: done, and each drop counted once. assembleAssets reports the collector's drops, and the
+    // Done, and each drop counted once. assembleAssets reports the collector's drops, and the
     // engine only sums the assets' and the fonts' counts.
     if (last?.type !== "done" || !assetsOut || !fontsOut) throw new Error(`expected done, got ${last && describeEvent(last)}`);
     expect(collectorNoise).toMatchObject({ "unreferenced-symbol": 1 });
