@@ -95,12 +95,21 @@ describe("createToneBudget", () => {
   });
 
   it("stops starting renders once the budget is spent, however many were asked for at once", async () => {
-    const budget = createToneBudget({ budgetMs: 400 });
-    expect(await budget.svg(svg)).toBe("opaque");
     const markup = heavy(2_000);
+    // The budget is sized from this machine's render time, so the test holds on fast and slow machines alike: two
+    // renders' worth per render slot leaves most of the 80 renders unstarted.
+    let renderMs = Infinity;
+    for (let i = 0; i < 3; i++) {
+      const start = performance.now();
+      expect(await toneFromSvg(markup)).not.toBe("unknown");
+      renderMs = Math.min(renderMs, performance.now() - start);
+    }
+    const budgetMs = Math.max(1, Math.round(renderMs * 2));
+    const budget = createToneBudget({ budgetMs });
+    expect(await budget.svg(svg)).toBe("opaque");
     const started = performance.now();
     const tones = await Promise.all(Array.from({ length: 80 }, () => budget.svg(markup)));
-    expect(performance.now() - started).toBeLessThan(1_000);
+    expect(performance.now() - started).toBeLessThan(budgetMs + 1_000);
     expect(tones.at(-1)).toBe("unknown");
     expect(tones.filter((tone) => tone === "unknown").length).toBeGreaterThan(40);
   });
