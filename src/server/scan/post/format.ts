@@ -57,7 +57,7 @@ export function sniffFormat(buffer: Uint8Array): AssetFormat {
   if (startsWith(b, 4, "ftypavif") || startsWith(b, 4, "ftypavis")) return "avif";
   if (b.length >= 6 && b[0] === 0 && b[1] === 0 && b[2] === 1 && b[3] === 0 && b[4] + b[5] * 256 > 0) return "ico";
   if (b.length >= 10 && startsWith(b, 0, "BM")) return "bmp";
-  const head = Buffer.from(b.subarray(0, 1024)).toString("utf8").replace(/^﻿/, "");
+  const head = Buffer.from(b.subarray(0, 1024)).toString("utf8").replace(/^\uFEFF/, "");
   const rest = head.replace(/^(?:\s|<\?xml[^>]*>|<!--[\s\S]*?-->|<!DOCTYPE[^>]*>)*/i, "");
   return /^<svg[\s>/]/i.test(rest) ? "svg" : "other";
 }

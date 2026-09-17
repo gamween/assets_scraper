@@ -46,7 +46,7 @@ beforeAll(async () => {
     },
     "/garbage": (_req, res) => {
       res.writeHead(200, { "content-type": "application/octet-stream" });
-      res.end(Buffer.from("PK not an image"));
+      res.end(Buffer.from("PK\u0003\u0004 not an image"));
     },
     "/partial.gif": (_req, res) => {
       res.writeHead(206, { "content-type": "image/gif", "content-range": `bytes 0-1023/${gif.length}` });

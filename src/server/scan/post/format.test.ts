@@ -47,7 +47,7 @@ describe("sniffFormat", () => {
 
   it("recognizes SVG text with a BOM, XML prolog, comments or doctype", () => {
     expect(sniffFormat(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>'))).toBe("svg");
-    expect(sniffFormat(Buffer.from('﻿  <?xml version="1.0"?>\n<!-- x --><!DOCTYPE svg><svg></svg>'))).toBe("svg");
+    expect(sniffFormat(Buffer.from('\uFEFF  <?xml version="1.0"?>\n<!-- x --><!DOCTYPE svg><svg></svg>'))).toBe("svg");
   });
 
   it("returns other otherwise", () => {
