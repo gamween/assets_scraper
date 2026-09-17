@@ -35,6 +35,11 @@ export interface RunInPageOptions {
   maxResultChars?: number;
   /** Tests inject a broken session to exercise the main-world fallback. */
   createSession?: (page: Page) => Promise<CDPSession>;
+  /**
+   * Called when the code starts in a world, before it can fail or time out there. Not called when runInPage gave up
+   * before the code started.
+   */
+  onWorld?: (world: "isolated" | "main") => void;
 }
 
 /**
@@ -71,10 +76,10 @@ function decodeResult<T>(raw: unknown, maxChars: number): T {
  * most `maxResultChars` characters, otherwise it rejects with `InPageResultTooLargeError`; a value JSON cannot
  * represent (`undefined`) gives undefined.
  *
- * After a timeout or an abort, nothing new starts in the page: a CDP session that arrives late is detached, and the
- * main-world fallback never runs. Code that already started is not stopped, though: a `Runtime.evaluate` or a
- * main-world evaluation keeps running in the renderer, and keeps its CPU and memory, until it ends on its own or the
- * page or browser closes. Callers that need the page quiet afterwards close it.
+ * After a timeout or an abort, nothing new starts in the page: a CDP session or an isolated world that arrives late is
+ * never used (the session is detached), and the main-world fallback never runs. Code that already started is not
+ * stopped, though: a `Runtime.evaluate` or a main-world evaluation keeps running in the renderer, and keeps its CPU and
+ * memory, until it ends on its own or the page or browser closes. Callers that need the page quiet afterwards close it.
  */
 export async function runInPage<T>(page: Page, source: string, expression: string, options: RunInPageOptions): Promise<{ value: T; world: "isolated" | "main" }> {
   const maxChars = options.maxResultChars ?? DEFAULT_MAX_RESULT_CHARS;
@@ -99,8 +104,12 @@ export async function runInPage<T>(page: Page, source: string, expression: strin
       if (finished) throw error;
       detach(session);
       session = undefined;
+      options.onWorld?.("main");
       return { value: decodeResult<T>(await page.evaluate(script), maxChars), world: "main" };
     }
+    // The world can arrive after runInPage gave up too (a page busy in a script delays it): the code never starts then.
+    if (finished) throw new Error("runInPage already finished");
+    options.onWorld?.("isolated");
     const response = (await session.send("Runtime.evaluate", { expression: script, contextId, awaitPromise: true, returnByValue: true })) as Protocol;
     if (response.exceptionDetails) {
       const { exception, text } = response.exceptionDetails;

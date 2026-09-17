@@ -135,23 +135,69 @@ describe("runInPage", () => {
     });
   });
 
-  it("rejects at once when the renderer crashes or the browser dies, which leave a CDP call unanswered", async () => {
+  it("never starts the code in an isolated world that arrives after the timeout", async () => {
     await onPage("/", async (page) => {
-      const started = Date.now();
-      const running = runInPage(page, "", "new Promise(() => {})", { timeoutMs: 20_000 });
-      await delay(300);
+      const sent: string[] = [];
+      let worldArrived = () => {};
+      const arrived = new Promise<void>((resolve) => (worldArrived = resolve));
+      // A page busy in a script answers Page.createIsolatedWorld late.
+      const slowWorld = async (target: Page): Promise<CDPSession> => {
+        const session = await target.context().newCDPSession(target);
+        const send = session.send.bind(session) as (method: string, params?: object) => Promise<unknown>;
+        session.send = (async (method: string, params?: object) => {
+          sent.push(method);
+          const result = await send(method, params);
+          if (method !== "Page.createIsolatedWorld") return result;
+          await delay(400);
+          // Runs after every continuation of this answer, so runInPage has sent what it sends next by then.
+          setImmediate(worldArrived);
+          return result;
+        }) as CDPSession["send"];
+        return session;
+      };
+      const onWorld = vi.fn();
+      const mark = "document.documentElement.dataset.ran = 'late'";
+      await expect(runInPage(page, "", mark, { timeoutMs: 100, createSession: slowWorld, onWorld })).rejects.toBeInstanceOf(InPageTimeoutError);
+      await arrived;
+      expect(sent).toEqual(["Page.getFrameTree", "Page.createIsolatedWorld"]);
+      expect(onWorld).not.toHaveBeenCalled();
+      expect(await page.evaluate(() => document.documentElement.dataset.ran)).toBeUndefined();
+    });
+  });
+
+  it("tells which world the code started in, before it fails or times out there", async () => {
+    await onPage("/", async (page) => {
+      const onWorld = vi.fn();
+      await expect(runInPage(page, "", "new Promise(() => {})", { timeoutMs: 300, onWorld })).rejects.toBeInstanceOf(InPageTimeoutError);
+      expect(onWorld.mock.calls).toEqual([["isolated"]]);
+
+      onWorld.mockClear();
+      const deadSession = await createDeadSession(page);
+      await expect(runInPage(page, "", "new Promise(() => {})", { timeoutMs: 300, createSession: async () => deadSession, onWorld })).rejects.toBeInstanceOf(InPageTimeoutError);
+      expect(onWorld.mock.calls).toEqual([["main"]]);
+    });
+  });
+
+  it("rejects at once when the renderer crashes or the browser dies, which leave a CDP call unanswered", async () => {
+    /** Code that marks the page once it runs, then never ends: the test acts once the evaluation is in flight. */
+    const hang = "(document.documentElement.dataset.running = 'yes', new Promise(() => {}))";
+    const running = (page: Page) => expect.poll(() => page.evaluate(() => document.documentElement.dataset.running), { timeout: 5000 }).toBe("yes");
+    await onPage("/", async (page) => {
+      const evaluation = runInPage(page, "", hang, { timeoutMs: 20_000 });
+      await running(page);
+      const crashedAt = Date.now();
       void page.context().newCDPSession(page).then((cdp) => cdp.send("Page.crash")).catch(() => {});
-      await expect(running).rejects.toBeInstanceOf(PageGoneError);
-      expect(Date.now() - started).toBeLessThan(5000);
+      await expect(evaluation).rejects.toBeInstanceOf(PageGoneError);
+      expect(Date.now() - crashedAt).toBeLessThan(5000);
     });
 
     let killedAt = 0;
     const result = await onPage("/", async (page, pid) => {
-      const running = runInPage(page, "", "new Promise(() => {})", { timeoutMs: 20_000 });
-      await delay(300);
+      const evaluation = runInPage(page, "", hang, { timeoutMs: 20_000 });
+      await running(page);
       killedAt = Date.now();
       process.kill(pid ?? 0, "SIGKILL");
-      return running.then(() => "resolved", (error: unknown) => error);
+      return evaluation.then(() => "resolved", (error: unknown) => error);
     });
     expect(result).toBeInstanceOf(PageGoneError);
     expect(Date.now() - killedAt).toBeLessThan(5000);
