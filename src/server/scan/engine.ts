@@ -55,6 +55,13 @@ const POST_GRACE_MS = 5_000;
 /** How long a cancelled scan waits for its cleanup (browser kill, proxy close) before the stream ends anyway. */
 const CANCEL_CLEANUP_MS = 10_000;
 const WATCHDOG_INTERVAL_MS = 500;
+const MB = 1024 * 1024;
+
+/**
+ * Largest collector result in characters of JSON: its byte caps (blob bytes as base64, inline SVG markup with every
+ * character escaped at worst) plus room for candidates, font rules and links.
+ */
+const collectorResultChars = () => Math.ceil((limits.blobTotalBytes * 4) / 3) + 2 * limits.svgTotalBytes + 16 * MB;
 
 class DeadlineReached extends Error {
   constructor() {
@@ -457,7 +464,7 @@ async function runBrowserStage(input: ScanContext & {
         };
         try {
           const result = await timed("collect", () =>
-            runInPage<RawCollectorOutput>(page, deps.collectorSource, `globalThis.__assetsScraper.collect(${JSON.stringify(options)})`, { timeoutMs, signal }),
+            runInPage<RawCollectorOutput>(page, deps.collectorSource, `globalThis.__assetsScraper.collect(${JSON.stringify(options)})`, { timeoutMs, signal, maxResultChars: collectorResultChars() }),
           );
           signal.throwIfAborted();
           collector = result.value;

@@ -1,9 +1,9 @@
-import type { Page } from "playwright-core";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import type { CDPSession, Page } from "playwright-core";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { withBrowser } from "@/server/browser/launch";
-import { InPageTimeoutError, runInPage } from "@/server/scan/inpage/run";
+import { InPageResultTooLargeError, InPageTimeoutError, runInPage } from "@/server/scan/inpage/run";
 import { serveFixture, type FixtureServer } from "../../fixtures/serve";
-import { startTestProxy, type TestProxy } from "./helpers";
+import { delay, startTestProxy, type TestProxy } from "./helpers";
 
 let fixture: FixtureServer;
 let proxy: TestProxy;
@@ -78,6 +78,51 @@ describe("runInPage", () => {
       const result = await runInPage(page, "globalThis.__main = 41", "document.title + ' ' + (globalThis.__main + 1)", { timeoutMs: 2000, createSession: async () => deadSession });
       expect(result).toEqual({ value: "Fixture Co 42", world: "main" });
       expect(await page.evaluate(() => (globalThis as { __main?: number }).__main)).toBe(41);
+    });
+  });
+
+  it("caps the result it sends to Node, even when a main-world page patches JSON", async () => {
+    await onPage("/", async (page) => {
+      await expect(runInPage(page, "", "'x'.repeat(5000)", { timeoutMs: 2000, maxResultChars: 1000 })).rejects.toBeInstanceOf(InPageResultTooLargeError);
+      expect(await runInPage(page, "", "({ text: 'x'.repeat(500) })", { timeoutMs: 2000, maxResultChars: 1000 })).toEqual({ value: { text: "x".repeat(500) }, world: "isolated" });
+      expect(await runInPage(page, "", "undefined", { timeoutMs: 2000 })).toEqual({ value: undefined, world: "isolated" });
+
+      await page.evaluate(() => {
+        JSON.stringify = () => "y".repeat(10_000);
+      });
+      const closedPage = await page.context().newPage();
+      const deadSession = await page.context().newCDPSession(closedPage);
+      await closedPage.close();
+      const main = runInPage(page, "", "({ ok: true })", { timeoutMs: 2000, maxResultChars: 1000, createSession: async () => deadSession });
+      await expect(main).rejects.toBeInstanceOf(InPageResultTooLargeError);
+    });
+  });
+
+  it("detaches a session that arrives after the timeout and never runs the code late", async () => {
+    await onPage("/", async (page) => {
+      const detached = vi.fn();
+      const lateSession = async (target: Page): Promise<CDPSession> => {
+        await delay(400);
+        const session = await target.context().newCDPSession(target);
+        const detach = session.detach.bind(session);
+        session.detach = () => {
+          detached();
+          return detach();
+        };
+        return session;
+      };
+      const mark = "document.documentElement.dataset.ran = 'late'";
+      await expect(runInPage(page, "", mark, { timeoutMs: 100, createSession: lateSession })).rejects.toBeInstanceOf(InPageTimeoutError);
+      await expect.poll(() => detached.mock.calls.length, { timeout: 3000 }).toBe(1);
+
+      // A session that fails after the timeout does not start the main-world fallback either.
+      const lateFailure = async (): Promise<CDPSession> => {
+        await delay(400);
+        throw new Error("no CDP session");
+      };
+      await expect(runInPage(page, "", mark, { timeoutMs: 100, createSession: lateFailure })).rejects.toBeInstanceOf(InPageTimeoutError);
+      await delay(800);
+      expect(await page.evaluate(() => document.documentElement.dataset.ran)).toBeUndefined();
     });
   });
 });
