@@ -5,14 +5,25 @@ import { FontFamily } from "@/lib/contract";
 import { SignLimitError } from "@/server/security/sign";
 import type { CapturedFont, CapturedSheet, FontBinaryMeta, PostInput, RawCollectorOutput, Signer } from "../types";
 import { parseFontBinary } from "./binary";
+import { MAX_DESCRIPTOR_CHARS, MAX_UNICODE_RANGE_CHARS, normalizeStretch, normalizeStyle, normalizeWeight } from "./css";
 import { MAX_INLINE_BYTES, MAX_INLINE_FONTS } from "./files";
 import { clearGoogleFontsCache } from "./google";
 import { buildFontFamilies, isConvertibleFont } from "./index";
 import { fakeGoogleFetch, fastestMs, growthFactor, LINEAR_GROWTH_BOUND } from "./testing";
+import { coversBasicLatin } from "./unicode";
 
 vi.mock("./binary", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./binary")>();
   return { ...actual, parseFontBinary: vi.fn(actual.parseFontBinary) };
+});
+// Records the descriptors this module normalizes and parses, to show which ones it skips first
+vi.mock("./css", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./css")>();
+  return { ...actual, normalizeWeight: vi.fn(actual.normalizeWeight), normalizeStyle: vi.fn(actual.normalizeStyle), normalizeStretch: vi.fn(actual.normalizeStretch) };
+});
+vi.mock("./unicode", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./unicode")>();
+  return { ...actual, coversBasicLatin: vi.fn(actual.coversBasicLatin) };
 });
 
 const signal = new AbortController().signal;
@@ -20,6 +31,7 @@ const bytes = (name: string) => readFileSync(path.join(process.cwd(), "tests/fix
 const interMeta = parseFontBinary(bytes("__inter.woff2"));
 const jbmMeta = parseFontBinary(bytes("jbm-cyr.woff2"));
 const PAGE = "https://www.site.example/";
+const MIB = 1024 * 1024;
 
 beforeEach(() => {
   clearGoogleFontsCache();
@@ -454,6 +466,47 @@ describe("buildFontFamilies", () => {
     expect(await registered(quoted(1_024, "d"))).toEqual(["d".repeat(1_022)]);
     expect(await registered("e".repeat(1_025))).toEqual([]);
     expect(await registered(quoted(1_025, "f"))).toEqual([]);
+  });
+
+  it("skips rules and document.fonts statuses whose weight, style or stretch is over 256 characters, or unicode range over 64 KiB, before normalizing them", async () => {
+    const fields = { weight: ["font-weight", "100 900"], style: ["font-style", "italic"], stretch: ["font-stretch", "75%"], unicodeRange: ["unicode-range", "U+0-FF"] } as const;
+    const maxOf = (field: string) => (field === "unicodeRange" ? MAX_UNICODE_RANGE_CHARS : MAX_DESCRIPTOR_CHARS);
+    for (const [field, [descriptor, value]] of Object.entries(fields)) {
+      // `value` padded with spaces to `length` characters, from the CSSOM and from a captured stylesheet
+      const face = (family: string, length: number) => rule(family, [`${PAGE}${family}.woff2`], { [field]: value.padEnd(length) });
+      const css = (family: string, length: number) => `@font-face{font-family:${family};src:url(/${family}.woff2);${descriptor}:${value.padEnd(length)}}`;
+      const max = maxOf(field);
+      const { families } = await build({
+        fontFaces: [face("CssomAt", max), face("CssomOver", max + 1)],
+        sheets: [{ url: `${PAGE}a.css`, status: 200, cssText: css("SheetAt", max) + css("SheetOver", max + 1) }],
+      });
+      expect(families.map((family) => family.name).sort(), field).toEqual(["CssomAt", "SheetAt"]);
+    }
+    // A registered family names an unreadable capture when it is the only one left
+    const unreadable = captured(`${PAGE}unreadable.woff2`, null);
+    for (const field of ["weight", "style", "stretch"]) {
+      const registered = async (length: number) =>
+        (await build({ fonts: [unreadable], fontStatuses: [{ ...loaded("Registered"), [field]: "normal".padEnd(length) }] })).families.map((family) => family.name);
+      expect(await registered(MAX_DESCRIPTOR_CHARS), field).toEqual(["Registered"]);
+      expect(await registered(MAX_DESCRIPTOR_CHARS + 1), field).toEqual([]);
+    }
+
+    // One 15 MB `font-weight` took 2.3 seconds and 1.3 GB to normalize, and 16 of them ran out of memory, whether from
+    // a stylesheet, the CSSOM or document.fonts. Such values are never normalized, parsed or sent.
+    const normalizers = [normalizeWeight, normalizeStyle, normalizeStretch, coversBasicLatin].map((fn) => vi.mocked(fn));
+    for (const fn of normalizers) fn.mockClear();
+    const long = "1 ".repeat(MIB / 2);
+    const { families } = await build({
+      sheets: [{ url: `${PAGE}a.css`, status: 200, cssText: Object.values(fields).map(([descriptor]) => `@font-face{font-family:Sheet;src:url(/s.woff2);${descriptor}:${long}}`).join("") }],
+      fontFaces: [rule("Kept", [`${PAGE}kept.woff2`], { unicodeRange: "U+0-FF" }), ...Object.keys(fields).map((field) => rule("Cssom", [`${PAGE}c.woff2`], { [field]: long }))],
+      fontStatuses: ["weight", "style", "stretch"].map((field) => ({ ...loaded("Kept"), [field]: long })),
+    });
+    expect(families.map((family) => family.name)).toEqual(["Kept"]);
+    for (const [index, fn] of normalizers.entries()) {
+      const lengths = fn.mock.calls.map(([text]) => text?.length ?? 0);
+      expect(lengths.length, fn.getMockName()).toBeGreaterThan(0);
+      expect(Math.max(...lengths), fn.getMockName()).toBeLessThanOrEqual(index === 3 ? MAX_UNICODE_RANGE_CHARS : MAX_DESCRIPTOR_CHARS);
+    }
   });
 
   it("stays linear on hostile collector output", async () => {

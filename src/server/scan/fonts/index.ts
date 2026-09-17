@@ -2,7 +2,7 @@ import type { FontFaceInfo, FontFamily, FontFile, FontFormat } from "@/lib/contr
 import { limits } from "@/server/config/limits";
 import { SignLimitError } from "@/server/security/sign";
 import type { CapturedFont, FontBinaryMeta, FontsOutput, PostInput, RawFontFaceRule, RawFontStatus, RawFontUsage, SafeFetch, Signer } from "../types";
-import { decodeIdent, MAX_FAMILY_CHARS, MAX_SRC_ENTRIES, normalizeStretch, normalizeStyle, normalizeWeight, parseFontFaceCss } from "./css";
+import { decodeIdent, MAX_FAMILY_CHARS, MAX_SRC_ENTRIES, normalizeStretch, normalizeStyle, normalizeWeight, parseFontFaceCss, withinDescriptorLimits } from "./css";
 import { createFileLookup, isDataUri, remoteUrl, type FileRecord } from "./files";
 import { matchGoogleFamilies } from "./google";
 import { classifyLicense } from "./license";
@@ -21,6 +21,9 @@ export { parseFontFaceCss } from "./css";
  * - Sources of each rule: at most `MAX_SRC_ENTRIES` (`css.ts`), from the CSSOM too.
  * - Family names: at most `MAX_FAMILY_CHARS` characters before decoding (`css.ts`), in stylesheets, the CSSOM and
  *   `document.fonts`. A rule or status with a longer one is skipped.
+ * - Weights, styles and stretches: at most `MAX_DESCRIPTOR_CHARS` characters, and unicode ranges at most
+ *   `MAX_UNICODE_RANGE_CHARS`, before normalizing (`css.ts`), in stylesheets, the CSSOM and `document.fonts`. A rule or
+ *   status with a longer one is skipped.
  * - Families `document.fonts` registered without a rule, and binary names of captured files without a rule: each name
  *   is matched against each family, in time that grows with the family's length. A registered family longer than
  *   `MAX_MATCHED_FAMILY_LENGTH` is deliberately not matched: binary names have 48 characters at most, but a longer
@@ -152,7 +155,8 @@ function pageHostOf(page: PostInput["page"]): string {
  * `parseFontSrc` reads them. A rule found in both adds the same file to the same face twice, which `addToGroup` ignores.
  * Stylesheets are read one by one until the scan deadline passes or the scan is aborted, since each one can take a
  * while to tokenize and nothing can interrupt it. Also returns the lowercase families of every rule, including rules
- * with `local()` sources only.
+ * with `local()` sources only. A rule with a descriptor over the caps of `withinDescriptorLimits` is skipped, and its
+ * family is not declared, as `parseFontFaceCss` skips it.
  */
 function collectRules(input: PostInput): { rules: RawFontFaceRule[]; declaredFamilies: Set<string> } {
   const sheetRules: RawFontFaceRule[] = [];
@@ -164,6 +168,7 @@ function collectRules(input: PostInput): { rules: RawFontFaceRule[]; declaredFam
   const rules: RawFontFaceRule[] = [];
   const declaredFamilies = new Set<string>();
   for (const raw of [...input.collector.fontFaces.slice(0, MAX_RULES_PER_SOURCE).filter(isRawRule), ...sheetRules]) {
+    if (!withinDescriptorLimits(raw)) continue;
     const family = ruleFamily(raw);
     if (family) declaredFamilies.add(family.toLowerCase());
     const src = raw.src.slice(0, MAX_SRC_ENTRIES).flatMap((entry: unknown) => {
@@ -230,7 +235,7 @@ function groupFiles(
 ) {
   const files = createFileLookup(captured, pageHostOf(input.page));
   const statuses = input.collector.fontStatuses
-    .filter((status) => isRawStatus(status) && status.family.length <= MAX_FAMILY_CHARS)
+    .filter((status) => isRawStatus(status) && status.family.length <= MAX_FAMILY_CHARS && withinDescriptorLimits(status))
     .map((status) => {
       const name = statusFamily(status.family);
       return {

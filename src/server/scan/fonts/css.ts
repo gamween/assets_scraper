@@ -33,6 +33,32 @@ export const MAX_SRC_ENTRIES = 16;
 export const MAX_FAMILY_CHARS = 1024;
 
 /**
+ * The most characters of a `font-weight`, `font-style` or `font-stretch` value, before normalizing, from a stylesheet,
+ * the CSSOM or `document.fonts`. Real values have about 20 at most (`oblique 10deg 20deg`). A longer value is dropped,
+ * with its rule or status, before it is normalized: normalizing splits a weight at each space, and one 15 MB
+ * `font-weight` in a stylesheet took 2.3 seconds and 1.2 GB, then went out in the `fonts` line.
+ */
+export const MAX_DESCRIPTOR_CHARS = 256;
+
+/**
+ * The most characters of a `unicode-range` value, before normalizing, from a stylesheet or the CSSOM. The subsets of
+ * Google Fonts CJK families have 2,000 at most. A longer value is dropped, with its rule, before it is normalized or
+ * parsed: parsing makes a pair of code points for each comma, and one 15 MB `unicode-range` took 620 MB.
+ */
+export const MAX_UNICODE_RANGE_CHARS = 64 * 1024;
+
+/**
+ * Whether the weight, style and stretch of a rule or `document.fonts` status fit `MAX_DESCRIPTOR_CHARS`, and its
+ * unicode range `MAX_UNICODE_RANGE_CHARS`. Missing descriptors fit.
+ */
+export function withinDescriptorLimits(face: { weight?: string; style?: string; stretch?: string; unicodeRange?: string }): boolean {
+  return (
+    [face.weight, face.style, face.stretch].every((value) => (value?.length ?? 0) <= MAX_DESCRIPTOR_CHARS) &&
+    (face.unicodeRange?.length ?? 0) <= MAX_UNICODE_RANGE_CHARS
+  );
+}
+
+/**
  * A CSS escape as css-tree reads one: a backslash, then 1 to 6 hex digits and one optional whitespace (`\r\n` counts as
  * one), or any other code unit, or nothing at the end of the text.
  */
@@ -275,9 +301,10 @@ interface FontFaceBlock {
  * no prelude: an `@font-face` inside a declaration value or a style rule, after a qualified rule's prelude (which runs
  * over semicolons up to its block), or followed by anything but whitespace and comments before its block, is not a
  * rule. Names are read with their CSS escapes decoded. Relative URLs resolve against `baseUrl` (the stylesheet URL).
- * Stops after `maxRules` rules. Broken CSS never throws: invalid declarations are skipped and blocks left open at the
- * end are closed. In a descriptor value a comment reads as a space, and a descriptor marked `!important` is dropped, as
- * browsers drop it.
+ * A rule with a family over `MAX_FAMILY_CHARS`, or a weight, style, stretch or unicode range over the caps of
+ * `withinDescriptorLimits`, is skipped. Stops after `maxRules` rules. Broken CSS never throws: invalid declarations are
+ * skipped and blocks left open at the end are closed. In a descriptor value a comment reads as a space, and a
+ * descriptor marked `!important` is dropped, as browsers drop it.
  */
 export function parseFontFaceCss(cssText: string, baseUrl: string, options: { maxRules?: number } = {}): RawFontFaceRule[] {
   const maxRules = options.maxRules ?? Infinity;
@@ -389,21 +416,20 @@ export function parseFontFaceCss(cssText: string, baseUrl: string, options: { ma
 
 function toRule(descriptors: Record<string, string>, baseUrl: string): RawFontFaceRule | null {
   const value = descriptors["font-family"] ?? "";
-  if (value.length > MAX_FAMILY_CHARS) return null;
+  const face = {
+    weight: descriptors["font-weight"],
+    style: descriptors["font-style"],
+    stretch: descriptors["font-stretch"],
+    unicodeRange: descriptors["unicode-range"],
+  };
+  if (value.length > MAX_FAMILY_CHARS || !withinDescriptorLimits(face)) return null;
   const family = readFamilyName(value);
   const src = parseFontSrc(descriptors.src ?? "", baseUrl);
   if (!family || !src.length) return null;
-  const rule: RawFontFaceRule = {
-    family,
-    src,
-    weight: normalizeWeight(descriptors["font-weight"]),
-    style: normalizeStyle(descriptors["font-style"]),
-    baseUrl,
-    origin: "network",
-  };
-  const stretch = collapse(descriptors["font-stretch"] ?? "");
+  const rule: RawFontFaceRule = { family, src, weight: normalizeWeight(face.weight), style: normalizeStyle(face.style), baseUrl, origin: "network" };
+  const stretch = collapse(face.stretch ?? "");
   if (stretch) rule.stretch = stretch;
-  const unicodeRange = collapse(descriptors["unicode-range"] ?? "");
+  const unicodeRange = collapse(face.unicodeRange ?? "");
   if (unicodeRange) rule.unicodeRange = unicodeRange;
   return rule;
 }

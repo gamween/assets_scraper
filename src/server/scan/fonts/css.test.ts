@@ -2,7 +2,7 @@ import parse from "css-tree/parser";
 import { tokenize } from "css-tree/tokenizer";
 import { ident } from "css-tree/utils";
 import { describe, expect, it, vi } from "vitest";
-import { decodeIdent, MAX_FAMILY_CHARS, MAX_SRC_ENTRIES, parseFontFaceCss, parseFontSrc } from "./css";
+import { decodeIdent, MAX_DESCRIPTOR_CHARS, MAX_FAMILY_CHARS, MAX_SRC_ENTRIES, MAX_UNICODE_RANGE_CHARS, parseFontFaceCss, parseFontSrc } from "./css";
 import { fastestMs, growthFactor, LINEAR_GROWTH_BOUND, random } from "./testing";
 
 // Counts the tokens the fonts code reads, to show where it stops tokenizing
@@ -89,6 +89,24 @@ describe("parseFontFaceCss", () => {
     expect(families(["a".repeat(1_025), `"${"b".repeat(1_023)}"`, `\\63 ${"c".repeat(1_021)}`])).toEqual([]);
   });
 
+  it("drops a rule whose weight, style or stretch is over 256 characters, or whose unicode range is over 64 KiB, before collapsing its spaces", () => {
+    const read = (descriptor: string, value: string) => parseFontFaceCss(`@font-face{font-family:A;src:url(a.woff2);${descriptor}:${value}}`, BASE);
+    // Values of `length` characters that collapse to a few
+    const spaced = (first: string, last: string, length: number) => `${first}${" ".repeat(length - first.length - last.length)}${last}`;
+    expect(MAX_DESCRIPTOR_CHARS).toBe(256);
+    expect(MAX_UNICODE_RANGE_CHARS).toBe(64 * 1_024);
+    const cases: [descriptor: string, first: string, last: string, max: number, rule: object][] = [
+      ["font-weight", "100", "900", 256, { weight: "100 900" }],
+      ["font-style", "oblique", "10deg", 256, { style: "oblique 10deg" }],
+      ["font-stretch", "75%", "125%", 256, { stretch: "75% 125%" }],
+      ["unicode-range", "U+0-FF,", "U+131", 64 * 1_024, { unicodeRange: "U+0-FF, U+131" }],
+    ];
+    for (const [descriptor, first, last, max, rule] of cases) {
+      expect(read(descriptor, spaced(first, last, max)), descriptor).toMatchObject([rule]);
+      expect(read(descriptor, spaced(first, last, max + 1)), descriptor).toEqual([]);
+    }
+  });
+
   it("decodes names, families and URLs in about the time it takes to tokenize them, however long they are", async () => {
     // css-tree's decoders built a 2 MB name one character at a time, 8 to 20 times slower than tokenizing it, into a
     // rope of 60 MB: 15 MB names ran out of memory, and a family kept its rope as long as its rule
@@ -98,7 +116,7 @@ describe("parseFontFaceCss", () => {
       quotedFamily: `@font-face{font-family:"${name}";src:url(a.woff2)}`,
       descriptor: `@font-face{${name}:x;font-family:A;src:url(a.woff2)}`,
       atRule: `@${name}{}@font-face{font-family:A;src:url(a.woff2)}`,
-      important: `@font-face{font-family:A;src:url(a.woff2);font-style:italic !${name}}`,
+      important: `@font-face{font-family:A;src:url(a.woff2);font-display:swap !${name}}`,
       srcFunction: `@font-face{font-family:A;src:${name}(x),url(a.woff2)}`,
       srcString: `@font-face{font-family:A;src:url("${name}")}`,
       srcUrl: `@font-face{font-family:A;src:url(${name})}`,
