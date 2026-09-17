@@ -209,5 +209,32 @@ export interface AssetsOutput {
   /** Every asset drop of the scan, `collector.noise` already included: the engine adds the fonts' counts, never the noise again (D1). */
   hidden: Partial<Record<HiddenReason, number>>;
   warnings: WarningCode[];
+  /** What happened to the CDN original candidates this scan tried (spec 8.4). */
+  originals: OriginalProbes;
+}
+
+/**
+ * One counter per outcome of a CDN original probe. A group that does not adopt its original falls back to the bytes
+ * the page itself served, which looks the same from outside whatever went wrong, so the reason is only knowable from
+ * here: `failed` is a probe that did not answer, `noise` one that answered with something the noise rules reject, and
+ * `skipped` one the verify budget never let start. `attempted` counts probes, so `adopted + failed + noise + skipped`
+ * accounts for it; `captured` is outside that sum, a candidate the page declared and the browser already had, adopted
+ * without any request going out.
+ */
+export interface OriginalProbes {
+  attempted: number;
+  adopted: number;
+  captured: number;
+  failed: number;
+  noise: number;
+  skipped: number;
 }
 export interface FontsOutput { families: FontFamily[]; hidden: Partial<Record<HiddenReason, number>> }
+
+/**
+ * No probe ran: post-processing did not finish, so nothing is known about the originals. Frozen, because it is
+ * assigned straight into per-scan state and one module-level object is shared by every scan the process handles.
+ */
+export const NO_ORIGINAL_PROBES: Readonly<OriginalProbes> = Object.freeze({
+  attempted: 0, adopted: 0, captured: 0, failed: 0, noise: 0, skipped: 0,
+});

@@ -1,6 +1,7 @@
 import vm from "node:vm";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FIT_COLLECTOR_OUTPUT, pageContextFor, paletteCap, pageWorkMs, postProcessingWindow, safeBrandLinks, safeNoise } from "./engine";
+import { NO_ORIGINAL_PROBES, type OriginalProbes } from "./types";
 
 const S = 1000;
 const window = (now: number) => postProcessingWindow({ startedAt: 0, now: now * S, deadlineMs: 90 * S, verifyMs: 8 * S });
@@ -177,5 +178,16 @@ describe("safeBrandLinks", () => {
   it("gives no links for output that is not a list", () => {
     expect(safeBrandLinks({ href: "https://example.com/press", text: "Press" })).toEqual([]);
     expect(safeBrandLinks(undefined)).toEqual([]);
+  });
+});
+
+describe("NO_ORIGINAL_PROBES", () => {
+  it("cannot be mutated by the scan it is handed to", () => {
+    // One module-level object stands in for the originals of every scan the process handles, so a write would
+    // carry across scans. Frozen, a write throws instead (module code is strict).
+    expect(() => {
+      (NO_ORIGINAL_PROBES as OriginalProbes).attempted += 1;
+    }).toThrow(TypeError);
+    expect(NO_ORIGINAL_PROBES).toEqual({ attempted: 0, adopted: 0, captured: 0, failed: 0, noise: 0, skipped: 0 });
   });
 });

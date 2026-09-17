@@ -143,6 +143,94 @@ describe("assembleAssets hidden counts", () => {
   });
 });
 
+describe("assembleAssets CDN original probes", () => {
+  const transformed = `${PAGE}media/photo.png?w=400&q=80`;
+
+  it("counts a candidate whose probe failed, instead of falling back to the page's bytes in silence", async () => {
+    const collector = collectorOutput({ candidates: [candidate(transformed, 1, 1, { visible: true })] });
+    // notFound answers the original with a 404, so the group keeps the transformed URL the page served.
+    const { assets, originals } = await run(collector, [captured(transformed)]);
+    expect(assets.map((asset) => asset.original?.url)).toEqual([transformed]);
+    expect(originals).toEqual({ attempted: 1, adopted: 0, captured: 0, failed: 1, noise: 0, skipped: 0 });
+  });
+
+  it("keeps an original the page served itself out of the probe counters", async () => {
+    const original = `${PAGE}media/photo.png`;
+    const collector = collectorOutput({
+      candidates: [candidate(transformed, 1, 1, { visible: true }), candidate(original, 1, 2, { visible: true })],
+    });
+    const { assets, originals } = await run(collector, [
+      captured(transformed, { width: 1200, height: 900, bytes: 50_000 }),
+      captured(original),
+    ]);
+    expect(assets.map((asset) => asset.original?.url)).toEqual([original]);
+    // No request went out for it, so `attempted` stays a count of probes and the adoption lands in its own bucket.
+    expect(originals).toEqual({ attempted: 0, adopted: 0, captured: 1, failed: 0, noise: 0, skipped: 0 });
+  });
+
+  it("reports a skipped probe even when the group ends on a candidate the page also served", async () => {
+    // Two candidates: the Contentful original, which nobody captured, then the transformed URL the page declared.
+    const intermediate = "https://images.ctfassets.net/s/a/b/c.png?w=400&fm=avif";
+    const wrapper = `https://www.gymshark.com/_next/image?url=${encodeURIComponent(intermediate)}&w=1920&q=75`;
+    // The first candidate is the fully stripped URL: its probe outlives the deadline, so `verifyUrl` returns
+    // `verify-skipped` without the limiter ever queueing a task, and only `resolve` knows the check was partial.
+    const deadline = Date.now() + 300;
+    // Outlives the deadline however the machine schedules it, so the probe always ends as `verify-skipped`.
+    const tooSlow: SafeFetch = async () => {
+      while (Date.now() < deadline + 20) await new Promise((resolve) => setTimeout(resolve, 20));
+      throw new Error("after the deadline");
+    };
+    const collector = collectorOutput({
+      candidates: [
+        candidate(wrapper, 1, 1, { visible: true }),
+        candidate(intermediate, 1, 2, { visible: true }),
+        // Declared and captured, so the implicit /favicon.ico probe never queues a task the limiter skips: the only
+        // record of the skip is the one `resolve` keeps.
+        candidate(`${PAGE}favicon.ico`, 2, 3, { foundIn: "icon-link" }),
+      ],
+    });
+    const input: PostInput = {
+      collector,
+      network: {
+        images: [
+          captured(wrapper, { width: 1200, height: 900, bytes: 50_000 }),
+          captured(intermediate),
+          captured(`${PAGE}favicon.ico`, { width: 32, height: 32, bytes: 1_000 }),
+        ],
+        fonts: [], sheets: [], bodyTimeouts: 0, skippedBodies: 0,
+      },
+      page: { requestedUrl: PAGE, finalUrl: PAGE, host: "shop.example", siteName: "Shop", title: "Shop" },
+      signer: { sign: proxyOf, count: 0 }, fetch: tooSlow, signal: new AbortController().signal, deadline,
+    };
+    const { assets, warnings } = await assembleAssets(input);
+    expect(assets.map((asset) => asset.original?.url)).toContain(intermediate);
+    expect(warnings).toContain("verify-skipped");
+  });
+
+  it("counts a candidate it adopted", async () => {
+    const original = `${PAGE}media/photo.png`;
+    // 64x64, so the noise rules keep it: a tiny original would be rejected and counted as noise, not adopted.
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAAT0lEQVRo3u3PQQkAAAgEsHub2IjGMoJvYbACS/W8FgEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQGBywJ466EtZ6dwxgAAAABJRU5ErkJggg==", "base64");
+    const serveOriginal: SafeFetch = async (url) =>
+      url === original
+        ? {
+            url, status: 200, headers: new Headers({ "content-type": "image/png", "content-length": String(png.length) }), redirected: false,
+            stream: () => new ReadableStream({ start: (c) => { c.enqueue(png); c.close(); } }),
+            buffer: async () => png, text: async () => "", json: async <T>() => ({}) as T, cancel: async () => {},
+          }
+        : notFound(url);
+    const collector = collectorOutput({ candidates: [candidate(transformed, 1, 1, { visible: true })] });
+    const input: PostInput = {
+      collector, network: { images: [captured(transformed)], fonts: [], sheets: [], bodyTimeouts: 0, skippedBodies: 0 },
+      page: { requestedUrl: PAGE, finalUrl: PAGE, host: "shop.example", siteName: "Shop", title: "Shop" },
+      signer: { sign: proxyOf, count: 0 }, fetch: serveOriginal, signal: new AbortController().signal, deadline: Date.now() + 60_000,
+    };
+    const { assets, originals } = await assembleAssets(input);
+    expect(assets.map((asset) => asset.original?.url)).toEqual([original]);
+    expect(originals).toMatchObject({ adopted: 1, failed: 0, noise: 0, skipped: 0 });
+  });
+});
+
 describe("assembleAssets empty captures", () => {
   it("checks an image captured with an empty body again instead of keeping it", async () => {
     const url = `${PAGE}stream.png`;
@@ -233,6 +321,18 @@ describe("assembleAssets on URL-heavy stylesheets", () => {
     expect(hidden).toEqual({ "probe-failed": 5 });
     expect(assets.find((asset) => asset.original?.url === loaded)?.foundIn).toEqual(["stylesheet"]);
     expect(warnings).toContain("truncated");
+  });
+
+  it("counts the declared URLs the probe budget stopped, instead of dropping them silently", async () => {
+    vi.stubEnv("MAX_STYLESHEET_URLS", "10");
+    vi.stubEnv("MAX_DECLARED_PROBES", "4");
+    const declared = Array.from({ length: 10 }, (_, i) => `${PAGE}img/${i}.png`);
+    const { assets, hidden, warnings } = await run(collectorOutput({}), [], undefined, [sheet(declared)]);
+    expect(assets).toEqual([]);
+    // Four probes run: the implicit /favicon.ico takes one slot and is not counted, three declared URLs take the rest
+    // and fail. The other seven never get a probe, and used to vanish with no hidden entry at all.
+    expect(hidden).toEqual({ "probe-failed": 3, "probe-skipped": 7 });
+    expect(warnings).toContain("verify-skipped");
   });
 
   it("reads a 15 MB sheet of 370,000 URLs quickly, keeping only the capped records", async () => {

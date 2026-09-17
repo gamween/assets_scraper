@@ -4,7 +4,7 @@ export default defineConfig({
   resolve: { tsconfigPaths: true },
   test: {
     projects: [
-      { extends: true, test: { name: "unit", environment: "node", include: ["src/**/*.test.ts"] } },
+      { extends: true, test: { name: "unit", environment: "node", include: ["src/**/*.test.ts", "scripts/**/*.test.mjs"] } },
       { extends: true, test: { name: "dom", environment: "jsdom", include: ["src/**/*.test.tsx"] } },
       {
         extends: true,

@@ -57,6 +57,41 @@ describe("originalCandidates", () => {
     expect(originalCandidates(input, { pageUrl: "https://site.example/", server })[0]).toBe(expected);
   });
 
+  describe("a query built only from transform parameters", () => {
+    it("drops it on a host no rule knows, with no Server hint", () => {
+      // images.stripeassets.com is a Contentful custom domain: the host pattern misses it and the Server header is
+      // only there for URLs the collector captured, so the whole reference scan kept these transformed.
+      expect(originalCandidates("https://images.stripeassets.com/fzn2n1nzq965/24BNV3GGtvCprFLrYovyaa/b2eac20a1d5ec75e4bff3888b998d163/kettle.jpg?w=1080&q=80&fm=avif", {})[0])
+        .toBe("https://images.stripeassets.com/fzn2n1nzq965/24BNV3GGtvCprFLrYovyaa/b2eac20a1d5ec75e4bff3888b998d163/kettle.jpg");
+      expect(originalCandidates("https://cdn.unknown.example/a/b/photo.png?width=400&height=300&fit=cover", {})[0])
+        .toBe("https://cdn.unknown.example/a/b/photo.png");
+    });
+
+    it("leaves a query that carries anything else alone", () => {
+      // A version or cache-busting key names the same bytes, so stripping it buys nothing and costs a probe.
+      expect(originalCandidates("https://www.notion.com/front-static/agentTop.png?v=2", {})).toEqual([]);
+      // A signature, a token or an id is load-bearing.
+      expect(originalCandidates("https://cdn.example/a.jpg?w=400&sig=abcdef", {})).toEqual([]);
+      expect(originalCandidates("https://cdn.example/a.jpg?id=7", {})).toEqual([]);
+      // The path has to name an image file: a transformer endpoint is not one.
+      expect(originalCandidates("https://cdn.example/resize?w=400", {})).toEqual([]);
+    });
+
+    it("leaves a query that changes what the picture shows alone", () => {
+      // These are imgix names, and the host rules that know imgix may strip them. This rule fires on every host and
+      // also feeds `variantKey`, where nothing probes the guess, so a crop or an overlay is not transform-only.
+      for (const query of ["rect=0,0,100,100", "fp-x=0.2&fp-y=0.8&fit=crop", "txt=hello", "mark=logo.png", "rot=90", "flip=h", "blur=40", "trim=color", "bg=ff0000", "faceindex=2", "or=90"]) {
+        expect(originalCandidates(`https://cdn.unknown.example/a/photo.jpg?${query}`, {})).toEqual([]);
+      }
+    });
+
+    it("never outranks the rule that knows the host", () => {
+      // Squarespace wants ?format=2500w, not a bare path, and this fallback must not win by recursing one level deeper.
+      expect(originalCandidates("https://images.squarespace-cdn.com/content/v1/abc/a.jpeg?format=500w", {})[0])
+        .toBe("https://images.squarespace-cdn.com/content/v1/abc/a.jpeg?format=2500w");
+    });
+  });
+
   it("lists every rewrite, most unwrapped first, and resolves relative inputs against the page", () => {
     expect(originalCandidates("https://www.gymshark.com/_next/image?url=https%3A%2F%2Fimages.ctfassets.net%2Fs%2Fa%2Fb%2Fc.png%3Fw%3D400%26fm%3Davif&w=1920&q=75", {})).toEqual([
       "https://images.ctfassets.net/s/a/b/c.png",
@@ -103,9 +138,37 @@ describe("variantKey", () => {
     expect(variantKey("https://site.example/_next/image?url=%2Fa.png&w=640&q=75")).toBe(variantKey("https://site.example/a.png"));
   });
 
+  it("merges the srcset width descriptor a build pipeline bakes into the file name", () => {
+    const widths = ["100w", "300w", "750w", "1500w", "2500w"].map((w) => variantKey(`https://media.example/images/services-desktop-${w}.webp`));
+    expect(new Set(widths).size).toBe(1);
+    expect(widths[0]).toBe("https://media.example/images/services-desktop.webp");
+  });
+
+  it("merges the size segment of an Apple Media Services thumb URL", () => {
+    const sizes = ["980x522sr.jpg", "1376x736sr.jpg", "2500x1336sr.jpg"].map((s) => variantKey(`https://is1-ssl.mzstatic.com/image/thumb/x5JjmiSD75wN12-HmmZRcg/${s}`));
+    expect(new Set(sizes).size).toBe(1);
+    expect(sizes[0]).toBe("https://is1-ssl.mzstatic.com/image/thumb/x5JjmiSD75wN12-HmmZRcg");
+    // Different assets behind the same requested size stay apart.
+    expect(variantKey("https://is1-ssl.mzstatic.com/image/thumb/AAA/220x54.png")).not.toBe(variantKey("https://is1-ssl.mzstatic.com/image/thumb/BBB/220x54.png"));
+  });
+
   it("keeps different images apart", () => {
     expect(variantKey("https://a.com/x.png")).not.toBe(variantKey("https://a.com/y.png"));
     expect(variantKey("https://a.com/x.png?id=1")).not.toBe(variantKey("https://a.com/x.png?id=2"));
     expect(variantKey("https://a.com/x.png")).not.toBe(variantKey("https://a.com/x.jpg"));
+    // A numeric suffix without the srcset `w` sizes a distinct icon file, and must not merge.
+    expect(variantKey("https://a.com/apple-touch-icon-180.png")).not.toBe(variantKey("https://a.com/apple-touch-icon-1024.png"));
+    // One digit plus `w` is too weak a signal to treat as a width descriptor.
+    expect(variantKey("https://a.com/draft-1w.png")).not.toBe(variantKey("https://a.com/draft-2w.png"));
+    // The size segment rule is scoped to the CDN that defines it.
+    expect(variantKey("https://a.com/image/thumb/id/220x54.png")).not.toBe(variantKey("https://a.com/image/thumb/id/440x108.png"));
+    // Two crops of one source file are two different pictures, and `variantKey` never probes, so the generic
+    // transform-only rewrite must not strip a query that art-directs. Spec 8.3 keeps art-directed sources apart.
+    expect(variantKey("https://cdn.unknown.example/a/photo.jpg?rect=0,0,100,100&w=400"))
+      .not.toBe(variantKey("https://cdn.unknown.example/a/photo.jpg?rect=200,200,100,100&w=400"));
+    expect(variantKey("https://cdn.unknown.example/a/photo.jpg?fp-x=0.1&fp-y=0.1&fit=crop&w=400"))
+      .not.toBe(variantKey("https://cdn.unknown.example/a/photo.jpg?fp-x=0.9&fp-y=0.9&fit=crop&w=400"));
+    expect(variantKey("https://cdn.unknown.example/a/photo.jpg?txt=one&w=400"))
+      .not.toBe(variantKey("https://cdn.unknown.example/a/photo.jpg?txt=two&w=400"));
   });
 });

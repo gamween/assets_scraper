@@ -25,6 +25,21 @@ const IMGIX_PARAMS = [
   "quality",
 ];
 const WORDPRESS_PARAMS = ["w", "h", "resize", "fit", "crop", "quality", "strip", "zoom", "lb"];
+/**
+ * Query parameters that only ask an image CDN for the same picture at another size, quality or format. A query built
+ * from these alone can be dropped to ask for the file itself. Version and cache-busting keys are deliberately out:
+ * dropping those changes nothing, and would only spend a probe. `url`-style keys are out too, since there the query
+ * carries the source and the path is the transformer.
+ *
+ * The list stays narrower than `IMGIX_PARAMS` on purpose. A host rule names the host it rewrites, so it may strip
+ * parameters that change what the picture shows (`rect`, `txt`, `mark`, `rot`, `flip`, `blur`); this rule fires on
+ * every host, and its output also feeds `variantKey`, where a wrong guess merges two different pictures into one
+ * asset with no probe to catch it. Only names that keep the subject intact belong here.
+ */
+const TRANSFORM_ONLY_PARAMS = new Set([
+  "w", "h", "width", "height", "q", "quality", "fm", "format", "auto", "fit", "dpr", "imwidth", "compress",
+  "progressive", "strip", "resize", "scale-down-to", "zoom", "lossless",
+]);
 /** Query parameters that only change how an image is rendered, removed from variant keys (spec 8.3). */
 const PRESENTATIONAL_PARAMS = [
   "w", "width", "h", "height", "q", "quality", "fm", "format", "auto", "fit", "dpr", "crop", "scale-down-to", "lossless",
@@ -60,7 +75,7 @@ const decodeBase64Url = (value: string): string | null => {
   }
 };
 
-function oneStep(u: URL, hints: CdnHints): Rewrite[] {
+function oneStep(u: URL, hints: CdnHints, depth: number): Rewrite[] {
   const out: Rewrite[] = [];
   const push = (href: string | null | undefined, confidence: Confidence = "high") => {
     const target = tryUrl(href);
@@ -240,6 +255,16 @@ function oneStep(u: URL, hints: CdnHints): Rewrite[] {
     if (m) for (const extension of ["png", "jpg", "jpeg", "webp"]) push(`${u.origin}${m[1]}.${extension}`, "low");
   }
 
+  // A query built only from size, quality and format parameters, on a path that already names an image file. Every
+  // host rule above is one instance of this shape, so a CDN the list does not know (a Contentful or imgix custom
+  // domain, for one) gets the same treatment without needing a `Server` hint. On the `resolve` path a probe decides
+  // whether the stripped URL is real, so a wrong guess costs one request; on the `variantKey` path there is no probe,
+  // which is why `TRANSFORM_ONLY_PARAMS` holds no parameter that changes what the picture shows.
+  if (depth === 0 && !out.length && u.search && new RegExp(`\\.${IMG_EXT}$`, "i").test(path)) {
+    const names = [...sp.keys()];
+    if (names.length > 0 && names.every((name) => TRANSFORM_ONLY_PARAMS.has(name.toLowerCase()))) push(withoutQuery(u), "medium");
+  }
+
   // Generic proxy: a parameter that carries the source URL, plain or base64. Only when no other rule matched.
   if (!out.length) {
     for (const [key, value] of sp) {
@@ -269,7 +294,7 @@ export function originalCandidates(url: string, hints: CdnHints = {}): string[] 
   for (let depth = 0; depth < MAX_DEPTH && frontier.length; depth++) {
     const next: URL[] = [];
     for (const u of frontier) {
-      for (const rewrite of oneStep(u, depth === 0 ? hints : {})) {
+      for (const rewrite of oneStep(u, depth === 0 ? hints : {}, depth)) {
         if (seen.has(rewrite.href)) continue;
         seen.add(rewrite.href);
         found.push({ ...rewrite, depth, index: found.length });
@@ -283,6 +308,17 @@ export function originalCandidates(url: string, hints: CdnHints = {}): string[] 
     .map((rewrite) => rewrite.href);
 }
 
+/**
+ * The width descriptor a `srcset` build pipeline bakes into the file name (`hero-1500w.webp`). Every entry of one
+ * `srcset` is the same picture at a different width, so they belong to one asset. Two digits minimum, so a real name
+ * ending in a single digit plus `w` is left alone, and `apple-touch-icon-180.png`, which has no `w`, never matches.
+ */
+const SRCSET_WIDTH_SUFFIX = new RegExp(`-\\d{2,5}w(\\.${IMG_EXT})$`, "i");
+
+/** Apple Media Services images: the last path segment of a `/image/thumb/` URL is the requested size, not the file. */
+const MZSTATIC_HOST = /(^|\.)mzstatic\.com$/i;
+const MZSTATIC_SIZE_SEGMENT = new RegExp(`^(/image/thumb/.+)/\\d{2,5}x\\d{2,5}[a-z0-9-]*\\.${IMG_EXT}$`, "i");
+
 /** Grouping key for size variants of one image (spec 8.3). Not a download URL. */
 export function variantKey(url: string, hints: CdnHints = {}): string {
   const href = originalCandidates(url, hints)[0] ?? url;
@@ -291,6 +327,8 @@ export function variantKey(url: string, hints: CdnHints = {}): string {
   for (const name of PRESENTATIONAL_PARAMS) u.searchParams.delete(name);
   u.pathname = u.pathname
     .replace(new RegExp(`_(?:xsmall|small|medium|large|xlarge|xxlarge)(?:_2x|_3x)?(\\.${IMG_EXT})$`, "i"), "$1")
-    .replace(new RegExp(`(?:@[23]x|_2x|_3x)(\\.${IMG_EXT})$`, "i"), "$1");
+    .replace(new RegExp(`(?:@[23]x|_2x|_3x)(\\.${IMG_EXT})$`, "i"), "$1")
+    .replace(SRCSET_WIDTH_SUFFIX, "$1");
+  if (MZSTATIC_HOST.test(u.hostname)) u.pathname = u.pathname.replace(MZSTATIC_SIZE_SEGMENT, "$1");
   return u.href.replace(/\?$/, "");
 }

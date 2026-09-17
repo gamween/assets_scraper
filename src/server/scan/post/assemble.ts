@@ -3,7 +3,7 @@ import sharp from "sharp";
 import type { Asset, AssetFormat, AssetKind, AssetSource, FoundIn, HiddenReason, Tone, WarningCode } from "@/lib/contract";
 import { limits } from "@/server/config/limits";
 import { SignLimitError } from "@/server/security/sign";
-import type { AssetsOutput, CapturedImage, CandidateContext, PostInput, RawCandidate } from "../types";
+import type { AssetsOutput, CapturedImage, CandidateContext, OriginalProbes, PostInput, RawCandidate } from "../types";
 import { originalCandidates, variantKey } from "./cdn";
 import { extensionFor, formatFromContentType, formatFromUrl, sniffFormat } from "./format";
 import { createFilenamer, displayName } from "./naming";
@@ -127,10 +127,14 @@ export async function assembleAssets(input: PostInput): Promise<AssetsOutput> {
     });
 
     let probes = 0;
+    const originals: OriginalProbes = { attempted: 0, adopted: 0, captured: 0, failed: 0, noise: 0, skipped: 0 };
     const resolve = async (members: UrlRecord[], best: UrlRecord): Promise<Resolved> => {
       const byUrl = new Map(members.map((member) => [member.url, member]));
       const attempts = new Set<string>();
-      if (best.scheme === "http") for (const url of originalCandidates(best.url, { pageUrl, server: best.server })) attempts.add(url);
+      // A CDN original can also be a URL the page itself declared, so membership does not tell the two apart: keep
+      // the candidate set, or the counters below miss exactly the groups where the original was found twice.
+      const candidates = new Set(best.scheme === "http" ? originalCandidates(best.url, { pageUrl, server: best.server }) : []);
+      for (const url of candidates) attempts.add(url);
       for (const member of [...members].sort((a, b) => sizeScore(b) - sizeScore(a))) attempts.add(member.url);
       let skipped = false;
       let failed = false;
@@ -139,6 +143,13 @@ export async function assembleAssets(input: PostInput): Promise<AssetsOutput> {
         const member = byUrl.get(url);
         if (member?.inline) return { kind: "inline", member };
         if (member?.capture) {
+          // The page served the original itself, so the group ends on the original after all. No request went out for
+          // it, so it is not a probe: `captured` keeps `attempted` a count of probes.
+          if (candidates.has(url)) originals.captured += 1;
+          // Falling back to the page's own bytes ends the group, so a skip recorded above would never be reported.
+          // Independent of the branch above: a candidate can be a captured member too, which is the case the skip
+          // was swallowed in.
+          if (skipped) warnings.add("verify-skipped");
           return {
             kind: "remote", url, format: formatOf(member), contentType: member.contentType ?? "", tone: member.capture.tone,
             bytes: member.bytes, markup: member.capture.svgText, ...sizeOf(member),
@@ -153,21 +164,30 @@ export async function assembleAssets(input: PostInput): Promise<AssetsOutput> {
           }
           probes++;
         }
+        const isCandidate = candidates.has(url);
+        if (isCandidate) originals.attempted += 1;
         const result = await limiter.run((signal) => verifyUrl(url, { fetch: input.fetch, pageUrl, signal, deadline: verifyDeadline }));
         if (result.ok) {
           // The noise rules again, with the size and type the request found (spec 8.2): a 2x2 file is noise wherever it was declared.
           const reason = noiseReason({ url, contentType: result.contentType, width: result.width, height: result.height, bytes: result.bytes });
           if (reason) {
+            if (isCandidate) originals.noise += 1;
             noise ??= reason;
             continue;
           }
+          if (isCandidate) originals.adopted += 1;
           return {
             kind: "remote", url, format: result.format, contentType: result.contentType, width: result.width, height: result.height,
             bytes: result.bytes, body: result.body,
           };
         }
-        if (result.reason === "verify-skipped") skipped = true;
-        else failed = true;
+        if (result.reason === "verify-skipped") {
+          skipped = true;
+          if (isCandidate) originals.skipped += 1;
+        } else {
+          failed = true;
+          if (isCandidate) originals.failed += 1;
+        }
       }
       if (skipped) {
         warnings.add("verify-skipped");
@@ -190,6 +210,9 @@ export async function assembleAssets(input: PostInput): Promise<AssetsOutput> {
         // A missing or unusable /favicon.ico was never declared by the page, so it is not counted (spec 8.2).
         const declared = members.some((member) => !member.implicit);
         if (declared && resolved.kind === "failed") hide("probe-failed");
+        // The probe budget is a defence, but a group it stops is still a file the page declared and the run dropped:
+        // count it, so the footer accounts for every asset that did not make it (spec 12.2) instead of losing it.
+        if (declared && resolved.kind === "skipped") hide("probe-skipped");
         if (declared && resolved.kind === "noise") hide(resolved.reason);
         if (resolved.kind !== "inline" && resolved.kind !== "remote") return null;
         return fileAsset(members, best, resolved);
@@ -201,7 +224,7 @@ export async function assembleAssets(input: PostInput): Promise<AssetsOutput> {
     const drafts = rank([...fileDrafts.filter((draft): draft is Draft => draft !== null), ...inlineSvgAssets(input, hide)], warnings);
     // Tones last, in relevance order: the time budget only counts tone work, never the fetches above.
     await applyTones(drafts);
-    return { assets: finish(drafts, input, warnings), hidden, warnings: [...warnings] };
+    return { assets: finish(drafts, input, warnings), hidden, warnings: [...warnings], originals };
   } finally {
     limiter.close();
   }
