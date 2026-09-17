@@ -17,6 +17,14 @@ export const DEFAULT_USER_AGENT = "Mozilla/5.0 (compatible; AssetsScraper/1.0; +
 
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 const DNS_CODES = new Set(["ENOTFOUND", "EAI_AGAIN", "EAI_NONAME", "EAI_NODATA", "EAI_FAIL"]);
+/** A host that refuses, resets, drops or times out the connection (undici's own connect timeout included). */
+const SOCKET_CODES = new Set([
+  "ECONNREFUSED", "ECONNRESET", "ECONNABORTED", "EHOSTUNREACH", "EHOSTDOWN", "ENETUNREACH", "ENETDOWN", "ETIMEDOUT", "EPIPE",
+  "EADDRNOTAVAIL", "EPROTO", "UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT",
+]);
+/** TLS handshake and certificate failures, as Node and OpenSSL name them. */
+const TLS_CODE =
+  /^(?:ERR_TLS_|ERR_SSL_|ERR_OSSL_|CERT_|CRL_|UNABLE_TO_|ERROR_IN_(?:CERT|CRL)_|(?:DEPTH_ZERO_SELF_SIGNED_CERT|SELF_SIGNED_CERT_IN_CHAIN|HOSTNAME_MISMATCH|INVALID_CA|PATH_LENGTH_EXCEEDED|INVALID_PURPOSE)$)/;
 /**
  * Time to open a connection, every address of the host included. Below the preflight deadline (`preflightMs`, 8 s), so
  * a host that drops SYNs fails as `connect` before the exchange deadline turns it into `timeout`; two lost SYNs still fit.
@@ -75,7 +83,12 @@ function parseUrl(value: string | URL, base?: URL): URL {
   }
 }
 
-function mapError(error: unknown, signal: AbortSignal, callerSignal: AbortSignal | undefined): SafeFetchError {
+/**
+ * The `SafeFetchError` for a failed exchange: SSRF refusals, DNS failures, socket and TLS failures (`connect`), and the
+ * caller's abort or the exchange deadline. Anything else, such as a caller's invalid header value, an HTTP parser error
+ * or an undici timeout, is not an unreachable host and comes back unchanged.
+ */
+function mapError(error: unknown, signal: AbortSignal, callerSignal: AbortSignal | undefined): unknown {
   if (error instanceof SafeFetchError) return error;
   if (callerSignal?.aborted) return new SafeFetchError("aborted", "Request aborted");
   if (signal.aborted) return new SafeFetchError("timeout", "Request timed out");
@@ -87,12 +100,12 @@ function mapError(error: unknown, signal: AbortSignal, callerSignal: AbortSignal
       return new SafeFetchError("blocked-address", current.message);
     }
     const code = (current as { code?: unknown }).code;
-    if (typeof code === "string" && DNS_CODES.has(code)) return new SafeFetchError("dns", code);
+    if (typeof code !== "string") continue;
+    if (DNS_CODES.has(code)) return new SafeFetchError("dns", code);
+    // `timeout` is only the exchange deadline above, so a host that drops SYNs is `connect` too
+    if (SOCKET_CODES.has(code) || TLS_CODE.test(code)) return new SafeFetchError("connect", (current as { message?: string }).message || code);
   }
-  // Everything else, undici's own connect timeout included (a host that drops SYNs), means the host could not be
-  // reached: `connect`. `timeout` is only the exchange deadline above.
-  const message = error instanceof Error ? (error.cause instanceof Error ? error.cause.message : error.message) : "Request failed";
-  return new SafeFetchError("connect", message);
+  return error;
 }
 
 function wrapResponse(
@@ -100,7 +113,7 @@ function wrapResponse(
   url: URL,
   redirected: boolean,
   maxBytes: number,
-  toSafeError: (error: unknown) => SafeFetchError,
+  toSafeError: (error: unknown) => unknown,
 ): SafeResponse {
   const headers = new Headers();
   response.headers.forEach((value, key) => headers.append(key, value));

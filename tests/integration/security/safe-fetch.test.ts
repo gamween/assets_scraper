@@ -193,6 +193,12 @@ describe("safeFetch", () => {
     await expect(safeFetch(`${allowed.origin}/`, { signal: already.signal })).rejects.toMatchObject({ code: "aborted" });
   });
 
+  it("rethrows a caller's invalid header unchanged instead of reporting the host unreachable", async () => {
+    const error = await safeFetch(`${allowed.origin}/echo`, { headers: { "x-bad": "a\nb" } }).then(() => null, (reason: unknown) => reason);
+    expect(error).toBeInstanceOf(TypeError);
+    expect(error).not.toBeInstanceOf(SafeFetchError);
+  });
+
   it("maps unreachable hosts to dns and connect", async () => {
     await expect(safeFetch("https://assets-scraper-does-not-exist.invalid/")).rejects.toMatchObject({ code: "dns" });
     const closed = await serveFixture();
@@ -200,6 +206,10 @@ describe("safeFetch", () => {
     process.env.SCAN_TEST_ALLOW_HOSTS = `${allowed.host},${closed.host}`;
     await closed.close();
     await expect(safeFetch(`${origin}/`, { timeoutMs: 3_000 })).rejects.toMatchObject({ code: "connect" });
+    // every checked address refusing gives one aggregated error, still a connect failure
+    dns.answers.set("dual-closed.test", ["::1", "127.0.0.1"]);
+    process.env.SCAN_TEST_ALLOW_HOSTS = `${allowed.host},dual-closed.test:${closed.port}`;
+    await expect(safeFetch(`http://dual-closed.test:${closed.port}/`, { timeoutMs: 3_000 })).rejects.toMatchObject({ code: "connect" });
     process.env.SCAN_TEST_ALLOW_HOSTS = allowed.host;
   });
 });
