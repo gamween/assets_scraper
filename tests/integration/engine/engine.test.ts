@@ -30,11 +30,14 @@ const FAKE_COLLECTOR = `globalThis.__assetsScraper = {
 
 const HANGING_COLLECTOR = "globalThis.__assetsScraper = { collect: () => new Promise(() => {}) };";
 const THROWING_COLLECTOR = 'globalThis.__assetsScraper = { async collect() { throw new Error("Not implemented: C: collector"); } };';
+/** Tells the test it runs (through the fixture route `/collector-started`), then never answers. */
+const REPORTING_COLLECTOR = 'globalThis.__assetsScraper = { collect: () => { fetch("/collector-started"); return new Promise(() => {}); } };';
 
 const PALETTE: Palette = { brand: [{ hex: "#ff3366", role: "primary" }], neutrals: [{ hex: "#141e28" }] };
 
 let fixture: FixtureServer;
 let victim: FixtureServer;
+let onCollectorStarted = () => {};
 let victimHits = 0;
 let downloadHits = 0;
 const downloadName = `assets-scraper-test-${randomUUID()}.bin`;
@@ -45,6 +48,10 @@ beforeAll(async () => {
     res.end(markup);
   };
   fixture = await serveFixture({
+    "/collector-started": (_req, res) => {
+      onCollectorStarted();
+      res.writeHead(204).end();
+    },
     "/report.pdf": (_req, res) => {
       res.writeHead(200, { "content-type": "application/pdf" });
       res.end("%PDF-1.7 fake");
@@ -123,6 +130,7 @@ afterAll(async () => {
 
 afterEach(() => {
   vi.unstubAllEnvs();
+  onCollectorStarted = () => {};
 });
 
 const fakeAssets = async (input: PostInput): Promise<AssetsOutput> => {
@@ -475,15 +483,95 @@ describe("scan engine", () => {
     expect(done.diagnostics.phases.process).toBeLessThan(7_000);
   });
 
-  it("turns collector and post-processing failures into internal errors with diagnostics", async () => {
+  it("keeps the network results when the collector throws or returns something else, and logs why", async () => {
     const log = vi.spyOn(console, "error").mockImplementation(() => {});
-    const collectorFails = await scan(testDeps({ collectorSource: THROWING_COLLECTOR }).deps, `${fixture.origin}/`);
-    expect(collectorFails.at(-1)).toMatchObject({ type: "error", code: "internal", message: "Something went wrong on our side", diagnostics: { collector: "isolated" } });
-    expect(collectorFails.some((event) => event.type === "done")).toBe(false);
-    // The client gets no internal detail; the server log does.
-    expect(JSON.stringify(collectorFails.at(-1))).not.toContain("Not implemented");
-    expect(log).toHaveBeenCalledWith(expect.stringMatching(/^Scan [0-9a-f-]{36} failed$/), expect.objectContaining({ message: expect.stringContaining("Not implemented: C: collector") }));
+    const logged: string[] = [];
+    try {
+      for (const collectorSource of [THROWING_COLLECTOR, "globalThis.__assetsScraper = { collect: async () => undefined };", 'globalThis.__assetsScraper = { collect: async () => ({ page: "nope" }) };']) {
+        logged.push(...log.mock.calls.flat().map(String));
+        log.mockClear();
+        const events = await scan(testDeps({ collectorSource }).deps, `${fixture.origin}/`);
+        const done = events.at(-1);
+        if (done?.type !== "done") throw new Error(`expected done, got ${done && describeEvent(done)}`);
+        expect(done.partial).toBe(true);
+        expect(events).toContainEqual({ type: "warning", code: "partial" });
+        expect(events.find((event) => event.type === "assets")).toMatchObject({ items: [{ id: "photo" }] });
+        // The client gets no internal detail; the server log does.
+        expect(JSON.stringify(events)).not.toContain("Not implemented");
+        expect(log).toHaveBeenCalledWith(expect.stringMatching(/^Scan [0-9a-f-]{36} collector failed$/), expect.any(Error));
+      }
+      expect(logged.join("\n")).toContain("Not implemented: C: collector");
+    } finally {
+      log.mockRestore();
+    }
+  });
 
+  it("keeps the network results when the browser dies during collection", async () => {
+    vi.stubEnv("COLLECT_MS", "60000");
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { deps, pids } = testDeps({ collectorSource: REPORTING_COLLECTOR });
+    let killedAt = 0;
+    // An out-of-memory kill between two watchdog readings (spec 7.3, critic R7).
+    onCollectorStarted = () => {
+      killedAt = Date.now();
+      process.kill(pids[0], "SIGKILL");
+    };
+    try {
+      const events = await scan(deps, `${fixture.origin}/`);
+      const done = events.at(-1);
+      if (done?.type !== "done") throw new Error(`expected done, got ${done && describeEvent(done)}`);
+      expect(killedAt).toBeGreaterThan(0);
+      expect(Date.now() - killedAt).toBeLessThan(15_000);
+      expect(done.partial).toBe(true);
+      expect(events.find((event) => event.type === "assets")).toMatchObject({ items: [{ id: "photo" }] });
+      expect(log).toHaveBeenCalledWith(expect.stringMatching(/^Scan [0-9a-f-]{36} collector failed$/), expect.anything());
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it("keeps the network results when the page reloads itself during collection", async () => {
+    vi.stubEnv("COLLECT_MS", "60000");
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const reloading = "globalThis.__assetsScraper = { collect: () => { setTimeout(() => location.reload(), 200); return new Promise(() => {}); } };";
+    const started = Date.now();
+    try {
+      const events = await scan(testDeps({ collectorSource: reloading }).deps, `${fixture.origin}/`);
+      const done = events.at(-1);
+      if (done?.type !== "done") throw new Error(`expected done, got ${done && describeEvent(done)}`);
+      expect(done.partial).toBe(true);
+      expect(Date.now() - started).toBeLessThan(30_000);
+      expect(events.find((event) => event.type === "assets")).toMatchObject({ items: [{ id: "photo" }] });
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it("stops page work when memory runs low, kills Chrome and returns partial results", async () => {
+    vi.stubEnv("COLLECT_MS", "60000");
+    let collecting = false;
+    onCollectorStarted = () => (collecting = true);
+    const readings: number[] = [];
+    const { deps, pids } = testDeps({
+      collectorSource: REPORTING_COLLECTOR,
+      readMemAvailableMb: async () => {
+        const available = collecting ? 200 : 4_000;
+        readings.push(available);
+        return available;
+      },
+    });
+    const events = await scan(deps, `${fixture.origin}/`);
+    const done = events.at(-1);
+    if (done?.type !== "done") throw new Error(`expected done, got ${done && describeEvent(done)}`);
+    expect(done.partial).toBe(true);
+    expect(readings).toContain(200);
+    expect(events.find((event) => event.type === "assets")).toMatchObject({ items: [{ id: "photo" }] });
+    expect(pids).toHaveLength(1);
+    await expect.poll(() => isProcessAlive(pids[0]), { timeout: 5000 }).toBe(false);
+  });
+
+  it("turns post-processing failures into internal errors", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
     const postFails = await scan(
       testDeps({
         assembleAssets: async () => {

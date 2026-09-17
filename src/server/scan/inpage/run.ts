@@ -19,6 +19,14 @@ export class InPageResultTooLargeError extends Error {
   }
 }
 
+/** The page closed, its renderer crashed or the browser died: a pending CDP call is never answered in those cases. */
+export class PageGoneError extends Error {
+  constructor(what: "closed" | "crashed" | "disconnected") {
+    super(`The page ${what === "disconnected" ? "lost its browser" : what} while in-page code ran`);
+    this.name = "PageGoneError";
+  }
+}
+
 export interface RunInPageOptions {
   timeoutMs: number;
   /** Rejects with the abort reason as soon as it aborts. */
@@ -53,8 +61,9 @@ function decodeResult<T>(raw: unknown, maxChars: number): T {
  * own globals, so pages that patch built-ins cannot break the bundled code, and page scripts cannot see it. When the
  * isolated world cannot be created, runs in the main world and reports `world: "main"`. An exception thrown by the
  * code itself rejects without a retry. Rejects with `InPageTimeoutError` after `timeoutMs` in every case, and nothing
- * runs in the page after that. The result crosses to Node as JSON of at most `maxResultChars` characters, otherwise
- * it rejects with `InPageResultTooLargeError`; a value JSON cannot represent (`undefined`) gives undefined.
+ * runs in the page after that; with `PageGoneError` as soon as the page closes or crashes or the browser dies. The
+ * result crosses to Node as JSON of at most `maxResultChars` characters, otherwise it rejects with
+ * `InPageResultTooLargeError`; a value JSON cannot represent (`undefined`) gives undefined.
  */
 export async function runInPage<T>(page: Page, source: string, expression: string, options: RunInPageOptions): Promise<{ value: T; world: "isolated" | "main" }> {
   const maxChars = options.maxResultChars ?? DEFAULT_MAX_RESULT_CHARS;
@@ -90,19 +99,31 @@ export async function runInPage<T>(page: Page, source: string, expression: strin
   };
 
   const { signal } = options;
-  let onAbort: (() => void) | undefined;
+  const browser = page.context().browser();
+  const listeners: (() => void)[] = [];
   const stop = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new InPageTimeoutError(options.timeoutMs)), options.timeoutMs);
-    onAbort = () => reject(signal?.reason);
+    const onAbort = () => reject(signal?.reason);
     signal?.addEventListener("abort", onAbort, { once: true });
+    const onClose = () => reject(new PageGoneError("closed"));
+    const onCrash = () => reject(new PageGoneError("crashed"));
+    const onDisconnect = () => reject(new PageGoneError("disconnected"));
+    page.once("close", onClose).once("crash", onCrash);
+    browser?.once("disconnected", onDisconnect);
+    listeners.push(() => {
+      signal?.removeEventListener("abort", onAbort);
+      page.off("close", onClose).off("crash", onCrash);
+      browser?.off("disconnected", onDisconnect);
+    });
   });
   try {
     signal?.throwIfAborted();
+    if (page.isClosed() || (browser && !browser.isConnected())) throw new PageGoneError(page.isClosed() ? "closed" : "disconnected");
     return await Promise.race([run(), stop]);
   } finally {
     finished = true;
     clearTimeout(timer);
-    if (onAbort) signal?.removeEventListener("abort", onAbort);
+    for (const remove of listeners) remove();
     detach(session);
   }
 }

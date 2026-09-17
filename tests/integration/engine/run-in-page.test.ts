@@ -1,7 +1,7 @@
 import type { CDPSession, Page } from "playwright-core";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { withBrowser } from "@/server/browser/launch";
-import { InPageResultTooLargeError, InPageTimeoutError, runInPage } from "@/server/scan/inpage/run";
+import { InPageResultTooLargeError, InPageTimeoutError, PageGoneError, runInPage } from "@/server/scan/inpage/run";
 import { serveFixture, type FixtureServer } from "../../fixtures/serve";
 import { delay, startTestProxy, type TestProxy } from "./helpers";
 
@@ -23,10 +23,10 @@ afterAll(async () => {
   await fixture.close();
 });
 
-const onPage = <T>(pathname: string, fn: (page: Page) => Promise<T>) =>
-  withBrowser({ egressPort: proxy.port, signal: new AbortController().signal }, async ({ page }) => {
+const onPage = <T>(pathname: string, fn: (page: Page, pid?: number) => Promise<T>) =>
+  withBrowser({ egressPort: proxy.port, signal: new AbortController().signal }, async ({ page, pid }) => {
     await page.goto(`${fixture.origin}${pathname}`);
-    return fn(page);
+    return fn(page, pid);
   });
 
 describe("runInPage", () => {
@@ -124,5 +124,27 @@ describe("runInPage", () => {
       await delay(800);
       expect(await page.evaluate(() => document.documentElement.dataset.ran)).toBeUndefined();
     });
+  });
+
+  it("rejects at once when the renderer crashes or the browser dies, which leave a CDP call unanswered", async () => {
+    await onPage("/", async (page) => {
+      const started = Date.now();
+      const running = runInPage(page, "", "new Promise(() => {})", { timeoutMs: 20_000 });
+      await delay(300);
+      void page.context().newCDPSession(page).then((cdp) => cdp.send("Page.crash")).catch(() => {});
+      await expect(running).rejects.toBeInstanceOf(PageGoneError);
+      expect(Date.now() - started).toBeLessThan(5000);
+    });
+
+    let killedAt = 0;
+    const result = await onPage("/", async (page, pid) => {
+      const running = runInPage(page, "", "new Promise(() => {})", { timeoutMs: 20_000 });
+      await delay(300);
+      killedAt = Date.now();
+      process.kill(pid ?? 0, "SIGKILL");
+      return running.then(() => "resolved", (error: unknown) => error);
+    });
+    expect(result).toBeInstanceOf(PageGoneError);
+    expect(Date.now() - killedAt).toBeLessThan(5000);
   });
 });

@@ -30,6 +30,8 @@ export interface ScanEngineDeps {
   extractPalette: (page: Page, options: { fetch: SafeFetch; signal: AbortSignal; timeBudgetMs: number }) => Promise<Palette | null>;
   /** Bundled in-page collector that defines `globalThis.__assetsScraper.collect`. */
   collectorSource: string;
+  /** MemAvailable in MB for the memory watchdog (spec 7.3); the watchdog is off without it. */
+  readMemAvailableMb?: () => Promise<number | undefined>;
 }
 
 const defaultDeps: ScanEngineDeps = {
@@ -41,6 +43,8 @@ const defaultDeps: ScanEngineDeps = {
   buildFontFamilies,
   extractPalette,
   collectorSource: COLLECTOR_SOURCE,
+  // `/proc/meminfo` only exists on Linux.
+  readMemAvailableMb: process.platform === "linux" ? readMemAvailableMb : undefined,
 };
 
 /** Palette signals take about 200 ms (spec 10); this is its share of the 15 s collection cap. */
@@ -110,6 +114,22 @@ function emptyCollectorOutput(nav: NavigationResult, network: CapturedNetwork): 
     noise: {},
     stats: { elements: 0, ms: 0, truncated: true },
   };
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+const COLLECTOR_LISTS = ["candidates", "svgs", "fontFaces", "fontStatuses", "fontUsage", "unreadableSheets", "blobs", "brandLinks"] as const;
+
+/** The top-level shape of collector output. A main-world page can overwrite the collector, and a bug can return nothing. */
+function isCollectorOutput(value: unknown): value is RawCollectorOutput {
+  if (!isRecord(value) || !isRecord(value.page) || !isRecord(value.noise) || !isRecord(value.stats)) return false;
+  const { page, stats } = value;
+  return (
+    typeof page.title === "string" &&
+    typeof page.baseUrl === "string" &&
+    typeof page.elementCount === "number" &&
+    typeof stats.truncated === "boolean" &&
+    COLLECTOR_LISTS.every((key) => Array.isArray(value[key]))
+  );
 }
 
 function mergeCounts(...sources: Partial<Record<string, number>>[]): Record<string, number> {
@@ -383,9 +403,10 @@ async function runBrowserStage(input: ScanContext & {
   let queuedAt: number | undefined;
   let egress: EgressProxy | undefined;
 
-  const watchdogTimer = process.platform === "linux" ? setInterval(() => void checkMemory(), WATCHDOG_INTERVAL_MS) : undefined;
-  async function checkMemory() {
-    const available = await readMemAvailableMb();
+  const readMemory = deps.readMemAvailableMb;
+  const watchdogTimer = readMemory ? setInterval(() => void checkMemory(readMemory), WATCHDOG_INTERVAL_MS) : undefined;
+  async function checkMemory(read: () => Promise<number | undefined>) {
+    const available = await read().catch(() => undefined);
     if (available !== undefined && available < limits.watchdogMemMb) watchdog.abort(new LowMemory());
   }
 
@@ -471,13 +492,17 @@ async function runBrowserStage(input: ScanContext & {
         };
         try {
           const result = await timed("collect", () =>
-            runInPage<RawCollectorOutput>(page, deps.collectorSource, `globalThis.__assetsScraper.collect(${JSON.stringify(options)})`, { timeoutMs, signal, maxResultChars: collectorResultChars() }),
+            runInPage<unknown>(page, deps.collectorSource, `globalThis.__assetsScraper.collect(${JSON.stringify(options)})`, { timeoutMs, signal, maxResultChars: collectorResultChars() }),
           );
           signal.throwIfAborted();
+          if (!isCollectorOutput(result.value)) throw new Error("The collector returned something other than collector output");
           collector = result.value;
           diagnostics.collector = result.world;
         } catch (error) {
-          if (!(error instanceof InPageTimeoutError) || signal.aborted) throw error;
+          if (signal.aborted) throw error;
+          // Spec 7.3: the collector ran out of time, broke, or lost its page (a crash, an out-of-memory kill, a page
+          // that reloads itself). The network capture still holds the page's images, fonts and stylesheets.
+          if (!(error instanceof InPageTimeoutError)) console.error(`Scan ${diagnostics.scanId} collector failed`, error);
           partial = true;
         }
 
