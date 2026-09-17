@@ -101,6 +101,11 @@ beforeAll(async () => {
       res.writeHead(200, { "content-type": "text/javascript" });
       res.end("");
     },
+    // Generic challenge title phrases (spec 8.9): a large working page, a small wall that answers 200, and a large wall
+    // that answers 403.
+    "/one-more-step": html(200, `<!doctype html><html><head><title>One more step to your account</title></head><body>${"<p>Tell us about your team</p>".repeat(400)}</body></html>`),
+    "/access-denied": html(200, "<!doctype html><html><head><title>Access denied</title></head><body><p>You do not have access to this page.</p></body></html>"),
+    "/access-denied-403": html(403, `<!doctype html><html><head><title>Access denied</title></head><body>${"<p>Blocked</p>".repeat(900)}</body></html>`),
     // A PerimeterX wall that stays a nearly empty page once loaded, with a normal title and status.
     "/px-wall": html(200, '<!doctype html><html><head><title>Welcome</title></head><body><div id="px-captcha"></div><script>window._pxAppId = "PX123";</script></body></html>'),
     "/wall": (_req, res) => {
@@ -269,6 +274,21 @@ describe("scan engine", () => {
     expect(events.at(-1)).toMatchObject({ diagnostics: { blockReason: "challenge-markup" } });
     expect(pids).toHaveLength(1);
     await expect.poll(() => isProcessAlive(pids[0]), { timeout: 5000 }).toBe(false);
+  });
+
+  it("counts a generic challenge title only on a failed page, or on a page that stays small once loaded", async () => {
+    const large = await scan(testDeps().deps, `${fixture.origin}/one-more-step`);
+    expect(large.at(-1)).toMatchObject({ type: "done", partial: false });
+
+    const small = await scan(testDeps().deps, `${fixture.origin}/access-denied`);
+    // The element count only means something once the page has loaded.
+    expect(small.map(describeEvent)).toEqual(["accepted", "step open start", "page", "step open done", "step load start", "step load done", "error blocked"]);
+    expect(small.at(-1)).toMatchObject({ diagnostics: { blockReason: "challenge-title" } });
+
+    const failed = await scan(testDeps().deps, `${fixture.origin}/access-denied-403`);
+    // The status holds at domcontentloaded: the scan stops before the page loads.
+    expect(failed.map(describeEvent)).toEqual(["accepted", "step open start", "error blocked"]);
+    expect(failed.at(-1)).toMatchObject({ diagnostics: { blockReason: "challenge-title" } });
   });
 
   it("lets the browser open a page the preflight gave up on after too many redirects", async () => {

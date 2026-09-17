@@ -579,7 +579,7 @@ async function runBrowserStage(input: ScanContext & {
 
         capture = startCapture(page, { signal });
         const opened = await timed("open", () => openPage(page, url, { signal }));
-        // Spec 8.9 at domcontentloaded: only the header and title rules, which do not depend on how much of the page exists.
+        // Spec 8.9 at domcontentloaded: only the rules that do not depend on how much of the page exists (detectChallenge).
         const challenge = detectChallenge(opened);
         if (challenge) throw new BlockedPage(challenge);
         signal.throwIfAborted();
