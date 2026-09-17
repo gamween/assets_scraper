@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import type { ScanEvent } from "../src/lib/contract";
-import { findAsset, loadFixture, mapAssets } from "./support/fixtures";
+import { diagnostics, findAsset, loadFixture, mapAssets } from "./support/fixtures";
 import { mockAssetRoutes, mockScan } from "./support/routes";
 
 const linear = loadFixture("linear");
@@ -114,6 +114,46 @@ test.describe("detail view", () => {
 
     await card(page, siteLogo.id).click();
     await expect(page).toHaveURL(new RegExp(`&asset=${siteLogo.id}$`));
+  });
+
+  test("&asset= opens the detail when a timed-out scan still delivered assets", async ({ page }) => {
+    const timedOut: ScanEvent[] = [...linear.filter((event) => event.type !== "done"), { type: "error", code: "timeout", message: "stream timeout", diagnostics }];
+    await mockAssetRoutes(page, timedOut);
+    await mockScan(page, timedOut);
+    await page.goto(`/?url=${encodeURIComponent("https://linear.app/")}&asset=${photo.id}`);
+    await expect(dialog(page).getByRole("heading", { level: 2 })).toHaveText(photo.name);
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("error-panel")).toBeVisible();
+    await expect(page).toHaveURL(/\?url=https%3A%2F%2Flinear\.app%2F$/);
+  });
+
+  test("&asset= opens a public-source asset of a blocked scan", async ({ page }) => {
+    const fallback = { ...siteLogo, id: "fallback-logo", foundIn: ["public-source" as const] };
+    const blocked: ScanEvent[] = [
+      { type: "accepted", scanId: diagnostics.scanId, url: "https://linear.app/" },
+      { type: "error", code: "blocked", message: "stream blocked", fallback: [fallback], diagnostics },
+    ];
+    await mockAssetRoutes(page, blocked);
+    await mockScan(page, blocked);
+    await page.goto(`/?url=${encodeURIComponent("https://linear.app/")}&asset=${fallback.id}`);
+    await expect(dialog(page).getByRole("heading", { level: 2 })).toHaveText(fallback.name);
+  });
+
+  test("&asset= dies with a scan that failed: a later scan does not open it", async ({ page }) => {
+    const failed: ScanEvent[] = [
+      { type: "accepted", scanId: diagnostics.scanId, url: "https://linear.app/" },
+      { type: "error", code: "connect", message: "stream connect", diagnostics },
+    ];
+    await mockAssetRoutes(page, linear);
+    await mockScan(page, failed, linear);
+    await page.goto(`/?url=${encodeURIComponent("https://linear.app/")}&asset=${photo.id}`);
+    await expect(page.getByTestId("error-panel")).toBeVisible();
+    await expect(page).toHaveURL(/\?url=https%3A%2F%2Flinear\.app%2F$/);
+    await page.getByTestId("error-panel").getByRole("button", { name: "Try again" }).click();
+    await expect(page.getByTestId("results")).toBeVisible();
+    await expect(page.getByTestId("asset-card").first()).toBeVisible();
+    await page.waitForTimeout(300);
+    await expect(dialog(page)).toHaveCount(0);
   });
 
   test("&asset= for a small icon walks its collapsed section without expanding it for good", async ({ page }) => {

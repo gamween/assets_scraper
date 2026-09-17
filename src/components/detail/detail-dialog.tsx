@@ -14,7 +14,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import type { Asset } from "@/lib/contract";
 import { formatBytes, formatCount, formatDimensions } from "@/lib/format";
 import { assetBytes, type Background } from "@/lib/client/filters";
-import { syncDetailToLocation, takePendingDetail } from "@/lib/client/scan-session";
+import { syncDetailToLocation } from "@/lib/client/scan-session";
 import { appStore, findAsset, getDetailList, useApp } from "@/lib/client/store";
 
 const ACTION_CLASS =
@@ -236,13 +236,6 @@ export function DetailDialog() {
   if (asset && asset !== shown) setShown(asset);
   const open = Boolean(detailId && asset);
   const popupRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (phase === "results") {
-      const pending = takePendingDetail();
-      if (pending) appStore.getState().openDetail(pending);
-    }
-  }, [phase]);
 
   useEffect(() => {
     if (phase === "results" || phase === "error") syncDetailToLocation(detailId);

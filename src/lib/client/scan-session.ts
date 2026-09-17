@@ -9,8 +9,16 @@ export const INVALID_URL_MESSAGE = "Enter a web address, like linear.app";
 
 let current: ScanHandle | null = null;
 
-/** `&asset=<id>` from the address bar waits for the results. */
+/** `&asset=<id>` from the address bar waits for the scan to end. It belongs to the scan in flight and dies with it. */
 let pendingDetail: string | null = null;
+
+/** Opens the pending `&asset=<id>` once the scan has ended, with results or with an error that still carries assets. */
+function openPendingDetail() {
+  const id = pendingDetail;
+  pendingDetail = null;
+  // Does nothing when the scan has no such asset; the detail view then drops `&asset` from the address bar.
+  if (id) appStore.getState().openDetail(id);
+}
 
 type HistoryMode = "push" | "replace" | "none";
 
@@ -28,10 +36,14 @@ function writeHistory(path: string, mode: HistoryMode) {
   else window.history.replaceState(null, "", path);
 }
 
-/** Starts a scan of an already normalized URL. Any scan in flight is aborted first. */
-export function runScan(url: string, host: string, history: HistoryMode = "push"): void {
+/**
+ * Starts a scan of an already normalized URL. Any scan in flight is aborted first. `detail` is an asset id from the
+ * address bar to open when the scan ends.
+ */
+export function runScan(url: string, host: string, history: HistoryMode = "push", detail: string | null = null): void {
   current?.abort();
   revokePreviewUrls();
+  pendingDetail = detail;
   const store = appStore.getState();
   store.beginScan({ url, host });
   writeHistory(shareablePath(url), history);
@@ -39,17 +51,23 @@ export function runScan(url: string, host: string, history: HistoryMode = "push"
   const handle = startScan(url, {
     onEvent(event) {
       appStore.getState().applyEvent(event);
-      if (event.type === "done") appStore.getState().setRecent(addRecent(host));
+      if (event.type === "done") {
+        appStore.getState().setRecent(addRecent(host));
+        openPendingDetail();
+      }
     },
     onError(error) {
       if (error.code === "invalid-url") {
         // The gate disagreed with the client normalization: back to the landing with the inline message.
+        pendingDetail = null;
         appStore.getState().reset(url);
         appStore.getState().setInputError(INVALID_URL_MESSAGE);
         writeHistory("/", "replace");
         return;
       }
       appStore.getState().failScan(error);
+      // A timeout can keep its assets and a blocked site its public-source fallback: both can open in detail.
+      openPendingDetail();
     },
     onRetry() {
       appStore.getState().restartAttempt();
@@ -86,6 +104,7 @@ export function rescan(): void {
 export function cancelScan(): void {
   current?.abort();
   current = null;
+  pendingDetail = null;
   const { url, input } = appStore.getState();
   appStore.getState().reset(url ?? input);
   writeHistory("/", "push");
@@ -94,6 +113,7 @@ export function cancelScan(): void {
 export function goHome(): void {
   current?.abort();
   current = null;
+  pendingDetail = null;
   appStore.getState().reset("");
   writeHistory("/", "push");
 }
@@ -114,6 +134,7 @@ export function syncFromLocation(): void {
     if (store.phase !== "idle") {
       current?.abort();
       current = null;
+      pendingDetail = null;
       store.reset(store.url ?? store.input);
     }
     return;
@@ -123,6 +144,7 @@ export function syncFromLocation(): void {
     // `/?url=` with something that is not a URL: the landing with the inline message, at `/` like any landing.
     current?.abort();
     current = null;
+    pendingDetail = null;
     store.reset(raw);
     appStore.getState().setInputError(INVALID_URL_MESSAGE);
     writeHistory("/", "replace");
@@ -130,17 +152,11 @@ export function syncFromLocation(): void {
   }
   const asset = params.get("asset");
   if (store.url === result.url && store.phase !== "idle") {
-    if (asset && store.phase === "results") store.openDetail(asset);
+    if (store.phase === "scanning") pendingDetail = asset;
+    else if (asset) store.openDetail(asset);
     return;
   }
-  runScan(result.url, result.host, "none");
-  if (asset) pendingDetail = asset;
-}
-
-export function takePendingDetail(): string | null {
-  const id = pendingDetail;
-  pendingDetail = null;
-  return id;
+  runScan(result.url, result.host, "none", asset);
 }
 
 let bootstrapped = false;
