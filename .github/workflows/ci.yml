@@ -12,11 +12,11 @@ env:
 jobs:
   diag:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        variant: [orphan-orig, orphan-fixed, capture-orig, capture-fixed]
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -29,4 +29,12 @@ jobs:
         run: |
           C=tests/integration/engine/capture.test.ts
           L=tests/integration/engine/launch.test.ts
-          for i in $(seq 1 14); do echo "=== iteration $i"; DIAG_LAUNCH=1 npx vitest run --project integration $C $L 2>&1 | grep -E "DIAG|× |Tests  |kills a browser left behind"; done
+          for s in 1 2 3 4 5 6; do (while :; do :; done) & done
+          case "${{ matrix.variant }}" in
+            orphan-orig) F=$L; T="^withBrowser ORIG kills a browser left behind" ;;
+            orphan-fixed) F=$L; T="^withBrowser kills a browser left behind" ;;
+            capture-orig) F=$C; T="ORIG (keeps the bytes|reserves the per-body)" ;;
+            capture-fixed) F=$C; T="^startCapture (keeps the bytes of the reads in flight|reserves the per-body cap)" ;;
+          esac
+          for i in $(seq 1 20); do DIAG_LAUNCH=1 npx vitest run --project integration $F -t "$T" 2>&1 | grep -E "DIAG stale|× |✓ .*(kills|keeps|reserves)|expected"; done
+          kill $(jobs -p) || true

@@ -155,6 +155,25 @@ afterEach(async () => {
   await endHeld();
 });
 
+/**
+ * Chrome reports these image responses only once their bodies are in, so a read takes a few milliseconds and two reads
+ * overlap only when their responses happen to land together. A read that starts alone waits (up to a second) until
+ * another one runs beside it, so what keeps reads apart in the tests below is the body cap, not timing.
+ */
+function overlapGate() {
+  let open = false;
+  let release = () => {};
+  const opened = new Promise<void>((resolve) => (release = resolve));
+  return {
+    started(inFlight: number) {
+      if (inFlight < 2) return;
+      open = true;
+      release();
+    },
+    wait: () => (open ? undefined : Promise.race([opened, delay(1000)])),
+  };
+}
+
 const onBrowser = <T>(fn: (page: Page) => Promise<T>) => withBrowser({ egressPort: proxy.port, signal: new AbortController().signal }, ({ page }) => fn(page));
 const sha1 = (buffer: Buffer) => createHash("sha1").update(buffer).digest("hex");
 const failing = () => {
@@ -327,6 +346,7 @@ describe("startCapture", () => {
     let restore = () => {};
     let inFlight = 0;
     let maxInFlight = 0;
+    const gate = overlapGate();
     try {
       const network = await onBrowser(async (page) => {
         // Registered before the capture listener, so reads made by the capture go through the counter.
@@ -336,7 +356,9 @@ describe("startCapture", () => {
           prototype.body = async function (this: Response) {
             inFlight += 1;
             maxInFlight = Math.max(maxInFlight, inFlight);
+            gate.started(inFlight);
             try {
+              await gate.wait();
               return await body.call(this);
             } finally {
               inFlight -= 1;
@@ -396,6 +418,88 @@ describe("startCapture", () => {
   });
 
   it("reserves the per-body cap for an encoded body, whose declared length is only a lower bound", async () => {
+    vi.stubEnv("BODY_MAX_BYTES", "400000");
+    vi.stubEnv("BODY_TOTAL_BYTES", "1000000");
+    let restore = () => {};
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const gate = overlapGate();
+    let finished = 0;
+    try {
+      const network = await onBrowser(async (page) => {
+        page.once("response", (response) => {
+          const prototype = Object.getPrototypeOf(response) as { body: Response["body"] };
+          const body = prototype.body;
+          prototype.body = async function (this: Response) {
+            inFlight += 1;
+            maxInFlight = Math.max(maxInFlight, inFlight);
+            gate.started(inFlight);
+            try {
+              await gate.wait();
+              return await body.call(this);
+            } finally {
+              inFlight -= 1;
+              finished += 1;
+            }
+          };
+          restore = () => (prototype.body = body);
+        });
+        const capture = startCapture(page, { signal: new AbortController().signal, toneFromBytes: async () => "unknown" });
+        await page.goto(`${fixture.origin}/many-gzip.html`, { waitUntil: "load" });
+        // Reads still queued when capture settles never start: wait for all of them first.
+        await expect.poll(() => finished, { timeout: 10_000 }).toBe(8);
+        return capture.settle(5000);
+      });
+      // Each declares about 60 KB, under a quarter of the cap, but reserves 400 KB: two fit in 1 MB at a time.
+      const size = (await noisePng).length;
+      expect(gzipSync(await noisePng).length).toBeLessThan(100_000);
+      expect(maxInFlight).toBe(2);
+      expect(network.images.filter((image) => image.url.includes("/slow-gzip/") && image.sha1).map((image) => image.bytes)).toEqual(Array.from({ length: 8 }, () => size));
+    } finally {
+      restore();
+    }
+  });
+
+  it("ORIG keeps the bytes of the reads in flight within the total body cap", async () => {
+    vi.stubEnv("BODY_MAX_BYTES", "100000");
+    vi.stubEnv("BODY_TOTAL_BYTES", "250000");
+    let restore = () => {};
+    let inFlight = 0;
+    let maxInFlight = 0;
+    try {
+      const network = await onBrowser(async (page) => {
+        // Registered before the capture listener, so reads made by the capture go through the counter.
+        page.once("response", (response) => {
+          const prototype = Object.getPrototypeOf(response) as { body: Response["body"] };
+          const body = prototype.body;
+          prototype.body = async function (this: Response) {
+            inFlight += 1;
+            maxInFlight = Math.max(maxInFlight, inFlight);
+            try {
+              return await body.call(this);
+            } finally {
+              inFlight -= 1;
+            }
+          };
+          restore = () => (prototype.body = body);
+        });
+        const capture = startCapture(page, { signal: new AbortController().signal, toneFromBytes: async () => "unknown" });
+        await page.goto(`${fixture.origin}/many.html`, { waitUntil: "load" });
+        return capture.settle(5000);
+      });
+      // No declared length: each read reserves the 100 KB per-body cap, so at most two fit in 250 KB at a time. Once
+      // three bodies are read, a fourth still fits on its own, and the last four go over the total.
+      const size = (await noisePng).length;
+      expect(size).toBeGreaterThan(50_000);
+      expect(maxInFlight).toBe(2);
+      expect(network.images.filter((image) => image.sha1).map((image) => image.bytes)).toEqual([size, size, size, size]);
+      expect(network.skippedBodies).toBe(4);
+    } finally {
+      restore();
+    }
+  });
+
+  it("ORIG reserves the per-body cap for an encoded body, whose declared length is only a lower bound", async () => {
     vi.stubEnv("BODY_MAX_BYTES", "400000");
     vi.stubEnv("BODY_TOTAL_BYTES", "1000000");
     let restore = () => {};

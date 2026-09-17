@@ -53,6 +53,11 @@ afterEach(() => {
 
 const open = () => ({ egressPort: proxy.port, signal: new AbortController().signal });
 const CHROME = process.env.CHROME_EXECUTABLE_PATH ?? (process.platform === "darwin" ? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" : "/usr/bin/google-chrome");
+/** The command line of a running process, the way the stale-browser check reads it (empty once the process is gone). */
+const commandLine = (pid: number) =>
+  process.platform === "linux"
+    ? spawnSync("cat", [`/proc/${pid}/cmdline`]).stdout.toString().replaceAll("\0", " ")
+    : spawnSync("ps", ["-ww", "-o", "command=", "-p", String(pid)]).stdout.toString();
 const fetchClip = () => fetch("/clip.mp4").then(() => "loaded", () => "blocked");
 
 /**
@@ -266,12 +271,36 @@ describe("withBrowser", () => {
       env: { PATH: process.env.PATH, HOME: process.env.HOME, [PIDFILE_ENV]: pidfile } as unknown as NodeJS.ProcessEnv,
     });
     try {
-      await expect.poll(() => isProcessAlive(orphan.pid ?? 0) && spawnSync("cat", [pidfile]).stdout.toString().trim(), { timeout: 10_000 }).toBe(String(orphan.pid));
-      console.log(`DIAG orphan ready ${performance.now().toFixed(1)} pid=${orphan.pid} deadOwner=${deadOwner}`);
+      // The wrapper writes the pidfile just before it execs the browser: wait until the orphan runs the binary, as a
+      // browser left behind does. Before that, the stale-browser check rightly refuses to kill a process that is no browser.
+      await expect.poll(() => spawnSync("cat", [pidfile]).stdout.toString().trim() === String(orphan.pid) && commandLine(orphan.pid ?? 0).includes(binary), { timeout: 10_000 }).toBe(true);
       await withBrowser(open(), async () => {});
-      console.log(`DIAG after withBrowser ${performance.now().toFixed(1)} state=${spawnSync("cat", [`/proc/${orphan.pid}/stat`]).stdout.toString().slice(0, 60)}`);
-      await new Promise((r) => setTimeout(r, 1000));
-      console.log(`DIAG +1s state=${spawnSync("cat", [`/proc/${orphan.pid}/stat`]).stdout.toString().slice(0, 60)} cmd=${spawnSync("cat", [`/proc/${orphan.pid}/cmdline`]).stdout.toString().replaceAll("\0", " ").slice(0, 120)}`);
+      await expect.poll(() => isProcessAlive(orphan.pid ?? 0), { timeout: 5000 }).toBe(false);
+    } finally {
+      if (orphan.pid && isProcessAlive(orphan.pid)) process.kill(-orphan.pid, "SIGKILL");
+      await rm(scratch, { recursive: true, force: true });
+      await rm(pidfile, { force: true });
+    }
+  });
+
+  it("ORIG kills a browser left behind by a Node process that died mid-scan before launching", async () => {
+    const binary = CHROME;
+    const deadOwner = spawnSync("true").pid;
+    const stateDir = browserStateDir();
+    const scratch = await mkdtemp(path.join(tmpdir(), "stale-browser-"));
+    await mkdir(stateDir, { recursive: true });
+    const wrapper = path.join(scratch, "wrapper.sh");
+    const pidfile = path.join(stateDir, `chromium-${deadOwner}-0.pid`);
+    await writeFile(wrapper, wrapperScript(binary));
+    await chmod(wrapper, 0o755);
+    const orphan = spawn(wrapper, ["--headless", "--no-sandbox", "--no-first-run", `--user-data-dir=${path.join(scratch, "profile")}`, pidfileMarker(pidfile), "about:blank"], {
+      detached: true,
+      stdio: "ignore",
+      env: { PATH: process.env.PATH, HOME: process.env.HOME, [PIDFILE_ENV]: pidfile } as unknown as NodeJS.ProcessEnv,
+    });
+    try {
+      await expect.poll(() => isProcessAlive(orphan.pid ?? 0) && spawnSync("cat", [pidfile]).stdout.toString().trim(), { timeout: 10_000 }).toBe(String(orphan.pid));
+      await withBrowser(open(), async () => {});
       await expect.poll(() => isProcessAlive(orphan.pid ?? 0), { timeout: 5000 }).toBe(false);
     } finally {
       if (orphan.pid && isProcessAlive(orphan.pid)) process.kill(-orphan.pid, "SIGKILL");
