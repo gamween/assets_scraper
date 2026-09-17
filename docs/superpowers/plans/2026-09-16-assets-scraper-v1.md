@@ -868,6 +868,7 @@ const envNumber = (name: string, fallback: number): number => {
 
 export const limits = {
   scanDeadlineMs: 90_000,
+  maxConcurrentScans: 1,
   queueWaitMs: 15_000,
   preflightMs: 8_000,
   preflightMaxBytes: 1 * MB,
@@ -881,6 +882,16 @@ export const limits = {
   animationsMs: 2_000,
   collectMs: 15_000,
   settleMs: 5_000,
+  gracefulCloseMs: 5_000, // graceful browser close before the kill
+  killedCloseMs: 2_000, // wait for browser.close() after a kill
+  readMs: 3_000, // small in-page reads after navigation
+  backToTopMs: 1_000,
+  paletteBudgetMs: 3_000, // the palette phase's share of collectMs
+  paletteOverrunMs: 1_000, // the engine aborts extractPalette at paletteBudgetMs plus this
+  paletteStopMs: 1_000, // after that abort, time for extractPalette to put the page back
+  postGraceMs: 5_000, // page work stops this long before the scan deadline
+  cancelCleanupMs: 10_000,
+  egressCloseMs: 1_000,
   verifyMs: 8_000,
   verifyConcurrency: 16,
   maxDeclaredProbes: 150,
@@ -919,6 +930,11 @@ export const limits = {
   minTmpFreeMb: 250,
   minMemAvailableMb: 900,
   watchdogMemMb: 350,
+  googleFontsMs: 2_000,
+  googleFontsMaxFamilies: 8,
+  paletteFetchMs: 600,
+  wikidataMs: 3_000,
+  faviconServiceMs: 3_000,
   get scansPerDay() {
     return envNumber("SCANS_PER_DAY", 80);
   },
@@ -930,6 +946,8 @@ export const limits = {
   },
 } as const;
 ```
+
+As built, every key (not only the three budgets above) is read on each access and can be overridden with an environment variable named after it in SCREAMING_SNAKE_CASE (`postGraceMs` reads `POST_GRACE_MS`, `paletteBudgetMs` reads `PALETTE_BUDGET_MS`); values that are not whole numbers above 0 are ignored.
 
 - [ ] **Step 3: `src/server/scan/types.ts`**
 

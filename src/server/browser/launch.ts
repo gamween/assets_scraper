@@ -353,7 +353,7 @@ async function shutdown({ browser, pid, pidfile, binary }: Launched, graceful: b
   if (pid && !closed) killProcessTree(pid);
   // A close that worked waited for Chromium to exit, so a live PID now may be another process that reused it.
   if (pid && closed && isAlive(pid) && (await isOwnBrowser(pid, binary, pidfile))) killProcessTree(pid);
-  if (!closed) await orAfter(browser.close().catch(() => {}), 2_000, undefined);
+  if (!closed) await orAfter(browser.close().catch(() => {}), limits.killedCloseMs, undefined);
   await removePidfile(pidfile);
   if (isServerless() && busySlots.size === 1) await sweepTmp();
 }

@@ -30,6 +30,8 @@ const defaults = {
   watchdogMemMb: 350,
   /** Graceful browser close before the kill (critic R6). */
   gracefulCloseMs: 5_000,
+  /** How long shutdown waits for `browser.close()` after the kill, before it moves on. */
+  killedCloseMs: 2_000,
   /** The small in-page reads after navigation: title, element count, markup sample. */
   readMs: 3_000,
   /** Scrolling back to the top after the lazy scroll. */
