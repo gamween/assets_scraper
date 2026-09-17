@@ -3,7 +3,8 @@
 //   OPS_TOKEN=... node scripts/scan-sites.mjs --sites stripe.com,linear.app
 // The ops token skips the bot check and the rate limit (spec 11.1), so the scans are not throttled.
 // Keep --out outside the repo; the default scan-results/ is git ignored. Exits 1 when a site ends without a scan
-// result, which includes the permanent block on g2.com.
+// result, except for a site listed in --expect-blocked (g2.com by default) that ends on a blocked error: that block
+// is permanent and by design, so it does not hide a run where the server died halfway.
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,11 +17,16 @@ const SITES = [
   "techcrunch.com", "uniswap.org", "vercel.com", "webflow.com", "xrpl.org",
 ];
 
+/** Sites that answer every automated client with a challenge page: their blocked error is the expected outcome. */
+const EXPECTED_BLOCKED = ["g2.com"];
+
 const DEFAULTS = { base: "http://localhost:3000", out: "scan-results", timeout: 180_000, retries: 1 };
-const FLAGS = new Set(["--base", "--out", "--sites", "--timeout", "--retries"]);
+const FLAGS = new Set(["--base", "--out", "--sites", "--timeout", "--retries", "--expect-blocked"]);
+
+const list = (value) => value.split(",").map((item) => item.trim()).filter(Boolean);
 
 export function parseArgs(argv) {
-  const options = { ...DEFAULTS, sites: SITES };
+  const options = { ...DEFAULTS, sites: SITES, expectBlocked: EXPECTED_BLOCKED };
   for (let i = 0; i < argv.length; i += 1) {
     const [flag, inline] = argv[i].split(/=(.*)/s);
     if (!FLAGS.has(flag)) throw new Error(`Unknown option ${flag}`);
@@ -28,10 +34,13 @@ export function parseArgs(argv) {
     if (value === undefined) throw new Error(`Missing value for ${flag}`);
     if (flag === "--base") options.base = value.replace(/\/+$/, "");
     else if (flag === "--out") options.out = value;
-    else if (flag === "--sites") options.sites = value.split(",").map((site) => site.trim()).filter(Boolean);
+    else if (flag === "--sites") options.sites = list(value);
+    // An empty --expect-blocked is meaningful, unlike an empty --sites: it means no failure is expected.
+    else if (flag === "--expect-blocked") options.expectBlocked = list(value);
     else if (flag === "--timeout") options.timeout = Number(value);
     else options.retries = Number(value);
   }
+  if (!options.sites.length) throw new Error("--sites must name at least one site");
   if (!Number.isFinite(options.timeout) || options.timeout <= 0) throw new Error("--timeout must be a positive number of milliseconds");
   if (!Number.isFinite(options.retries) || options.retries < 0) throw new Error("--retries must be zero or more");
   return options;
@@ -200,6 +209,13 @@ function table(rows) {
 /** A scan that never reached the page, or whose stream died early, is worth one more try; a real scan result is not. */
 export const shouldRetry = (summary) => ["transport", "truncated"].includes(summary.status) || ["busy", "internal", "dns", "connect"].includes(summary.error?.code);
 
+/**
+ * Whether a row means the run went wrong. A site listed in `expectBlocked` is allowed exactly one outcome besides a
+ * scan result, its blocked error: any other failure on it still counts, so the exit code keeps its meaning.
+ */
+export const isFailure = (row, expectBlocked = EXPECTED_BLOCKED) =>
+  !["done", "partial"].includes(row.status) && !(row.error?.code === "blocked" && expectBlocked.includes(row.site));
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   if (!process.env.OPS_TOKEN) console.warn("OPS_TOKEN is not set: scans go through the bot check, the rate limit and the daily budget.");
@@ -222,7 +238,9 @@ async function main() {
   await writeFile(path.join(options.out, "summary.json"), `${JSON.stringify({ base: options.base, startedAt, finishedAt: new Date().toISOString(), rows }, null, 2)}\n`);
   await writeFile(path.join(options.out, "summary.md"), `${rendered}\n`);
   console.log(`\n${rendered}\n\nWrote ${rows.length} results to ${path.resolve(options.out)}`);
-  const failures = rows.filter((row) => !["done", "partial"].includes(row.status));
+  const blocked = rows.filter((row) => !isFailure(row, options.expectBlocked) && row.status !== "done" && row.status !== "partial");
+  if (blocked.length) console.log(`Blocked as expected: ${blocked.map((row) => row.site).join(", ")}`);
+  const failures = rows.filter((row) => isFailure(row, options.expectBlocked));
   if (failures.length) {
     console.log(`Sites without a scan result: ${failures.map((row) => `${row.site} (${row.error?.code ?? row.status})`).join(", ")}`);
     process.exitCode = 1;
