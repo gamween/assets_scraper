@@ -125,12 +125,16 @@ function openTunnel(port: number, target: string): Promise<{ status: string; soc
   });
 }
 
+const NO_BLACKHOLE = "this kernel answers connections to a full accept queue instead of dropping their SYNs";
+
 /**
  * A loopback port whose connects never complete, standing in for a host that drops SYNs: a listener with a backlog of 1
  * on a worker thread that blocks its own event loop, so it never accepts, and filler connections that fill its accept
- * queue, after which the kernel drops new SYNs.
+ * queue. It relies on the kernel then dropping new SYNs rather than answering them, as macOS and the Linux CI runner do;
+ * another backlog clamp or overflow setting could answer them instead. So fillers are opened one at a time until one
+ * stays pending, and when they all connect or get a reset instead, this resolves null and callers skip with `NO_BLACKHOLE`.
  */
-async function listenBlackhole(): Promise<{ host: string; port: number; close(): Promise<void> }> {
+async function listenBlackhole(): Promise<{ host: string; port: number; close(): Promise<void> } | null> {
   const release = new Int32Array(new SharedArrayBuffer(4));
   const worker = new Worker(
     `const { parentPort, workerData } = require("node:worker_threads");
@@ -144,18 +148,26 @@ async function listenBlackhole(): Promise<{ host: string; port: number; close():
     { eval: true, workerData: release.buffer },
   );
   const port = await new Promise<number>((resolve, reject) => worker.once("message", resolve).once("error", reject));
-  const fillers = Array.from({ length: 8 }, () => net.connect(port, "127.0.0.1").on("error", () => {}));
-  await new Promise((resolve) => fillers[0].once("connect", resolve));
-  await new Promise((resolve) => setTimeout(resolve, 200));
-  return {
-    host: `127.0.0.1:${port}`,
-    port,
-    close: async () => {
-      for (const filler of fillers) filler.destroy();
-      Atomics.store(release, 0, 1);
-      await worker.terminate();
-    },
+  const fillers: net.Socket[] = [];
+  const close = async () => {
+    for (const filler of fillers) filler.destroy();
+    Atomics.store(release, 0, 1);
+    await worker.terminate();
   };
+  for (let attempt = 0; attempt < 32; attempt++) {
+    const filler = net.connect(port, "127.0.0.1").on("error", () => {});
+    fillers.push(filler);
+    // a loopback SYN is answered at once, so a connect still pending after 300 ms had its SYN dropped
+    const outcome = await new Promise<"connected" | "reset" | "pending">((resolve) => {
+      const timer = setTimeout(() => resolve("pending"), 300);
+      filler.once("connect", () => { clearTimeout(timer); resolve("connected"); });
+      filler.once("error", () => { clearTimeout(timer); resolve("reset"); });
+    });
+    if (outcome === "pending") return { host: `127.0.0.1:${port}`, port, close };
+    if (outcome === "reset") break;
+  }
+  await close();
+  return null;
 }
 
 /** Resolves with the milliseconds until `socket` closes, or "open" when it is still open after `waitMs`. */
@@ -381,8 +393,9 @@ describe("egress proxy guard", () => {
     expect(proxy.stats()).toMatchObject({ blocked: 0, refused: 0 });
   });
 
-  it("answers a tunnel whose upstream never completes the connect with 504 and frees its slot", async () => {
+  it("answers a tunnel whose upstream never completes the connect with 504 and frees its slot", async ({ skip }) => {
     const blackhole = await listenBlackhole();
+    if (!blackhole) return skip(NO_BLACKHOLE);
     process.env.SCAN_TEST_ALLOW_HOSTS = `${allowed.host},${blackhole.host}`;
     try {
       proxy = await startEgressProxy({ maxSockets: 1, connectTimeoutMs: 500 });
@@ -397,19 +410,25 @@ describe("egress proxy guard", () => {
     }
   });
 
-  it("applies the connect timeout to plain requests too, then the idle timeout once connected", async () => {
+  it("applies the connect timeout to plain requests too, freeing their slot, then the idle timeout once connected", async ({ skip }) => {
     const blackhole = await listenBlackhole();
+    if (!blackhole) return skip(NO_BLACKHOLE);
     const silent = net.createServer((socket) => socket.on("error", () => {}));
     await new Promise<void>((resolve) => silent.listen(0, "127.0.0.1", resolve));
     const silentHost = `127.0.0.1:${(silent.address() as net.AddressInfo).port}`;
     process.env.SCAN_TEST_ALLOW_HOSTS = `${allowed.host},${blackhole.host},${silentHost}`;
     try {
-      proxy = await startEgressProxy({ connectTimeoutMs: 500, idleTimeoutMs: 3_000 });
+      proxy = await startEgressProxy({ maxSockets: 1, connectTimeoutMs: 500, idleTimeoutMs: 3_000 });
       const start = performance.now();
       expect(await getVia(proxy.port, `http://${blackhole.host}/`)).toBe("closed");
       expect(performance.now() - start).toBeLessThan(2_500);
+      // the timed-out upstream gave back the only slot, which the proxy frees once it sees the close
+      await vi.waitFor(async () => expect(await getVia(proxy.port, `${allowed.origin}/control.html`)).toMatchObject({ status: 200 }), { timeout: 5_000, interval: 50 });
+      expect(proxy.stats()).toMatchObject({ blocked: 0 });
+      await proxy.close();
 
       // connected upstreams that stay silent get the idle timeout, not the connect timeout
+      proxy = await startEgressProxy({ connectTimeoutMs: 500, idleTimeoutMs: 3_000 });
       const tunnel = await openTunnel(proxy.port, silentHost);
       expect(tunnel.status).toBe("HTTP/1.1 200 Connection Established");
       const plain = net.connect(proxy.port, "127.0.0.1", () => plain.write(`GET http://${silentHost}/ HTTP/1.1\r\nHost: ${silentHost}\r\n\r\n`));
