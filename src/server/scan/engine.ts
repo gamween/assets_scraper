@@ -13,7 +13,7 @@ import { startCapture, type CaptureHandle } from "./capture";
 import { buildFallback, directAsset } from "./fallback";
 import { buildFontFamilies } from "./fonts";
 import { COLLECTOR_SOURCE } from "./inpage/generated/collector";
-import { InPageTimeoutError, runInPage } from "./inpage/run";
+import { InPageTimeoutError, JSON_ESCAPE_FACTOR, runInPage } from "./inpage/run";
 import { loadAndScroll, openPage, prepareForCollection, readPageFacts, type NavigationResult } from "./navigate";
 import { extractPalette } from "./palette";
 import { assembleAssets } from "./post/assemble";
@@ -68,10 +68,10 @@ const WATCHDOG_INTERVAL_MS = 500;
 const MB = 1024 * 1024;
 
 /**
- * Largest collector result in characters of JSON: its byte caps (blob bytes as base64, inline SVG markup with every
- * character escaped at worst) plus room for candidates, font rules and links.
+ * Largest collector result in characters of JSON: its byte caps (blob bytes as base64, which JSON never escapes, and
+ * inline SVG markup with every character escaped at worst) plus room for candidates, font rules and links.
  */
-const collectorResultChars = () => Math.ceil((limits.blobTotalBytes * 4) / 3) + 2 * limits.svgTotalBytes + 16 * MB;
+const collectorResultChars = () => Math.ceil((limits.blobTotalBytes * 4) / 3) + JSON_ESCAPE_FACTOR * limits.svgTotalBytes + 16 * MB;
 
 class DeadlineReached extends Error {
   constructor() {

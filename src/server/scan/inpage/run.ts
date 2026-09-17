@@ -37,6 +37,12 @@ export interface RunInPageOptions {
   createSession?: (page: Page) => Promise<CDPSession>;
 }
 
+/**
+ * The most characters of JSON one character of a string can take: `JSON.stringify` writes a control character or a
+ * lone surrogate as `\uXXXX`. Callers size `maxResultChars` for string content with it.
+ */
+export const JSON_ESCAPE_FACTOR = 6;
+
 const WORLD_NAME = "assets-scraper";
 const DEFAULT_MAX_RESULT_CHARS = 1_000_000;
 

@@ -1,7 +1,7 @@
 import type { Page } from "playwright-core";
 import { limits } from "@/server/config/limits";
 import { ScanFailure } from "@/server/errors";
-import { runInPage } from "./inpage/run";
+import { JSON_ESCAPE_FACTOR, runInPage } from "./inpage/run";
 
 export interface NavigationResult {
   status: number;
@@ -137,8 +137,10 @@ export async function readPageFacts(page: Page, options: { signal: AbortSignal; 
   const { signal } = options;
   const sampleChars = options.sampleChars ?? HTML_SAMPLE_CHARS;
   try {
-    // The sample in JSON: every character escaped at worst, plus the title.
-    const { value } = await runInPage<unknown>(page, "", pageFacts(sampleChars), { timeoutMs: READ_MS, signal, maxResultChars: 2 * (sampleChars + MAX_TITLE_CHARS) + 1_024 });
+    // The sample and the title in JSON, every character escaped at worst, plus the element count and the keys. A page
+    // over this cap would give no facts, and so no markup rules: the cap must hold for any sample.
+    const maxResultChars = JSON_ESCAPE_FACTOR * (sampleChars + MAX_TITLE_CHARS) + 1_024;
+    const { value } = await runInPage<unknown>(page, "", pageFacts(sampleChars), { timeoutMs: READ_MS, signal, maxResultChars });
     return isPageFacts(value) ? { ...value, title: value.title.trim() } : null;
   } catch {
     if (signal.aborted) throw signal.reason;

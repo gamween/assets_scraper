@@ -606,6 +606,35 @@ describe("scan engine", () => {
     }
   });
 
+  it("accepts collector output at its SVG cap when JSON escapes every character of the markup", async () => {
+    vi.stubEnv("SVG_TOTAL_BYTES", "5000000");
+    vi.stubEnv("BLOB_TOTAL_BYTES", "1");
+    // Control characters take 6 characters each in JSON (\u0001).
+    const collectorSource = `${FAKE_COLLECTOR}
+{
+  const collect = globalThis.__assetsScraper.collect;
+  globalThis.__assetsScraper.collect = async (options) => {
+    const output = await collect(options);
+    const context = { header: false, nav: false, footer: false, homeLink: false, logoWord: false, siteWord: false, logoWall: false, shadowRoot: false, iframe: false };
+    const markup = "\\u0001".repeat(options.maxSvgTotalBytes);
+    return { ...output, svgs: [{ markup, hash: "h", source: "inline", referenced: false, order: 0, visible: true, context, usedCount: 1, hasLiveText: false, elementCount: 1 }] };
+  };
+}`;
+    let markupChars = 0;
+    const { deps } = testDeps({
+      collectorSource,
+      assembleAssets: (input) => {
+        markupChars = input.collector.svgs[0]?.markup.length ?? 0;
+        return fakeAssets(input);
+      },
+    });
+    const events = await scan(deps, `${fixture.origin}/`);
+    const done = events.at(-1);
+    if (done?.type !== "done") throw new Error(`expected done, got ${done && describeEvent(done)}`);
+    expect(done.partial).toBe(false);
+    expect(markupChars).toBe(5_000_000);
+  });
+
   it("keeps the network results when the browser dies during collection", async () => {
     vi.stubEnv("COLLECT_MS", "60000");
     const log = vi.spyOn(console, "error").mockImplementation(() => {});

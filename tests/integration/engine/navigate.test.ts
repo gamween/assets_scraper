@@ -46,6 +46,8 @@ beforeAll(async () => {
       const rows = Array.from({ length: 6000 }, (_, i) => `<div class="row" data-note="${"n".repeat(200)}">Row ${i}</div>`).join("");
       res.end(`<!doctype html><html><head><title>Heavy</title><script src="/cdn-cgi/challenge-platform/scripts/jsd/main.js"></script><script>window._pxAppId = "PX123";</script></head><body>${rows}<script>/* ${"x".repeat(50_000)} */</script><div id="px-captcha"></div></body></html>`);
     },
+    // Control characters take 6 characters each in JSON (\u0001).
+    "/control.html": html(`<script>/*${"\u0001".repeat(20_000)}*/</script><div id="px-captcha"></div>`),
     "/patched.html": html(`<div>One</div><div>Two</div><script>document.getElementsByTagName = () => ({ length: 1e9 }); Object.defineProperty(document, "title", { get: () => "Just a moment..." });</script>`),
   });
   proxy = await startTestProxy({ allow: [fixture.host] });
@@ -100,6 +102,16 @@ describe("readPageFacts", () => {
       expect(facts?.htmlSample).toContain('<script src="/cdn-cgi/challenge-platform/scripts/jsd/main.js">');
       expect(facts?.htmlSample).toContain('window._pxAppId = "PX123"');
       expect(facts?.htmlSample).not.toContain("px-captcha");
+    });
+  });
+
+  it("reads a sample made of characters that JSON escapes at length", async () => {
+    await onBrowser(async (page) => {
+      await openPage(page, `${fixture.origin}/control.html`, { signal: idle() });
+      const facts = await readPageFacts(page, { signal: idle(), sampleChars: 4000 });
+      expect(facts?.title).toBe("Test");
+      expect(facts?.htmlSample.length).toBe(4000);
+      expect(facts?.htmlSample).toContain("\u0001".repeat(3000));
     });
   });
 
