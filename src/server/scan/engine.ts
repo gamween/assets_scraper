@@ -19,6 +19,7 @@ import { loadAndScroll, MAX_TITLE_CHARS, openPage, prepareForCollection, readPag
 import { extractPalette } from "./palette";
 import { assembleAssets } from "./post/assemble";
 import { cutText, MAX_SITE_NAME_CHARS, preflight, type PreflightResult } from "./preflight";
+import { NO_ORIGINAL_PROBES } from "./types";
 import type { AssetsOutput, CapturedNetwork, CollectorOptions, FontsOutput, PageContext, PostInput, RawCollectorOutput, SafeFetch, ScanBackend, Signer } from "./types";
 
 export interface ScanEngineDeps {
@@ -316,6 +317,7 @@ async function runScan({ url, deps, cancel, emit }: ScanContext): Promise<void> 
     queueMs: 0,
     egress: { bytes: 0, blocked: 0 },
     bodyTimeouts: 0,
+    originals: NO_ORIGINAL_PROBES,
     // Set by the collector when it starts in a world (see onWorld below).
     collector: "none",
     version: process.env.VERCEL_GIT_COMMIT_SHA ?? "dev",
@@ -385,8 +387,9 @@ async function runScan({ url, deps, cancel, emit }: ScanContext): Promise<void> 
     if (!assetsResult && !fontsResult) throw new ScanFailure("timeout", "Processing the page took too long");
     const processedPartly = !assetsResult || !fontsResult;
     // assembleAssets reports the collector's drops in its own `hidden`; when it ran out of time, they are reported here.
-    const assetsOut: AssetsOutput = assetsResult?.value ?? { assets: [], hidden: collector.noise, warnings: [] };
+    const assetsOut: AssetsOutput = assetsResult?.value ?? { assets: [], hidden: collector.noise, warnings: [], originals: NO_ORIGINAL_PROBES };
     const fontsOut: FontsOutput = fontsResult?.value ?? { families: [], hidden: {} };
+    diagnostics.originals = assetsOut.originals;
     // One signer and cap per scan (spec 11.2): assets sign inside assembleAssets, font files only after it, so the
     // assets keep the priority whichever task finishes first.
     const fontsCapped = signFontFiles(fontsOut.families, postInput.signer);

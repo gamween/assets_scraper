@@ -143,6 +143,41 @@ describe("assembleAssets hidden counts", () => {
   });
 });
 
+describe("assembleAssets CDN original probes", () => {
+  const transformed = `${PAGE}media/photo.png?w=400&q=80`;
+
+  it("counts a candidate whose probe failed, instead of falling back to the page's bytes in silence", async () => {
+    const collector = collectorOutput({ candidates: [candidate(transformed, 1, 1, { visible: true })] });
+    // notFound answers the original with a 404, so the group keeps the transformed URL the page served.
+    const { assets, originals } = await run(collector, [captured(transformed)]);
+    expect(assets.map((asset) => asset.original?.url)).toEqual([transformed]);
+    expect(originals).toEqual({ attempted: 1, adopted: 0, failed: 1, noise: 0, skipped: 0 });
+  });
+
+  it("counts a candidate it adopted", async () => {
+    const original = `${PAGE}media/photo.png`;
+    // 64x64, so the noise rules keep it: a tiny original would be rejected and counted as noise, not adopted.
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAAT0lEQVRo3u3PQQkAAAgEsHub2IjGMoJvYbACS/W8FgEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQGBywJ466EtZ6dwxgAAAABJRU5ErkJggg==", "base64");
+    const serveOriginal: SafeFetch = async (url) =>
+      url === original
+        ? {
+            url, status: 200, headers: new Headers({ "content-type": "image/png", "content-length": String(png.length) }), redirected: false,
+            stream: () => new ReadableStream({ start: (c) => { c.enqueue(png); c.close(); } }),
+            buffer: async () => png, text: async () => "", json: async <T>() => ({}) as T, cancel: async () => {},
+          }
+        : notFound(url);
+    const collector = collectorOutput({ candidates: [candidate(transformed, 1, 1, { visible: true })] });
+    const input: PostInput = {
+      collector, network: { images: [captured(transformed)], fonts: [], sheets: [], bodyTimeouts: 0, skippedBodies: 0 },
+      page: { requestedUrl: PAGE, finalUrl: PAGE, host: "shop.example", siteName: "Shop", title: "Shop" },
+      signer: { sign: proxyOf, count: 0 }, fetch: serveOriginal, signal: new AbortController().signal, deadline: Date.now() + 60_000,
+    };
+    const { assets, originals } = await assembleAssets(input);
+    expect(assets.map((asset) => asset.original?.url)).toEqual([original]);
+    expect(originals).toMatchObject({ adopted: 1, failed: 0, noise: 0, skipped: 0 });
+  });
+});
+
 describe("assembleAssets empty captures", () => {
   it("checks an image captured with an empty body again instead of keeping it", async () => {
     const url = `${PAGE}stream.png`;

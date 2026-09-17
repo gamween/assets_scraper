@@ -159,7 +159,7 @@ const fakeAssets = async (input: PostInput): Promise<AssetsOutput> => {
     order: 0, score: 100, usedCount: 1, tone: photo?.tone ?? "unknown", display: source, original: source,
   };
   // Like the real assembleAssets, hidden holds the collector's drops and adds what post-processing drops.
-  return { assets: [asset], hidden: { ...input.collector.noise, spacer: 2 }, warnings: [] };
+  return { assets: [asset], hidden: { ...input.collector.noise, spacer: 2 }, warnings: [], originals: { attempted: 0, adopted: 0, failed: 0, noise: 0, skipped: 0 } };
 };
 const fakeFonts = async (): Promise<FontsOutput> => ({ families: [], hidden: {} });
 

@@ -3,7 +3,7 @@ import sharp from "sharp";
 import type { Asset, AssetFormat, AssetKind, AssetSource, FoundIn, HiddenReason, Tone, WarningCode } from "@/lib/contract";
 import { limits } from "@/server/config/limits";
 import { SignLimitError } from "@/server/security/sign";
-import type { AssetsOutput, CapturedImage, CandidateContext, PostInput, RawCandidate } from "../types";
+import type { AssetsOutput, CapturedImage, CandidateContext, OriginalProbes, PostInput, RawCandidate } from "../types";
 import { originalCandidates, variantKey } from "./cdn";
 import { extensionFor, formatFromContentType, formatFromUrl, sniffFormat } from "./format";
 import { createFilenamer, displayName } from "./naming";
@@ -127,6 +127,7 @@ export async function assembleAssets(input: PostInput): Promise<AssetsOutput> {
     });
 
     let probes = 0;
+    const originals: OriginalProbes = { attempted: 0, adopted: 0, failed: 0, noise: 0, skipped: 0 };
     const resolve = async (members: UrlRecord[], best: UrlRecord): Promise<Resolved> => {
       const byUrl = new Map(members.map((member) => [member.url, member]));
       const attempts = new Set<string>();
@@ -139,6 +140,8 @@ export async function assembleAssets(input: PostInput): Promise<AssetsOutput> {
         const member = byUrl.get(url);
         if (member?.inline) return { kind: "inline", member };
         if (member?.capture) {
+          // Falling back to the page's own bytes ends the group, so a skip recorded above would never be reported.
+          if (skipped) warnings.add("verify-skipped");
           return {
             kind: "remote", url, format: formatOf(member), contentType: member.contentType ?? "", tone: member.capture.tone,
             bytes: member.bytes, markup: member.capture.svgText, ...sizeOf(member),
@@ -153,21 +156,31 @@ export async function assembleAssets(input: PostInput): Promise<AssetsOutput> {
           }
           probes++;
         }
+        // A URL that is not one of the group's own members is a CDN original candidate: count what becomes of it.
+        const isCandidate = member === undefined;
+        if (isCandidate) originals.attempted += 1;
         const result = await limiter.run((signal) => verifyUrl(url, { fetch: input.fetch, pageUrl, signal, deadline: verifyDeadline }));
         if (result.ok) {
           // The noise rules again, with the size and type the request found (spec 8.2): a 2x2 file is noise wherever it was declared.
           const reason = noiseReason({ url, contentType: result.contentType, width: result.width, height: result.height, bytes: result.bytes });
           if (reason) {
+            if (isCandidate) originals.noise += 1;
             noise ??= reason;
             continue;
           }
+          if (isCandidate) originals.adopted += 1;
           return {
             kind: "remote", url, format: result.format, contentType: result.contentType, width: result.width, height: result.height,
             bytes: result.bytes, body: result.body,
           };
         }
-        if (result.reason === "verify-skipped") skipped = true;
-        else failed = true;
+        if (result.reason === "verify-skipped") {
+          skipped = true;
+          if (isCandidate) originals.skipped += 1;
+        } else {
+          failed = true;
+          if (isCandidate) originals.failed += 1;
+        }
       }
       if (skipped) {
         warnings.add("verify-skipped");
@@ -204,7 +217,7 @@ export async function assembleAssets(input: PostInput): Promise<AssetsOutput> {
     const drafts = rank([...fileDrafts.filter((draft): draft is Draft => draft !== null), ...inlineSvgAssets(input, hide)], warnings);
     // Tones last, in relevance order: the time budget only counts tone work, never the fetches above.
     await applyTones(drafts);
-    return { assets: finish(drafts, input, warnings), hidden, warnings: [...warnings] };
+    return { assets: finish(drafts, input, warnings), hidden, warnings: [...warnings], originals };
   } finally {
     limiter.close();
   }
