@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
 import type http from "node:http";
+import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { gzipSync } from "node:zlib";
 import type { Page, Response } from "playwright-core";
 import sharp from "sharp";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -30,9 +32,44 @@ const slowImages = Object.fromEntries(
   ]),
 );
 
+/** The same noise PNGs sent gzip-encoded with their compressed length declared, the body a little later. */
+const slowGzipImages = Object.fromEntries(
+  Array.from({ length: 8 }, (_, i): [string, http.RequestListener] => [
+    `/slow-gzip/${i}.png`,
+    (_req, res) => {
+      void noisePng.then((png) => {
+        const body = gzipSync(png);
+        res.writeHead(200, { "content-type": "image/png", "content-encoding": "gzip", "content-length": String(body.length) });
+        res.flushHeaders();
+        setTimeout(() => res.end(body), 400);
+      });
+    },
+  ]),
+);
+
+const gzipped = (contentType: string, text: string) => (_req: http.IncomingMessage, res: http.ServerResponse) => {
+  const body = gzipSync(text);
+  res.writeHead(200, { "content-type": contentType, "content-encoding": "gzip", "content-length": String(body.length) });
+  res.end(body);
+};
+/** Base64 of random bytes: gzip saves only about a quarter of it. */
+const bigSvg = `<svg xmlns="http://www.w3.org/2000/svg"><!-- ${randomBytes(90_000).toString("base64")} --></svg>`;
+const smallSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>';
+
 beforeAll(async () => {
   fixture = await serveFixture({
     ...slowImages,
+    ...slowGzipImages,
+    "/gzip/big.svg": gzipped("image/svg+xml", bigSvg),
+    "/gzip/small.svg": gzipped("image/svg+xml", smallSvg),
+    "/gzip.html": (_req, res) => {
+      res.writeHead(200, { "content-type": "text/html" });
+      res.end('<!doctype html><title>Gzip</title><img src="/gzip/big.svg"><img src="/gzip/small.svg">');
+    },
+    "/many-gzip.html": (_req, res) => {
+      res.writeHead(200, { "content-type": "text/html" });
+      res.end(`<!doctype html><title>Many gzip</title>${Array.from({ length: 8 }, (_, i) => `<img src="/slow-gzip/${i}.png">`).join("")}`);
+    },
     "/hang.html": (_req, res) => {
       res.writeHead(200, { "content-type": "text/html" });
       res.end('<!doctype html><title>Hang</title><img src="/hang.png"><img src="/moved.png"><link rel="stylesheet" href="/assets/style.css">');
@@ -186,6 +223,81 @@ describe("startCapture", () => {
       expect(maxInFlight).toBe(2);
       expect(network.images.filter((image) => image.sha1).map((image) => image.bytes)).toEqual([size, size, size, size]);
       expect(network.skippedBodies).toBe(4);
+    } finally {
+      restore();
+    }
+  });
+
+  it("never reads an encoded body declared over a quarter of the body cap, and reads small encoded bodies decoded", async () => {
+    vi.stubEnv("BODY_MAX_BYTES", "100000");
+    const reads: string[] = [];
+    let restore = () => {};
+    try {
+      const network = await onBrowser(async (page) => {
+        page.once("response", (response) => {
+          const prototype = Object.getPrototypeOf(response) as { body: Response["body"] };
+          const body = prototype.body;
+          prototype.body = function (this: Response) {
+            reads.push(new URL(this.url()).pathname);
+            return body.call(this);
+          };
+          restore = () => (prototype.body = body);
+        });
+        const capture = startCapture(page, { signal: new AbortController().signal, toneFromBytes: async () => "unknown" });
+        await page.goto(`${fixture.origin}/gzip.html`, { waitUntil: "load" });
+        return capture.settle(5000);
+      });
+      const big = network.images.find((image) => image.url.endsWith("/gzip/big.svg"));
+      // About 90 KB on the wire for 120 KB of markup: the declared length is under the cap, the body is not.
+      expect(gzipSync(bigSvg).length).toBeGreaterThan(25_000);
+      expect(Buffer.byteLength(bigSvg)).toBeGreaterThan(100_000);
+      expect(big).toMatchObject({ status: 200, contentType: "image/svg+xml" });
+      expect(big?.sha1).toBeUndefined();
+      expect(reads).not.toContain("/gzip/big.svg");
+      expect(network.skippedBodies).toBeGreaterThanOrEqual(1);
+      const small = network.images.find((image) => image.url.endsWith("/gzip/small.svg"));
+      expect(small?.svgText).toBe(smallSvg);
+      expect(small?.bytes).toBe(Buffer.byteLength(smallSvg));
+    } finally {
+      restore();
+    }
+  });
+
+  it("reserves the per-body cap for an encoded body, whose declared length is only a lower bound", async () => {
+    vi.stubEnv("BODY_MAX_BYTES", "400000");
+    vi.stubEnv("BODY_TOTAL_BYTES", "1000000");
+    let restore = () => {};
+    let inFlight = 0;
+    let maxInFlight = 0;
+    let finished = 0;
+    try {
+      const network = await onBrowser(async (page) => {
+        page.once("response", (response) => {
+          const prototype = Object.getPrototypeOf(response) as { body: Response["body"] };
+          const body = prototype.body;
+          prototype.body = async function (this: Response) {
+            inFlight += 1;
+            maxInFlight = Math.max(maxInFlight, inFlight);
+            try {
+              return await body.call(this);
+            } finally {
+              inFlight -= 1;
+              finished += 1;
+            }
+          };
+          restore = () => (prototype.body = body);
+        });
+        const capture = startCapture(page, { signal: new AbortController().signal, toneFromBytes: async () => "unknown" });
+        await page.goto(`${fixture.origin}/many-gzip.html`, { waitUntil: "load" });
+        // Reads still queued when capture settles never start: wait for all of them first.
+        await expect.poll(() => finished, { timeout: 10_000 }).toBe(8);
+        return capture.settle(5000);
+      });
+      // Each declares about 60 KB, under a quarter of the cap, but reserves 400 KB: two fit in 1 MB at a time.
+      const size = (await noisePng).length;
+      expect(gzipSync(await noisePng).length).toBeLessThan(100_000);
+      expect(maxInFlight).toBe(2);
+      expect(network.images.filter((image) => image.url.includes("/slow-gzip/") && image.sha1).map((image) => image.bytes)).toEqual(Array.from({ length: 8 }, () => size));
     } finally {
       restore();
     }

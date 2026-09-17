@@ -27,6 +27,11 @@ export interface CaptureOptions {
  * endless distinct URLs would otherwise grow the records and the queue of pending reads without limit.
  */
 const MAX_RECORDS = 4_000;
+/**
+ * An encoded body (gzip, br) declared over this fraction of the per-body cap is skipped unread: the text formats the
+ * capture reads (SVG, CSS) decode to 4 to 10 times their compressed size, so it would almost always be over the cap.
+ */
+const ENCODED_EXPANSION = 4;
 const FONT_TYPE = /font|woff|opentype|truetype|sfnt/i;
 const FONT_EXTENSION = /\.(woff2?|ttf|otf|eot)(?:[?#]|$)/i;
 const SVG = (url: string, contentType: string) => /image\/svg/i.test(contentType) || /\.svgz?(?:[?#]|$)/i.test(url);
@@ -59,6 +64,13 @@ const timeoutAfter = <T>(promise: Promise<T>, ms: number): Promise<T> =>
  * Playwright hands over a body only whole, so the total cap works by reservation: a read starts only when its declared
  * length, or the per-body cap when no length is declared, still fits next to the bytes already read and the reads in
  * flight. A read that does not fit waits for those to finish.
+ *
+ * `content-length` counts the bytes on the wire, but Playwright hands over the decoded body. So an encoded body
+ * (`content-encoding` other than identity) reserves the per-body cap like a body with no declared length, and one
+ * declared over a quarter of the cap is skipped unread (see ENCODED_EXPANSION). Limit: the real size of a body is only
+ * known once Playwright has read it whole into Node memory. The caps apply to that size, so a body with no declared
+ * length, or one that decodes to far more than its declared length, is bounded by what the browser holds (and the
+ * memory watchdog), not by the per-body cap.
  */
 export function startCapture(page: Page, options: CaptureOptions): CaptureHandle {
   const tone = options.toneFromBytes ?? toneFromBytes;
@@ -90,16 +102,21 @@ export function startCapture(page: Page, options: CaptureOptions): CaptureHandle
    * stops never start.
    */
   const schedule = (response: Response, read: (body: Buffer) => Promise<void> | void) => {
-    // Undefined gives NaN: no declared length.
-    const declared = Number(response.headers()["content-length"]);
+    const headers = response.headers();
+    // Undefined gives NaN: no declared length. With an encoding, the declared length is only a lower bound of the body.
+    const declared = Number(headers["content-length"]);
     const known = Number.isFinite(declared);
-    if (known && (declared > limits.bodyMaxBytes || bytesRead + declared > limits.bodyTotalBytes)) {
+    const encoding = headers["content-encoding"]?.trim().toLowerCase();
+    const encoded = Boolean(encoding) && encoding !== "identity";
+    const maxDeclared = encoded ? limits.bodyMaxBytes / ENCODED_EXPANSION : limits.bodyMaxBytes;
+    if (known && (declared > maxDeclared || bytesRead + declared > limits.bodyTotalBytes)) {
       skippedBodies += 1;
       return;
     }
+    const reservation = known && !encoded ? declared : limits.bodyMaxBytes;
     const job = new Promise<void>((resolve) => {
       queue.push({
-        reserve: known ? declared : limits.bodyMaxBytes,
+        reserve: reservation,
         drop: resolve,
         start: () => {
           // Started alone because it did not fit: what is left of the total still has to hold a declared length.
@@ -108,7 +125,7 @@ export function startCapture(page: Page, options: CaptureOptions): CaptureHandle
             skippedBodies += 1;
             return resolve();
           }
-          const reserve = Math.min(known ? declared : limits.bodyMaxBytes, left);
+          const reserve = Math.min(reservation, left);
           reading += 1;
           reserved += reserve;
           readBody(response)
@@ -146,7 +163,7 @@ export function startCapture(page: Page, options: CaptureOptions): CaptureHandle
 
   /**
    * The body within the caps, or undefined (counted as a timeout or a skip). A declared length can be smaller than the
-   * body (it counts compressed bytes), so the caps are checked again on the real size.
+   * body (it counts encoded bytes), so the caps are checked again on the real size, once the body is in memory.
    */
   const readBody = async (response: Response): Promise<Buffer | undefined> => {
     let body: Buffer;
