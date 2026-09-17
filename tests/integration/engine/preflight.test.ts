@@ -26,6 +26,19 @@ beforeAll(async () => {
       res.writeHead(403, { "content-type": "text/html" });
       res.end('<html><head><title>Access denied</title><link rel="icon" href="/assets/touch.png"></head></html>');
     },
+    "/wall": (_req, res) => {
+      res.writeHead(403, { "content-type": "text/plain" });
+      res.end("error code: 1010");
+    },
+    "/limited": (_req, res) => {
+      res.writeHead(429, { "content-type": "application/json" });
+      res.end('{"error":"rate limited"}');
+    },
+    "/large.html": (_req, res) => {
+      const body = Buffer.from(`<!doctype html><html><head><title>Large</title><link rel="icon" href="/large.png"></head><body>${"<p>filler</p>".repeat(2000)}</body></html>`);
+      res.writeHead(200, { "content-type": "text/html", "content-length": String(body.length) });
+      res.end(body);
+    },
     "/gone": (_req, res) => {
       res.writeHead(404, { "content-type": "text/html" });
       res.end("<title>Not found</title>");
@@ -76,7 +89,26 @@ describe("preflight", () => {
 
   it("returns no head for a file", async () => {
     const result = await preflight(`${fixture.origin}/report.pdf`, { fetch, signal: signal() });
-    expect(result).toMatchObject({ status: 200, contentType: "application/pdf", head: null });
+    expect(result).toMatchObject({ status: 200, contentType: "application/pdf", head: null, file: true });
+    expect((await preflight(`${fixture.origin}/`, { fetch, signal: signal() })).file).toBe(false);
+  });
+
+  it("never calls a bot wall answered in text or JSON a file", async () => {
+    expect(await preflight(`${fixture.origin}/wall`, { fetch, signal: signal() })).toMatchObject({ status: 403, contentType: "text/plain", head: null, file: false });
+    expect(await preflight(`${fixture.origin}/limited`, { fetch, signal: signal() })).toMatchObject({ status: 429, contentType: "application/json", head: null, file: false });
+  });
+
+  it("reads the head of a page whose declared length is over the preflight cap", async () => {
+    vi.stubEnv("PREFLIGHT_MAX_BYTES", "4096");
+    const result = await preflight(`${fixture.origin}/large.html`, { fetch, signal: signal() });
+    expect(result.head).toMatchObject({ title: "Large", icons: [{ href: `${fixture.origin}/large.png`, rel: "icon" }] });
+  });
+
+  it("leaves a page that redirects too many times to the browser", async () => {
+    const looping: SafeFetch = async () => {
+      throw new SafeFetchError("too-many-redirects", "More than 5 redirects");
+    };
+    expect(await preflight("https://example.com/", { fetch: looping, signal: signal() })).toEqual({ finalUrl: "https://example.com/", status: 0, contentType: "", headers: {}, head: null, file: false });
   });
 
   it("maps blocked addresses and DNS failures", async () => {
@@ -90,7 +122,6 @@ describe("preflight", () => {
     ["connect", "connect"],
     ["own-host", "own-host"],
     ["unsupported-port", "unsupported-port"],
-    ["too-many-redirects", "http"],
   ] as const)("maps safeFetch %s to %s", async (code, expected) => {
     const failing: SafeFetch = async () => {
       throw new SafeFetchError(code, code);

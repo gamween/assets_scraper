@@ -15,10 +15,13 @@ export interface PageHead {
 
 export interface PreflightResult {
   finalUrl: string;
+  /** 0 when the preflight gave up on the page and left it to the browser. */
   status: number;
   contentType: string;
   headers: Record<string, string>;
   head: PageHead | null;
+  /** The URL answered successfully with something other than HTML: `not-html` (spec 7.2 phase 1). */
+  file: boolean;
 }
 
 /** parseHead reads at most this many characters of the document. */
@@ -211,7 +214,8 @@ const HTML_TYPES = new Set(["text/html", "application/xhtml+xml"]);
 /** Statuses that often come with a bot wall: the browser still gets a chance (spec 7.2 phase 1). */
 const SCANNABLE_ERRORS = new Set([403, 429, 503]);
 
-const FAILURE: Record<SafeFetchErrorCode, { code: ErrorCode; message: string }> = {
+/** `too-many-redirects` is not here: the browser gets its own try (see `preflight`). */
+const FAILURE: Record<Exclude<SafeFetchErrorCode, "too-many-redirects">, { code: ErrorCode; message: string }> = {
   "invalid-url": { code: "invalid-url", message: "The address is not a valid web address" },
   "blocked-address": { code: "blocked-address", message: "Local and private network addresses are blocked" },
   "own-host": { code: "own-host", message: "The scanner cannot scan itself" },
@@ -220,13 +224,12 @@ const FAILURE: Record<SafeFetchErrorCode, { code: ErrorCode; message: string }> 
   connect: { code: "connect", message: "The host could not be reached" },
   timeout: { code: "timeout", message: "The page took too long to answer" },
   aborted: { code: "timeout", message: "The page took too long to answer" },
-  "too-many-redirects": { code: "http", message: "The page redirects too many times" },
   "too-large": { code: "internal", message: "The page was larger than expected" },
 };
 
 function toScanFailure(error: unknown, signal: AbortSignal): unknown {
   if (signal.aborted) return signal.reason;
-  if (!(error instanceof SafeFetchError)) return error;
+  if (!(error instanceof SafeFetchError) || error.code === "too-many-redirects") return error;
   const { code, message } = FAILURE[error.code];
   return new ScanFailure(code, message);
 }
@@ -258,7 +261,10 @@ async function readStart(response: SafeResponse, maxBytes: number, signal: Abort
 /**
  * Spec 7.2 phase 1: fetch the page through `safeFetch` before any browser work. Maps network and address failures to
  * scan errors, stops on HTTP errors other than 403, 429 and 503, and parses the head of HTML pages for the fallback.
- * A response that is not HTML resolves with `head: null`; the caller decides what to do with it.
+ * Only a successful response that is not HTML is a `file`: a bot wall often answers a 403, 429 or 503 in plain text or
+ * JSON, and the browser still gets its chance. A redirect loop or a long redirect chain also goes on to the browser,
+ * which keeps cookies (sites that set a cookie and redirect loop without one) and allows more hops; its egress proxy
+ * checks every connection, and a real loop fails there as `connect`.
  */
 export async function preflight(url: string, options: { fetch: SafeFetch; signal: AbortSignal }): Promise<PreflightResult> {
   const { signal } = options;
@@ -267,8 +273,13 @@ export async function preflight(url: string, options: { fetch: SafeFetch; signal
   const deadline = AbortSignal.any([signal, AbortSignal.timeout(limits.preflightMs)]);
   let response: SafeResponse;
   try {
-    response = await options.fetch(url, { method: "GET", headers: { accept: "text/html,*/*;q=0.8" }, maxBytes, timeoutMs: limits.preflightMs, signal: deadline });
+    // No byte cap in safeFetch: it refuses a body whose declared length is over its cap before the first byte, and the
+    // head of a large page is still needed. `readStart` stops after `maxBytes` and cancels the rest.
+    response = await options.fetch(url, { method: "GET", headers: { accept: "text/html,*/*;q=0.8" }, maxBytes: Number.MAX_SAFE_INTEGER, timeoutMs: limits.preflightMs, signal: deadline });
   } catch (error) {
+    if (!signal.aborted && error instanceof SafeFetchError && error.code === "too-many-redirects") {
+      return { finalUrl: url, status: 0, contentType: "", headers: {}, head: null, file: false };
+    }
     throw toScanFailure(error, signal);
   }
 
@@ -283,11 +294,11 @@ export async function preflight(url: string, options: { fetch: SafeFetch; signal
   }
   if (contentType && !HTML_TYPES.has(contentType)) {
     await response.cancel().catch(() => {});
-    return { ...result, head: null };
+    return { ...result, head: null, file: response.status < 400 };
   }
   const html = await readStart(response, maxBytes, deadline);
   signal.throwIfAborted();
   // No content type at all: trust the markup only if it looks like a document.
-  if (!contentType && !/^\s*(<!doctype html|<html|<head|<body)/i.test(html)) return { ...result, head: null };
-  return { ...result, head: parseHead(html, response.url) };
+  if (!contentType && !/^\s*(<!doctype html|<html|<head|<body)/i.test(html)) return { ...result, head: null, file: false };
+  return { ...result, head: parseHead(html, response.url), file: false };
 }

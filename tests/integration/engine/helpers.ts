@@ -94,7 +94,8 @@ type Route = (url: URL) => Response | Promise<Response>;
 /**
  * Stand-in for `safeFetch` (Track A): global fetch restricted to `allow` (`host:port` pairs), plus canned `routes`
  * keyed by URL prefix. Everything else fails the way safeFetch fails: `.invalid` hosts with `dns`, the rest with
- * `blocked-address`.
+ * `blocked-address`. Bodies keep safeFetch's byte cap: a declared length over `maxBytes` (25 MB by default) errors the
+ * stream before the first byte, and so does a body that grows past it.
  */
 export function createFakeFetch(options: { allow?: string[]; routes?: Record<string, Route> } = {}): SafeFetch & { calls: string[] } {
   const allowed = new Set(options.allow ?? []);
@@ -121,22 +122,48 @@ export function createFakeFetch(options: { allow?: string[]; routes?: Record<str
     } else {
       throw new SafeFetchError("blocked-address", `${url.host} is not a public address`);
     }
-    return toSafeResponse(input, response);
+    return toSafeResponse(input, response, init.maxBytes ?? 25 * 1024 * 1024);
   };
   return Object.assign(fetchFn, { calls });
 }
 
-function toSafeResponse(requested: string, response: Response): SafeResponse {
-  const empty = () => new ReadableStream<Uint8Array>({ start: (controller) => controller.close() });
+function toSafeResponse(requested: string, response: Response, maxBytes: number): SafeResponse {
+  const stream = (): ReadableStream<Uint8Array> => {
+    const reader = response.body?.getReader();
+    let total = 0;
+    const tooLarge = (controller: ReadableStreamDefaultController<Uint8Array>, detail: string) => {
+      void reader?.cancel().catch(() => {});
+      controller.error(new SafeFetchError("too-large", detail));
+    };
+    return new ReadableStream<Uint8Array>(
+      {
+        start(controller) {
+          if (!reader) return controller.close();
+          const declared = Number(response.headers.get("content-length"));
+          if (!response.headers.has("content-encoding") && Number.isFinite(declared) && declared > maxBytes) tooLarge(controller, `Declared ${declared} bytes, over ${maxBytes}`);
+        },
+        async pull(controller) {
+          const chunk = await (reader as ReadableStreamDefaultReader<Uint8Array>).read();
+          if (chunk.done) return controller.close();
+          total += chunk.value.byteLength;
+          if (total > maxBytes) return tooLarge(controller, `Body over ${maxBytes} bytes`);
+          controller.enqueue(chunk.value);
+        },
+        cancel: (reason) => reader?.cancel(reason),
+      },
+      { highWaterMark: 0 },
+    );
+  };
+  const buffer = async () => Buffer.from(await new Response(stream()).arrayBuffer());
   return {
     url: response.url || requested,
     status: response.status,
     headers: response.headers,
     redirected: response.redirected,
-    stream: () => response.body ?? empty(),
-    buffer: async () => Buffer.from(await response.arrayBuffer()),
-    text: () => response.text(),
-    json: <T>() => response.json() as Promise<T>,
+    stream,
+    buffer,
+    text: async () => (await buffer()).toString("utf8"),
+    json: async <T>() => JSON.parse((await buffer()).toString("utf8")) as T,
     cancel: async () => {
       await response.body?.cancel().catch(() => {});
     },
