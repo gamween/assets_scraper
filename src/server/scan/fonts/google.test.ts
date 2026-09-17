@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fakeGoogleFetch, fakeResponse } from "../../../../tests/integration/fonts/fake-google";
-import { clearGoogleFontsCache, googleFontsCssUrl, matchGoogleFamilies } from "./google";
+import { clearGoogleFontsCache, googleFontsCacheSize, googleFontsCssUrl, matchGoogleFamilies } from "./google";
+import { fakeGoogleFetch, fakeResponse } from "./testing";
 
 beforeEach(() => clearGoogleFontsCache());
 afterEach(() => vi.useRealTimers());
@@ -52,6 +52,29 @@ describe("matchGoogleFamilies", () => {
     vi.setSystemTime(new Date("2026-09-17T10:05:01Z"));
     await matchGoogleFamilies(["Inter", "Brand Serif"], { fetch });
     expect(fetch.calls).toHaveLength(4);
+  });
+
+  it("keeps at most 1,000 answers, dropping expired ones first and then the oldest", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-17T10:00:00Z"));
+    const names = (from: number, count: number) => Array.from({ length: count }, (_, index) => `Family ${from + index}`);
+    const fetch = fakeGoogleFetch([]);
+    await matchGoogleFamilies(names(0, 600), { fetch, maxNames: 600 });
+    vi.setSystemTime(new Date("2026-09-17T10:04:00Z"));
+    await matchGoogleFamilies(names(600, 300), { fetch, maxNames: 300 });
+    expect(googleFontsCacheSize()).toBe(900);
+
+    // The first 600 expire at 10:05, so writing after that drops them all
+    vi.setSystemTime(new Date("2026-09-17T10:05:01Z"));
+    await matchGoogleFamilies(names(900, 1), { fetch });
+    expect(googleFontsCacheSize()).toBe(301);
+
+    // Full of live answers, the oldest ones go
+    await matchGoogleFamilies(names(901, 1_000), { fetch, maxNames: 1_000 });
+    expect(googleFontsCacheSize()).toBe(1_000);
+    fetch.calls.length = 0;
+    await matchGoogleFamilies(["Family 600", "Family 1900"], { fetch });
+    expect(fetch.calls.map((call) => new URL(call.url).searchParams.get("family"))).toEqual(["Family 600"]);
   });
 
   it("does not request anything once the signal is aborted", async () => {

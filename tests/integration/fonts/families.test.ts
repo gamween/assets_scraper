@@ -5,10 +5,10 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { FontFamily, type FontFile } from "@/lib/contract";
 import { buildFontFamilies } from "@/server/scan/fonts";
 import { clearGoogleFontsCache } from "@/server/scan/fonts/google";
+import { fakeGoogleFetch } from "@/server/scan/fonts/testing";
 import { parseUnicodeRange } from "@/server/scan/fonts/unicode";
 import type { PostInput } from "@/server/scan/types";
 import { serveFixture, type FixtureServer } from "../../fixtures/serve";
-import { fakeGoogleFetch } from "./fake-google";
 import { fakeSigner, launchChrome, scanPageFonts } from "./harness";
 
 const SITE = path.join(import.meta.dirname, "../../fixtures/site");
@@ -129,11 +129,10 @@ describe("buildFontFamilies on the fixture site", () => {
     }
     expect([...signer.signed].sort()).toEqual(files.map((file) => file.url).sort());
 
-    // ids are unique, and only used families were checked against Google Fonts
+    // ids are unique, and only used families were checked against Google Fonts, Brand Serif by its binary name only
     expect(new Set(families.map((family) => family.id)).size).toBe(families.length);
     const asked = fetch.calls.map((call) => new URL(call.url).searchParams.get("family"));
-    expect(asked).toEqual(expect.arrayContaining(["Inter", "Brand Serif", "Source Sans 3"]));
-    expect(asked).not.toContain("Unused Face");
+    expect([...asked].sort()).toEqual(["Inter", "Source Sans 3"]);
   });
 
   it("carries data: URI fonts inline, without a URL or a signature", async () => {

@@ -3,11 +3,12 @@ import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { FontFamily } from "@/lib/contract";
 import { SignLimitError } from "@/server/security/sign";
-import { fakeGoogleFetch } from "../../../../tests/integration/fonts/fake-google";
 import type { CapturedFont, CapturedSheet, PostInput, RawCollectorOutput, Signer } from "../types";
 import { parseFontBinary } from "./binary";
+import { MAX_INLINE_BYTES, MAX_INLINE_FONTS } from "./files";
 import { clearGoogleFontsCache } from "./google";
 import { buildFontFamilies, isConvertibleFont } from "./index";
+import { fakeGoogleFetch, growthFactor } from "./testing";
 
 vi.mock("./binary", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./binary")>();
@@ -75,10 +76,8 @@ function signerThatSigns(max = Infinity): RecordingSigner {
   };
 }
 
-async function build(parts: Parts) {
-  const fetch = fakeGoogleFetch(parts.google ?? []);
-  const signer = parts.signer ?? signerThatSigns();
-  const input: PostInput = {
+function inputOf(parts: Parts): PostInput {
+  return {
     collector: {
       page: { title: "Site", baseUrl: PAGE, elementCount: 1 },
       candidates: [],
@@ -94,14 +93,19 @@ async function build(parts: Parts) {
     },
     network: { images: [], fonts: parts.fonts ?? [], sheets: parts.sheets ?? [], bodyTimeouts: 0, skippedBodies: 0 },
     page: { requestedUrl: PAGE, finalUrl: PAGE, host: "www.site.example", siteName: "Site", title: "Site" },
-    signer,
-    fetch,
+    signer: parts.signer ?? signerThatSigns(),
+    fetch: fakeGoogleFetch(parts.google ?? []),
     signal,
     deadline: parts.deadline ?? Date.now() + 10_000,
   };
+}
+
+async function build(parts: Parts) {
+  const input = inputOf(parts);
   const { families } = await buildFontFamilies(input);
   for (const family of families) FontFamily.parse(family);
-  return { families, byName: new Map(families.map((family) => [family.name, family])), fetch, signer };
+  const byName = new Map(families.map((family) => [family.name, family]));
+  return { families, byName, fetch: input.fetch as ReturnType<typeof fakeGoogleFetch>, signer: input.signer as RecordingSigner };
 }
 
 const captured = (url: string, meta = interMeta, status = 200): CapturedFont => ({ url, status, contentType: "font/woff2", bytes: 1_000, meta });
@@ -152,9 +156,9 @@ describe("buildFontFamilies", () => {
       downloadable: false,
       usage: 0.25,
     });
-    // Adobe Fonts files are listed but never offered, so they are not signed
-    expect(byName.get("argent-pixel-cf")!.faces[0].files[0]).toMatchObject({ url: typekit, format: "woff2", proxy: "" });
-    expect(signer.signed).toEqual([gstatic]);
+    // Adobe Fonts files are never offered for download, but the font row loads them for its specimen
+    expect(byName.get("argent-pixel-cf")!.faces[0].files[0]).toMatchObject({ url: typekit, format: "woff2", proxy: `signed:${typekit}` });
+    expect(signer.signed).toEqual([gstatic, typekit]);
   });
 
   it("groups captured files without a rule by binary name and ignores failed or unreadable captures", async () => {
@@ -241,6 +245,90 @@ describe("buildFontFamilies", () => {
     expect(fetch.calls).toEqual([]);
   });
 
+  it("lists data: URI sources only when their bytes are a font, typed by their signature", async () => {
+    const font = bytes("jbm-cyr.woff2");
+    const html = "<script>alert(1)</script>";
+    const { byName, families } = await build({
+      fontFaces: [
+        rule("Script", [{ url: `data:text/html,${encodeURIComponent(html)}`, format: "woff2" }]),
+        rule("Fallback", [{ url: `data:text/html;base64,${Buffer.from(html).toString("base64")}`, format: "woff2" }, { url: "https://www.site.example/f.woff", format: "woff" }]),
+        rule("Mislabeled", [{ url: `data:text/html;base64,${font.toString("base64")}` }]),
+      ],
+    });
+    expect(families.map((family) => family.name).sort()).toEqual(["Fallback", "Mislabeled"]);
+    expect(byName.get("Fallback")!.faces[0].files).toEqual([{ url: "https://www.site.example/f.woff", proxy: "signed:https://www.site.example/f.woff", format: "woff", coversLatin: true }]);
+    expect(byName.get("Mislabeled")!.faces[0].files[0]).toMatchObject({ format: "woff2", inline: { mime: "font/woff2", base64: font.toString("base64") } });
+  });
+
+  it("caps the data: URI fonts a scan decodes, parses and inlines, loaded faces first", async () => {
+    const font = bytes("jbm-cyr.woff2");
+    const count = MAX_INLINE_FONTS + 8;
+    const { families } = await build({
+      // Distinct URIs of the same bytes: faces 0 to 19 did not load, faces 20 to 39 did
+      fontFaces: Array.from({ length: count }, (_, index) => rule(`Face ${index}`, [`data:font/woff2;v=${index};base64,${font.toString("base64")}`])),
+      fontStatuses: Array.from({ length: count }, (_, index) => ({ ...loaded(`Face ${index}`), status: index < 20 ? ("unloaded" as const) : ("loaded" as const) })),
+    });
+    expect(families).toHaveLength(MAX_INLINE_FONTS);
+    expect(families.filter((family) => family.usedOnPage)).toHaveLength(20);
+    const unused = families.filter((family) => !family.usedOnPage).map((family) => family.name);
+    expect(unused.sort()).toEqual(Array.from({ length: MAX_INLINE_FONTS - 20 }, (_, index) => `Face ${index}`).sort());
+    expect(vi.mocked(parseFontBinary)).toHaveBeenCalledTimes(MAX_INLINE_FONTS);
+
+    // A file past the byte budget is not decoded twice nor parsed, and the rule falls back to its next source
+    vi.mocked(parseFontBinary).mockClear();
+    const huge = Buffer.concat([Buffer.from("wOF2"), Buffer.alloc(MAX_INLINE_BYTES)]);
+    const capped = await build({
+      fontFaces: [
+        rule("Huge", [{ url: `data:font/woff2;base64,${huge.toString("base64")}` }, { url: "https://www.site.example/huge.woff", format: "woff" }]),
+        rule("Tiny", [`data:font/woff2;base64,${font.toString("base64")}`]),
+      ],
+    });
+    expect(capped.byName.get("Huge")!.faces[0].files).toMatchObject([{ url: "https://www.site.example/huge.woff", format: "woff" }]);
+    expect(capped.byName.get("Tiny")!.faces[0].files).toMatchObject([{ url: "", bytes: font.length, inline: { base64: font.toString("base64") } }]);
+    expect(vi.mocked(parseFontBinary).mock.calls.map(([buffer]) => buffer.length)).toEqual([font.length]);
+  });
+
+  it("reads at most 5,000 rules from the CSSOM and 5,000 from captured stylesheets", async () => {
+    const face = (index: number) => rule("Face", [`https://www.site.example/${index}.woff2`]);
+    const sheet = Array.from({ length: 5_001 }, (_, index) => `@font-face{font-family:Face;src:url(/s${index}.woff2)}`).join("");
+    const { families } = await build({
+      fontFaces: Array.from({ length: 5_001 }, (_, index) => face(index)),
+      sheets: [
+        { url: "https://www.site.example/a.css", status: 200, cssText: sheet },
+        { url: "https://www.site.example/b.css", status: 200, cssText: "@font-face{font-family:Face;src:url(/more.woff2)}" },
+      ],
+    });
+    const urls = families[0].faces[0].files.map((file) => file.url);
+    expect(urls).toHaveLength(10_000);
+    expect(urls).not.toContain("https://www.site.example/5000.woff2");
+    expect(urls).not.toContain("https://www.site.example/s5000.woff2");
+    expect(urls).not.toContain("https://www.site.example/more.woff2");
+  });
+
+  it("stays linear on hostile collector output", async () => {
+    const long = "Face".repeat(25);
+    const hostile: Record<string, (size: number) => Parts> = {
+      // every rule against every document.fonts status of its family
+      statuses: (size) => ({
+        fontFaces: Array.from({ length: size }, (_, index) => rule(long, [`${PAGE}${index}.woff2`], { weight: String(index) })),
+        fontStatuses: Array.from({ length: size }, (_, index) => loaded(long, `w${index}`)),
+      }),
+      // CSS families that clean to one name: every new one against the ones already kept
+      variants: (size) => ({ fontFaces: Array.from({ length: size }, (_, index) => rule(`__${"Inter".repeat(40)}_${index.toString(16).padStart(6, "0")}`, [`${PAGE}${index}.woff2`])) }),
+      // every binary name of a file without a rule against every registered family
+      undeclared: (size) => ({
+        fonts: Array.from({ length: size }, (_, index) => captured(`${PAGE}u${index}.woff2`, { format: "woff2", nameId1: `Name ${index} Sans` })),
+        fontStatuses: Array.from({ length: size }, (_, index) => loaded(`Registered ${index}`)),
+      }),
+      // family names that give the same id
+      ids: (size) => ({ fontFaces: Array.from({ length: size }, (_, index) => rule(String.fromCharCode(0x4e00 + index), [`${PAGE}${index}.woff2`])) }),
+    };
+    for (const [name, parts] of Object.entries(hostile)) {
+      const factor = await growthFactor((size) => buildFontFamilies(inputOf(parts(size))), name === "undeclared" ? 300 : 1_000);
+      expect.soft(factor, name).toBeLessThan(8);
+    }
+  }, 60_000);
+
   it("lists the loaded source of a rule, else its best declared format, and skips local() only rules", async () => {
     const base = "https://www.site.example/f/";
     const { byName } = await build({
@@ -259,28 +347,34 @@ describe("buildFontFamilies", () => {
     expect(byName.get("Multi")!.faces[0].files.map((file) => [file.url, file.format])).toEqual([[`${base}multi.woff2`, "woff2"]]);
   });
 
-  it("stops signing at the signing cap without failing, loaded files first", async () => {
+  it("stops signing at the signing cap without failing, loaded files first and Adobe Fonts files last", async () => {
     const [declared, loadedFace, loadedFile] = ["a", "b", "c"].map((name) => `https://www.site.example/${name}.woff2`);
-    const { byName, families, signer } = await build({
+    const typekit = "https://use.typekit.net/af/1a2b3c/000000000000000000017701/27/l?fvd=n4&v=3";
+    const parts: Parts = {
       fontFaces: [
+        rule("Kit", [typekit]),
         rule("Face", [declared], { weight: "300" }),
         rule("Face", [loadedFace], { weight: "400" }),
         rule("Face", [loadedFile], { weight: "700" }),
       ],
-      fonts: [captured(loadedFile)],
-      fontStatuses: [loaded("Face", "400")],
-      signer: signerThatSigns(2),
-    });
-    expect(families).toHaveLength(1);
+      fonts: [captured(typekit, null), captured(loadedFile)],
+      fontStatuses: [loaded("Face", "400"), loaded("Kit")],
+    };
+    const { byName, families, signer } = await build({ ...parts, signer: signerThatSigns(2) });
+    expect(families.map((family) => family.name)).toEqual(["Kit", "Face"]);
     expect(signer.signed).toEqual([loadedFile, loadedFace]);
     expect(byName.get("Face")!.faces.map((face) => [face.weight, face.loaded, face.files[0].proxy])).toEqual([
       ["300", false, ""],
       ["400", true, `signed:${loadedFace}`],
       ["700", true, `signed:${loadedFile}`],
     ]);
+    expect(byName.get("Kit")!.faces[0].files[0].proxy).toBe("");
+
+    const all = await build({ ...parts, signer: signerThatSigns(4) });
+    expect(all.signer.signed).toEqual([loadedFile, loadedFace, declared, typekit]);
   });
 
-  it("checks Google Fonts for the first 8 used families, by display name and embedded name", async () => {
+  it("checks Google Fonts for the first 8 used families, a renamed font by its embedded name only", async () => {
     const faces = Array.from({ length: 9 }, (_, index) => rule(index ? `Face ${index}` : "Brand Serif", [`https://www.site.example/${index}.woff2`]));
     const { byName, fetch } = await build({
       fontFaces: faces,
@@ -290,11 +384,20 @@ describe("buildFontFamilies", () => {
       google: ["Inter"],
     });
     expect(byName.get("Brand Serif")).toMatchObject({ googleFamily: "Inter" });
-    expect(fetch.calls.map((call) => new URL(call.url).searchParams.get("family"))).toEqual([
-      "Brand Serif",
-      "Inter",
-      ...Array.from({ length: 7 }, (_, index) => `Face ${index + 1}`),
-    ]);
+    expect(fetch.calls.map((call) => new URL(call.url).searchParams.get("family"))).toEqual(["Inter", ...Array.from({ length: 7 }, (_, index) => `Face ${index + 1}`)]);
+  });
+
+  it("does not take the Google Fonts match of a CSS name for a binary that names another font", async () => {
+    const url = "https://www.site.example/lato.woff2";
+    const { families, fetch } = await build({
+      fontFaces: [rule("Lato", [url])],
+      fonts: [captured(url, { format: "woff2", nameId1: "Proxima Nova" })],
+      fontStatuses: [loaded("Lato")],
+      google: ["Lato"],
+    });
+    expect(families[0]).toMatchObject({ name: "Lato", license: { kind: "unknown" }, convertible: false });
+    expect(families[0].googleFamily).toBeUndefined();
+    expect(fetch.calls.map((call) => new URL(call.url).searchParams.get("family"))).toEqual(["Proxima Nova"]);
   });
 
   it("offers TTF for an unknown licence only when Google Fonts knows the family, and skips the check past the deadline", async () => {

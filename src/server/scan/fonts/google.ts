@@ -2,6 +2,8 @@ import { limits } from "@/server/config/limits";
 import type { SafeFetch } from "../types";
 
 const CACHE_MS = 5 * 60_000;
+/** The asset proxy also asks about names read from any font binary, so a warm instance would otherwise keep them all. */
+const CACHE_MAX_ENTRIES = 1_000;
 /** Google Fonts family names are ASCII words: this also keeps `:`, `@`, `;` and `,` (css2 query syntax) out. */
 const CHECKABLE_NAME = /^[A-Za-z0-9][A-Za-z0-9 .'-]{1,63}$/;
 
@@ -15,6 +17,25 @@ export function clearGoogleFontsCache(): void {
   cache.clear();
 }
 
+/** Test hook: how many answers are cached. */
+export function googleFontsCacheSize(): number {
+  return cache.size;
+}
+
+/**
+ * Entries are kept in insertion order with the same lifetime, so expired ones come first: they are dropped on every
+ * write, then the oldest ones while the cache is full.
+ */
+function remember(name: string, match: boolean) {
+  const now = Date.now();
+  cache.delete(name);
+  for (const [key, entry] of cache) {
+    if (entry.expires > now && cache.size < CACHE_MAX_ENTRIES) break;
+    cache.delete(key);
+  }
+  cache.set(name, { match, expires: now + CACHE_MS });
+}
+
 async function isGoogleFamily(name: string, fetch: SafeFetch, timeoutMs: number, signal?: AbortSignal): Promise<boolean> {
   const cached = cache.get(name);
   if (cached && cached.expires > Date.now()) return cached.match;
@@ -25,7 +46,7 @@ async function isGoogleFamily(name: string, fetch: SafeFetch, timeoutMs: number,
     // 200 is a known family and 400 an unknown one. Anything else is a failure and is asked again next time.
     if (response.status !== 200 && response.status !== 400) return false;
     const match = response.status === 200;
-    cache.set(name, { match, expires: Date.now() + CACHE_MS });
+    remember(name, match);
     return match;
   } catch {
     return false;
@@ -35,7 +56,8 @@ async function isGoogleFamily(name: string, fetch: SafeFetch, timeoutMs: number,
 /**
  * Asks the Google Fonts CSS API (spec section 9) whether each name is a Google Fonts family, through `safeFetch`,
  * in parallel, with `limits.googleFontsMs` each. Checks at most `maxNames` unique names, by default
- * `limits.googleFontsMaxFamilies` (one name per family). Answers are cached per name for 5 minutes. Returns the names
+ * `limits.googleFontsMaxFamilies` (one name per family). Answers are cached per name for 5 minutes, 1,000 names at
+ * most. Returns the names
  * that matched, mapped to the exact family name. Never throws.
  */
 export async function matchGoogleFamilies(
