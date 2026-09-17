@@ -55,6 +55,24 @@ export function createSlots(size: number): TakeSlot {
 /** The conversion slots of this instance. */
 export const takeConversionSlot = createSlots(CONVERSION_SLOTS);
 
+/** The last decompression queued; see `decompressWoff2`. */
+let decompressing: Promise<unknown> = Promise.resolve();
+
+/**
+ * The sfnt bytes of a WOFF2 file, or null when woff2 refuses them. wawoff2 answers with a view of its WebAssembly heap,
+ * which the next decompression overwrites (or detaches when the heap grows), and hands it over through an `await`, so two
+ * conversions that reach it in the same turn corrupt each other before either copies. Decompressions therefore run one
+ * at a time, each copied out before the next starts; they block the main thread anyway, so this costs no throughput.
+ */
+function decompressWoff2(source: Uint8Array): Promise<Buffer | null> {
+  const run = decompressing.then(async () => {
+    const { decompress } = await import("wawoff2");
+    return Buffer.from(await decompress(source));
+  }).catch(() => null);
+  decompressing = run;
+  return run;
+}
+
 export type Woff2Conversion =
   | { ok: true; bytes: Buffer; contentType: "font/ttf" | "font/otf" }
   | { ok: false; reason: "license" | "not-convertible" };
@@ -69,14 +87,8 @@ export async function convertWoff2(source: Buffer, signal: AbortSignal): Promise
     meta = parseFontBinary(source);
   } catch {}
   if (!(await isConvertibleFont(meta, { fetch: safeFetch, signal }))) return { ok: false, reason: "license" };
-  let output: Buffer;
-  try {
-    const { decompress } = await import("wawoff2");
-    output = Buffer.from(await decompress(source));
-  } catch {
-    return { ok: false, reason: "not-convertible" };
-  }
-  const contentType = sniffContentType(output);
-  if (contentType !== "font/ttf" && contentType !== "font/otf") return { ok: false, reason: "not-convertible" };
+  const output = await decompressWoff2(source);
+  const contentType = output && sniffContentType(output);
+  if (!output || (contentType !== "font/ttf" && contentType !== "font/otf")) return { ok: false, reason: "not-convertible" };
   return { ok: true, bytes: output, contentType };
 }

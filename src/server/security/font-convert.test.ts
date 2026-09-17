@@ -97,6 +97,15 @@ describe("convertWoff2", () => {
     expect(fonts.isConvertibleFont).toHaveBeenCalledWith(expect.objectContaining({ format: expect.any(String) }), expect.objectContaining({ fetch: expect.any(Function), signal: expect.any(AbortSignal) }));
   });
 
+  it("keeps each output intact when conversions run at the same time", async () => {
+    const signal = new AbortController().signal;
+    const sequential = [await convertWoff2(inter, signal), await convertWoff2(ss3, signal)];
+    // wawoff2 answers with a view of its heap, which the next decompression reuses before an awaiting caller copies it
+    const concurrent = await Promise.all([convertWoff2(inter, signal), convertWoff2(ss3, signal), convertWoff2(inter, signal)]);
+    const bytes = (result: Awaited<ReturnType<typeof convertWoff2>>) => (result.ok ? Buffer.from(result.bytes) : null);
+    expect(concurrent.map(bytes)).toEqual([bytes(sequential[0]), bytes(sequential[1]), bytes(sequential[0])]);
+  });
+
   it("refuses a font whose licence does not allow conversion, and bytes that are not WOFF2", async () => {
     fonts.isConvertibleFont.mockResolvedValue(false);
     expect(await convertWoff2(inter, new AbortController().signal)).toEqual({ ok: false, reason: "license" });
