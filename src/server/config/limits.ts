@@ -62,6 +62,13 @@ const defaults = {
   bodyReadMs: 8_000,
   bodyConcurrency: 24,
   bodyTotalBytes: 250 * MB,
+  /**
+   * Font parsing in capture. Parsing is synchronous on the event loop (a 5 MB WOFF2 takes about 200 ms) and a page
+   * controls how many fonts it serves and how large, so past any of these a font is hashed but gets no metadata.
+   */
+  fontParseMaxBytes: 5 * MB,
+  fontParseBudgetMs: 1_500,
+  fontParseMaxFiles: 40,
   // `blob:` image bytes kept for the client, also passed to the collector as maxBlobBytes and maxBlobTotalBytes
   blobMaxBytes: 2 * MB,
   blobTotalBytes: 16 * MB,

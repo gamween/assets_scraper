@@ -33,14 +33,6 @@ const MAX_RECORDS = 4_000;
  * capture reads (SVG, CSS) decode to 4 to 10 times their compressed size, so it would almost always be over the cap.
  */
 const ENCODED_EXPANSION = 4;
-/**
- * Font parsing budgets. Parsing is synchronous on the event loop (a 5 MB WOFF2 takes about 200 ms), and any response
- * whose URL ends in a font extension counts as a font, so a page controls how many there are and how large. Past a cap
- * a font is still hashed, but has no metadata.
- */
-const FONT_PARSE_MAX_BYTES = 5 * 1024 * 1024;
-const FONT_PARSE_BUDGET_MS = 1_500;
-const FONT_PARSE_MAX_FILES = 40;
 const FONT_TYPE = /font|woff|opentype|truetype|sfnt/i;
 const FONT_EXTENSION = /\.(woff2?|ttf|otf|eot)(?:[?#]|$)/i;
 const SVG = (url: string, contentType: string) => /image\/svg/i.test(contentType) || /\.svgz?(?:[?#]|$)/i.test(url);
@@ -235,7 +227,8 @@ export function startCapture(page: Page, options: CaptureOptions): CaptureHandle
   const captureFont = (record: CapturedFont, body: Buffer) => {
     record.bytes = body.length;
     record.sha1 = createHash("sha1").update(body).digest("hex");
-    if (body.length > FONT_PARSE_MAX_BYTES || parsedFonts >= FONT_PARSE_MAX_FILES || fontParseMs >= FONT_PARSE_BUDGET_MS) return;
+    // Font parsing budgets (limits.fontParse*): past any of them the font keeps `meta: null`.
+    if (body.length > limits.fontParseMaxBytes || parsedFonts >= limits.fontParseMaxFiles || fontParseMs >= limits.fontParseBudgetMs) return;
     parsedFonts += 1;
     const started = performance.now();
     try {
