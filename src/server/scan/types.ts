@@ -87,6 +87,8 @@ export interface CollectorOptions {
   maxBlobBytes: number;                     // bytes of one `blob:` image before base64 (spec 7.4, limits.blobMaxBytes)
   maxBlobTotalBytes: number;                // all `blobs` together before base64 (spec 7.4, limits.blobTotalBytes)
   maxOutputChars: number;                   // JSON characters of the whole output; lists are cut to fit (limits.collectorMaxOutputChars)
+  maxTitleChars: number;                    // `page.title` is cut to one character over this before the output is fitted (MAX_TITLE_CHARS)
+  maxSiteNameChars: number;                 // same for `page.siteName` (MAX_SITE_NAME_CHARS)
 }
 
 export interface RawCollectorOutput {

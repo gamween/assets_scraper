@@ -31,6 +31,8 @@ const MAX_SAME_MARKUP_NORMALIZATIONS = 3;
 const MAX_STYLED_SVG_ELEMENTS = 4_000;
 const MAX_TEXT_NODES = 20_000;
 const BLOB_FETCH_MS = 3_000;
+/** `page.baseUrl` and `manifestUrl` longer than this are left out, so they cannot push the lists out of the budget. */
+const MAX_PAGE_URL_CHARS = 8_192;
 
 const LAZY_ATTR =
   /^data-(?:lazy-?)?(?:src|srcset|original|original-set|hi-?res(?:-src)?|full(?:-src)?|large(?:-src)?|zoom(?:-src)?|fallback(?:-src)?|bg|background|background-image|image|img|echo|flickity-lazyload|lazy|srcset-lazy|pin-media|retina|2x)$/i;
@@ -1173,14 +1175,20 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
     }
   }
 
-  const title = document.title;
+  // Cut like the engine does (one character over the cap, so it still sees an over-long text) before the output is
+  // measured, so a huge title cannot push the lists out of the budget.
+  const title = String(document.title).slice(0, options.maxTitleChars + 1);
   const siteName =
-    document.querySelector('meta[property="og:site_name"]')?.getAttribute("content")?.trim() ||
-    document.querySelector('meta[name="application-name"]')?.getAttribute("content")?.trim() ||
-    undefined;
+    (
+      document.querySelector('meta[property="og:site_name"]')?.getAttribute("content")?.trim() ||
+      document.querySelector('meta[name="application-name"]')?.getAttribute("content")?.trim()
+    )?.slice(0, options.maxSiteNameChars + 1) || undefined;
+  // The engine only fetches an http(s) manifest and falls back to the page URL for an empty base, so over-long URLs go.
+  const pageBaseUrl = baseURI.length <= MAX_PAGE_URL_CHARS ? baseURI : "";
+  if (manifestUrl && (manifestUrl.length > MAX_PAGE_URL_CHARS || !/^https?:/i.test(manifestUrl))) manifestUrl = undefined;
 
   const output: RawCollectorOutput = {
-    page: { title, ...(siteName ? { siteName } : {}), baseUrl: baseURI, elementCount: document.getElementsByTagName("*").length },
+    page: { title, ...(siteName ? { siteName } : {}), baseUrl: pageBaseUrl, elementCount: document.getElementsByTagName("*").length },
     candidates: [...candidates.values()],
     svgs: [...svgs.values()],
     ...(manifestUrl ? { manifestUrl } : {}),
@@ -1201,32 +1209,52 @@ const OUTPUT_LISTS = ["candidates", "svgs", "fontFaces", "fontStatuses", "fontUs
 
 /**
  * Cuts the output lists until the output is at most `maxChars` characters of JSON, and says whether it cut anything.
- * Every list loses its tail, and all lists lose the same share of their items (the last 10% of each first, and so on),
- * so the items that come first in page order stay. Measured sizes count a comma per item, one too many for a list that
- * ends up empty, so the target keeps a character of margin per list. The engine fits the output again as a safety net
- * (a main-world page can replace `JSON.stringify` or the whole collector), so a measure that fails cuts nothing.
+ * Same order as the engine's safety net (`FIT_COLLECTOR_OUTPUT`): first the candidates that repeat the URL of an earlier
+ * candidate (they only add a use of an asset that stays), then the largest items, and among equals the later one in page
+ * order. Small items that free almost no space stay while a large one can go.
+ *
+ * Each item is measured on its own and the rest of the output with its lists emptied, so no single string ever holds
+ * the whole output (past V8's maximum string length a whole-output `JSON.stringify` throws and nothing would be cut).
+ * The running total counts a comma per item, at most one per list too many, so the result never goes over `maxChars`.
+ * The engine fits again as a safety net (a main-world page can replace `JSON.stringify` or the whole collector), so a
+ * measure that fails cuts nothing.
  */
 function fitOutput(output: RawCollectorOutput, maxChars: number): boolean {
+  const items: { key: (typeof OUTPUT_LISTS)[number]; index: number; repeat: boolean; size: number }[] = [];
   let total: number;
   try {
-    total = JSON.stringify(output).length;
+    const rest: Record<string, unknown> = { ...output };
+    for (const key of OUTPUT_LISTS) rest[key] = [];
+    total = JSON.stringify(rest).length;
+    const urls = new Set<string>();
+    for (const key of OUTPUT_LISTS) {
+      const list: unknown[] = output[key];
+      list.forEach((item, index) => {
+        const url = key === "candidates" ? (item as RawCandidate).url : undefined;
+        const repeat = url !== undefined && urls.has(url);
+        if (url !== undefined) urls.add(url);
+        items.push({ key, index, repeat, size: (JSON.stringify(item) ?? "null").length + 1 });
+        total += items[items.length - 1].size;
+      });
+    }
   } catch {
     return false;
   }
-  if (!(total > maxChars)) return false;
-  const lists = OUTPUT_LISTS.map((key) => ({ key, items: output[key] as unknown[], keep: output[key].length }));
-  const items: { list: (typeof lists)[number]; index: number; share: number; size: number }[] = [];
-  for (const list of lists) {
-    list.items.forEach((item, index) => items.push({ list, index, share: (index + 1) / list.items.length, size: (JSON.stringify(item) ?? "null").length + 1 }));
-  }
-  items.sort((a, b) => b.share - a.share || b.index - a.index);
-  const target = maxChars - lists.length;
+  // The exact size has one comma less per non-empty list.
+  if (total - OUTPUT_LISTS.filter((key) => output[key].length > 0).length <= maxChars) return false;
+  items.sort((a, b) => Number(b.repeat) - Number(a.repeat) || b.size - a.size || b.index - a.index);
+  const dropped = new Map<string, Set<number>>();
   for (const item of items) {
-    if (total <= target) break;
+    if (total <= maxChars) break;
+    let indexes = dropped.get(item.key);
+    if (!indexes) dropped.set(item.key, (indexes = new Set()));
+    indexes.add(item.index);
     total -= item.size;
-    item.list.keep = Math.min(item.list.keep, item.index);
   }
-  for (const list of lists) (output[list.key] as unknown[]) = list.items.slice(0, list.keep);
+  for (const [key, indexes] of dropped) {
+    const list: unknown[] = output[key as (typeof OUTPUT_LISTS)[number]];
+    (output[key as (typeof OUTPUT_LISTS)[number]] as unknown[]) = list.filter((_, index) => !indexes.has(index));
+  }
   return true;
 }
 

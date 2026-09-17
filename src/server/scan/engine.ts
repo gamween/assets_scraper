@@ -599,6 +599,8 @@ async function runBrowserStage(input: ScanContext & {
           maxBlobBytes: limits.blobMaxBytes,
           maxBlobTotalBytes: limits.blobTotalBytes,
           maxOutputChars: limits.collectorMaxOutputChars,
+          maxTitleChars: MAX_TITLE_CHARS,
+          maxSiteNameChars: MAX_SITE_NAME_CHARS,
         };
         // The collector cuts its own lists to this budget; FIT_COLLECTOR_OUTPUT fits again in case it did not.
         const budget = limits.collectorMaxOutputChars;

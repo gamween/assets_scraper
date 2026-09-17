@@ -6,6 +6,8 @@ import { limits } from "@/server/config/limits";
 import { NotImplementedError } from "@/server/errors";
 import { safeFetch } from "@/server/net/safe-fetch";
 import { COLLECTOR_SOURCE } from "@/server/scan/inpage/generated/collector";
+import { MAX_TITLE_CHARS } from "@/server/scan/navigate";
+import { MAX_SITE_NAME_CHARS } from "@/server/scan/preflight";
 import { toneFromBytes } from "@/server/scan/post/tone";
 import type {
   CapturedNetwork,
@@ -47,6 +49,8 @@ export function collectorOptions(host: string, siteName: string, patch: Partial<
     maxBlobBytes: limits.blobMaxBytes,
     maxBlobTotalBytes: limits.blobTotalBytes,
     maxOutputChars: limits.collectorMaxOutputChars,
+    maxTitleChars: MAX_TITLE_CHARS,
+    maxSiteNameChars: MAX_SITE_NAME_CHARS,
     ...patch,
   };
 }
