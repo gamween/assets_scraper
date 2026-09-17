@@ -1,7 +1,21 @@
 import parse from "css-tree/parser";
-import { describe, expect, it } from "vitest";
-import { MAX_SRC_ENTRIES, parseFontFaceCss, parseFontSrc } from "./css";
-import { fastestMs, growthFactor, LINEAR_GROWTH_BOUND } from "./testing";
+import { tokenize } from "css-tree/tokenizer";
+import { ident } from "css-tree/utils";
+import { describe, expect, it, vi } from "vitest";
+import { decodeIdent, MAX_FAMILY_CHARS, MAX_SRC_ENTRIES, parseFontFaceCss, parseFontSrc } from "./css";
+import { fastestMs, growthFactor, LINEAR_GROWTH_BOUND, random } from "./testing";
+
+// Counts the tokens the fonts code reads, to show where it stops tokenizing
+const tokenizer = vi.hoisted(() => ({ tokens: 0 }));
+vi.mock("css-tree/tokenizer", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("css-tree/tokenizer")>();
+  const tokenize: typeof actual.tokenize = (source, onToken) =>
+    actual.tokenize(source, (type, start, end) => {
+      tokenizer.tokens += 1;
+      onToken?.(type, start, end);
+    });
+  return { ...actual, tokenize };
+});
 
 const MIB = 1024 * 1024;
 const BASE = "https://s.example/css/a.css";
@@ -68,6 +82,41 @@ describe("parseFontFaceCss", () => {
     expect(parseFontFaceCss(`@font-face{font-family:imp !important;src:url(a.woff2)}@font-face{font-family:source;src:url(a.woff2) !important}`, BASE)).toEqual([]);
   });
 
+  it("drops a family longer than 1,024 characters before decoding it", () => {
+    const families = (values: string[]) => values.flatMap((value) => parseFontFaceCss(`@font-face{font-family:${value};src:url(a.woff2)}`, BASE)).map((rule) => rule.family);
+    expect(MAX_FAMILY_CHARS).toBe(1_024);
+    expect(families(["a".repeat(1_024), `"${"b".repeat(1_022)}"`, `\\63 ${"c".repeat(1_020)}`])).toEqual(["a".repeat(1_024), "b".repeat(1_022), "c".repeat(1_021)]);
+    expect(families(["a".repeat(1_025), `"${"b".repeat(1_023)}"`, `\\63 ${"c".repeat(1_021)}`])).toEqual([]);
+  });
+
+  it("decodes names, families and URLs in about the time it takes to tokenize them, however long they are", async () => {
+    // css-tree's decoders built a 2 MB name one character at a time, 8 to 20 times slower than tokenizing it, into a
+    // rope of 60 MB: 15 MB names ran out of memory, and a family kept its rope as long as its rule
+    const name = `\\62 ${"a".repeat(2 * MIB)}`;
+    const sheets = {
+      family: `@font-face{font-family:${name};src:url(a.woff2)}`,
+      quotedFamily: `@font-face{font-family:"${name}";src:url(a.woff2)}`,
+      descriptor: `@font-face{${name}:x;font-family:A;src:url(a.woff2)}`,
+      atRule: `@${name}{}@font-face{font-family:A;src:url(a.woff2)}`,
+      important: `@font-face{font-family:A;src:url(a.woff2);font-style:italic !${name}}`,
+      srcFunction: `@font-face{font-family:A;src:${name}(x),url(a.woff2)}`,
+      srcString: `@font-face{font-family:A;src:url("${name}")}`,
+      srcUrl: `@font-face{font-family:A;src:url(${name})}`,
+      srcLocal: `@font-face{font-family:A;src:local(${name})}`,
+    };
+    // Lengths of the first source of each rule found
+    const found = Object.fromEntries(Object.entries(sheets).map(([key, css]) => [key, parseFontFaceCss(css, BASE).map((rule) => (rule.src[0].url ?? rule.src[0].local)!.length)]));
+    const decoded = `b${"a".repeat(2 * MIB)}`;
+    const short = new URL("a.woff2", BASE).href.length;
+    const long = new URL(decoded, BASE).href.length;
+    expect(found).toEqual({ family: [], quotedFamily: [], descriptor: [short], atRule: [short], important: [short], srcFunction: [short], srcString: [long], srcUrl: [long], srcLocal: [decoded.length] });
+    for (const [key, css] of Object.entries(sheets)) {
+      const parsing = await fastestMs(() => parseFontFaceCss(css, BASE));
+      const tokenizing = await fastestMs(() => tokenize(css, () => {}));
+      expect.soft(parsing, key).toBeLessThan(tokenizing * 5 + 5);
+    }
+  }, 60_000);
+
   it("stops after maxRules rules", () => {
     expect(parseFontFaceCss(sheetOf(10), BASE, { maxRules: 3 }).map((rule) => rule.family)).toEqual(["f0", "f1", "f2"]);
     expect(parseFontFaceCss(sheetOf(10), BASE, { maxRules: 0 })).toEqual([]);
@@ -90,6 +139,26 @@ describe("parseFontFaceCss", () => {
     expect(parseFontFaceCss("@font-face{src:url(a.woff2)} @font-face{font-family:X}", "https://s.example/")).toEqual([]);
     expect(parseFontFaceCss("}}}{{{@font-face{", "https://s.example/")).toEqual([]);
     expect(parseFontFaceCss("", "https://s.example/")).toEqual([]);
+  });
+});
+
+describe("decodeIdent", () => {
+  it("decodes CSS escapes exactly as css-tree does", () => {
+    expect(decodeIdent("\\31 23\\ Grotesk\\5FAE\\8f6f\\\r\nx\\0\\110000 \\")).toBe("123 Grotesk\u5fae\u8f6fx\ufffd\ufffd");
+    const next = random(7);
+    const chars = ["\\", "\\", "a", "F", "0", "g", " ", "\t", "\n", "\r", "\f", '"', ")", "\ud83d", "\ude00", "\u00e9"];
+    for (let run = 0; run < 20_000; run += 1) {
+      const text = Array.from({ length: Math.floor(next() * 12) }, () => chars[Math.floor(next() * chars.length)]).join("");
+      expect(decodeIdent(text), JSON.stringify(text)).toBe(ident.decode(text));
+    }
+  });
+
+  it("reads a string or url() left open at the end of a value with its last character escaped as browsers do", () => {
+    // css-tree gave `"` and `)` for these, the escaped character alone
+    expect(parseFontFaceCss(`@font-face{src:url(a.woff2);font-family:"a\\"`, BASE)).toMatchObject([{ family: 'a"' }]);
+    expect(parseFontFaceCss(`@font-face{src:url(a.woff2);font-family:"a\\\\"`, BASE)).toMatchObject([{ family: "a\\" }]);
+    expect(parseFontSrc("url(a.woff2\\)", BASE)).toEqual([{ url: "https://s.example/css/a.woff2)" }]);
+    expect(parseFontSrc("local('a\\'", BASE)).toEqual([{ local: "a'" }]);
   });
 });
 

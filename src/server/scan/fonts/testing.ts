@@ -30,6 +30,16 @@ export function fakeGoogleFetch(families: string[]): FakeGoogleFetch {
   return Object.assign(fetch, { calls });
 }
 
+/** Deterministic pseudo-random numbers in [0, 1) (mulberry32). */
+export function random(seed: number): () => number {
+  return () => {
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
 /** The fastest of `runs` runs of `task`, in milliseconds, so a GC pause or a JIT tier change in one run does not count. */
 export async function fastestMs(task: () => unknown, runs = 3): Promise<number> {
   let fastest = Infinity;

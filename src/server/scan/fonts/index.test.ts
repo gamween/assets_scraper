@@ -393,6 +393,19 @@ describe("buildFontFamilies", () => {
     expect(await growthFactor((size) => buildFontFamilies(hostile(size)), 20_000)).toBeLessThan(2);
   });
 
+  it("skips families longer than 1,024 characters from the CSSOM and document.fonts before decoding them", async () => {
+    const quoted = (length: number, char: string) => `"${char.repeat(length - 2)}"`;
+    const rules = await build({ fontFaces: [rule(quoted(1_024, "a"), [`${PAGE}a.woff2`]), rule(quoted(1_025, "b"), [`${PAGE}b.woff2`])] });
+    expect(rules.families.map((family) => family.name)).toEqual(["a".repeat(1_022)]);
+    // A registered family names an unreadable capture when it is the only one left
+    const unreadable = captured(`${PAGE}unreadable.woff2`, null);
+    const registered = async (family: string) => (await build({ fonts: [unreadable], fontStatuses: [loaded(family)] })).families.map((entry) => entry.name);
+    expect(await registered("c".repeat(1_024))).toEqual(["c".repeat(1_024)]);
+    expect(await registered(quoted(1_024, "d"))).toEqual(["d".repeat(1_022)]);
+    expect(await registered("e".repeat(1_025))).toEqual([]);
+    expect(await registered(quoted(1_025, "f"))).toEqual([]);
+  });
+
   it("stays linear on hostile collector output", async () => {
     const long = "Face".repeat(25);
     const hostile: Record<string, (size: number) => Parts> = {

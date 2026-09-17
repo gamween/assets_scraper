@@ -1,5 +1,5 @@
 import { tokenize, tokenTypes as T } from "css-tree/tokenizer";
-import { ident, string, url as cssUrl } from "css-tree/utils";
+import { ident } from "css-tree/utils";
 import type { RawFontFaceRule } from "../types";
 
 // Only the css-tree tokenizer, never its parser. The parser is one shared object whose token buffers keep the size of
@@ -24,6 +24,52 @@ const isBlank = (type: number) => type === T.WhiteSpace || type === T.Comment;
  * seconds and 338 MB to list one file.
  */
 export const MAX_SRC_ENTRIES = 16;
+
+/**
+ * The most characters of a `font-family` value, before decoding, from a stylesheet, the CSSOM or `document.fonts`. Real
+ * families have a few dozen. A longer value is dropped, with its rule or status, before it is decoded: otherwise one
+ * stylesheet could name a family with 15 MB, which the `fonts` line sends three times.
+ */
+export const MAX_FAMILY_CHARS = 1024;
+
+/**
+ * A CSS escape as css-tree reads one: a backslash, then 1 to 6 hex digits and one optional whitespace (`\r\n` counts as
+ * one), or any other code unit, or nothing at the end of the text.
+ */
+const ESCAPE = /\\(?:[0-9a-f]{1,6}(?:\r\n|[\t\n\f\r ])?|\r\n|[^])?/gi;
+
+/**
+ * Text with its CSS escapes decoded (`\31 23 Grotesk` gives "123 Grotesk"), exactly as css-tree's `ident.decode` gives
+ * it. css-tree appends each character of the text to its result one at a time, and V8 keeps a string built that way as
+ * a rope of about 30 bytes per character until something reads it: decoding a 15 MB name took 455 MB, and a family
+ * kept it with its rule. Here text without escapes is returned as it is, and each escape is decoded on its own into one
+ * flat string.
+ */
+export function decodeIdent(text: string): string {
+  return text.includes("\\") ? text.replace(ESCAPE, (escape) => ident.decode(escape)) : text;
+}
+
+/** Whether the last character of `text` is escaped: preceded by an odd number of backslashes. */
+function endsEscaped(text: string): boolean {
+  let backslashes = 0;
+  while (backslashes < text.length - 1 && text[text.length - 2 - backslashes] === "\\") backslashes += 1;
+  return backslashes % 2 === 1;
+}
+
+/**
+ * The value of a string token (`"a\"b"` gives `a"b`) with `decodeIdent`. A string left open at the end of the text keeps
+ * its last character when that is an escaped quote (`"a\"` gives `a"`), as browsers read it.
+ */
+function decodeString(token: string): string {
+  const closed = token.length > 1 && token[token.length - 1] === token[0] && !endsEscaped(token);
+  return decodeIdent(token.slice(1, closed ? -1 : undefined));
+}
+
+/** The URL of a `url(...)` token, without its whitespace, with `decodeIdent`. */
+function decodeUrlToken(token: string): string {
+  const closed = token.endsWith(")") && !endsEscaped(token);
+  return decodeIdent(token.slice("url(".length, closed ? -1 : undefined)).trim();
+}
 
 /** Thrown from a tokenizer callback to stop tokenizing once enough has been read. */
 class Enough extends Error {}
@@ -115,7 +161,7 @@ export function parseFontSrc(src: string, baseUrl: string): FontSrc[] {
       return;
     }
     if (closers.length === 1 && fn && !isBlank(type)) {
-      const text = type === T.String ? string.decode(src.slice(start, end)) : type === T.Ident ? ident.decode(src.slice(start, end)) : null;
+      const text = type === T.String ? decodeString(src.slice(start, end)) : type === T.Ident ? decodeIdent(src.slice(start, end)) : null;
       // format() keeps its first argument, when it is a string or an identifier
       if (fn.kind === "format") {
         if (!fn.texts.length) fn.texts.push(text ?? "");
@@ -129,9 +175,9 @@ export function parseFontSrc(src: string, baseUrl: string): FontSrc[] {
         current = null;
       } else if (!current && type === T.Url) {
         startSource();
-        addSource(absoluteUrl(cssUrl.decode(src.slice(start, end)).trim(), baseUrl));
+        addSource(absoluteUrl(decodeUrlToken(src.slice(start, end)), baseUrl));
       } else if (type === T.Function) {
-        const name = ident.decode(src.slice(start, end - 1)).toLowerCase();
+        const name = decodeIdent(src.slice(start, end - 1)).toLowerCase();
         if (!current && (name === "url" || name === "local")) {
           startSource();
           fn = { kind: name, texts: [], other: false };
@@ -167,10 +213,10 @@ function readFamilyName(value: string): string {
   tokenize(value, (type, start, end) => {
     if (invalid || isBlank(type)) return;
     if (type === T.String && !names.length) {
-      names.push(string.decode(value.slice(start, end)));
+      names.push(decodeString(value.slice(start, end)));
       quoted = true;
     } else if (type === T.Ident && !quoted) {
-      names.push(ident.decode(value.slice(start, end)));
+      names.push(decodeIdent(value.slice(start, end)));
     } else {
       invalid = true;
     }
@@ -270,12 +316,12 @@ export function parseFontFaceCss(cssText: string, baseUrl: string, options: { ma
     if (type === T.Semicolon) {
       endDeclaration(block, start);
     } else if (block.valueStart < 0) {
-      if (type === T.Ident && block.name === null) block.name = ident.decode(cssText.slice(start, end)).toLowerCase();
+      if (type === T.Ident && block.name === null) block.name = decodeIdent(cssText.slice(start, end)).toLowerCase();
       else if (type === T.Colon && block.name !== null) block.valueStart = end;
       else if (type !== T.WhiteSpace) block.invalid = true;
     } else if (type === T.Delim && cssText[start] === "!") {
       block.bang = true;
-    } else if (type === T.Ident && block.bang && ident.decode(cssText.slice(start, end)).toLowerCase() === "important") {
+    } else if (type === T.Ident && block.bang && decodeIdent(cssText.slice(start, end)).toLowerCase() === "important") {
       block.invalid = true;
     } else if (type !== T.WhiteSpace) {
       block.bang = false;
@@ -313,7 +359,7 @@ export function parseFontFaceCss(cssText: string, baseUrl: string, options: { ma
         statementStart = true;
         atRule = null;
       } else if (type === T.AtKeyword && statementStart) {
-        atRule = ident.decode(cssText.slice(start + 1, end)).toLowerCase();
+        atRule = decodeIdent(cssText.slice(start + 1, end)).toLowerCase();
         statementStart = false;
         prelude = false;
       } else if (!isBlank(type)) {
@@ -345,7 +391,9 @@ export function parseFontFaceCss(cssText: string, baseUrl: string, options: { ma
 }
 
 function toRule(descriptors: Record<string, string>, baseUrl: string): RawFontFaceRule | null {
-  const family = readFamilyName(descriptors["font-family"] ?? "");
+  const value = descriptors["font-family"] ?? "";
+  if (value.length > MAX_FAMILY_CHARS) return null;
+  const family = readFamilyName(value);
   const src = parseFontSrc(descriptors.src ?? "", baseUrl);
   if (!family || !src.length) return null;
   const rule: RawFontFaceRule = {

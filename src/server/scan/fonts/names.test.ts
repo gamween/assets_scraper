@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { binaryFamilyName, cleanCssFamily, GENERIC_FAMILIES, isMangledCssFamily, resolveFamilyName, splitFamilies, type NameMeta } from "./names";
-import { growthFactor, LINEAR_GROWTH_BOUND } from "./testing";
+import { growthFactor, LINEAR_GROWTH_BOUND, random } from "./testing";
 
 /** discovery-lab/lib/fonts.mjs `resolveFamilyName`, verbatim apart from types: the reference implementation. */
 function labResolveFamilyName(meta: NameMeta | null, cssFamily: string | null) {
@@ -38,16 +38,6 @@ function labResolveFamilyName(meta: NameMeta | null, cssFamily: string | null) {
   const tb = new Set(tokens(bin));
   if (tokens(css).some((t) => tb.has(t) || nb.includes(t))) return { name: bin, basis: "binary (shared token)" };
   return { name: css, basis: "css (binary name unrelated)", embeddedName: bin };
-}
-
-/** Deterministic pseudo-random numbers in [0, 1) (mulberry32). */
-function random(seed: number) {
-  return () => {
-    seed = (seed + 0x6d2b79f5) | 0;
-    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
 }
 
 describe("resolveFamilyName", () => {

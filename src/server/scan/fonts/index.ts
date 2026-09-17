@@ -1,9 +1,8 @@
-import { string } from "css-tree/utils";
 import type { FontFaceInfo, FontFamily, FontFile, FontFormat } from "@/lib/contract";
 import { limits } from "@/server/config/limits";
 import { SignLimitError } from "@/server/security/sign";
 import type { CapturedFont, FontBinaryMeta, FontsOutput, PostInput, RawFontFaceRule, RawFontStatus, RawFontUsage, SafeFetch, Signer } from "../types";
-import { MAX_SRC_ENTRIES, normalizeStretch, normalizeStyle, normalizeWeight, parseFontFaceCss } from "./css";
+import { decodeIdent, MAX_FAMILY_CHARS, MAX_SRC_ENTRIES, normalizeStretch, normalizeStyle, normalizeWeight, parseFontFaceCss } from "./css";
 import { createFileLookup, isDataUri, remoteUrl, type FileRecord } from "./files";
 import { matchGoogleFamilies } from "./google";
 import { classifyLicense } from "./license";
@@ -20,6 +19,8 @@ export { parseFontFaceCss } from "./css";
  * - `@font-face` rules read from the CSSOM, and again from captured stylesheets. Pages with the most rules, CJK fonts
  *   split in about 100 `unicode-range` subsets per weight, have a few thousand.
  * - Sources of each rule: at most `MAX_SRC_ENTRIES` (`css.ts`), from the CSSOM too.
+ * - Family names: at most `MAX_FAMILY_CHARS` characters before decoding (`css.ts`), in stylesheets, the CSSOM and
+ *   `document.fonts`. A rule or status with a longer one is skipped.
  * - Families `document.fonts` registered without a rule, and binary names of captured files without a rule: each name
  *   is matched against each family, in time that grows with the family's length. A registered family longer than
  *   `MAX_MATCHED_FAMILY_LENGTH` is deliberately not matched: binary names have 48 characters at most, but a longer
@@ -102,23 +103,23 @@ const isRawUsage = (value: unknown): value is RawFontUsage =>
   isObject(value) && typeof value.stack === "string" && Number.isSafeInteger(value.chars) && (value.chars as number) > 0;
 
 const QUOTED = /^"[\s\S]*"$/;
-/** The content of a CSS string with its escapes decoded: `a\"b` gives `a"b`. */
-const decodeCssString = (content: string) => string.decode(`"${content}"`);
 
 /**
- * The family of a rule as the browser reads it. Captured stylesheets give it decoded. The CSSOM gives it serialized as
- * CSS, a string with escapes (`"a\"b"`) or identifiers (`Inter`), which a collector may pass without its quotes.
+ * The family of a rule as the browser reads it, or "" when it is longer than `MAX_FAMILY_CHARS`. Captured stylesheets
+ * give it decoded. The CSSOM gives it serialized as CSS, a string with escapes (`"a\"b"`) or identifiers (`Inter`),
+ * which a collector may pass without its quotes.
  */
 function ruleFamily(rule: RawFontFaceRule): string {
+  if (rule.family.length > MAX_FAMILY_CHARS) return "";
   if (rule.origin === "network") return rule.family;
-  return decodeCssString(QUOTED.test(rule.family) ? rule.family.slice(1, -1) : rule.family);
+  return decodeIdent(QUOTED.test(rule.family) ? rule.family.slice(1, -1) : rule.family);
 }
 
 /**
  * The family of a `document.fonts` face as the browser reads it. `FontFace.family` gives the name of a face from an
  * `@font-face` rule as it is, and the name of a face made with the `FontFace` constructor as a CSS string (`"My Font"`).
  */
-const statusFamily = (family: string) => (QUOTED.test(family) ? decodeCssString(family.slice(1, -1)) : family);
+const statusFamily = (family: string) => (QUOTED.test(family) ? decodeIdent(family.slice(1, -1)) : family);
 
 /**
  * `binaryFamilyName` read once per metadata object in a scan: it cleans every name record, which can be 65 KB long, and
@@ -225,14 +226,19 @@ function groupFiles(
   binaryName: (meta: FontBinaryMeta | null) => string | null,
 ) {
   const files = createFileLookup(captured, pageHostOf(input.page));
-  const statuses = input.collector.fontStatuses.filter(isRawStatus).map((status) => ({
-    name: statusFamily(status.family),
-    family: statusFamily(status.family).toLowerCase(),
-    weight: normalizeWeight(status.weight),
-    style: normalizeStyle(status.style),
-    stretch: normalizeStretch(status.stretch),
-    loaded: status.status === "loaded",
-  }));
+  const statuses = input.collector.fontStatuses
+    .filter((status) => isRawStatus(status) && status.family.length <= MAX_FAMILY_CHARS)
+    .map((status) => {
+      const name = statusFamily(status.family);
+      return {
+        name,
+        family: name.toLowerCase(),
+        weight: normalizeWeight(status.weight),
+        style: normalizeStyle(status.style),
+        stretch: normalizeStretch(status.stretch),
+        loaded: status.status === "loaded",
+      };
+    });
   const loaded = statuses.filter((status) => status.loaded);
   const loadedFaces = new Set(loaded.map((status) => faceKey(status.family, status)));
   const loadedFamilies = new Set(loaded.map((status) => status.family));
