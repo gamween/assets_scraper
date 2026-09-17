@@ -66,10 +66,15 @@ function decodeResult<T>(raw: unknown, maxChars: number): T {
  * Evaluates `${source};${expression}` in a fresh CDP isolated world of the main frame (spec 7.5): same DOM, but its
  * own globals, so pages that patch built-ins cannot break the bundled code, and page scripts cannot see it. When the
  * isolated world cannot be created, runs in the main world and reports `world: "main"`. An exception thrown by the
- * code itself rejects without a retry. Rejects with `InPageTimeoutError` after `timeoutMs` in every case, and nothing
- * runs in the page after that; with `PageGoneError` as soon as the page closes or crashes or the browser dies. The
- * result crosses to Node as JSON of at most `maxResultChars` characters, otherwise it rejects with
- * `InPageResultTooLargeError`; a value JSON cannot represent (`undefined`) gives undefined.
+ * code itself rejects without a retry. Rejects with `InPageTimeoutError` after `timeoutMs` in every case; with
+ * `PageGoneError` as soon as the page closes or crashes or the browser dies. The result crosses to Node as JSON of at
+ * most `maxResultChars` characters, otherwise it rejects with `InPageResultTooLargeError`; a value JSON cannot
+ * represent (`undefined`) gives undefined.
+ *
+ * After a timeout or an abort, nothing new starts in the page: a CDP session that arrives late is detached, and the
+ * main-world fallback never runs. Code that already started is not stopped, though: a `Runtime.evaluate` or a
+ * main-world evaluation keeps running in the renderer, and keeps its CPU and memory, until it ends on its own or the
+ * page or browser closes. Callers that need the page quiet afterwards close it.
  */
 export async function runInPage<T>(page: Page, source: string, expression: string, options: RunInPageOptions): Promise<{ value: T; world: "isolated" | "main" }> {
   const maxChars = options.maxResultChars ?? DEFAULT_MAX_RESULT_CHARS;
