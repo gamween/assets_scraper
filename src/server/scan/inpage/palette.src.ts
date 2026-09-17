@@ -55,9 +55,12 @@ function collect(opts: PaletteSignalOptions = {}): RawPaletteSignals {
     if (hit !== undefined) return hit;
     let v: RGBA | null = null;
     const m = RGB_RE.exec(str);
-    if (m) {
+    // Raw strings (custom properties, meta colors) can hold channels a browser would clamp or refuse.
+    const channels = m ? [+m[1], +m[2], +m[3]] : [];
+    if (m && channels.every((c) => Number.isFinite(c))) {
       const a = m[4] === undefined ? 1 : m[5] ? parseFloat(m[4]) / 100 : parseFloat(m[4]);
-      v = [+m[1], +m[2], +m[3], a];
+      const [r, g, b] = channels.map((c) => Math.min(255, c));
+      v = [r, g, b, a];
     } else if (CSS.supports("color", str)) {
       ctx.globalCompositeOperation = "copy";
       ctx.fillStyle = "#000";

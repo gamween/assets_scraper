@@ -81,7 +81,6 @@ afterEach(() => context.close());
 describe("extractPalette", () => {
   it("extracts the fixture brand and text colors and leaves the DOM as it was", async () => {
     await page.goto(`${server.origin}/`, { waitUntil: "load" });
-    await page.evaluate(PALETTE_SOURCE);
     // Warm-up run (JIT, first screenshot), so the timing below measures a scan and not the test runner
     expect(await extract(page)).not.toBeNull();
     const before = await html(page);
@@ -296,5 +295,19 @@ describe("in-page collect", () => {
     expect(signals.vars).toEqual([["--brand", "#2f5bea", 1]]);
     expect(signals.iconUrls.every((url) => url.length <= 2048)).toBe(true);
     expect(JSON.stringify(signals).length).toBeLessThan(50_000);
+  });
+
+  it("clamps out of range rgb() channels and ignores malformed ones, like the browser", async () => {
+    await page.goto(`${server.origin}/consent.html`, { waitUntil: "load" });
+    await page.evaluate(() => {
+      const style = document.createElement("style");
+      style.textContent = ":root { --brand: rgb(300, 20, 20); --primary: rgb(1.5.5, 20, 20); }";
+      document.head.append(style);
+    });
+    await page.evaluate(PALETTE_SOURCE);
+
+    const signals = await collect({ hideOverlays: false });
+
+    expect(signals.vars).toEqual([["--brand", "#ff1414", 1]]);
   });
 });
