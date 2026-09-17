@@ -895,6 +895,7 @@ export const limits = {
   verifyMs: 8_000,
   verifyConcurrency: 16,
   maxDeclaredProbes: 150,
+  maxStylesheetUrls: 2_000, // stylesheet text URLs the network did not load that get a record
   egressMaxBytes: 400 * MB,
   egressMaxSockets: 96,
   bodyMaxBytes: 15 * MB,
@@ -1158,7 +1159,7 @@ export interface PostInput {
   deadline: number;                 // epoch ms
 }
 
-export interface AssetsOutput { assets: Asset[]; hidden: Record<string, number>; warnings: WarningCode[] }
+export interface AssetsOutput { assets: Asset[]; hidden: Record<string, number>; warnings: WarningCode[] } // hidden already includes collector.noise (D1)
 export interface FontsOutput { families: FontFamily[]; hidden: Record<string, number> }
 ```
 

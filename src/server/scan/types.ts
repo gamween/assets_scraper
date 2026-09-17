@@ -204,5 +204,10 @@ export interface PostInput {
   deadline: number;                 // epoch ms
 }
 
-export interface AssetsOutput { assets: Asset[]; hidden: Partial<Record<HiddenReason, number>>; warnings: WarningCode[] }
+export interface AssetsOutput {
+  assets: Asset[];
+  /** Every asset drop of the scan, `collector.noise` already included: the engine adds the fonts' counts, never the noise again (D1). */
+  hidden: Partial<Record<HiddenReason, number>>;
+  warnings: WarningCode[];
+}
 export interface FontsOutput { families: FontFamily[]; hidden: Partial<Record<HiddenReason, number>> }
