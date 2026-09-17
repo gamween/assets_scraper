@@ -78,8 +78,8 @@ export function isTestAllowed(host: string, port: number): boolean {
 /**
  * Why a host is refused before any DNS lookup, or null: `private-ip` for an IP literal outside public unicast space
  * (bracketed IPv6 and legacy IPv4 spellings included), `private-dns` for `localhost` and `*.localhost`. Case, a port
- * and root dots are ignored. The one rule shared by the gate, `safeFetch` and `resolvePublicHost`; callers apply the
- * test allowlist themselves.
+ * and root dots are ignored. The one rule shared by the gate, `safeFetch` and `resolvePublicAddresses` (and so the egress
+ * proxy); callers apply the test allowlist themselves.
  */
 export function privateHostReason(host: string): "private-ip" | "private-dns" | null {
   const key = hostKey(host);
@@ -129,7 +129,10 @@ export async function resolvePublicAddresses(host: string, port: number): Promis
   return [...new Set(records.map((record) => record.address))];
 }
 
-/** The first address `resolvePublicAddresses` returns, for callers that connect to one address only. */
+/**
+ * The first address `resolvePublicAddresses` returns: the single-address form spec 11.1 names. The app itself calls
+ * `resolvePublicAddresses`, so a dead first address falls back to the next one.
+ */
 export async function resolvePublicHost(host: string, port: number): Promise<string> {
   return (await resolvePublicAddresses(host, port))[0];
 }
