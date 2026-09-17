@@ -43,6 +43,9 @@ const listMatches = (u: URL, list: string[]) => {
   });
 };
 
+/** Raster data URIs smaller than this are noise (`tiny-data-uri`), whatever their dimensions. */
+export const TINY_DATA_URI_BYTES = 1024;
+
 export interface NoiseInput {
   url: string;
   contentType?: string;     // captured or probed content type, or the media type of a data URI
@@ -70,7 +73,7 @@ export function noiseReason(input: NoiseInput): HiddenReason | null {
     }
     const bytes = input.bytes ?? url.length * 0.75;
     if (width != null && height != null && Math.max(width, height) < 64) return "tiny-data-uri";
-    return bytes < 1024 ? "tiny-data-uri" : null;
+    return bytes < TINY_DATA_URI_BYTES ? "tiny-data-uri" : null;
   }
   if (u.protocol === "blob:") return input.blobCaptured ? null : "blob-unavailable";
   if (u.protocol !== "http:" && u.protocol !== "https:") return "not-image";

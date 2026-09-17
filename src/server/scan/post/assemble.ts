@@ -7,7 +7,7 @@ import type { AssetsOutput, CapturedImage, CandidateContext, PostInput, RawCandi
 import { originalCandidates, variantKey } from "./cdn";
 import { extensionFor, formatFromContentType, formatFromUrl, sniffFormat } from "./format";
 import { createFilenamer, displayName } from "./naming";
-import { noiseReason, svgNoiseReason } from "./noise";
+import { noiseReason, svgNoiseReason, TINY_DATA_URI_BYTES } from "./noise";
 import { decodeDataUri, forEachStylesheetUrl } from "./parse";
 import { assignRole, isSpriteSheet, logoScore, relevanceScore } from "./roles";
 import { createToneBudget } from "./tone";
@@ -69,6 +69,9 @@ interface Draft {
   toneJob?: ToneJob;
   inlineRasterBytes: number;  // raster bytes sent to the client as base64
 }
+
+/** Inline raster headers read at once. */
+const METADATA_CONCURRENCY = 2;
 
 const sha1 = (value: string | Buffer) => createHash("sha1").update(value).digest("hex");
 const area = (size?: { width?: number; height?: number }) => (size?.width ?? 0) * (size?.height ?? 0);
@@ -392,47 +395,54 @@ async function buildRecords(input: PostInput, baseUrl: string, limiter: Limiter,
   }
   const blobs = new Map(collector.blobs.map((blob) => [blob.url, blob]));
 
-  await Promise.all(
-    [...records.values()].map(async (record) => {
-      if (record.scheme === "http") {
-        const capture = captured.get(record.url);
-        if (capture) {
-          record.capture = capture;
-          record.contentType = capture.contentType;
-          record.bytes = capture.bytes;
-          record.sha1 = capture.sha1;
-          record.width = capture.width;
-          record.height = capture.height;
-          record.server = capture.server;
-        }
-        record.key = variantKey(record.url, { pageUrl, server: record.server });
-      } else if (record.scheme === "data") {
-        const decoded = decodeDataUri(record.url);
-        if (decoded) {
-          record.inline = decoded;
-          record.contentType = decoded.mime;
-          record.bytes = decoded.buffer.length;
-          record.sha1 = sha1(decoded.buffer);
-        }
-      } else {
-        // blob: bytes, network body first (spec 8.1). They travel inline and are never merged with other URLs by content.
-        const blob = blobs.get(record.url);
-        const capture = captured.get(record.url);
-        if (capture?.blobBase64) record.inline = { mime: capture.contentType, buffer: Buffer.from(capture.blobBase64, "base64") };
-        else if (blob) record.inline = { mime: blob.mime, buffer: Buffer.from(blob.base64, "base64") };
-        if (record.inline) {
-          record.contentType = record.inline.mime;
-          record.bytes = record.inline.buffer.length;
-        }
+  const measure: UrlRecord[] = [];
+  for (const record of records.values()) {
+    if (record.scheme === "http") {
+      const capture = captured.get(record.url);
+      if (capture) {
+        record.capture = capture;
+        record.contentType = capture.contentType;
+        record.bytes = capture.bytes;
+        record.sha1 = capture.sha1;
+        record.width = capture.width;
+        record.height = capture.height;
+        record.server = capture.server;
       }
-      record.kind = formatOf(record) === "svg" ? "svg" : "raster";
-      if (record.inline && record.kind === "raster") {
-        const meta = await sharp(record.inline.buffer, { failOn: "none", limitInputPixels: false }).metadata().catch(() => null);
-        record.width = meta?.width;
-        record.height = meta?.height;
+      record.key = variantKey(record.url, { pageUrl, server: record.server });
+    } else if (record.scheme === "data") {
+      const decoded = decodeDataUri(record.url);
+      if (decoded) {
+        record.inline = decoded;
+        record.contentType = decoded.mime;
+        record.bytes = decoded.buffer.length;
+        record.sha1 = sha1(decoded.buffer);
       }
-    }),
-  );
+    } else {
+      // blob: bytes, network body first (spec 8.1). They travel inline and are never merged with other URLs by content.
+      const blob = blobs.get(record.url);
+      const capture = captured.get(record.url);
+      if (capture?.blobBase64) record.inline = { mime: capture.contentType, buffer: Buffer.from(capture.blobBase64, "base64") };
+      else if (blob) record.inline = { mime: blob.mime, buffer: Buffer.from(blob.base64, "base64") };
+      if (record.inline) {
+        record.contentType = record.inline.mime;
+        record.bytes = record.inline.buffer.length;
+      }
+    }
+    record.kind = formatOf(record) === "svg" ? "svg" : "raster";
+    // A raster data URI under 1 KB is noise whatever its size (spec 8.2), so it is never decoded
+    if (record.inline && record.kind === "raster" && !(record.scheme === "data" && record.inline.buffer.length < TINY_DATA_URI_BYTES)) measure.push(record);
+  }
+  // Image headers are read on the libuv thread pool, which DNS lookups for the probes share: a few at a time
+  let next = 0;
+  const worker = async () => {
+    while (next < measure.length) {
+      const record = measure[next++];
+      const meta = await sharp(record.inline!.buffer, { failOn: "none", limitInputPixels: false }).metadata().catch(() => null);
+      record.width = meta?.width;
+      record.height = meta?.height;
+    }
+  };
+  await Promise.all(Array.from({ length: METADATA_CONCURRENCY }, worker));
   return records;
 }
 

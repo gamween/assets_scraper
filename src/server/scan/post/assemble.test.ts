@@ -4,6 +4,27 @@ import { SignLimitError } from "@/server/security/sign";
 import type { CandidateContext, CapturedImage, CapturedSheet, PostInput, RawCandidate, RawCollectorOutput, SafeFetch, Signer } from "../types";
 import { assembleAssets, siteLabel } from "./assemble";
 
+// Counts the image header reads of inline rasters, and how many run at once
+const metadataCalls = vi.hoisted(() => ({ total: 0, active: 0, peak: 0 }));
+vi.mock("sharp", async (importOriginal) => {
+  const actual = (await importOriginal<{ default: typeof import("sharp") }>()).default;
+  const wrapped = (...args: Parameters<typeof actual>) => {
+    const instance = actual(...args);
+    const metadata = instance.metadata.bind(instance);
+    instance.metadata = (async () => {
+      metadataCalls.total++;
+      metadataCalls.peak = Math.max(metadataCalls.peak, ++metadataCalls.active);
+      try {
+        return await metadata();
+      } finally {
+        metadataCalls.active--;
+      }
+    }) as typeof instance.metadata;
+    return instance;
+  };
+  return { default: Object.assign(wrapped, actual) };
+});
+
 /** assembleAssets on synthetic collector output, with a fetch that answers every probe with a 404. */
 
 const PAGE = "https://shop.example/";
@@ -214,4 +235,24 @@ describe("assembleAssets on URL-heavy stylesheets", () => {
     expect(hidden["probe-failed"]).toBeLessThanOrEqual(limits.maxDeclaredProbes);
     expect(warnings).toEqual(expect.arrayContaining(["truncated", "verify-skipped"]));
   }, 60_000);
+});
+
+describe("assembleAssets inline rasters", () => {
+  const png1x1 = (i: number, padding = 0) => {
+    // A 1x1 PNG with a distinct text chunk, so every data URI is a distinct URL
+    const base = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
+    return `data:image/png;base64,${Buffer.concat([base, Buffer.from(String(i)), Buffer.alloc(padding)]).toString("base64")}`;
+  };
+
+  it("never decodes raster data URIs under 1 KB, and reads the others a few at a time", async () => {
+    metadataCalls.total = 0;
+    metadataCalls.peak = 0;
+    const tiny = Array.from({ length: 5_000 }, (_, i) => candidate(png1x1(i), i + 1, i + 1));
+    const large = Array.from({ length: 20 }, (_, i) => candidate(png1x1(i, 2_000), 10_000 + i, 10_000 + i));
+    const { assets, hidden } = await run(collectorOutput({ candidates: [...tiny, ...large] }));
+    expect(assets).toEqual([]);
+    expect(hidden["tiny-data-uri"]).toBe(5_020);
+    expect(metadataCalls.total).toBe(20);
+    expect(metadataCalls.peak).toBeLessThanOrEqual(2);
+  });
 });
