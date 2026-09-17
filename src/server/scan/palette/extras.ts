@@ -22,6 +22,8 @@ export async function fetchPaletteExtras(
 ): Promise<PaletteExtras> {
   const found: PaletteExtras = { icon: null, manifest: null };
   const budget = new AbortController();
+  // Listens before anything can abort, so it settles even when the scan is already aborted
+  const done = new Promise<void>((resolve) => budget.signal.addEventListener("abort", () => resolve(), { once: true }));
   const stop = () => budget.abort();
   const timer = setTimeout(stop, options.budgetMs);
   options.signal.addEventListener("abort", stop, { once: true });
@@ -61,7 +63,6 @@ export async function fetchPaletteExtras(
     }
   };
 
-  const done = new Promise<void>((resolve) => budget.signal.addEventListener("abort", () => resolve(), { once: true }));
   await Promise.race([Promise.all([icon(), manifest()]), done]);
   clearTimeout(timer);
   options.signal.removeEventListener("abort", stop);

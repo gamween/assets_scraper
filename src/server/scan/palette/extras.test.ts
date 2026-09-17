@@ -122,6 +122,22 @@ describe("fetchPaletteExtras", () => {
     await expect(pending).resolves.toEqual({ icon: null, manifest: null });
   });
 
+  it("returns at once when the scan is already aborted, even if a request never settles", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const calls: string[] = [];
+    // Ignores its signal: only the budget race can end the wait
+    const fetch: SafeFetch = (url) => {
+      calls.push(url);
+      return new Promise(() => {});
+    };
+    const started = performance.now();
+    const extras = await fetchPaletteExtras({ iconUrls: ["https://a.test/icon.png"], manifestUrl: "https://a.test/m.json" }, { fetch, signal: controller.signal, budgetMs: 10_000 });
+    expect(extras).toEqual({ icon: null, manifest: null });
+    expect(performance.now() - started).toBeLessThan(500);
+    expect(calls).toEqual([]);
+  });
+
   it("survives fetch errors and bad manifests", async () => {
     const fetch: SafeFetch = async (url) => {
       if (url.endsWith(".json")) return response(url, 200, "application/json", "{not json");
