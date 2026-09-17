@@ -41,14 +41,24 @@ export async function fastestMs(task: () => unknown, runs = 3): Promise<number> 
   return fastest;
 }
 
+/** How many times `growthFactor` grows the input. */
+const GROWTH = 8;
+
 /**
- * How many times slower `task` gets when its input grows from `size` to 4 times `size`: about 4 for linear work and
- * 16 for quadratic work, whatever the speed of the machine. Warms up first and keeps the fastest of 3 runs per size.
- * Pick a `size` where one run takes a few milliseconds at least.
+ * The bound tests set on `growthFactor`: linear work gives about 8, quadratic work about 64, so a GC pause or a busy
+ * machine can push a linear run well past 8 without reaching it, and a quadratic regression stays far above it.
+ */
+export const LINEAR_GROWTH_BOUND = 20;
+
+/**
+ * How many times slower `task` gets when its input grows from `size` to `GROWTH` times `size`: about 8 for linear work
+ * and 64 for quadratic work, whatever the speed of the machine. Warms up first and keeps the fastest of 3 runs per size.
+ * Pick a `size` where one run takes a few milliseconds at least, and where `GROWTH` times `size` stays under the caps of
+ * the code under test.
  */
 export async function growthFactor(task: (size: number) => unknown, size: number): Promise<number> {
   await task(size);
   const small = await fastestMs(() => task(size));
-  const large = await fastestMs(() => task(size * 4));
+  const large = await fastestMs(() => task(size * GROWTH));
   return large / Math.max(small, 1);
 }

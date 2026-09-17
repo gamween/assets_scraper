@@ -1,7 +1,7 @@
 import parse from "css-tree/parser";
 import { describe, expect, it } from "vitest";
 import { parseFontFaceCss, parseFontSrc } from "./css";
-import { fastestMs, growthFactor } from "./testing";
+import { fastestMs, growthFactor, LINEAR_GROWTH_BOUND } from "./testing";
 
 const MIB = 1024 * 1024;
 const BASE = "https://s.example/css/a.css";
@@ -69,7 +69,7 @@ describe("parseFontFaceCss", () => {
     expect(after).toBeLessThan(before * 3 + 10);
 
     expect(parseFontFaceCss(sheetOf(50_000), BASE)).toHaveLength(50_000);
-    expect(await growthFactor((rules) => parseFontFaceCss(sheetOf(rules), BASE), 12_500)).toBeLessThan(8);
+    expect(await growthFactor((rules) => parseFontFaceCss(sheetOf(rules), BASE), 6_250)).toBeLessThan(LINEAR_GROWTH_BOUND);
   }, 60_000);
 
   it("skips rules without a family or a usable source and never throws on junk", () => {
@@ -116,8 +116,8 @@ describe("parseFontSrc", () => {
         parseFontFaceCss(`@font-face{font-family:X;src:${value}}`, BASE);
         parseFontFaceCss(`@media x{${value}{@font-face{font-family:X;src:url(a.woff2)`, BASE);
       }
-    }, 40_000);
-    expect(factor).toBeLessThan(8);
+    }, 20_000);
+    expect(factor).toBeLessThan(LINEAR_GROWTH_BOUND);
   });
 
   it("keeps the first format of a legacy list and drops unresolvable URLs", () => {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { binaryFamilyName, cleanCssFamily, GENERIC_FAMILIES, isMangledCssFamily, resolveFamilyName, splitFamilies, type NameMeta } from "./names";
-import { growthFactor } from "./testing";
+import { growthFactor, LINEAR_GROWTH_BOUND } from "./testing";
 
 /** discovery-lab/lib/fonts.mjs `resolveFamilyName`, verbatim apart from types: the reference implementation. */
 function labResolveFamilyName(meta: NameMeta | null, cssFamily: string | null) {
@@ -105,7 +105,7 @@ describe("resolveFamilyName", () => {
     };
     // 48 characters at most for a binary name, as in the lab
     expect(hostile(200_000)).toEqual(["Inter", "(unknown)", "__a_".repeat(50_000), `Brand${" ".repeat(200_000)}x`, "Brand"]);
-    expect(await growthFactor(hostile, 40_000)).toBeLessThan(8);
+    expect(await growthFactor(hostile, 20_000)).toBeLessThan(LINEAR_GROWTH_BOUND);
   });
 
   it("keeps the CSS name and reports an unrelated embedded name", () => {

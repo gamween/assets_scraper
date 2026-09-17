@@ -8,7 +8,7 @@ import { parseFontBinary } from "./binary";
 import { MAX_INLINE_BYTES, MAX_INLINE_FONTS } from "./files";
 import { clearGoogleFontsCache } from "./google";
 import { buildFontFamilies, isConvertibleFont } from "./index";
-import { fakeGoogleFetch, growthFactor } from "./testing";
+import { fakeGoogleFetch, growthFactor, LINEAR_GROWTH_BOUND } from "./testing";
 
 vi.mock("./binary", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./binary")>();
@@ -323,9 +323,10 @@ describe("buildFontFamilies", () => {
       // family names that give the same id
       ids: (size) => ({ fontFaces: Array.from({ length: size }, (_, index) => rule(String.fromCharCode(0x4e00 + index), [`${PAGE}${index}.woff2`])) }),
     };
+    // 600 grows to 4,800, under the cap of 5,000 CSSOM rules; binary names and registered families are capped at 128
     for (const [name, parts] of Object.entries(hostile)) {
-      const factor = await growthFactor((size) => buildFontFamilies(inputOf(parts(size))), name === "undeclared" ? 300 : 1_000);
-      expect.soft(factor, name).toBeLessThan(8);
+      const factor = await growthFactor((size) => buildFontFamilies(inputOf(parts(size))), name === "undeclared" ? 300 : 600);
+      expect.soft(factor, name).toBeLessThan(LINEAR_GROWTH_BOUND);
     }
   }, 60_000);
 
