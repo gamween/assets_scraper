@@ -54,7 +54,7 @@ function startsLikeSvg(text: string): boolean {
     pattern.lastIndex = from;
     return pattern.test(text) ? pattern.lastIndex : -1;
   };
-  let position = matchEnd(SPACE, text.startsWith("﻿") ? 1 : 0);
+  let position = matchEnd(SPACE, text.startsWith("\uFEFF") ? 1 : 0);
   const declarationEnd = matchEnd(XML_DECLARATION, position);
   if (declarationEnd !== -1) position = matchEnd(SPACE, declarationEnd);
   let doctypeSeen = false;

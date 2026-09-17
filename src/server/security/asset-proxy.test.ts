@@ -16,7 +16,7 @@ describe("sniffContentType", () => {
   it("recognizes SVG text after a BOM, an XML declaration, comments and an SVG doctype", () => {
     expect(sniffContentType(text(SVG))).toBe("image/svg+xml");
     const preamble =
-      '﻿ \n<?xml version="1.0" encoding="UTF-8"?>\n<!-- Generator: x -->\n<!---->' +
+      '\uFEFF \n<?xml version="1.0" encoding="UTF-8"?>\n<!-- Generator: x -->\n<!---->' +
       '<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">\n<!-- -- -->\n<SVG\nwidth="1">';
     expect(sniffContentType(text(preamble))).toBe("image/svg+xml");
   });
