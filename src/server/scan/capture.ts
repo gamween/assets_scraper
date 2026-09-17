@@ -132,8 +132,11 @@ export function startCapture(page: Page, options: CaptureOptions): CaptureHandle
       for (const job of queue.splice(0)) job.drop();
       return;
     }
-    for (let i = 0; i < queue.length && reading < limits.bodyConcurrency; ) {
-      if (reading > 0 && bytesRead + reserved + queue[i].reserve > limits.bodyTotalBytes) {
+    // Read once: each limit parses the environment, and this loop can walk thousands of queued reads per completion.
+    const concurrency = limits.bodyConcurrency;
+    const totalBytes = limits.bodyTotalBytes;
+    for (let i = 0; i < queue.length && reading < concurrency; ) {
+      if (reading > 0 && bytesRead + reserved + queue[i].reserve > totalBytes) {
         i += 1;
         continue;
       }
