@@ -51,14 +51,6 @@ const defaultDeps: ScanEngineDeps = {
 
 const WATCHDOG_INTERVAL_MS = 500;
 
-/**
- * Characters of JSON the collector output is fitted in (see FIT_COLLECTOR_OUTPUT). Node holds the result several times
- * while Playwright and the engine parse it, so this bounds the memory a page can make the scan use. It holds the blob
- * bytes at their cap as base64 (which JSON never escapes), inline SVG markup at its cap with every character escaped
- * the way ordinary markup can be (quotes, backslashes and line breaks take 2 characters), and `limits.collectorJsonRoomChars`
- * for candidates, font rules and links.
- */
-const collectorBudgetChars = () => Math.ceil((limits.blobTotalBytes * 4) / 3) + 2 * limits.svgTotalBytes + limits.collectorJsonRoomChars;
 /** The fitted output can differ from the budget by a few characters (see FIT_COLLECTOR_OUTPUT). */
 const COLLECTOR_RESULT_SLACK_CHARS = 1_024;
 const COLLECTOR_LISTS = ["candidates", "svgs", "fontFaces", "fontStatuses", "fontUsage", "unreadableSheets", "blobs", "brandLinks"] as const;
@@ -68,8 +60,9 @@ const COLLECTOR_LISTS = ["candidates", "svgs", "fontFaces", "fontStatuses", "fon
  * It cuts the title and the site name to one character over their caps (the engine cuts them in Node, see
  * `pageContextFor`), then fits the output in `budget` characters of JSON: over it, list items go until it fits, first
  * the candidates that repeat the URL of an earlier candidate (they only add a use of an asset that stays), then the
- * largest items, and `stats.truncated` is set. The collector caps SVG and blob bytes, but not candidates: a page that
- * uses a large data: URI on hundreds of elements would otherwise lose the whole collector output.
+ * largest items, and `stats.truncated` is set. The collector fits its own output in the same budget
+ * (`CollectorOptions.maxOutputChars`), so this is a safety net for a collector a main-world page replaced or broke:
+ * without it, output over the budget would lose the whole collector result.
  *
  * Measured sizes count a comma per item, one too many for a list that ends up empty, so the loop keeps a character
  * of margin per list it touched and the result never goes over the budget.
@@ -605,8 +598,10 @@ async function runBrowserStage(input: ScanContext & {
           maxBrandLinks: limits.maxBrandLinks,
           maxBlobBytes: limits.blobMaxBytes,
           maxBlobTotalBytes: limits.blobTotalBytes,
+          maxOutputChars: limits.collectorMaxOutputChars,
         };
-        const budget = collectorBudgetChars();
+        // The collector cuts its own lists to this budget; FIT_COLLECTOR_OUTPUT fits again in case it did not.
+        const budget = limits.collectorMaxOutputChars;
         const expression = `(${FIT_COLLECTOR_OUTPUT})(await globalThis.__assetsScraper.collect(${JSON.stringify(options)}), ${budget})`;
         let world: "isolated" | "main" | undefined;
         try {

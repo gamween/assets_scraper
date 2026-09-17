@@ -86,6 +86,7 @@ export interface CollectorOptions {
   maxBrandLinks: number;                    // spec 8.1
   maxBlobBytes: number;                     // bytes of one `blob:` image before base64 (spec 7.4, limits.blobMaxBytes)
   maxBlobTotalBytes: number;                // all `blobs` together before base64 (spec 7.4, limits.blobTotalBytes)
+  maxOutputChars: number;                   // JSON characters of the whole output; lists are cut to fit (limits.collectorMaxOutputChars)
 }
 
 export interface RawCollectorOutput {

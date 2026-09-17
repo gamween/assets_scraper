@@ -798,9 +798,8 @@ describe("scan engine", () => {
   });
 
   it("fits collector output over its budget instead of losing it, and warns that it is truncated", async () => {
-    // A budget of about 8 MB: the SVG and blob caps add almost nothing.
-    vi.stubEnv("SVG_TOTAL_BYTES", "1");
-    vi.stubEnv("BLOB_TOTAL_BYTES", "1");
+    // A budget of 8 MB. This collector ignores maxOutputChars, like one a main-world page replaced: the engine fits it.
+    vi.stubEnv("COLLECTOR_MAX_OUTPUT_CHARS", "8000000");
     // A 50 KB data: URI on 300 elements (15 MB), a unique logo, a 9 MB SVG and a small one.
     const collectorSource = `${FAKE_COLLECTOR}
 {
@@ -812,7 +811,8 @@ describe("scan engine", () => {
     const pattern = "data:image/png;base64," + "A".repeat(50000);
     const candidates = [candidate(pattern, 0), candidate(location.origin + "/logo.png", 1), ...Array.from({ length: 299 }, (_, i) => candidate(pattern, i + 2))];
     const svg = (markup, order) => ({ markup, hash: "h" + order, source: "inline", referenced: false, order, visible: true, context, usedCount: 1, hasLiveText: false, elementCount: 1 });
-    return { ...output, page: { ...output.page, title: "T".repeat(50000) }, candidates, svgs: [svg("<svg>" + "x".repeat(9000000) + "</svg>", 0), svg("<svg><path/></svg>", 1)] };
+    // stats.ms carries the maxOutputChars the engine passed, for the test to check.
+    return { ...output, stats: { ...output.stats, ms: options.maxOutputChars }, page: { ...output.page, title: "T".repeat(50000) }, candidates, svgs: [svg("<svg>" + "x".repeat(9000000) + "</svg>", 0), svg("<svg><path/></svg>", 1)] };
   };
 }`;
     let collected: PostInput["collector"] | undefined;
@@ -832,7 +832,7 @@ describe("scan engine", () => {
     expect(events).toContainEqual({ type: "warning", code: "truncated" });
     expect(collected?.candidates.map((candidate) => candidate.order)).toEqual([0, 1]);
     expect(collected?.svgs.map((svg) => svg.markup)).toEqual(["<svg><path/></svg>"]);
-    expect(collected?.stats.truncated).toBe(true);
+    expect(collected?.stats).toMatchObject({ truncated: true, ms: 8_000_000 });
     // The collector's title is cut, for post-processing and in the final page event.
     expect(pageTitle).toBe("T".repeat(2_048));
     expect(events.filter((event) => event.type === "page").at(-1)).toMatchObject({ page: { title: "T".repeat(2_048) } });

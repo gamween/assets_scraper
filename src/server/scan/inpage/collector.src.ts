@@ -17,7 +17,8 @@ import type {
  * Runs inside the scanned page, normally in a CDP isolated world where `customElements` is null, so it never uses it.
  * It cannot import app code: `parseSrcset` and `extractCssUrls` are copies of `post/parse.ts`, keep them in sync.
  * Returns plain JSON. Caps: `maxElements` walked, `timeBudgetMs`, `maxSvgNormalizations`, `maxSvgBytes` per SVG,
- * `maxSvgTotalBytes` for all SVG markup, blob byte caps. Hitting one sets `stats.truncated`.
+ * `maxSvgTotalBytes` for all SVG markup, blob byte caps, `maxOutputChars` of JSON for the whole output. Hitting one sets
+ * `stats.truncated`.
  */
 
 declare global {
@@ -1178,7 +1179,7 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
     document.querySelector('meta[name="application-name"]')?.getAttribute("content")?.trim() ||
     undefined;
 
-  return {
+  const output: RawCollectorOutput = {
     page: { title, ...(siteName ? { siteName } : {}), baseUrl: baseURI, elementCount: document.getElementsByTagName("*").length },
     candidates: [...candidates.values()],
     svgs: [...svgs.values()],
@@ -1192,6 +1193,41 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
     noise,
     stats: { elements: elements.length, ms: Math.round(performance.now() - T0), truncated },
   };
+  if (fitOutput(output, options.maxOutputChars)) output.stats.truncated = true;
+  return output;
+}
+
+const OUTPUT_LISTS = ["candidates", "svgs", "fontFaces", "fontStatuses", "fontUsage", "unreadableSheets", "blobs", "brandLinks"] as const;
+
+/**
+ * Cuts the output lists until the output is at most `maxChars` characters of JSON, and says whether it cut anything.
+ * Every list loses its tail, and all lists lose the same share of their items (the last 10% of each first, and so on),
+ * so the items that come first in page order stay. Measured sizes count a comma per item, one too many for a list that
+ * ends up empty, so the target keeps a character of margin per list. The engine fits the output again as a safety net
+ * (a main-world page can replace `JSON.stringify` or the whole collector), so a measure that fails cuts nothing.
+ */
+function fitOutput(output: RawCollectorOutput, maxChars: number): boolean {
+  let total: number;
+  try {
+    total = JSON.stringify(output).length;
+  } catch {
+    return false;
+  }
+  if (!(total > maxChars)) return false;
+  const lists = OUTPUT_LISTS.map((key) => ({ key, items: output[key] as unknown[], keep: output[key].length }));
+  const items: { list: (typeof lists)[number]; index: number; share: number; size: number }[] = [];
+  for (const list of lists) {
+    list.items.forEach((item, index) => items.push({ list, index, share: (index + 1) / list.items.length, size: (JSON.stringify(item) ?? "null").length + 1 }));
+  }
+  items.sort((a, b) => b.share - a.share || b.index - a.index);
+  const target = maxChars - lists.length;
+  for (const item of items) {
+    if (total <= target) break;
+    total -= item.size;
+    item.list.keep = Math.min(item.list.keep, item.index);
+  }
+  for (const list of lists) (output[list.key] as unknown[]) = list.items.slice(0, list.keep);
+  return true;
 }
 
 function decodeURIComponentSafe(text: string): string {

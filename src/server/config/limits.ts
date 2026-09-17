@@ -80,8 +80,11 @@ const defaults = {
   svgMaxNormalizations: 400,
   spriteFetchMs: 4_000,
   maxBrandLinks: 6,
-  /** JSON characters the collector output gets past its blobs and SVG markup: candidates, font rules and links. */
-  collectorJsonRoomChars: 8 * MB,
+  /**
+   * JSON characters of the whole collector output. Node holds the result several times while Playwright and the engine
+   * parse it, so this bounds the memory a page can make the scan use. The collector cuts its lists to stay under it.
+   */
+  collectorMaxOutputChars: 32_000_000,
 
   // Results
   maxAssets: 1_500,

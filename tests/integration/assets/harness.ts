@@ -46,6 +46,7 @@ export function collectorOptions(host: string, siteName: string, patch: Partial<
     maxBrandLinks: limits.maxBrandLinks,
     maxBlobBytes: limits.blobMaxBytes,
     maxBlobTotalBytes: limits.blobTotalBytes,
+    maxOutputChars: limits.collectorMaxOutputChars,
     ...patch,
   };
 }

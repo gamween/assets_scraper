@@ -296,4 +296,24 @@ describe("collector limits and hostile pages", () => {
     expect(tinySvgs.noise["svg-too-large"]).toBeGreaterThan(0);
     expect(tinySvgs.svgs.every((s) => s.markup.length <= 150)).toBe(true);
   });
+
+  it("cuts the tail of its lists to stay under maxOutputChars and says so", async () => {
+    const { context, page } = await openPage(browser, `${server.origin}/`);
+    const full = await runCollector(page, collectorOptions(server.host, "Fixture"));
+    const size = JSON.stringify(full).length;
+    const roomy = await runCollector(page, collectorOptions(server.host, "Fixture", { maxOutputChars: size + 1_000 }));
+    const cap = Math.floor(size / 2);
+    const capped = await runCollector(page, collectorOptions(server.host, "Fixture", { maxOutputChars: cap }));
+    await context.close();
+    expect(full.stats.truncated).toBe(false);
+    expect(roomy.stats.truncated).toBe(false);
+    expect(roomy.candidates).toHaveLength(full.candidates.length);
+    expect(capped.stats.truncated).toBe(true);
+    expect(JSON.stringify(capped).length).toBeLessThanOrEqual(cap);
+    // Page order is kept: each list is a prefix of the uncut one, and the first items are still there.
+    expect(capped.candidates.length).toBeGreaterThan(0);
+    expect(capped.candidates.length).toBeLessThan(full.candidates.length);
+    expect(capped.candidates.map((c) => c.url)).toEqual(full.candidates.slice(0, capped.candidates.length).map((c) => c.url));
+    expect(capped.svgs.map((s) => s.hash)).toEqual(full.svgs.slice(0, capped.svgs.length).map((s) => s.hash));
+  });
 });
