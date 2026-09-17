@@ -143,6 +143,35 @@ function isCollectorOutput(value: unknown): value is RawCollectorOutput {
   );
 }
 
+/** Longest brand link text sent to the client, which shows it on a chip. */
+const MAX_BRAND_LINK_TEXT_CHARS = 200;
+const MAX_BRAND_LINK_URL_CHARS = 2_048;
+
+/**
+ * Brand links as they go to the client (spec 8.1): http and https links with their text, at most `limits.maxBrandLinks`,
+ * text trimmed and cut to MAX_BRAND_LINK_TEXT_CHARS. The collector applies these rules already, but a main-world page
+ * can replace the collector, so the engine checks its output again before it reaches the UI.
+ */
+export function safeBrandLinks(links: unknown): PageInfo["brandLinks"] {
+  const kept: PageInfo["brandLinks"] = [];
+  if (!Array.isArray(links)) return kept;
+  for (const link of links) {
+    if (kept.length >= limits.maxBrandLinks) break;
+    if (!isRecord(link) || typeof link.href !== "string" || typeof link.text !== "string" || link.href.length > MAX_BRAND_LINK_URL_CHARS) continue;
+    let url: URL;
+    try {
+      url = new URL(link.href);
+    } catch {
+      continue;
+    }
+    if ((url.protocol !== "http:" && url.protocol !== "https:") || url.href.length > MAX_BRAND_LINK_URL_CHARS) continue;
+    // Never half of a surrogate pair at the cut.
+    const text = link.text.trim().slice(0, MAX_BRAND_LINK_TEXT_CHARS).replace(/[\uD800-\uDBFF]$/, "");
+    kept.push({ href: url.href, text });
+  }
+  return kept;
+}
+
 function mergeCounts(...sources: Partial<Record<string, number>>[]): Record<string, number> {
   const total: Record<string, number> = {};
   for (const source of sources)
@@ -364,7 +393,7 @@ function emitResults(results: ScanResults, emit: (event: ScanEvent) => void): vo
     ...(context.siteName ? { siteName: context.siteName } : {}),
     ...(faviconAsset ? { favicon: faviconAsset.display ?? faviconAsset.original ?? undefined } : {}),
     status: nav.status,
-    brandLinks: collector.brandLinks,
+    brandLinks: safeBrandLinks(collector.brandLinks),
   };
   emit({ type: "page", page });
   emit({ type: "palette", palette: results.palette });

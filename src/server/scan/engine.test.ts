@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { pageWorkMs, postProcessingWindow } from "./engine";
+import { pageWorkMs, postProcessingWindow, safeBrandLinks } from "./engine";
 
 const S = 1000;
 const window = (now: number) => postProcessingWindow({ startedAt: 0, now: now * S, deadlineMs: 90 * S, verifyMs: 8 * S });
@@ -25,5 +25,32 @@ describe("postProcessingWindow", () => {
     expect(window(87)).toEqual({ networkDeadline: 87 * S, endsAt: 90 * S });
     expect(window(90)).toEqual({ networkDeadline: 90 * S, endsAt: 90 * S });
     expect(window(91).endsAt).toBe(90 * S);
+  });
+});
+
+describe("safeBrandLinks", () => {
+  it("keeps http and https links with text, at most maxBrandLinks, with their text cut", () => {
+    const links = [
+      { href: "javascript:alert(1)", text: "Press" },
+      { href: "https://example.com/press", text: "  Press kit  " },
+      { href: "https://example.com/brand", text: 42 },
+      { href: `https://example.com/${"a".repeat(3000)}`, text: "Long" },
+      "https://example.com/media",
+      null,
+      { href: "data:text/html,hi", text: "Data" },
+      { href: "not a url", text: "Broken" },
+      { href: "http://example.com/logos", text: `${"x".repeat(199)}😀 and more` },
+      ...Array.from({ length: 10 }, (_, i) => ({ href: `https://example.com/brand/${i}`, text: `Brand ${i}` })),
+    ];
+    expect(safeBrandLinks(links)).toEqual([
+      { href: "https://example.com/press", text: "Press kit" },
+      { href: "http://example.com/logos", text: "x".repeat(199) },
+      ...Array.from({ length: 4 }, (_, i) => ({ href: `https://example.com/brand/${i}`, text: `Brand ${i}` })),
+    ]);
+  });
+
+  it("gives no links for output that is not a list", () => {
+    expect(safeBrandLinks({ href: "https://example.com/press", text: "Press" })).toEqual([]);
+    expect(safeBrandLinks(undefined)).toEqual([]);
   });
 });
