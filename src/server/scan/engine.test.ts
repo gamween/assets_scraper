@@ -99,6 +99,14 @@ describe("FIT_COLLECTOR_OUTPUT", () => {
     expect(JSON.stringify(fitted).length).toBeLessThanOrEqual(budget);
   });
 
+  it("drops the later of equal-size items first, so page order wins", () => {
+    const svgs = ["a", "b", "c"].map((char) => ({ markup: `<svg>${char.repeat(1_000)}</svg>` }));
+    const whole = output({ svgs });
+    const budget = JSON.stringify(whole).length - 500;
+    const fitted = fit(whole, budget);
+    expect(fitted.svgs.map((svg) => svg.markup[5])).toEqual(["a", "b"]);
+  });
+
   it("never goes over a budget that the output can fit, lists that end up empty included", () => {
     const bare = JSON.stringify(output({ stats: { truncated: true } })).length;
     for (let budget = bare; budget < bare + 120; budget += 1) {
