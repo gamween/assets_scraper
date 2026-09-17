@@ -7,7 +7,7 @@ import { assembleAssets, siteLabel } from "./assemble";
 // Counts the image header reads of inline rasters, and how many run at once
 const metadataCalls = vi.hoisted(() => ({ total: 0, active: 0, peak: 0 }));
 vi.mock("sharp", async (importOriginal) => {
-  const actual = (await importOriginal<{ default: typeof import("sharp") }>()).default;
+  const actual = (await importOriginal<typeof import("sharp")>()).default;
   const wrapped = (...args: Parameters<typeof actual>) => {
     const instance = actual(...args);
     const metadata = instance.metadata.bind(instance);
