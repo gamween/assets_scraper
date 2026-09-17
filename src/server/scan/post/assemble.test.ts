@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { limits } from "@/server/config/limits";
-import type { CandidateContext, CapturedImage, PostInput, RawCandidate, RawCollectorOutput, SafeFetch } from "../types";
+import { SignLimitError } from "@/server/security/sign";
+import type { CandidateContext, CapturedImage, PostInput, RawCandidate, RawCollectorOutput, SafeFetch, Signer } from "../types";
 import { assembleAssets, siteLabel } from "./assemble";
 
 /** assembleAssets on synthetic collector output, with a fetch that answers every probe with a 404. */
@@ -45,12 +46,14 @@ const captured = (url: string, patch: Partial<CapturedImage> = {}): CapturedImag
   url, status: 200, contentType: "image/png", bytes: 20_000, sha1: url, width: 640, height: 480, tone: "opaque", ...patch,
 });
 
-const run = (collector: RawCollectorOutput, images: CapturedImage[] = []) => {
+const proxyOf = (url: string) => `/api/asset?u=${encodeURIComponent(url)}`;
+
+const run = (collector: RawCollectorOutput, images: CapturedImage[] = [], signer: Signer = { sign: proxyOf, count: 0 }) => {
   const input: PostInput = {
     collector,
     network: { images, fonts: [], sheets: [], bodyTimeouts: 0, skippedBodies: 0 },
     page: { requestedUrl: PAGE, finalUrl: PAGE, host: "shop.example", siteName: "Shop", title: "Shop" },
-    signer: { sign: (url) => `/api/asset?u=${encodeURIComponent(url)}`, count: 0 },
+    signer,
     fetch: notFound,
     signal: new AbortController().signal,
     deadline: Date.now() + 60_000,
@@ -104,6 +107,37 @@ describe("assembleAssets hidden counts", () => {
     const { assets, hidden } = await run(collector);
     expect(assets).toEqual([]);
     expect(hidden).toEqual({ "probe-failed": 1 });
+  });
+});
+
+describe("assembleAssets signing", () => {
+  it("signs http: sources first within the signing cap, since the client always proxies them", async () => {
+    const shown = [1, 2, 3].map((i) => `${PAGE}photo-${i}.png`);
+    const insecure = "http://legacy.shop.example/old.png";
+    const collector = collectorOutput({
+      candidates: [
+        ...shown.map((url, i) => candidate(url, i + 1, i + 1, { visible: true, rect: { x: 0, y: 0, width: 400, height: 300 } })),
+        candidate(insecure, 9, 9),
+      ],
+    });
+    let count = 0;
+    const signer: Signer = {
+      sign: (url) => {
+        if (count >= 2) throw new SignLimitError("signing cap");
+        count++;
+        return proxyOf(url);
+      },
+      get count() {
+        return count;
+      },
+    };
+    const { assets, warnings } = await run(collector, [...shown, insecure].map((url) => captured(url)), signer);
+    const proxies = new Map(assets.map((a) => [a.original?.url, a.original?.proxy]));
+    expect(assets.at(-1)?.original?.url).toBe(insecure);
+    expect(proxies.get(insecure)).toBe(proxyOf(insecure));
+    expect(proxies.get(shown[0])).toBe(proxyOf(shown[0]));
+    expect([proxies.get(shown[1]), proxies.get(shown[2])]).toEqual(["", ""]);
+    expect(warnings).toContain("truncated");
   });
 });
 

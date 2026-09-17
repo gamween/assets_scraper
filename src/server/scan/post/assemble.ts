@@ -647,7 +647,10 @@ async function applyTones(drafts: Draft[]): Promise<void> {
   );
 }
 
-/** Names, makes filenames unique and signs remote sources, most relevant first. */
+/**
+ * Names, makes filenames unique and signs remote sources. Within the signing cap, `http:` sources come first, since the
+ * client always loads them through the proxy (spec 11.2), then the rest, most relevant first.
+ */
 function finish(drafts: Draft[], input: PostInput, warnings: Set<WarningCode>): Asset[] {
   const index = new Map<Draft, number>();
   const counters: Record<AssetKind, number> = { svg: 0, image: 0 };
@@ -674,7 +677,7 @@ function finish(drafts: Draft[], input: PostInput, warnings: Set<WarningCode>): 
   };
 
   const ids = new Set<string>();
-  return drafts.map((draft) => {
+  const assets = drafts.map((draft) => {
     const asset = draft.asset;
     while (ids.has(asset.id)) asset.id = sha1(`${asset.id}:dup`);
     ids.add(asset.id);
@@ -689,8 +692,14 @@ function finish(drafts: Draft[], input: PostInput, warnings: Set<WarningCode>): 
       url: draft.url,
     });
     asset.filename = filename(asset.name, extensionFor(asset.format));
-    sign(asset.display);
-    sign(asset.original);
     return asset;
   });
+  for (const insecure of [true, false]) {
+    for (const asset of assets) {
+      for (const source of [asset.display, asset.original]) {
+        if (source && source.url.startsWith("http:") === insecure) sign(source);
+      }
+    }
+  }
+  return assets;
 }
