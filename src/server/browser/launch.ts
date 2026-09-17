@@ -341,13 +341,15 @@ async function launch(slot: number, executable: Executable, egressPort: number):
   return { browser, pid: await readPid(pidfile), pidfile, binary: executable.binary };
 }
 
+const GRACEFUL_CLOSE_MS = 5_000;
+
 /**
  * Graceful close when the scan ended normally, SIGKILL otherwise or when close hangs (critic R6). A graceful close stops
- * waiting as soon as the signal aborts too, so a hung close never holds a scan past its deadline. Never rejects: a
+ * waiting as soon as `signal` aborts too, so a hung close never holds a scan past its deadline. Never rejects: a
  * cleanup step that fails (a pidfile that cannot be removed) is left to the stale-browser check of the next launch.
  */
 async function shutdown({ browser, pid, pidfile, binary }: Launched, graceful: boolean, signal: AbortSignal): Promise<void> {
-  const closed = graceful && (await within(browser.close().then(() => true, () => false), 5_000, signal));
+  const closed = graceful && (await within(browser.close().then(() => true, () => false), GRACEFUL_CLOSE_MS, signal));
   if (pid && !closed) killProcessTree(pid);
   // A close that worked waited for Chromium to exit, so a live PID now may be another process that reused it.
   if (pid && closed && isAlive(pid) && (await isOwnBrowser(pid, binary, pidfile))) killProcessTree(pid);
@@ -405,6 +407,8 @@ export interface WithBrowserOptions {
   egressPort: number | (() => Promise<number>);
   /** Aborting it kills the browser. It also cuts short the graceful close that follows `fn`. */
   signal: AbortSignal;
+  /** Aborting it only cuts short the graceful close that follows `fn` (the browser is killed instead). */
+  closeSignal?: AbortSignal;
   /** Called at once when every slot is busy and the call starts waiting. */
   onQueued?: () => void;
   /** Called when a call that waited gets its slot, before the health gate and the launch. */
@@ -463,7 +467,7 @@ export async function withBrowser<T>(options: WithBrowserOptions, fn: (session: 
   } finally {
     if (launched) {
       try {
-        await shutdown(launched, succeeded, signal);
+        await shutdown(launched, succeeded, options.closeSignal ? AbortSignal.any([signal, options.closeSignal]) : signal);
       } finally {
         releaseSlot(slot);
       }

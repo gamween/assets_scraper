@@ -39,6 +39,7 @@ const PALETTE: Palette = { brand: [{ hex: "#ff3366", role: "primary" }], neutral
 let fixture: FixtureServer;
 let victim: FixtureServer;
 let onCollectorStarted = () => {};
+let onCollectorDone = () => {};
 let victimHits = 0;
 let downloadHits = 0;
 const downloadName = `assets-scraper-test-${randomUUID()}.bin`;
@@ -51,6 +52,10 @@ beforeAll(async () => {
   fixture = await serveFixture({
     "/collector-started": (_req, res) => {
       onCollectorStarted();
+      res.writeHead(204).end();
+    },
+    "/collector-done": (_req, res) => {
+      onCollectorDone();
       res.writeHead(204).end();
     },
     "/report.pdf": (_req, res) => {
@@ -132,6 +137,7 @@ afterAll(async () => {
 afterEach(() => {
   vi.unstubAllEnvs();
   onCollectorStarted = () => {};
+  onCollectorDone = () => {};
 });
 
 const fakeAssets = async (input: PostInput): Promise<AssetsOutput> => {
@@ -508,6 +514,45 @@ describe("scan engine", () => {
     expect(events.find((event) => event.type === "assets")).toMatchObject({ items: [{ id: "photo" }] });
     expect(done.stats.hidden).toEqual({ spacer: 2, "unreferenced-symbol": 1 });
     expect(pids).toHaveLength(1);
+    await expect.poll(() => isProcessAlive(pids[0]), { timeout: 5000 }).toBe(false);
+  });
+
+  it("settles and closes the browser within the settle budget when the close hangs", async () => {
+    vi.stubEnv("SETTLE_MS", "1000");
+    let collectedAt = 0;
+    let collectDoneAt = 0;
+    onCollectorDone = () => (collectedAt = Date.now());
+    const collectorSource = `${FAKE_COLLECTOR}
+{
+  const collect = globalThis.__assetsScraper.collect;
+  globalThis.__assetsScraper.collect = async (options) => {
+    const output = await collect(options);
+    await fetch("/collector-done");
+    return output;
+  };
+}`;
+    const { deps, pids } = testDeps({
+      collectorSource,
+      withBrowser: (options, fn) =>
+        withBrowser(options, (session) => {
+          if (session.pid) pids.push(session.pid);
+          const close = session.browser.close.bind(session.browser);
+          let calls = 0;
+          session.browser.close = (closeOptions) => (calls++ === 0 ? new Promise<void>(() => {}) : close(closeOptions));
+          return fn(session);
+        }),
+    });
+    const events = await scan(deps, `${fixture.origin}/`, {
+      onEvent: (event) => {
+        if (event.type === "step" && event.step === "collect" && event.state === "done") collectDoneAt = Date.now();
+      },
+    });
+    const done = events.at(-1);
+    if (done?.type !== "done") throw new Error(`expected done, got ${done && describeEvent(done)}`);
+    expect(done.partial).toBe(false);
+    expect(collectedAt).toBeGreaterThan(0);
+    // Spec 7.2 phase 9: settling and closing share the settle budget; the hung close is cut and the browser killed.
+    expect(collectDoneAt - collectedAt).toBeLessThan(3_000);
     await expect.poll(() => isProcessAlive(pids[0]), { timeout: 5000 }).toBe(false);
   });
 

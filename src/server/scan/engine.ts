@@ -392,6 +392,9 @@ async function runBrowserStage(input: ScanContext & {
   const { url, deps, cancel, emit, pre, diagnostics, timed } = input;
   const watchdog = new AbortController();
   const signal = AbortSignal.any([cancel, input.deadline, watchdog.signal]);
+  // Spec 7.2 phase 9: settling the body reads and closing the browser share `limits.settleMs`.
+  const closeBy = new AbortController();
+  let closeTimer: ReturnType<typeof setTimeout> | undefined;
   /** Emits the step unless page work was stopped, and tells whether it did. */
   const step = (id: StepId, state: "start" | "done"): boolean => {
     if (signal.aborted) return false;
@@ -425,6 +428,7 @@ async function runBrowserStage(input: ScanContext & {
           return egress.port;
         },
         signal,
+        closeSignal: closeBy.signal,
         onQueued: () => {
           queuedAt = performance.now();
           step("queue", "start");
@@ -516,6 +520,7 @@ async function runBrowserStage(input: ScanContext & {
           partial = true;
         }
 
+        closeTimer = setTimeout(() => closeBy.abort(), limits.settleMs);
         network = await timed("settle", () => (capture as CaptureHandle).settle(limits.settleMs));
       },
     );
@@ -529,6 +534,7 @@ async function runBrowserStage(input: ScanContext & {
     partial = true;
   } finally {
     clearInterval(watchdogTimer);
+    clearTimeout(closeTimer);
     if (egress) {
       const stats = egress.stats();
       diagnostics.egress = { bytes: stats.bytes, blocked: stats.blocked };
