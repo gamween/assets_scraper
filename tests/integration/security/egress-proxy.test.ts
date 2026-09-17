@@ -86,13 +86,15 @@ function rawReply(port: number, request: string, waitMs = 5_000): Promise<{ data
   });
 }
 
-/** An upstream that answers each request with the raw reply named by its path and keeps the connection open. */
-async function listenRawUpstream(replies: Record<string, string>): Promise<net.Server> {
+/** An upstream that answers each request with the raw reply named by its path, then keeps the connection open or closes it. */
+async function listenRawUpstream(replies: Record<string, string>, closeAfter: string[] = []): Promise<net.Server> {
   const server = net.createServer((socket) => {
     socket.on("error", () => {});
     socket.once("data", (chunk) => {
       const path = chunk.toString("latin1").split(" ")[1] ?? "";
-      socket.write(Buffer.from(replies[path] ?? "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n", "latin1"));
+      const reply = Buffer.from(replies[path] ?? "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n", "latin1");
+      if (closeAfter.includes(path)) socket.end(reply);
+      else socket.write(reply);
     });
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -306,7 +308,8 @@ describe("egress proxy guard", () => {
       "/high": "HTTP/1.1 999 Odd\r\nContent-Length: 2\r\n\r\nhi",
       "/reason": "HTTP/1.1 200 O\x7fK\r\nContent-Length: 2\r\n\r\nhi",
       "/switch": "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n",
-    });
+      "/truncated": "HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nhi",
+    }, ["/truncated"]);
     const host = `127.0.0.1:${(upstream.address() as net.AddressInfo).port}`;
     process.env.SCAN_TEST_ALLOW_HOSTS = `${allowed.host},${host}`;
     try {
@@ -323,6 +326,10 @@ describe("egress proxy guard", () => {
       expect(reason.data.endsWith("\r\n\r\nhi")).toBe(true);
       // Node's client drops a 101 without an error event: the proxy must still end the request
       expect(await rawReply(proxy.port, request("/switch"))).toEqual({ data: "", closed: true });
+      // an upstream that closes mid-body closes the client connection too, before the promised length
+      const truncated = await rawReply(proxy.port, request("/truncated"));
+      expect(truncated.data).toMatch(/^HTTP\/1\.1 200 OK\r\n[\s\S]*\r\n\r\nhi$/);
+      expect(truncated.closed).toBe(true);
       expect(await getVia(proxy.port, `${allowed.origin}/control.html`)).toMatchObject({ status: 200 });
     } finally {
       process.env.SCAN_TEST_ALLOW_HOSTS = allowed.host;
