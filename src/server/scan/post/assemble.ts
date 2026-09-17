@@ -131,7 +131,10 @@ export async function assembleAssets(input: PostInput): Promise<AssetsOutput> {
     const resolve = async (members: UrlRecord[], best: UrlRecord): Promise<Resolved> => {
       const byUrl = new Map(members.map((member) => [member.url, member]));
       const attempts = new Set<string>();
-      if (best.scheme === "http") for (const url of originalCandidates(best.url, { pageUrl, server: best.server })) attempts.add(url);
+      // A CDN original can also be a URL the page itself declared, so membership does not tell the two apart: keep
+      // the candidate set, or the counters below miss exactly the groups where the original was found twice.
+      const candidates = new Set(best.scheme === "http" ? originalCandidates(best.url, { pageUrl, server: best.server }) : []);
+      for (const url of candidates) attempts.add(url);
       for (const member of [...members].sort((a, b) => sizeScore(b) - sizeScore(a))) attempts.add(member.url);
       let skipped = false;
       let failed = false;
@@ -140,8 +143,14 @@ export async function assembleAssets(input: PostInput): Promise<AssetsOutput> {
         const member = byUrl.get(url);
         if (member?.inline) return { kind: "inline", member };
         if (member?.capture) {
-          // Falling back to the page's own bytes ends the group, so a skip recorded above would never be reported.
-          if (skipped) warnings.add("verify-skipped");
+          // The page served the original itself, so the group ends on the original after all.
+          if (candidates.has(url)) {
+            originals.attempted += 1;
+            originals.adopted += 1;
+          } else if (skipped) {
+            // Falling back to the page's own bytes ends the group, so a skip recorded above would never be reported.
+            warnings.add("verify-skipped");
+          }
           return {
             kind: "remote", url, format: formatOf(member), contentType: member.contentType ?? "", tone: member.capture.tone,
             bytes: member.bytes, markup: member.capture.svgText, ...sizeOf(member),
@@ -156,8 +165,7 @@ export async function assembleAssets(input: PostInput): Promise<AssetsOutput> {
           }
           probes++;
         }
-        // A URL that is not one of the group's own members is a CDN original candidate: count what becomes of it.
-        const isCandidate = member === undefined;
+        const isCandidate = candidates.has(url);
         if (isCandidate) originals.attempted += 1;
         const result = await limiter.run((signal) => verifyUrl(url, { fetch: input.fetch, pageUrl, signal, deadline: verifyDeadline }));
         if (result.ok) {
