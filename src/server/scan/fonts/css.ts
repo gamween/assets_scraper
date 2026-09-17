@@ -1,11 +1,16 @@
-import * as csstree from "css-tree";
+import type { CssNode } from "css-tree";
+// The parser, walker and generator entry points, not the package root: the root also builds the lexer, which loads
+// mdn-data JSON through createRequire, something bundlers and serverless file tracing do not follow reliably.
+import generate from "css-tree/generator";
+import parse from "css-tree/parser";
+import walk from "css-tree/walker";
 import type { RawFontFaceRule } from "../types";
 
 type FontSrc = RawFontFaceRule["src"][number];
 
 const unescapeCss = (value: string) => value.replace(/\\(.)/g, "$1");
 
-const textOf = (node: csstree.CssNode) => (node.type === "String" ? node.value : node.type === "Identifier" ? node.name : "");
+const textOf = (node: CssNode) => (node.type === "String" ? node.value : node.type === "Identifier" ? node.name : "");
 
 /**
  * Parses an `@font-face` `src` value into `local()` names and absolute `url()`s with their optional format hint
@@ -13,9 +18,9 @@ const textOf = (node: csstree.CssNode) => (node.type === "String" ? node.value :
  * regex. A value css-tree cannot parse gives no sources, as browsers drop it.
  */
 export function parseFontSrc(src: string, baseUrl: string): FontSrc[] {
-  let ast: csstree.CssNode;
+  let ast: CssNode;
   try {
-    ast = csstree.parse(src, { context: "value", onParseError: () => {} });
+    ast = parse(src, { context: "value", onParseError: () => {} });
   } catch {
     return [];
   }
@@ -92,9 +97,9 @@ export function normalizeStretch(value: string | undefined): string | undefined 
  */
 export function parseFontFaceCss(cssText: string, baseUrl: string): RawFontFaceRule[] {
   if (!/@font-face/i.test(cssText)) return [];
-  let ast: csstree.CssNode;
+  let ast: CssNode;
   try {
-    ast = csstree.parse(cssText, {
+    ast = parse(cssText, {
       parseValue: false,
       parseRulePrelude: false,
       parseAtrulePrelude: false,
@@ -105,14 +110,14 @@ export function parseFontFaceCss(cssText: string, baseUrl: string): RawFontFaceR
     return [];
   }
   const rules: RawFontFaceRule[] = [];
-  csstree.walk(ast, {
+  walk(ast, {
     visit: "Atrule",
     enter(node) {
       if (node.name.toLowerCase() !== "font-face" || !node.block) return;
       const descriptors: Record<string, string> = {};
       node.block.children.forEach((child) => {
         if (child.type !== "Declaration") return;
-        descriptors[child.property.toLowerCase()] = child.value.type === "Raw" ? child.value.value : csstree.generate(child.value);
+        descriptors[child.property.toLowerCase()] = child.value.type === "Raw" ? child.value.value : generate(child.value);
       });
       const family = unquoteFamily(descriptors["font-family"] ?? "");
       const src = parseFontSrc(descriptors.src ?? "", baseUrl);
