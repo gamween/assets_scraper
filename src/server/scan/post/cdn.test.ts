@@ -103,9 +103,29 @@ describe("variantKey", () => {
     expect(variantKey("https://site.example/_next/image?url=%2Fa.png&w=640&q=75")).toBe(variantKey("https://site.example/a.png"));
   });
 
+  it("merges the srcset width descriptor a build pipeline bakes into the file name", () => {
+    const widths = ["100w", "300w", "750w", "1500w", "2500w"].map((w) => variantKey(`https://media.example/images/services-desktop-${w}.webp`));
+    expect(new Set(widths).size).toBe(1);
+    expect(widths[0]).toBe("https://media.example/images/services-desktop.webp");
+  });
+
+  it("merges the size segment of an Apple Media Services thumb URL", () => {
+    const sizes = ["980x522sr.jpg", "1376x736sr.jpg", "2500x1336sr.jpg"].map((s) => variantKey(`https://is1-ssl.mzstatic.com/image/thumb/x5JjmiSD75wN12-HmmZRcg/${s}`));
+    expect(new Set(sizes).size).toBe(1);
+    expect(sizes[0]).toBe("https://is1-ssl.mzstatic.com/image/thumb/x5JjmiSD75wN12-HmmZRcg");
+    // Different assets behind the same requested size stay apart.
+    expect(variantKey("https://is1-ssl.mzstatic.com/image/thumb/AAA/220x54.png")).not.toBe(variantKey("https://is1-ssl.mzstatic.com/image/thumb/BBB/220x54.png"));
+  });
+
   it("keeps different images apart", () => {
     expect(variantKey("https://a.com/x.png")).not.toBe(variantKey("https://a.com/y.png"));
     expect(variantKey("https://a.com/x.png?id=1")).not.toBe(variantKey("https://a.com/x.png?id=2"));
     expect(variantKey("https://a.com/x.png")).not.toBe(variantKey("https://a.com/x.jpg"));
+    // A numeric suffix without the srcset `w` sizes a distinct icon file, and must not merge.
+    expect(variantKey("https://a.com/apple-touch-icon-180.png")).not.toBe(variantKey("https://a.com/apple-touch-icon-1024.png"));
+    // One digit plus `w` is too weak a signal to treat as a width descriptor.
+    expect(variantKey("https://a.com/draft-1w.png")).not.toBe(variantKey("https://a.com/draft-2w.png"));
+    // The size segment rule is scoped to the CDN that defines it.
+    expect(variantKey("https://a.com/image/thumb/id/220x54.png")).not.toBe(variantKey("https://a.com/image/thumb/id/440x108.png"));
   });
 });

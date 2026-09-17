@@ -284,6 +284,17 @@ export function originalCandidates(url: string, hints: CdnHints = {}): string[] 
 }
 
 /** Grouping key for size variants of one image (spec 8.3). Not a download URL. */
+/**
+ * The width descriptor a `srcset` build pipeline bakes into the file name (`hero-1500w.webp`). Every entry of one
+ * `srcset` is the same picture at a different width, so they belong to one asset. Two digits minimum, so a real name
+ * ending in a single digit plus `w` is left alone, and `apple-touch-icon-180.png`, which has no `w`, never matches.
+ */
+const SRCSET_WIDTH_SUFFIX = new RegExp(`-\\d{2,5}w(\\.${IMG_EXT})$`, "i");
+
+/** Apple Media Services images: the last path segment of a `/image/thumb/` URL is the requested size, not the file. */
+const MZSTATIC_HOST = /(^|\.)mzstatic\.com$/i;
+const MZSTATIC_SIZE_SEGMENT = new RegExp(`^(/image/thumb/.+)/\\d{2,5}x\\d{2,5}[a-z0-9-]*\\.${IMG_EXT}$`, "i");
+
 export function variantKey(url: string, hints: CdnHints = {}): string {
   const href = originalCandidates(url, hints)[0] ?? url;
   const u = tryUrl(href, hints.pageUrl);
@@ -291,6 +302,8 @@ export function variantKey(url: string, hints: CdnHints = {}): string {
   for (const name of PRESENTATIONAL_PARAMS) u.searchParams.delete(name);
   u.pathname = u.pathname
     .replace(new RegExp(`_(?:xsmall|small|medium|large|xlarge|xxlarge)(?:_2x|_3x)?(\\.${IMG_EXT})$`, "i"), "$1")
-    .replace(new RegExp(`(?:@[23]x|_2x|_3x)(\\.${IMG_EXT})$`, "i"), "$1");
+    .replace(new RegExp(`(?:@[23]x|_2x|_3x)(\\.${IMG_EXT})$`, "i"), "$1")
+    .replace(SRCSET_WIDTH_SUFFIX, "$1");
+  if (MZSTATIC_HOST.test(u.hostname)) u.pathname = u.pathname.replace(MZSTATIC_SIZE_SEGMENT, "$1");
   return u.href.replace(/\?$/, "");
 }
