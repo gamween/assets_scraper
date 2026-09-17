@@ -49,22 +49,28 @@ function frameStyle(asset: Asset, variant: "tile" | "detail"): CSSProperties {
 
 type LoadState = "direct" | "proxy" | "failed";
 
+/** Tile GIFs (spec 12.3, play on hover only): the first frame waits on a canvas until then. */
+type StillState = "pending" | "ready" | "unavailable";
+
 /**
  * The preview image of an asset. Inline SVG and inline bytes load from object URLs; remote files load directly with no
  * referrer, then through the signed proxy when that fails; `http:` goes through the proxy from the start.
  * Remount with `key={asset.id}` to reset the fallback state for another asset.
+ *
+ * GIF tiles draw their first frame on a canvas once the image has loaded, then unmount the image: it only mounts again
+ * while `playing` (the card is hovered), and covers the still frame once loaded.
  */
-export function AssetPreview({ asset, variant, className }: { asset: Asset; variant: "tile" | "detail"; className?: string }) {
+export function AssetPreview({ asset, variant, playing = false, className }: { asset: Asset; variant: "tile" | "detail"; playing?: boolean; className?: string }) {
   const source = variant === "tile" ? (asset.display ?? asset.original) : (asset.original ?? asset.display);
   const inlineUrl = asset.inline ? inlinePreviewUrl(asset) : null;
   const [state, setState] = useState<LoadState>("direct");
   const [loaded, setLoaded] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [still, setStill] = useState(false);
+  const gifTile = variant === "tile" && asset.format === "gif";
+  const [still, setStill] = useState<StillState>("pending");
 
   const direct = inlineUrl ?? (source ? previewSrc(source) : null);
   const src = state === "direct" ? direct : state === "proxy" ? (source?.proxy ?? null) : null;
-  const animatedTile = variant === "tile" && asset.format === "gif" && !inlineUrl;
 
   if (!src) {
     return (
@@ -75,45 +81,63 @@ export function AssetPreview({ asset, variant, className }: { asset: Asset; vari
     );
   }
 
+  const stillReady = gifTile && still === "ready";
+  const frame = frameStyle(asset, variant);
+
   return (
     <>
-      <img
-        src={src}
-        alt=""
-        draggable={false}
-        referrerPolicy="no-referrer"
-        loading={variant === "tile" ? "lazy" : "eager"}
-        decoding="async"
-        style={frameStyle(asset, variant)}
-        className={cn(
-          "block max-h-full max-w-full object-contain transition-opacity duration-[120ms] ease-enter select-none",
-          loaded ? "opacity-100" : "opacity-0",
-          animatedTile && still && "opacity-0 group-hover/card:opacity-100",
-          className,
-        )}
-        onLoad={(event) => {
-          setLoaded(true);
-          if (!animatedTile) return;
-          const image = event.currentTarget;
-          const canvas = canvasRef.current;
-          if (!canvas || !image.naturalWidth) return;
-          canvas.width = image.naturalWidth;
-          canvas.height = image.naturalHeight;
-          canvas.getContext("2d")?.drawImage(image, 0, 0);
-          setStill(true);
-        }}
-        onError={() => {
-          setLoaded(false);
-          // Inline previews and proxied sources have no further fallback.
-          setState(state === "direct" && !inlineUrl && source?.proxy && source.proxy !== direct ? "proxy" : "failed");
-        }}
-      />
-      {animatedTile ? (
+      {!stillReady || playing ? (
+        <img
+          src={src}
+          alt=""
+          draggable={false}
+          referrerPolicy="no-referrer"
+          loading={variant === "tile" ? "lazy" : "eager"}
+          decoding="async"
+          style={frame}
+          className={cn(
+            "block max-h-full max-w-full object-contain transition-opacity duration-[120ms] ease-enter select-none",
+            gifTile && "peer/gif [grid-area:1/1]",
+            stillReady ? "opacity-0 data-loaded:opacity-100" : gifTile && still === "pending" ? "opacity-0" : loaded ? "opacity-100" : "opacity-0",
+            className,
+          )}
+          onLoad={(event) => {
+            const image = event.currentTarget;
+            image.dataset.loaded = "";
+            setLoaded(true);
+            if (!gifTile || still !== "pending") return;
+            const canvas = canvasRef.current;
+            try {
+              const context = canvas?.getContext("2d");
+              if (!canvas || !context || !image.naturalWidth) throw new Error("No canvas");
+              canvas.width = image.naturalWidth;
+              canvas.height = image.naturalHeight;
+              // Canvas draws use the first frame of an animated image (HTML spec), whatever frame is on screen.
+              context.drawImage(image, 0, 0);
+              setStill("ready");
+            } catch {
+              setStill("unavailable");
+            }
+          }}
+          onError={() => {
+            setLoaded(false);
+            // Inline previews and proxied sources have no further fallback.
+            setState(state === "direct" && !inlineUrl && source?.proxy && source.proxy !== direct ? "proxy" : "failed");
+          }}
+        />
+      ) : null}
+      {gifTile ? (
         <canvas
           ref={canvasRef}
           aria-hidden="true"
-          style={frameStyle(asset, variant)}
-          className={cn("pointer-events-none absolute object-contain", still ? "opacity-100 group-hover/card:opacity-0" : "opacity-0")}
+          data-testid="gif-still"
+          data-state={still}
+          style={frame}
+          className={cn(
+            "pointer-events-none block max-h-full max-w-full object-contain transition-opacity duration-[120ms] ease-enter [grid-area:1/1]",
+            stillReady ? "opacity-100 peer-data-loaded/gif:opacity-0" : "opacity-0",
+            still === "unavailable" && "hidden",
+          )}
         />
       ) : null}
     </>

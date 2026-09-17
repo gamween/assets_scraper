@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import type { ScanEvent } from "../src/lib/contract";
+import type { Asset, ScanEvent } from "../src/lib/contract";
 import { formatBytes, formatDimensions } from "../src/lib/format";
 import { assetsOf, findAsset, fontsOf, loadFixture, withDone } from "./support/fixtures";
 import { mockAssetRoutes, mockScan, type AssetRouteOptions } from "./support/routes";
@@ -190,6 +190,51 @@ test.describe("results", () => {
     await img.scrollIntoViewIfNeeded();
     await expect.poll(() => img.getAttribute("src")).toBe(hero.display!.proxy);
     await expect.poll(() => img.evaluate((el: HTMLImageElement) => el.complete && el.naturalWidth > 0)).toBe(true);
+  });
+
+  test("GIF tiles show their first frame and play only while hovered", async ({ page }) => {
+    const photo = findAsset(linear, (a) => a.kind === "image" && a.role === "image" && a.visible && !!a.display && (a.renderedWidth ?? 0) > 100);
+    const url = "https://e2e.test/e2e-assets/linear.app/loop.gif";
+    const remote = { url, proxy: `/api/asset?u=${Buffer.from(url).toString("base64url")}&e=1&s=s`, format: "gif" as const, width: 400, height: 300 };
+    const remoteGif: Asset = { ...photo, id: "remote-gif", name: "loop.gif", filename: "linear-loop.gif", format: "gif", score: 5000, width: 400, height: 300, display: remote, original: remote };
+    // Two 8x6 frames: blue, then red.
+    const base64 = "R0lGODlhCAAGAIAAAExpcStQ6CH/C05FVFNDQVBFMi4wAwEAAAAh+QQFFAAAACwAAAAACAAGAAACBoyPqct9BQAh+QQFFAAAACwAAAAACAAGAIBMaXHGKCgCBoyPqct9BQA7";
+    const inlineGif: Asset = { ...remoteGif, id: "inline-gif", name: "pulse.gif", filename: "linear-pulse.gif", width: 8, height: 6, display: null, original: null, inline: { mime: "image/gif", base64 } };
+    let added = false;
+    const events = linear.map((event) => {
+      if (event.type !== "assets" || added) return event;
+      added = true;
+      return { ...event, items: [...event.items, remoteGif, inlineGif] };
+    });
+    await openResults(page, events);
+    await page.getByRole("tab", { name: /^Images/ }).click();
+
+    for (const id of [remoteGif.id, inlineGif.id]) {
+      const card = page.locator(`[data-asset-id="${id}"]`);
+      const well = card.getByTestId("preview-well");
+      const still = well.getByTestId("gif-still");
+      await card.scrollIntoViewIfNeeded();
+      await expect(still).toHaveAttribute("data-state", "ready");
+      await expect(still).toHaveCSS("opacity", "1");
+      // No animated image runs until the card is hovered, not even a hidden one.
+      await expect(well.locator("img")).toHaveCount(0);
+
+      await card.hover();
+      await expect(well.locator("img")).toHaveAttribute("data-loaded", "");
+      await expect(well.locator("img")).toHaveCSS("opacity", "1");
+      await expect(still).toHaveCSS("opacity", "0");
+
+      await page.mouse.move(1, 1);
+      await expect(well.locator("img")).toHaveCount(0);
+      await expect(still).toHaveCSS("opacity", "1");
+    }
+
+    // The still frame is the first frame of the animation.
+    const pixel = await page
+      .locator(`[data-asset-id="${inlineGif.id}"]`)
+      .getByTestId("gif-still")
+      .evaluate((canvas: HTMLCanvasElement) => [...canvas.getContext("2d")!.getImageData(4, 3, 1, 1).data]);
+    expect(pixel).toEqual([43, 80, 232, 255]);
   });
 
   test("scraped SVG markup never reaches the DOM", async ({ page }) => {

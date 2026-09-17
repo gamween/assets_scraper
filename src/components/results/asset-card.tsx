@@ -1,7 +1,7 @@
 "use client";
 
 import { CheckIcon, CodeXml, Download } from "lucide-react";
-import { memo, type MouseEvent } from "react";
+import { memo, useState, type MouseEvent, type PointerEvent } from "react";
 import { Badge } from "@/components/common/badge";
 import { cn } from "@/components/common/cn";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -55,9 +55,14 @@ export const AssetCard = memo(function AssetCard({ asset }: { asset: Asset }) {
   const well = wellBackground(asset.tone, background);
   const badge = roleBadge(asset);
   const [base, extension] = splitExtension(asset.filename);
+  // Spec 12.3: GIFs play on hover only (touch has no hover: tiles keep the still frame, the detail view plays them).
+  const [hovered, setHovered] = useState(false);
+  const hover = asset.format === "gif" ? (on: boolean) => (event: PointerEvent) => event.pointerType !== "touch" && setHovered(on) : null;
 
   return (
     <article
+      onPointerEnter={hover?.(true)}
+      onPointerLeave={hover?.(false)}
       data-testid="asset-card"
       data-asset-id={asset.id}
       data-role={asset.role}
@@ -71,7 +76,7 @@ export const AssetCard = memo(function AssetCard({ asset }: { asset: Asset }) {
       )}
     >
       <div data-testid="preview-well" data-background={well} className={cn("relative grid aspect-[4/3] w-full place-items-center overflow-hidden", WELL_CLASSES[well])}>
-        <AssetPreview key={asset.id} asset={asset} variant="tile" />
+        <AssetPreview key={asset.id} asset={asset} variant="tile" playing={hovered} />
         {badge ? (
           <Badge tone="surface" className="pointer-events-none absolute top-2 left-2 z-10 font-sans text-[11px] font-medium tracking-normal">
             {badge}
