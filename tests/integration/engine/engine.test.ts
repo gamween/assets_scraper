@@ -91,8 +91,8 @@ const fakeAssets = async (input: PostInput): Promise<AssetsOutput> => {
     id: "photo", kind: "image", role: "image", name: "Photo", filename: "fixture-photo.png", format: "png", foundIn: ["network"], visible: true, declaredOnly: false,
     order: 0, score: 100, usedCount: 1, tone: photo?.tone ?? "unknown", display: source, original: source,
   };
-  // Like the real assembleAssets, the hidden counts start from the collector's noise.
-  return { assets: [asset], hidden: { ...input.collector.noise, spacer: 2 }, warnings: [] };
+  // Like the real assembleAssets, hidden only counts what post-processing drops: the engine adds the collector's noise.
+  return { assets: [asset], hidden: { spacer: 2 }, warnings: [] };
 };
 const fakeFonts = async (): Promise<FontsOutput> => ({ families: [], hidden: {} });
 
@@ -134,6 +134,7 @@ async function scan(deps: Partial<ScanEngineDeps>, url: string, options: { signa
 }
 
 const describeEvent = (event: ScanEvent) => (event.type === "step" ? `step ${event.step} ${event.state}` : event.type === "error" ? `error ${event.code}` : event.type);
+const stepsOf = (events: ScanEvent[]) => events.filter((event) => event.type === "step").map(describeEvent);
 
 describe("scan engine", () => {
   it("streams the whole scan of the fixture in order", async () => {
@@ -243,14 +244,23 @@ describe("scan engine", () => {
     expect(events.find((event) => event.type === "assets")).toMatchObject({ items: [{ id: "photo" }] });
   });
 
-  it("stops a page stuck in a script at the deadline and kills Chrome", async () => {
+  it("stops a page stuck in a script at the deadline, kills Chrome and ends by the deadline", async () => {
     vi.stubEnv("SCAN_DEADLINE_MS", "15000");
-    const { deps, pids } = testDeps();
+    // Short load waits and a long scroll budget: the deadline stops the scan while it scrolls the stuck page.
+    vi.stubEnv("LOAD_MS", "1000");
+    vi.stubEnv("NETWORK_IDLE_MS", "1000");
+    vi.stubEnv("SCROLL_MS", "60000");
+    const { deps, pids } = testDeps({ assembleAssets: () => new Promise<AssetsOutput>(() => {}) });
     const started = Date.now();
     const events = await scan(deps, `${fixture.origin}/loop.html`);
-    expect(Date.now() - started).toBeLessThan(25_000);
-    const last = events.at(-1);
-    expect(last?.type === "done" ? last.partial : last?.type === "error" && last.code).toSatisfy((value) => value === true || value === "timeout");
+    const done = events.at(-1);
+    if (done?.type !== "done") throw new Error(`expected done, got ${done && describeEvent(done)}`);
+    expect(done.partial).toBe(true);
+    // Post-processing never finishes here: the scan still ends by its deadline with what is ready.
+    expect(Date.now() - started).toBeLessThan(16_000);
+    expect(events.find((event) => event.type === "assets")).toEqual({ type: "assets", items: [] });
+    // Collection never started, so no collect step is reported.
+    expect(stepsOf(events)).toEqual(["step open start", "step open done", "step load start", "step load done", "step scroll start", "step process start", "step process done"]);
     expect(pids).toHaveLength(1);
     await expect.poll(() => isProcessAlive(pids[0]), { timeout: 5000 }).toBe(false);
   });
@@ -383,6 +393,26 @@ describe("scan engine", () => {
     );
     expect(postFails.at(-1)).toMatchObject({ type: "error", code: "internal", message: "Something went wrong on our side" });
     log.mockRestore();
+  });
+
+  it("reports a post-processing failure after page work reached its deadline as internal, and logs it", async () => {
+    vi.stubEnv("SCAN_DEADLINE_MS", "12000");
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    // Page work stops 5 s before the scan deadline; this fails just after that, while post-processing still has time.
+    const pageDeadlineAt = Date.now() + 7_000;
+    const events = await scan(
+      testDeps({
+        assembleAssets: async () => {
+          await new Promise((resolve) => setTimeout(resolve, Math.max(0, pageDeadlineAt - Date.now()) + 500));
+          throw new Error("assemble bug");
+        },
+      }).deps,
+      `${fixture.origin}/`,
+    );
+    const calls = log.mock.calls;
+    log.mockRestore();
+    expect(events.at(-1)).toMatchObject({ type: "error", code: "internal" });
+    expect(calls).toContainEqual([expect.stringMatching(/^Scan [0-9a-f-]{36} failed$/), expect.objectContaining({ message: "assemble bug" })]);
   });
 
   it("runs the default in-page and post-processing modules end to end", async () => {

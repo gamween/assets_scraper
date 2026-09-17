@@ -47,7 +47,10 @@ const defaultDeps: ScanEngineDeps = {
 const PALETTE_BUDGET_MS = 3_000;
 /** The engine's own stop for the palette phase, in case extractPalette overruns its budget. */
 const PALETTE_CAP_MS = PALETTE_BUDGET_MS + 1_000;
-/** CPU time post-processing gets after its network deadline. */
+/**
+ * CPU time post-processing gets after its network deadline. Page work stops this long before the scan deadline, so
+ * that what it gathered still turns into results by the deadline.
+ */
 const POST_GRACE_MS = 5_000;
 /** How long a cancelled scan waits for its cleanup (browser kill, proxy close) before the stream ends anyway. */
 const CANCEL_CLEANUP_MS = 10_000;
@@ -117,17 +120,23 @@ function orAfter<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
 }
 
 /**
- * When post-processing (spec 7.2 phase 10) must end. Network work gets up to `limits.verifyMs`, then CPU work always
- * gets POST_GRACE_MS. Network time is cut so that both end by the scan deadline. Only a scan whose page work reached
- * the deadline (`partial`), or left less than POST_GRACE_MS before it, ends past it: with no network time, and
- * POST_GRACE_MS to turn what was collected into results (spec 7.2: at the deadline, emit what is ready).
+ * How long page work (preflight and browser, spec 7.2 phases 1 to 9) may run: the scan deadline minus POST_GRACE_MS,
+ * so that at the deadline the scan has already emitted what is ready (spec 7.2).
  */
-export function postProcessingWindow(input: { startedAt: number; now: number; partial: boolean; deadlineMs: number; verifyMs: number }): { networkDeadline: number; endsAt: number } {
-  const { startedAt, now, partial, deadlineMs, verifyMs } = input;
+export function pageWorkMs(deadlineMs: number): number {
+  return Math.max(0, deadlineMs - POST_GRACE_MS);
+}
+
+/**
+ * When post-processing (spec 7.2 phase 10) must end. Network work gets up to `limits.verifyMs`, then CPU work gets
+ * POST_GRACE_MS. Network time is cut so that both end by the scan deadline; a scan whose page work was stopped by its
+ * deadline gets no network time. Nothing runs past the scan deadline.
+ */
+export function postProcessingWindow(input: { startedAt: number; now: number; deadlineMs: number; verifyMs: number }): { networkDeadline: number; endsAt: number } {
+  const { startedAt, now, deadlineMs, verifyMs } = input;
   const scanEnds = startedAt + deadlineMs;
-  if (partial || now + POST_GRACE_MS > scanEnds) return { networkDeadline: now, endsAt: now + POST_GRACE_MS };
-  const networkDeadline = Math.min(now + verifyMs, scanEnds - POST_GRACE_MS);
-  return { networkDeadline, endsAt: networkDeadline + POST_GRACE_MS };
+  const networkDeadline = Math.max(now, Math.min(now + verifyMs, scanEnds - POST_GRACE_MS));
+  return { networkDeadline, endsAt: Math.min(networkDeadline + POST_GRACE_MS, scanEnds) };
 }
 
 /** Internal errors reach the client without their message, which can hold paths or URLs; the server log keeps it. */
@@ -182,8 +191,11 @@ async function runScan({ url, deps, cancel, emit }: ScanContext): Promise<void> 
     collector: "isolated",
     version: process.env.VERCEL_GIT_COMMIT_SHA ?? "dev",
   };
-  const deadline = new AbortController();
-  const deadlineTimer = setTimeout(() => deadline.abort(new DeadlineReached()), limits.scanDeadlineMs);
+  const deadlineMs = limits.scanDeadlineMs;
+  const scanEnds = startedAt + deadlineMs;
+  // Page work stops before the scan deadline; post-processing gets the rest and ends by it (see postProcessingWindow).
+  const pageDeadline = new AbortController();
+  const pageDeadlineTimer = setTimeout(() => pageDeadline.abort(new DeadlineReached()), pageWorkMs(deadlineMs));
   const step = (id: StepId, state: "start" | "done") => emit({ type: "step", step: id, state });
   // Browser work abandoned at the deadline can still finish in the background and record a phase: send a copy.
   const snapshot = (): Diagnostics => structuredClone(diagnostics);
@@ -205,18 +217,19 @@ async function runScan({ url, deps, cancel, emit }: ScanContext): Promise<void> 
     step("open", "start");
 
     // Phase 1: preflight.
-    pre = await timed("preflight", () => preflight(url, { fetch: deps.fetch, signal: AbortSignal.any([cancel, deadline.signal]) }));
+    pre = await timed("preflight", () => preflight(url, { fetch: deps.fetch, signal: AbortSignal.any([cancel, pageDeadline.signal]) }));
     if (pre.file) {
       throw new ScanFailure("not-html", "This URL is a file, not a page", { fallback: [directAsset({ url: pre.finalUrl, contentType: pre.contentType, signer: getSigner() })] });
     }
 
     // Phases 2 to 9: browser.
-    const browserStage = await runBrowserStage({ url, deps, cancel, emit, pre, diagnostics, deadline: deadline.signal, timed });
+    const browserStage = await runBrowserStage({ url, deps, cancel, emit, pre, diagnostics, deadline: pageDeadline.signal, timed });
     const { nav, network } = browserStage;
     let { collector } = browserStage;
     const partial = browserStage.partial;
     collector ??= emptyCollectorOutput(nav, network);
-    step("collect", "done");
+    // Steps stay in pairs: page work stopped before collection (during scroll, say) never started the collect step.
+    if (browserStage.collectStarted) step("collect", "done");
 
     // Phase 10: post-processing.
     step("process", "start");
@@ -224,7 +237,7 @@ async function runScan({ url, deps, cancel, emit }: ScanContext): Promise<void> 
     const host = new URL(finalUrl).hostname;
     const context: PageContext = { requestedUrl: url, finalUrl, host, siteName: collector.page.siteName ?? pre.head?.siteName ?? "", title: collector.page.title || nav.title };
     const now = Date.now();
-    const postWindow = postProcessingWindow({ startedAt, now, partial, deadlineMs: limits.scanDeadlineMs, verifyMs: limits.verifyMs });
+    const postWindow = postProcessingWindow({ startedAt, now, deadlineMs, verifyMs: limits.verifyMs });
     const postTimeout = new AbortController();
     const postTimer = setTimeout(() => postTimeout.abort(new DeadlineReached()), postWindow.endsAt - now);
     const postSignal = AbortSignal.any([cancel, postTimeout.signal]);
@@ -248,7 +261,7 @@ async function runScan({ url, deps, cancel, emit }: ScanContext): Promise<void> 
     const [assetsResult, fontsResult] = outputs;
     if (!assetsResult && !fontsResult) throw new ScanFailure("timeout", "Processing the page took too long");
     const processedPartly = !assetsResult || !fontsResult;
-    const assetsOut: AssetsOutput = assetsResult?.value ?? { assets: [], hidden: collector.noise, warnings: [] };
+    const assetsOut: AssetsOutput = assetsResult?.value ?? { assets: [], hidden: {}, warnings: [] };
     const fontsOut: FontsOutput = fontsResult?.value ?? { families: [], hidden: {} };
     step("process", "done");
 
@@ -291,9 +304,9 @@ async function runScan({ url, deps, cancel, emit }: ScanContext): Promise<void> 
         svg: assets.filter((asset) => asset.kind === "svg").length,
         images: assets.filter((asset) => asset.kind === "image").length,
         fonts: fontsOut.families.length,
-        // assembleAssets reports the collector's noise with its own (spec 8.2): adding `collector.noise` again would
-        // count it twice.
-        hidden: mergeCounts(assetsOut.hidden, fontsOut.hidden),
+        // Spec 8.2: the collector's drops and post-processing's drops. assembleAssets and buildFontFamilies only count
+        // their own, so each reason is counted once.
+        hidden: mergeCounts(collector.noise, assetsOut.hidden, fontsOut.hidden),
         durationMs: Date.now() - startedAt,
       },
       diagnostics: snapshot(),
@@ -302,7 +315,8 @@ async function runScan({ url, deps, cancel, emit }: ScanContext): Promise<void> 
     if (cancel.aborted) return;
     if (error instanceof BlockedPage) {
       diagnostics.blockReason = error.reason;
-      const fallback = await buildFallback({ host: new URL(url).hostname, pageUrl: url, head: pre?.head ?? null, fetch: deps.fetch, signer: getSigner(), signal: cancel }).catch(() => []);
+      const lookups = AbortSignal.any([cancel, AbortSignal.timeout(Math.max(0, scanEnds - Date.now()))]);
+      const fallback = await buildFallback({ host: new URL(url).hostname, pageUrl: url, head: pre?.head ?? null, fetch: deps.fetch, signer: getSigner(), signal: lookups }).catch(() => []);
       if (cancel.aborted) return;
       emit({ type: "error", code: "blocked", message: "The site blocked the scan", fallback, diagnostics: snapshot() });
     } else if (error instanceof ScanFailure) {
@@ -310,14 +324,14 @@ async function runScan({ url, deps, cancel, emit }: ScanContext): Promise<void> 
       emit({ type: "error", code: error.code, message: error.message, ...(httpStatus ? { httpStatus } : {}), ...(fallback ? { fallback } : {}), diagnostics: snapshot() });
     } else if (error instanceof BusyError) {
       emit({ type: "error", code: "busy", message: "All browsers are busy", diagnostics: snapshot() });
-    } else if (error instanceof DeadlineReached || deadline.signal.aborted) {
+    } else if (error instanceof DeadlineReached) {
       emit({ type: "error", code: "timeout", message: "The page took too long to load", diagnostics: snapshot() });
     } else {
       logInternal(error, scanId);
       emit({ type: "error", code: "internal", message: INTERNAL_MESSAGE, diagnostics: snapshot() });
     }
   } finally {
-    clearTimeout(deadlineTimer);
+    clearTimeout(pageDeadlineTimer);
   }
 }
 
@@ -327,6 +341,8 @@ interface BrowserStage {
   collector: RawCollectorOutput | undefined;
   network: CapturedNetwork;
   partial: boolean;
+  /** Whether `step collect start` went out. */
+  collectStarted: boolean;
 }
 
 /**
@@ -342,8 +358,11 @@ async function runBrowserStage(input: ScanContext & {
   const { url, deps, cancel, emit, pre, diagnostics, timed } = input;
   const watchdog = new AbortController();
   const signal = AbortSignal.any([cancel, input.deadline, watchdog.signal]);
-  const step = (id: StepId, state: "start" | "done") => {
-    if (!signal.aborted) emit({ type: "step", step: id, state });
+  /** Emits the step unless page work was stopped, and tells whether it did. */
+  const step = (id: StepId, state: "start" | "done"): boolean => {
+    if (signal.aborted) return false;
+    emit({ type: "step", step: id, state });
+    return true;
   };
 
   let capture: CaptureHandle | undefined;
@@ -352,6 +371,7 @@ async function runBrowserStage(input: ScanContext & {
   let collector: RawCollectorOutput | undefined;
   let network: CapturedNetwork | undefined;
   let partial = false;
+  let collectStarted = false;
   let queuedAt: number | undefined;
 
   const egress = await deps.startEgressProxy({ maxBytes: limits.egressMaxBytes, maxSockets: limits.egressMaxSockets });
@@ -404,7 +424,7 @@ async function runBrowserStage(input: ScanContext & {
           },
         });
 
-        step("collect", "start");
+        collectStarted = step("collect", "start");
         await timed("prepare", () => prepareForCollection(page, { signal }));
         const collectEnds = Date.now() + limits.collectMs;
         const extracted = await timed("palette", () =>
@@ -463,7 +483,7 @@ async function runBrowserStage(input: ScanContext & {
   if (!nav) throw new ScanFailure("timeout", "The page took too long to load");
   network ??= await (capture as CaptureHandle | undefined)?.settle(0) ?? { images: [], fonts: [], sheets: [], bodyTimeouts: 0, skippedBodies: 0 };
   diagnostics.bodyTimeouts = network.bodyTimeouts;
-  return { nav, palette, collector, network, partial };
+  return { nav, palette, collector, network, partial, collectStarted };
 }
 
 /**
