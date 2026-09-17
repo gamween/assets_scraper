@@ -59,16 +59,20 @@ const run = (collector: RawCollectorOutput, images: CapturedImage[] = []) => {
 };
 
 describe("assembleAssets hidden counts", () => {
-  it("counts its own drops only, never the collector's", async () => {
+  it("reports the collector's drops together with its own, once each", async () => {
+    const hugeSvg = `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><!--${"x".repeat(limits.svgMaxBytes)}--></svg>`)}`;
     const collector = collectorOutput({
       candidates: [
         candidate(`${PAGE}logo.png`, 1, 1, { foundIn: "icon-link" }),
         candidate("https://www.google-analytics.com/collect?v=1", 2, 2),
+        candidate(hugeSvg, 3, 3, { foundIn: "css-background", visible: true }),
       ],
       noise: { "lottie-frame": 3, "unreferenced-symbol": 2, "svg-too-large": 1 },
     });
     const { hidden } = await run(collector, [captured(`${PAGE}logo.png`)]);
-    expect(hidden).toEqual({ tracker: 1 });
+    // Only the collector sees Lottie frames and unreferenced symbols: the engine takes them from here (spec 8.1, 8.2).
+    expect(hidden).toEqual({ "lottie-frame": 3, "unreferenced-symbol": 2, "svg-too-large": 2, tracker: 1 });
+    expect(collector.noise).toEqual({ "lottie-frame": 3, "unreferenced-symbol": 2, "svg-too-large": 1 });
   });
 
   it("does not count a missing /favicon.ico the page never declared", async () => {

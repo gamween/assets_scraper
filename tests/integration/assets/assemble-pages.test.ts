@@ -119,6 +119,12 @@ beforeAll(async () => {
         <img src="data:image/png;base64,${bigPng.toString("base64")}" alt="Big raster">
       </body></html>`)(req, res);
     },
+    "/sprites.html": html(`</head><body>
+      <div class="lottie-player"><svg width="100" height="100"><g id="__lottie_element_1"><rect width="100" height="100"/></g></svg></div>
+      <svg style="display:none"><symbol id="used" viewBox="0 0 8 8"><path d="M0 0h8v8z"/></symbol><symbol id="unused" viewBox="0 0 8 8"><circle cx="4" cy="4" r="4"/></symbol></svg>
+      <svg width="16" height="16"><use href="#used"/></svg>
+      <img src="/assets/poster.jpg" alt="Poster">
+    </body></html>`),
     "/tiny.png": (_req, res) => {
       res.writeHead(200, { "content-type": "image/png" });
       res.end(noisePng);
@@ -217,6 +223,12 @@ describe("assembleAssets on purpose-built pages", () => {
     const logo = assets.find((a) => a.role === "site-logo");
     expect(logo).toMatchObject({ kind: "svg", tone: "light" });
     expect(assets.find((a) => a.original?.url.endsWith("/slow.png"))).toMatchObject({ declaredOnly: true });
+  });
+
+  it("reports the drops only the collector sees", async () => {
+    const { assets, hidden } = await scan("/sprites.html");
+    expect(assets.filter((a) => a.foundIn.includes("sprite-symbol"))).toHaveLength(1);
+    expect(hidden).toEqual({ "lottie-frame": 1, "unreferenced-symbol": 1 });
   });
 
   it("applies the noise rules to probed files and caps inline bytes", async () => {

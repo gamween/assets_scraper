@@ -97,14 +97,15 @@ const siteLabel = (host: string) => {
 };
 
 /**
- * `hidden` only counts what post-processing drops. The collector's own drops (`collector.noise`) are not repeated here:
- * the engine adds both into `stats.hidden`.
+ * `hidden` is every asset drop of the scan (spec 8.1, 8.2): it starts from the collector's own drops (`collector.noise`:
+ * Lottie frames, unreferenced symbols, oversized inline SVGs) and adds what post-processing drops. The engine sums it
+ * with the fonts' counts into `stats.hidden` and does not add `collector.noise` again.
  */
 export async function assembleAssets(input: PostInput): Promise<AssetsOutput> {
   const { collector, page } = input;
   const pageUrl = page.finalUrl;
   const baseUrl = collector.page.baseUrl || pageUrl;
-  const hidden: Partial<Record<HiddenReason, number>> = {};
+  const hidden: Partial<Record<HiddenReason, number>> = { ...collector.noise };
   const hide = (reason: HiddenReason) => {
     hidden[reason] = (hidden[reason] ?? 0) + 1;
   };
