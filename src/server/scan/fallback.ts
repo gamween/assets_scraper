@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import sharp from "sharp";
 import type { Asset, AssetFormat, AssetRole, FoundIn } from "@/lib/contract";
 import { limits } from "@/server/config/limits";
-import type { PageHead } from "./preflight";
+import { MAX_HEAD_URL_CHARS, type PageHead } from "./preflight";
 import type { SafeFetch, Signer } from "./types";
 
 /** Spec 8.9: Wikidata asks for a descriptive user agent. Nothing personal goes in it. */
@@ -11,10 +11,11 @@ const FAVICON_SERVICE_MS = 3_000;
 const FAVICON_MAX_BYTES = 1024 * 1024;
 /**
  * The fallback travels in a single `error` line (spec 14: 256 KB). Each asset carries its URL four times (display and
- * original, each with the signed proxy path), about 10 KB at the longest URL kept, so 20 assets stay well under.
+ * original, each with the signed proxy path), about 10 KB at the longest URL kept, plus its name, which holds the site
+ * name (at most 200 characters, see `parseHead`), so 20 assets stay well under.
  */
 const MAX_FALLBACK_ASSETS = 20;
-const MAX_FALLBACK_URL_CHARS = 2_048;
+const MAX_FALLBACK_URL_CHARS = MAX_HEAD_URL_CHARS;
 /** Per source, so that one crowded head (dozens of icon links) leaves room for the others. */
 const MAX_HEAD_ICONS = 8;
 const MAX_SOCIAL_IMAGES = 4;
@@ -161,19 +162,20 @@ async function wikidataLogo(host: string, fetch: SafeFetch, signal: AbortSignal)
     return null;
   }
   const data = await response.json<SparqlResults>();
-  // CONTAINS also matches other sites ("x.com" is in "dropbox.com"), so keep the exact host only.
-  const match = data.results?.bindings?.find((binding) => {
+  for (const binding of data.results?.bindings ?? []) {
     try {
-      return new URL(binding.site?.value ?? "").hostname.toLowerCase().replace(/^www\./, "") === bareHost && binding.logo?.value;
+      // CONTAINS also matches other sites ("x.com" is in "dropbox.com"), so keep the exact host only.
+      if (new URL(binding.site?.value ?? "").hostname.toLowerCase().replace(/^www\./, "") !== bareHost) continue;
+      const url = new URL(binding.logo?.value ?? "");
+      if (url.protocol === "http:") url.protocol = "https:";
+      if (url.protocol === "https:" && url.href.length <= MAX_FALLBACK_URL_CHARS) {
+        return { url: url.href, role: "site-logo", foundIn: "public-source", name: "", basename: "logo", format: formatOf(url.href) };
+      }
     } catch {
-      return false;
+      // Not a URL: try the next binding.
     }
-  });
-  if (!match?.logo?.value) return null;
-  const url = new URL(match.logo.value);
-  if (url.protocol === "http:") url.protocol = "https:";
-  if (url.protocol !== "https:") return null;
-  return { url: url.href, role: "site-logo", foundIn: "public-source", name: "", basename: "logo", format: formatOf(url.href) };
+  }
+  return null;
 }
 
 /**

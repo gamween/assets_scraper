@@ -231,7 +231,9 @@ describe("buildFallback", () => {
   it("keeps the fallback small enough for one NDJSON line, with every source represented", async () => {
     const icon = await png();
     const longPath = (i: number, size: number) => `/icons/${i}-${"a".repeat(size)}.png`;
+    // og:site_name goes into the name of every asset.
     const html = `<html><head>
+      <meta property="og:site_name" content="${"S".repeat(15_000)}">
       ${Array.from({ length: 200 }, (_, i) => `<link rel="icon" href="${longPath(i, i % 2 ? 3000 : 1500)}">`).join("")}
       ${Array.from({ length: 30 }, (_, i) => `<meta property="og:image" content="${longPath(1000 + i, 1500)}">`).join("")}
       <script type="application/ld+json">${JSON.stringify({ "@graph": Array.from({ length: 30 }, (_, i) => ({ logo: `https://www.example.com${longPath(2000 + i, 1500)}` })) })}</script>
@@ -240,7 +242,14 @@ describe("buildFallback", () => {
       routes: {
         "https://www.google.com/s2/favicons": () => new Response(new Uint8Array(icon), { headers: { "content-type": "image/png" } }),
         "https://query.wikidata.org/sparql": () =>
-          Response.json({ results: { bindings: [{ logo: { value: "http://commons.wikimedia.org/wiki/Special:FilePath/Example.svg" }, site: { value: "https://www.example.com/" } }] } }),
+          Response.json({
+            results: {
+              bindings: [
+                { logo: { value: `http://commons.wikimedia.org/wiki/Special:FilePath/${"L".repeat(3000)}.svg` }, site: { value: "https://www.example.com/" } },
+                { logo: { value: "http://commons.wikimedia.org/wiki/Special:FilePath/Example.svg" }, site: { value: "https://www.example.com/" } },
+              ],
+            },
+          }),
       },
     });
     // Signed proxy paths as long as the real signer's: the URL in base64url plus the expiry and the signature.
@@ -248,7 +257,10 @@ describe("buildFallback", () => {
     const assets = await buildFallback({ host: "www.example.com", head: parseHead(html, "https://www.example.com/"), fetch: publicFetch, signer, signal: signal() });
 
     expect(assets.length).toBeLessThanOrEqual(20);
-    for (const asset of assets) expect(asset.original?.url.length).toBeLessThanOrEqual(2048);
+    for (const asset of assets) {
+      expect(asset.original?.url.length).toBeLessThanOrEqual(2048);
+      expect(asset.name.length).toBeLessThanOrEqual(300);
+    }
     const line = JSON.stringify({ type: "error", code: "blocked", message: "The site blocked the scan", fallback: assets });
     expect(Buffer.byteLength(line)).toBeLessThan(256_000);
     const urls = assets.map((asset) => asset.original?.url ?? "");
