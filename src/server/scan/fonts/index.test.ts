@@ -218,6 +218,28 @@ describe("buildFontFamilies", () => {
     expect(families[0].faces).toHaveLength(2);
   });
 
+  it("never makes a family with an Adobe Fonts file downloadable, even merged with files from other hosts", async () => {
+    const selfHosted = "https://www.site.example/proxima.woff2";
+    const typekit = "https://use.typekit.net/af/abc/l?fvd=n4&v=3";
+    const proxima = { format: "woff2" as const, nameId1: "Proxima Nova" };
+    const { families } = await build({
+      fontFaces: [rule("Proxima Nova", [selfHosted]), rule("proxima-nova", [typekit])],
+      fonts: [captured(selfHosted, proxima), captured(typekit, proxima)],
+      fontStatuses: [loaded("Proxima Nova"), loaded("proxima-nova")],
+    });
+    expect(families).toHaveLength(1);
+    expect(families[0]).toMatchObject({
+      name: "Proxima Nova",
+      cssFamilies: ["Proxima Nova", "proxima-nova"],
+      source: "adobe-fonts",
+      sourceHost: "use.typekit.net",
+      license: { kind: "commercial" },
+      convertible: false,
+      downloadable: false,
+    });
+    expect(families[0].faces.flatMap((face) => face.files.map((file) => file.url))).toEqual([selfHosted, typekit]);
+  });
+
   it("parses only the data: URI source a rule picks", async () => {
     const font = bytes("jbm-cyr.woff2");
     const { families } = await build({

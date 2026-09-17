@@ -372,9 +372,9 @@ function toFaceInfo(face: FaceRecord, proxyFor: (url: string) => string | undefi
 /**
  * Builds the font families of a scan (spec section 9) from the collector's `@font-face` rules, `document.fonts`
  * statuses and text usage, plus the captured font files and stylesheets. Families are grouped and named in three
- * stages, carry their source, licence, usage share and Google Fonts match (checked for the first
- * `limits.googleFontsMaxFamilies` used families, by display name, or only by the name in the binary when it names
- * another font), and are sorted by usage, then used before unused.
+ * stages, carry their source (Adobe Fonts when any of their files is), licence, usage share and Google Fonts match
+ * (checked for the first `limits.googleFontsMaxFamilies` used families, by display name, or only by the name in the
+ * binary when it names another font), and are sorted by usage, then used before unused.
  * Remote files get a signed proxy URL, since the per-scan signing cap is shared with the assets: files that loaded
  * first, then the other files of loaded faces, then declared files, then Adobe Fonts files, which are not downloadable
  * (spec 9) but still give their font row its specimen (spec 12.3). Past that cap a remote file has an empty `proxy`, as
@@ -397,6 +397,9 @@ export async function buildFontFamilies(input: PostInput): Promise<FontsOutput> 
     const faces = [...family.faces.values()];
     const entries = faces.flatMap((face) => face.files);
     const rep = representative(entries);
+    // Adobe Fonts files are never downloadable (spec 9): a family merged from rules on Adobe Fonts and on other hosts
+    // takes its source, and so its licence and download rights, from an Adobe Fonts file
+    const origin = entries.find((entry) => entry.file.source === "adobe-fonts") ?? rep;
     // The licence of the first file with licence text and the axes of the first variable file: metadata is read, and
     // a data: URI file parsed, only until both are found
     let firstMeta: FontBinaryMeta | undefined;
@@ -413,9 +416,9 @@ export async function buildFontFamilies(input: PostInput): Promise<FontsOutput> 
     return {
       family,
       faces,
-      source: rep.file.source,
-      host: rep.file.host,
-      license: classifyLicense(licenseMeta ?? firstMeta, rep.file.source),
+      source: origin.file.source,
+      host: origin.file.host,
+      license: classifyLicense(licenseMeta ?? firstMeta, origin.file.source),
       axes,
       usage: totalChars ? Math.round((family.chars / totalChars) * 10_000) / 10_000 : 0,
       usedOnPage: family.chars > 0 || faces.some((face) => face.loaded),
