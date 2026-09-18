@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Diagnostics } from "@/lib/contract";
 import type { StreamEvent } from "./scan-client";
-import { createAppStore, getDetailList, getDownloadAllItems, getVisibleItems } from "./store";
+import { createAppStore, getDetailList, getDownloadAllCount, getDownloadAllItems, getVisibleItems } from "./store";
 import { makeAsset, makeFont } from "./testing";
 
 const diagnostics: Diagnostics = {
@@ -123,6 +123,27 @@ describe("app store", () => {
     expect(all()).toEqual(["asset:logo", "asset:illu"]);
     store.getState().toggleSection("small-icons");
     expect(all()).toEqual(["asset:logo", "asset:illu", "asset:icon"]);
+  });
+
+  it("counts what Download all would take, search included, and reaches zero on a tab with nothing in it", () => {
+    const store = loadedStore();
+    expect(getDownloadAllCount(store.getState())).toBe(5);
+    // The grid is empty and the tab counts read 0, but Download all still takes the whole tab (spec 12.4), so the
+    // number the button prints must stay the tab total instead of following the search.
+    store.getState().setQuery("zzznomatch");
+    expect(getVisibleItems(store.getState())).toEqual([]);
+    expect(getDownloadAllCount(store.getState())).toBe(5);
+
+    const svgOnly = createAppStore();
+    svgOnly.getState().beginScan({ url: "https://linear.app/", host: "linear.app" });
+    for (const event of [
+      { type: "assets", items: [logo, illu] },
+      { type: "done", partial: false, stats: { assets: 2, svg: 2, images: 0, fonts: 0, hidden: {}, durationMs: 1000 }, diagnostics },
+    ] satisfies StreamEvent[]) {
+      svgOnly.getState().applyEvent(event);
+    }
+    svgOnly.getState().setTab("images");
+    expect(getDownloadAllCount(svgOnly.getState())).toBe(0);
   });
 
   it("downloads stylesheet-only files and unused fonts even while their sections are collapsed", () => {

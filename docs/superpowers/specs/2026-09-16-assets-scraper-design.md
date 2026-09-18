@@ -498,7 +498,7 @@ No analytics, no public listing, `noindex` everywhere, no server-side storage of
 
 **Results.**
 
-- Header: favicon, page title, mono meta `linear.app · 48 assets · 11s`, actions `Copy link`, `Rescan`, `Download all`.
+- Header: favicon, page title, mono meta `linear.app · 48 assets · 11s`, actions `Copy link`, `Rescan`, `Download all 48`.
 - Palette strip: brand swatches then neutrals, each a 32 px square with its hex in mono under it, click copies the hex, `Copy all` copies one `#hex role` per line.
 - Brand links: `Brand resources on this site` chips that start a scan of that page.
 - Sticky filter row: tabs `All`, `SVG`, `Images`, `Fonts` with counts, search `Filter by name or URL` (key `/`), sort (`Relevance`, `Page order`, `Largest`, `File size`, `Name`), background control `Auto · Light · Dark · Grid`.
@@ -525,7 +525,7 @@ No analytics, no public listing, `noindex` everywhere, no server-side storage of
 
 - Checkbox click or `Cmd/Ctrl+click` toggles, `Shift+click` selects a range in visual order, once something is selected a plain click toggles. Touch uses a `Select` button. `Cmd/Ctrl+A` selects everything visible in the current tab and search (collapsed sections excluded). `Esc` clears.
 - Floating bar at the bottom center, 52 px, 12 px above the edge plus the safe area: `8 selected · 2.4 MB`, `Clear`, `Download ZIP`.
-- `Download all` zips every asset of the current tab, small icons only when expanded.
+- `Download all` zips every asset of the current tab, small icons only when expanded. The button prints that count (`Download all 48`) and is disabled only when the count is zero, so a search that hides every tile never makes the button look narrower than it is.
 - ZIP built in the browser with client-zip from an async generator, 6 fetches at a time through `getAssetBlob(asset, "original")`. `showSaveFilePicker` streaming when available, blob download otherwise, with a warning above 300 MB. Progress in the button (`Zipping 18 of 48`) and a `Cancel` link. Failed entries end in a toast (`2 files couldn't be downloaded`, `Show`).
 - Layout: `<host>-assets/svg/`, `<host>-assets/images/`, `<host>-assets/fonts/<family>/`. Open-licence WOFF2 fonts that have a proxy path also get a converted `.ttf` next to them. Data-URI fonts are added from their own bytes in their original format only.
 

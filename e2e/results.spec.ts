@@ -28,7 +28,8 @@ test.describe("results", () => {
     await expect(page.getByTestId("results-meta")).toHaveText(`linear.app · ${stats.assets} assets · 11s`);
     await expect(page).toHaveTitle(`${stats.assets} assets · linear.app`);
     await expect(page.getByRole("button", { name: "Rescan" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Download all" })).toBeVisible();
+    // The button carries the number of files it would zip: its scope is the whole tab, not the filtered grid.
+    await expect(page.getByRole("button", { name: /^Download all \d+$/ })).toBeVisible();
 
     await page.getByRole("button", { name: "Copy link" }).click();
     await expect(page.getByTestId("toast")).toContainText("Link copied");

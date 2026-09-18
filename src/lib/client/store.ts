@@ -323,16 +323,29 @@ export function getDetailList(state: AppState): Asset[] {
 /** Sections that `Download all` takes even while collapsed: only small icons wait for `Show` (spec 12.4). */
 const DOWNLOAD_ALL_SECTIONS: readonly SectionId[] = ["stylesheets", "declared-fonts"];
 
+type DownloadAllInputs = [Asset[], FontFamily[], Tab, SortKey, SectionId[], Phase, ScanErrorInfo | null];
+let downloadAllCache: { inputs: DownloadAllInputs; value: Item[] } | null = null;
+
 /**
  * Spec 12.4 `Download all`: every item of the current tab, whatever the search, in visual order, small icons only
  * when that section is expanded. Stylesheet-only files and unused fonts are in even while their sections are collapsed.
+ * Memoized on its inputs: the header reads its length on every store change, ZIP progress ticks included.
  */
 export function getDownloadAllItems(state: AppState): Item[] {
+  const inputs: DownloadAllInputs = [state.assets, state.fonts, state.tab, state.sort, state.expanded, state.phase, state.error];
+  if (downloadAllCache && sameInputs(downloadAllCache.inputs, inputs)) return downloadAllCache.value;
   const fallback = state.phase === "error" && !state.assets.length ? (state.error?.fallback ?? []) : [];
   const sections = fallback.length
     ? publicSourcesSection(fallback, { query: "", sort: state.sort })
     : sectionize(state.assets, state.fonts, { tab: state.tab, query: "", sort: state.sort });
-  return visibleItems(sections, new Set([...state.expanded, ...DOWNLOAD_ALL_SECTIONS]));
+  const value = visibleItems(sections, new Set([...state.expanded, ...DOWNLOAD_ALL_SECTIONS]));
+  downloadAllCache = { inputs, value };
+  return value;
+}
+
+/** What `Download all` would take right now: the button prints it, so its scope is never a surprise. */
+export function getDownloadAllCount(state: AppState): number {
+  return getDownloadAllItems(state).length;
 }
 
 export function findAsset(state: AppState, id: string | null): Asset | null {

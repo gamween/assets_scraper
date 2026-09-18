@@ -163,11 +163,23 @@ test.describe("selection and ZIP", () => {
     expect(filenames).not.toContain(smallIcon.filename);
     expect(filenames).not.toContain(cssOnly.filename);
 
-    // Spec 12.4: the search narrows the grid and select-all, not Download all.
+    // Spec 12.4: the search narrows the grid and select-all, not Download all. The button prints what it would take,
+    // so the two numbers never contradict each other in silence.
+    const downloadAll = page.getByRole("button", { name: /^Download all/ });
+    await expect(downloadAll).toHaveAccessibleName(`Download all ${filenames.length + 1}`);
     const search = page.getByRole("searchbox", { name: "Filter by name or URL" });
     await search.fill(siteLogo.filename);
     await expect(page.getByTestId("asset-card")).not.toHaveCount(filenames.length);
-    const zip = await zipEntries(page, () => page.getByRole("button", { name: "Download all" }).click());
+    await expect(downloadAll).toHaveAccessibleName(`Download all ${filenames.length + 1}`);
+
+    // The loudest control on an empty grid still says how many files it would zip, and stays enabled.
+    await search.fill("zzzznomatch");
+    await expect(page.getByText('Nothing matches "zzzznomatch"')).toBeVisible();
+    await expect(downloadAll).toBeEnabled();
+    await expect(downloadAll).toHaveAccessibleName(`Download all ${filenames.length + 1}`);
+
+    await search.fill(siteLogo.filename);
+    const zip = await zipEntries(page, () => downloadAll.click());
     expect(zip.name).toBe("linear.app-assets.zip");
     // Every file of the tab, stylesheet-only files included; small icons wait for Show.
     expect(zip.entries.sort()).toEqual([...filenames, cssOnly.filename].map((name) => `linear.app-assets/svg/${name}`).sort());
@@ -175,7 +187,9 @@ test.describe("selection and ZIP", () => {
 
     await search.fill("");
     await page.getByRole("region", { name: "Small icons", exact: true }).getByRole("button", { name: "Show" }).click();
-    const expanded = await zipEntries(page, () => page.getByRole("button", { name: "Download all" }).click());
+    const expanded = await zipEntries(page, () => downloadAll.click());
+    // Expanding the small icons adds them to what Download all takes, so the printed count matches the ZIP.
+    await expect(downloadAll).toHaveAccessibleName(`Download all ${expanded.entries.length}`);
     expect(expanded.entries).toContain(`linear.app-assets/svg/${smallIcon.filename}`);
   });
 });
