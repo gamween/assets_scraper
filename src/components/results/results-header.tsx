@@ -47,6 +47,9 @@ export function ResultsHeader({ actions = true }: { actions?: boolean }) {
   const duration = useApp((s) => s.done?.stats.durationMs);
   const zip = useApp((s) => s.zip);
   const zippingAll = zip?.source === "all";
+  // Spec 12.6 reserves near black for the primary action. With a selection on screen `Download ZIP` in the floating
+  // bar is that action, so `Download all` steps back rather than competing with an identical-looking button.
+  const selecting = useApp((s) => s.selection.size > 0);
 
   return (
     <header className="flex flex-wrap items-center justify-between gap-x-8 gap-y-4 pt-7">
@@ -79,7 +82,7 @@ export function ResultsHeader({ actions = true }: { actions?: boolean }) {
               Cancel
             </button>
           ) : null}
-          <Button variant="primary" onClick={downloadAll} disabled={downloadAllCount === 0 || (zip !== null && !zippingAll)} aria-live="polite">
+          <Button variant={selecting ? "secondary" : "primary"} onClick={downloadAll} disabled={downloadAllCount === 0 || (zip !== null && !zippingAll)} aria-live="polite">
             {zippingAll ? <LoaderCircle className="spinner" aria-hidden="true" /> : <Download aria-hidden="true" />}
             <span className="tabular-nums">{zippingAll ? `Zipping ${zip.done} of ${zip.total}` : `Download all ${downloadAllCount}`}</span>
           </Button>

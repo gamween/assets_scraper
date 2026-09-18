@@ -152,6 +152,21 @@ test.describe("selection and ZIP", () => {
     expect(downloaded).toBe(false);
   });
 
+  test("only one near-black button is on screen at a time", async ({ page }) => {
+    await openResults(page);
+    const nearBlack = async () =>
+      page.locator("button").evaluateAll((buttons) =>
+        buttons.filter((button) => button.checkVisibility() && getComputedStyle(button).backgroundColor === "rgb(24, 24, 27)").map((button) => button.textContent),
+      );
+    await expect.poll(nearBlack).toEqual([expect.stringContaining("Download all")]);
+
+    await cardOf(page, siteLogo.id).getByRole("checkbox").click();
+    await expect(selectionBar(page)).toBeVisible();
+    // Spec 12.6 reserves near black for the primary action: with a selection, that is `Download ZIP`.
+    // Polled: the button colour is transitioned, so it is still ink for the first 100 ms after the click.
+    await expect.poll(nearBlack).toEqual([expect.stringContaining("Download ZIP")]);
+  });
+
   test("Download all zips the current tab whatever the search, small icons only when expanded", async ({ page }) => {
     await openResults(page);
     await page.getByRole("tab", { name: /^SVG/ }).click();
