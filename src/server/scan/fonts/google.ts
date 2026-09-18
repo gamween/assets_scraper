@@ -9,6 +9,24 @@ const CHECKABLE_NAME = /^[A-Za-z0-9][A-Za-z0-9 .'-]{1,63}$/;
 
 const cache = new Map<string, { match: boolean; expires: number }>();
 
+/**
+ * Spellings to ask about for one declared family name, most likely first. A page can declare a catalogue family
+ * without its spaces (`SourceCodePro` on stripe.com) or with separators (`source-code-pro`), and the CSS API only
+ * knows the catalogue spelling, so such a family lost its licence, its `Google Fonts` link and its `Download TTF`.
+ * Camel case and runs of capitals are split, separators collapse to single spaces and each word is capitalised.
+ */
+export function familySpellings(name: string): string[] {
+  const declared = name.trim();
+  const spaced = declared
+    .replace(/[_+-]+/g, " ")
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/\s+/g, " ")
+    .trim();
+  const capitalised = spaced.replace(/(^|\s)([a-z])/g, (_, space: string, letter: string) => space + letter.toUpperCase());
+  return [...new Set([declared, spaced, capitalised])].filter((spelling) => CHECKABLE_NAME.test(spelling));
+}
+
 export const googleFontsCssUrl = (family: string): string =>
   `https://fonts.googleapis.com/css2?family=${encodeURIComponent(family).replace(/%20/g, "+")}`;
 
@@ -65,9 +83,16 @@ export async function matchGoogleFamilies(
   options: { fetch: SafeFetch; signal?: AbortSignal; timeoutMs?: number; maxNames?: number },
 ): Promise<Map<string, string>> {
   const maxNames = options.maxNames ?? limits.googleFontsMaxFamilies;
-  const unique = [...new Set(names.map((name) => name.trim()))].filter((name) => CHECKABLE_NAME.test(name)).slice(0, maxNames);
+  const unique = [...new Set(names.map((name) => name.trim()))].filter((name) => familySpellings(name).length > 0).slice(0, maxNames);
   const timeoutMs = Math.min(options.timeoutMs ?? limits.googleFontsMs, limits.googleFontsMs);
   if (timeoutMs <= 0) return new Map();
-  const matched = await Promise.all(unique.map((name) => isGoogleFamily(name, options.fetch, timeoutMs, options.signal)));
-  return new Map(unique.filter((_, index) => matched[index]).map((name) => [name, name]));
+  const matched = await Promise.all(
+    unique.map(async (name): Promise<readonly [string, string] | null> => {
+      for (const spelling of familySpellings(name)) {
+        if (await isGoogleFamily(spelling, options.fetch, timeoutMs, options.signal)) return [name, spelling] as const;
+      }
+      return null;
+    }),
+  );
+  return new Map(matched.filter((entry): entry is readonly [string, string] => entry !== null));
 }

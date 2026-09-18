@@ -1,9 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { clearGoogleFontsCache, googleFontsCacheSize, googleFontsCssUrl, matchGoogleFamilies } from "./google";
+import { clearGoogleFontsCache, familySpellings, googleFontsCacheSize, googleFontsCssUrl, matchGoogleFamilies } from "./google";
 import { fakeGoogleFetch, fakeResponse } from "./testing";
 
 beforeEach(() => clearGoogleFontsCache());
 afterEach(() => vi.useRealTimers());
+
+describe("familySpellings", () => {
+  it("splits camel case and separators into the catalogue spelling", () => {
+    for (const declared of ["SourceCodePro", "Source_Code_Pro", "source-code-pro", "source code pro"]) {
+      expect(familySpellings(declared), declared).toContain("Source Code Pro");
+    }
+    expect(familySpellings("SFProText")).toContain("SF Pro Text");
+    // A name already spelled the catalogue way is asked about once.
+    expect(familySpellings("Source Code Pro")).toEqual(["Source Code Pro"]);
+    expect(familySpellings("Inter:wght@700")).toEqual([]);
+  });
+});
 
 describe("matchGoogleFamilies", () => {
   it("maps each family the Google Fonts CSS API knows to its exact name", async () => {
@@ -16,6 +28,13 @@ describe("matchGoogleFamilies", () => {
       "https://fonts.googleapis.com/css2?family=Source+Sans+3",
     ]);
     expect(fetch.calls[0].options).toMatchObject({ method: "GET", timeoutMs: 2_000 });
+  });
+
+  it("finds a family declared without its spaces, and reports the catalogue spelling", async () => {
+    const fetch = fakeGoogleFetch(["Source Code Pro"]);
+    const matches = await matchGoogleFamilies(["SourceCodePro"], { fetch });
+    expect(matches).toEqual(new Map([["SourceCodePro", "Source Code Pro"]]));
+    expect(fetch.calls.map((call) => new URL(call.url).searchParams.get("family"))).toEqual(["SourceCodePro", "Source Code Pro"]);
   });
 
   it("requests at most 8 unique names by default and skips names the API cannot take", async () => {
