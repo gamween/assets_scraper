@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 
-import { isFailure, parseArgs, shouldRetry, summarize } from "./scan-sites.mjs";
+import { isEdgeDenial, isFailure, parseArgs, shouldRetry, summarize } from "./scan-sites.mjs";
 
 const script = fileURLToPath(new URL("./scan-sites.mjs", import.meta.url));
 const run = promisify(execFile);
@@ -69,6 +69,16 @@ describe("isFailure", () => {
   });
 });
 
+describe("isEdgeDenial", () => {
+  it("tells the edge rate limit apart from a scan that failed", () => {
+    expect(isEdgeDenial({ status: 429, code: "429", message: "Too Many Requests", mitigated: "deny" })).toBe(true);
+    // The app's own rate-limited error is an ApiError with a 429 body but no mitigation header.
+    expect(isEdgeDenial({ status: 429, code: "429", message: "Too Many Requests", mitigated: null })).toBe(true);
+    expect(isEdgeDenial({ status: 503, code: "busy", message: "All browsers are busy", mitigated: null })).toBe(false);
+    expect(isEdgeDenial(undefined)).toBe(false);
+  });
+});
+
 describe("summarize", () => {
   it("falls back to the collected events when a done event carries no stats", () => {
     const row = summarize(result({
@@ -103,6 +113,16 @@ const blockingServer = async () => {
   const server = createServer((request, response) => {
     response.writeHead(200, { "content-type": "application/x-ndjson" });
     response.end(`${JSON.stringify({ type: "error", code: "blocked", message: "The site blocked the scan", httpStatus: 403 })}\n`);
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return { base: `http://127.0.0.1:${server.address().port}`, close: () => new Promise((resolve) => server.close(resolve)) };
+};
+
+/** The Vercel WAF answer: a bare 429 from the edge, whose body is not an ApiError, before the function runs. */
+const denyingServer = async () => {
+  const server = createServer((request, response) => {
+    response.writeHead(429, { "content-type": "application/json", "x-vercel-mitigated": "deny" });
+    response.end(JSON.stringify({ error: { code: "429", message: "Too Many Requests" } }));
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   return { base: `http://127.0.0.1:${server.address().port}`, close: () => new Promise((resolve) => server.close(resolve)) };
@@ -156,6 +176,41 @@ describe("main", () => {
       const other = [script, "--base", server.base, "--sites", "stripe.com", "--retries", "0", "--out", out];
       const failure = await run(process.execPath, other).then(() => null, (error) => error);
       expect(failure?.code).toBe(1);
+    } finally {
+      await server.close();
+    }
+  }, 30_000);
+
+  it("reports an edge denial as never scanned, apart from the sites without a scan result", async () => {
+    const out = await mkdtemp(path.join(tmpdir(), "scan-sites-"));
+    const server = await denyingServer();
+    try {
+      const args = [script, "--base", server.base, "--sites", "stripe.com", "--retries", "0", "--out", out];
+      const failure = await run(process.execPath, args).then(() => null, (error) => error);
+      expect(failure?.code).toBe(1);
+      expect(failure?.stdout).toContain("Denied by the edge rate limit, never scanned: stripe.com");
+      expect(failure?.stdout).not.toContain("Sites without a scan result");
+
+      const summary = JSON.parse(await readFile(path.join(out, "summary.json"), "utf8"));
+      expect(summary.rows[0].status).toBe("edge-denied");
+    } finally {
+      await server.close();
+    }
+  }, 30_000);
+
+  it("paces a sweep so it stays under the edge rate limit", async () => {
+    const out = await mkdtemp(path.join(tmpdir(), "scan-sites-"));
+    const server = await streamingServer([JSON.stringify({ type: "done", partial: false, stats: { durationMs: 1, assets: 0, svg: 0, images: 0, fonts: 0, hidden: {} } })]);
+    try {
+      const args = [script, "--base", server.base, "--sites", "a.com,b.com,c.com", "--retries", "0", "--pace", "2", "--pace-window", "1200", "--out", out];
+      const started = Date.now();
+      const { stdout } = await run(process.execPath, args);
+      expect(stdout).toContain("Pacing: 2 scans done, waiting");
+      // Two scans, then the rest of the first window, then the third.
+      expect(Date.now() - started).toBeGreaterThanOrEqual(1_000);
+
+      const summary = JSON.parse(await readFile(path.join(out, "summary.json"), "utf8"));
+      expect(summary.rows.map((row) => row.status)).toEqual(["done", "done", "done"]);
     } finally {
       await server.close();
     }

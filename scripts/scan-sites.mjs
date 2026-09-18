@@ -1,10 +1,14 @@
 // Scans the reference sites through a running app and writes one JSON per site plus a summary table.
 //   OPS_TOKEN=... node scripts/scan-sites.mjs --base http://localhost:3201 --out ../reference-scans/run1
 //   OPS_TOKEN=... node scripts/scan-sites.mjs --sites stripe.com,linear.app
-// The ops token skips the bot check and the rate limit (spec 11.1), so the scans are not throttled.
+//   OPS_TOKEN=... node scripts/scan-sites.mjs --base https://assets-scraper.vercel.app --pace 19
+// The ops token skips the bot check and the daily budget (spec 11.1). It does NOT skip the Vercel rate-limit rule of
+// spec 14, which runs at the edge before the function: against a deployment, 20 requests per 10 minutes per IP is the
+// real ceiling, and the 23 reference sites do not fit in one window. Use --pace to chunk the sweep under it.
 // Keep --out outside the repo; the default scan-results/ is git ignored. Exits 1 when a site ends without a scan
 // result, except for a site listed in --expect-blocked (g2.com by default) that ends on a blocked error: that block
-// is permanent and by design, so it does not hide a run where the server died halfway.
+// is permanent and by design, so it does not hide a run where the server died halfway. A site the edge denied is
+// reported apart from the sites the app failed to scan: it was never scanned at all.
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -20,8 +24,8 @@ const SITES = [
 /** Sites that answer every automated client with a challenge page: their blocked error is the expected outcome. */
 const EXPECTED_BLOCKED = ["g2.com"];
 
-const DEFAULTS = { base: "http://localhost:3000", out: "scan-results", timeout: 180_000, retries: 1 };
-const FLAGS = new Set(["--base", "--out", "--sites", "--timeout", "--retries", "--expect-blocked"]);
+const DEFAULTS = { base: "http://localhost:3000", out: "scan-results", timeout: 180_000, retries: 1, pace: 0, paceWindow: 600_000 };
+const FLAGS = new Set(["--base", "--out", "--sites", "--timeout", "--retries", "--expect-blocked", "--pace", "--pace-window"]);
 
 const list = (value) => value.split(",").map((item) => item.trim()).filter(Boolean);
 
@@ -38,11 +42,15 @@ export function parseArgs(argv) {
     // An empty --expect-blocked is meaningful, unlike an empty --sites: it means no failure is expected.
     else if (flag === "--expect-blocked") options.expectBlocked = list(value);
     else if (flag === "--timeout") options.timeout = Number(value);
+    else if (flag === "--pace") options.pace = Number(value);
+    else if (flag === "--pace-window") options.paceWindow = Number(value);
     else options.retries = Number(value);
   }
   if (!options.sites.length) throw new Error("--sites must name at least one site");
   if (!Number.isFinite(options.timeout) || options.timeout <= 0) throw new Error("--timeout must be a positive number of milliseconds");
   if (!Number.isFinite(options.retries) || options.retries < 0) throw new Error("--retries must be zero or more");
+  if (!Number.isFinite(options.pace) || options.pace < 0) throw new Error("--pace must be zero or more scans per window");
+  if (!Number.isFinite(options.paceWindow) || options.paceWindow <= 0) throw new Error("--pace-window must be a positive number of milliseconds");
   return options;
 }
 
@@ -112,7 +120,13 @@ async function scanSite(site, options) {
       } catch {
         parsed = null;
       }
-      collected.http = { status: response.status, code: parsed?.error?.code ?? null, message: parsed?.error?.message ?? body.slice(0, 200) };
+      collected.http = {
+        status: response.status,
+        code: parsed?.error?.code ?? null,
+        message: parsed?.error?.message ?? body.slice(0, 200),
+        // Set by the Vercel WAF when the edge refused the request, so the function never ran (spec 14).
+        mitigated: response.headers.get("x-vercel-mitigated"),
+      };
       return { site, url, wallMs: Date.now() - started, ...collected };
     }
     for await (const event of readEvents(response, (line) => collected.badLines.push(line))) {
@@ -135,13 +149,31 @@ async function scanSite(site, options) {
 
 const sum = (record) => Object.values(record ?? {}).reduce((total, count) => total + count, 0);
 
+/**
+ * Whether the edge refused the request before the function ran: the rate-limit rule of spec 14, whose body is Vercel's
+ * own `{"error":{"code":"429"}}` and not an ApiError. The site was never scanned, and retrying only deepens the hole.
+ */
+export const isEdgeDenial = (http) => Boolean(http) && http.status === 429 && (http.mitigated === "deny" || http.code === "429");
+
 /** One row of the summary table, plus everything the comparison with the lab needs. */
 export function summarize(result) {
   const done = result.done;
   const page = result.pages.at(-1) ?? null;
   const logos = result.assets.filter((asset) => asset.role === "site-logo");
   const fallback = result.error?.fallback ?? [];
-  const status = result.transport ? "transport" : result.http ? `http-${result.http.status}` : result.error ? "error" : done ? (done.partial ? "partial" : "done") : "truncated";
+  const status = result.transport
+    ? "transport"
+    : result.http
+      ? isEdgeDenial(result.http)
+        ? "edge-denied"
+        : `http-${result.http.status}`
+      : result.error
+        ? "error"
+        : done
+          ? done.partial
+            ? "partial"
+            : "done"
+          : "truncated";
   return {
     site: result.site,
     url: result.url,
@@ -225,7 +257,10 @@ export const shouldRetry = (summary) => ["transport", "truncated"].includes(summ
  * scan result, its blocked error: any other failure on it still counts, so the exit code keeps its meaning.
  */
 export const isFailure = (row, expectBlocked = EXPECTED_BLOCKED) =>
-  !["done", "partial"].includes(row.status) && !(row.error?.code === "blocked" && expectBlocked.includes(row.site));
+  !["done", "partial", "edge-denied"].includes(row.status) && !(row.error?.code === "blocked" && expectBlocked.includes(row.site));
+
+/** Sleeps `ms`, or returns at once when there is nothing to wait for. */
+const sleep = (ms) => (ms > 0 ? new Promise((resolve) => setTimeout(resolve, ms)) : Promise.resolve());
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
@@ -233,7 +268,20 @@ async function main() {
   await mkdir(options.out, { recursive: true });
   const startedAt = new Date().toISOString();
   const rows = [];
+  let batchStartedAt = 0;
+  let inBatch = 0;
   for (const site of options.sites) {
+    // Fixed window, like the rule itself: `pace` scans, then wait out what is left of the window before the next batch.
+    if (options.pace) {
+      if (inBatch >= options.pace) {
+        const waitMs = options.paceWindow - (Date.now() - batchStartedAt);
+        if (waitMs > 0) console.log(`Pacing: ${options.pace} scans done, waiting ${Math.ceil(waitMs / 1000)} s for the next window`);
+        await sleep(waitMs);
+        inBatch = 0;
+      }
+      if (inBatch === 0) batchStartedAt = Date.now();
+      inBatch += 1;
+    }
     let result = await scanSite(site, options);
     let summary = summarize(result);
     for (let attempt = 0; attempt < options.retries && shouldRetry(summary); attempt += 1) {
@@ -249,8 +297,15 @@ async function main() {
   await writeFile(path.join(options.out, "summary.json"), `${JSON.stringify({ base: options.base, startedAt, finishedAt: new Date().toISOString(), rows }, null, 2)}\n`);
   await writeFile(path.join(options.out, "summary.md"), `${rendered}\n`);
   console.log(`\n${rendered}\n\nWrote ${rows.length} results to ${path.resolve(options.out)}`);
-  const blocked = rows.filter((row) => !isFailure(row, options.expectBlocked) && row.status !== "done" && row.status !== "partial");
+  const denied = rows.filter((row) => row.status === "edge-denied");
+  const blocked = rows.filter((row) => !isFailure(row, options.expectBlocked) && !["done", "partial", "edge-denied"].includes(row.status));
   if (blocked.length) console.log(`Blocked as expected: ${blocked.map((row) => row.site).join(", ")}`);
+  if (denied.length) {
+    // Not an app failure: the edge rate limit of spec 14 refused these before the function ran, so nothing was scanned.
+    console.log(`Denied by the edge rate limit, never scanned: ${denied.map((row) => row.site).join(", ")}`);
+    console.log(`Run those again in a later window, or pace the whole sweep with --pace 19.`);
+    process.exitCode = 1;
+  }
   const failures = rows.filter((row) => isFailure(row, options.expectBlocked));
   if (failures.length) {
     console.log(`Sites without a scan result: ${failures.map((row) => `${row.site} (${row.error?.code ?? row.status})`).join(", ")}`);
