@@ -14,6 +14,7 @@ import { startCapture, type CaptureHandle } from "./capture";
 import { buildFallback, directAsset } from "./fallback";
 import { buildFontFamilies, signFontFiles } from "./fonts";
 import { COLLECTOR_SOURCE } from "./inpage/generated/collector";
+import { OUTPUT_LISTS } from "./inpage/lists";
 import { InPageTimeoutError, runInPage } from "./inpage/run";
 import { loadAndScroll, MAX_TITLE_CHARS, openPage, prepareForCollection, readPageFacts, type NavigationResult } from "./navigate";
 import { extractPalette } from "./palette";
@@ -63,7 +64,6 @@ const WATCHDOG_INTERVAL_MS = 500;
 
 /** The fitted output can differ from the budget by a few characters (see FIT_COLLECTOR_OUTPUT). */
 const COLLECTOR_RESULT_SLACK_CHARS = 1_024;
-const COLLECTOR_LISTS = ["candidates", "svgs", "fontFaces", "fontStatuses", "fontUsage", "unreadableSheets", "blobs", "brandLinks"] as const;
 
 /**
  * In-page code (a function of the collector output and a budget) that runs right after the collector, in its world.
@@ -99,7 +99,7 @@ export const FIT_COLLECTOR_OUTPUT = `(output, budget) => {
   const items = [];
   const urls = new Set();
   let total = 0;
-  for (const key of ${JSON.stringify(COLLECTOR_LISTS)}) {
+  for (const key of ${JSON.stringify(OUTPUT_LISTS)}) {
     const list = output[key];
     if (!Array.isArray(list)) continue;
     shell[key] = [];
@@ -205,7 +205,7 @@ function isCollectorOutput(value: unknown): value is RawCollectorOutput {
     typeof page.baseUrl === "string" &&
     typeof page.elementCount === "number" &&
     typeof stats.truncated === "boolean" &&
-    COLLECTOR_LISTS.every((key) => Array.isArray(value[key])) &&
+    OUTPUT_LISTS.every((key) => Array.isArray(value[key])) &&
     (value.candidates as unknown[]).every(isCandidate) &&
     (value.svgs as unknown[]).every(isSvg)
   );

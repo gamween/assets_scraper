@@ -1,4 +1,5 @@
 import type { FoundIn, HiddenReason } from "@/lib/contract";
+import { OUTPUT_LISTS } from "./lists";
 import type {
   CandidateContext,
   CollectorOptions,
@@ -1251,7 +1252,6 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
   return output;
 }
 
-const OUTPUT_LISTS = ["candidates", "svgs", "fontFaces", "fontStatuses", "fontUsage", "unreadableSheets", "blobs", "brandLinks"] as const;
 
 /**
  * Cuts the output lists until the output is at most `maxChars` characters of JSON, and says whether it cut anything.
