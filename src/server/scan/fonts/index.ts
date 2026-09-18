@@ -521,7 +521,9 @@ export async function buildFontFamilies(input: PostInput): Promise<FontsOutput> 
     while (ids.has(id)) id = `${base}-${(n += 1)}`;
     suffixes.set(base, n);
     ids.add(id);
-    const googleFamily = checked.includes(summary) ? candidates(summary).find((name) => google.has(name)) : undefined;
+    // The map is keyed by the declared name and holds the catalogue spelling: report the value, it is what the
+    // Google Fonts specimen URL needs (`SourceCodePro` 404s, `Source Code Pro` does not).
+    const googleFamily = checked.includes(summary) ? candidates(summary).map((name) => google.get(name)).find(Boolean) : undefined;
     const result: FontFamily = {
       id,
       name: summary.family.name,

@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { googleFontsUrl } from "@/components/results/font-actions";
 import { FontFamily } from "@/lib/contract";
 import { createSigner, SignLimitError } from "@/server/security/sign";
 import type { CapturedFont, CapturedSheet, FontBinaryMeta, PostInput, RawCollectorOutput, Signer } from "../types";
@@ -744,6 +745,19 @@ describe("buildFontFamilies", () => {
     });
     expect(byName.get("Brand Serif")).toMatchObject({ googleFamily: "Inter" });
     expect(fetch.calls.map((call) => new URL(call.url).searchParams.get("family"))).toEqual(["Inter", ...Array.from({ length: 7 }, (_, index) => `Face ${index + 1}`)]);
+  });
+
+  it("reports the catalogue spelling of a family declared without its spaces, so the specimen link resolves", async () => {
+    const url = "https://www.site.example/scp.woff2";
+    const { families } = await build({
+      fontFaces: [rule("SourceCodePro", [url])],
+      fontStatuses: [loaded("SourceCodePro")],
+      fontUsage: [{ stack: "SourceCodePro", weight: "400", style: "normal", chars: 4 }],
+      google: ["Source Code Pro"],
+    });
+    expect(families[0]).toMatchObject({ name: "SourceCodePro", googleFamily: "Source Code Pro" });
+    // The Fonts tab builds the specimen href from `googleFamily`: the declared spelling would 404 on fonts.google.com
+    expect(googleFontsUrl(families[0].googleFamily!)).toBe("https://fonts.google.com/specimen/Source+Code+Pro");
   });
 
   it("does not take the Google Fonts match of a CSS name for a binary that names another font", async () => {
