@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { rescan } from "@/lib/client/scan-session";
 import { getSections, useApp } from "@/lib/client/store";
 import { BrandLinks } from "./brand-links";
-import { FilterBar } from "./filter-bar";
+import { FilterBar, RESULTS_PANEL_ID } from "./filter-bar";
 import { hiddenSummary } from "./labels";
 import { PaletteStrip } from "./palette-strip";
 import { ResultsHeader } from "./results-header";
@@ -58,6 +58,7 @@ function SectionsOrEmpty() {
 
 /** Spec 12.2 results: header, palette, brand links, sticky filters, sections, hidden noise footer. */
 export function ResultsView() {
+  const tab = useApp((s) => s.tab);
   const partial = useApp((s) => s.done?.partial ?? false);
   const empty = useApp((s) => s.assets.length + s.fonts.length === 0);
   // The footer counts images the scan dropped, so it belongs where images are on screen: not on the Fonts tab, and not
@@ -90,7 +91,8 @@ export function ResultsView() {
         </div>
       </div>
       <FilterBar />
-      <div className="page-x">
+      {/* One panel for the four tabs: only the active tab's content is ever rendered. No tabIndex, it holds cards. */}
+      <div id={RESULTS_PANEL_ID} role="tabpanel" aria-labelledby={`tab-${tab}`} className="page-x">
         <SectionsOrEmpty />
         {hidden && showHidden ? <p className="mt-12 text-small text-text-3">{hidden}</p> : null}
       </div>

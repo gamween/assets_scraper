@@ -13,6 +13,8 @@ const SORT_LABELS: Record<SortKey, string> = { relevance: "Relevance", "page-ord
 const BACKGROUND_LABELS: Record<Background, string> = { auto: "Auto", light: "Light", dark: "Dark", grid: "Grid" };
 
 export const SEARCH_INPUT_ID = "results-search";
+/** The one panel the four tabs switch: only the active tab's content is ever rendered. */
+export const RESULTS_PANEL_ID = "results-panel";
 
 function Tabs() {
   const tab = useApp((s) => s.tab);
@@ -23,15 +25,31 @@ function Tabs() {
   const counts = tabCounts(assets, fonts, query);
 
   return (
-    <div role="tablist" aria-label="Asset types" className="-mb-px flex h-full min-w-0 items-stretch gap-5 overflow-x-auto scrollbar-none">
+    <div
+      role="tablist"
+      aria-label="Asset types"
+      onKeyDown={(event) => {
+        const delta = event.key === "ArrowRight" || event.key === "ArrowDown" ? 1 : event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 0;
+        if (!delta) return;
+        event.preventDefault();
+        const next = TABS[(TABS.indexOf(tab) + delta + TABS.length) % TABS.length];
+        setTab(next);
+        (event.currentTarget.querySelector(`#tab-${next}`) as HTMLElement | null)?.focus();
+      }}
+      className="-mb-px flex h-full min-w-0 items-stretch gap-5 overflow-x-auto scrollbar-none"
+    >
       {TABS.map((id, index) => {
         const active = id === tab;
         return (
           <button
             key={id}
+            id={`tab-${id}`}
             type="button"
             role="tab"
             aria-selected={active}
+            aria-controls={RESULTS_PANEL_ID}
+            // Roving tabindex, as the ARIA tabs pattern expects: Tab reaches the tablist once, arrows move within it.
+            tabIndex={active ? 0 : -1}
             aria-keyshortcuts={String(index + 1)}
             onClick={() => setTab(id)}
             className={cn(

@@ -83,6 +83,26 @@ test.describe("results", () => {
     await expect(page.getByRole("tab", { name: /^All/ })).toHaveAttribute("aria-selected", "true");
   });
 
+  test("the tablist takes one tab stop and the arrows move the selection", async ({ page }) => {
+    await openResults(page, linear);
+    const all = page.getByRole("tab", { name: /^All/ });
+    const svg = page.getByRole("tab", { name: /^SVG/ });
+    // Roving tabindex: only the selected tab is in the tab order, and it controls the panel it switches.
+    await expect(all).toHaveAttribute("tabindex", "0");
+    await expect(svg).toHaveAttribute("tabindex", "-1");
+    const panel = page.getByRole("tabpanel");
+    await expect(all).toHaveAttribute("aria-controls", (await panel.getAttribute("id"))!);
+    await expect(panel).toHaveAttribute("aria-labelledby", (await all.getAttribute("id"))!);
+
+    await all.focus();
+    await page.keyboard.press("ArrowRight");
+    await expect(svg).toHaveAttribute("aria-selected", "true");
+    await expect(svg).toBeFocused();
+    await page.keyboard.press("ArrowLeft");
+    await expect(all).toHaveAttribute("aria-selected", "true");
+    await expect(all).toBeFocused();
+  });
+
   test("Auto never picks the checkerboard, and a pale swatch is still a swatch", async ({ page }) => {
     await openResults(page, linear);
     // Spec 12.3: light on dark, dark on light, everything else on the plain well. The checkerboard is opt-in.
