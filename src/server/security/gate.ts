@@ -16,6 +16,12 @@ export function apiError(status: number, code: ErrorCode, message: string, heade
   return Response.json(body, { status, headers: { "cache-control": "no-store", ...headers } });
 }
 
+/**
+ * Spec 7.1 step 1. Exported because the route binds it to every method but POST: the Next router answers a method it
+ * has no export for before any of this runs, with a bare cacheable 405 and no `allow`.
+ */
+export const refuseScanMethod = (): Response => apiError(405, "invalid-url", "Use POST with a JSON body.", { allow: "POST" });
+
 const fail = (status: number, code: ErrorCode, message: string, headers?: Record<string, string>): GateResult => ({
   ok: false,
   response: apiError(status, code, message, headers),
@@ -98,7 +104,7 @@ function normalizeTestUrl(input: string): UrlInputResult | null {
  * `x-ops-token` (OPS_TOKEN, at least 32 characters) skips BotID and the budget and may omit Origin.
  */
 export async function gateScanRequest(request: Request): Promise<GateResult> {
-  if (request.method !== "POST") return fail(405, "invalid-url", "Use POST with a JSON body.", { allow: "POST" });
+  if (request.method !== "POST") return { ok: false, response: refuseScanMethod() };
   const mediaType = (request.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
   if (mediaType !== "application/json") return fail(400, "invalid-url", INVALID_URL);
 

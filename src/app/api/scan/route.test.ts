@@ -3,10 +3,11 @@ import type { ScanEvent } from "@/lib/contract";
 
 const gateScanRequest = vi.fn();
 const scan = vi.fn();
-vi.mock("@/server/security/gate", () => ({ gateScanRequest }));
+const refuseScanMethod = () => Response.json({ error: { code: "invalid-url", message: "Use POST with a JSON body." } }, { status: 405, headers: { allow: "POST", "cache-control": "no-store" } });
+vi.mock("@/server/security/gate", () => ({ gateScanRequest, refuseScanMethod }));
 vi.mock("@/server/scan/engine", () => ({ scanEngine: { scan } }));
 
-const { POST, maxDuration, runtime } = await import("./route");
+const { DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT, maxDuration, runtime } = await import("./route");
 
 const request = () => new Request("http://localhost/api/scan", { method: "POST", body: JSON.stringify({ url: "example.com" }), headers: { "content-type": "application/json" } });
 
@@ -39,6 +40,16 @@ describe("POST /api/scan", () => {
     expect(response.headers.get("content-type")).toBe("application/x-ndjson; charset=utf-8");
     expect(scan).toHaveBeenCalledWith({ url: "https://example.com/" }, { signal: incoming.signal });
     expect((await response.text()).trim().split("\n").map((line) => JSON.parse(line))).toEqual(events);
+  });
+
+  it("binds every other method to the gate's refusal, so Next does not answer a bare 405 first", async () => {
+    for (const handler of [GET, HEAD, PUT, PATCH, DELETE, OPTIONS]) {
+      const response = await handler();
+      expect(response.status).toBe(405);
+      expect(response.headers.get("allow")).toBe("POST");
+      expect(response.headers.get("cache-control")).toBe("no-store");
+    }
+    expect(scan).not.toHaveBeenCalled();
   });
 
   it("answers a JSON internal error when the gate itself fails", async () => {

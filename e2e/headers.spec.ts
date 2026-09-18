@@ -23,6 +23,15 @@ test.describe("response headers", () => {
     expect(await page.evaluate(() => (window as unknown as { __csp: string[] }).__csp)).toEqual([]);
   });
 
+  test("GET /api/scan is refused by the gate, not by the router", async ({ request }) => {
+    // Without the route's own non-POST exports, Next answers first with a bare cacheable 405 (spec 7.1 step 1).
+    const response = await request.get("/api/scan");
+    expect(response.status()).toBe(405);
+    expect(response.headers()["allow"]).toBe("POST");
+    expect(response.headers()["cache-control"]).toBe("no-store");
+    expect(await response.json()).toEqual({ error: { code: "invalid-url", message: "Use POST with a JSON body." } });
+  });
+
   test("the asset proxy is left to set its own CSP", async ({ request }) => {
     // Next drops a route handler header that next.config already set, so the app CSP must not reach
     // /api/asset or it would replace the proxy's sandbox CSP (spec 11.2).
