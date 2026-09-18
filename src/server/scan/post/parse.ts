@@ -43,8 +43,11 @@ export function parseSrcset(value: string | null | undefined): SrcsetCandidate[]
       i++;
     }
     if (!url) continue;
-    const w = descriptor.match(/(\d+)w\b/);
-    const x = descriptor.match(/(\d*\.?\d+)x\b/);
+    // The digit runs are bounded and the alternation removes the `\d*`/`\d+` overlap: the unbounded form is cubic in
+    // the descriptor length, so one long digit run blocks the caller for minutes. Nine digits is far beyond any real
+    // descriptor, and a longer run is not a number `Number()` could use.
+    const w = descriptor.match(/(\d{1,9})w\b/);
+    const x = descriptor.match(/(\d{1,9}(?:\.\d{1,9})?|\.\d{1,9})x\b/);
     if (w) out.push({ url, w: Number(w[1]) });
     else out.push({ url, x: x ? Number(x[1]) : 1 });
   }
