@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { makeAsset, remoteSource } from "@/lib/client/testing";
-import { assetMeta, foundInLabel, hiddenSummary, roleBadge, roleLabel, splitExtension } from "./labels";
+import { assetMeta, foundInLabel, hiddenSummary, roleBadge, roleLabel } from "./labels";
 
 describe("hiddenSummary", () => {
   it("names the reasons by count", () => {
@@ -49,10 +49,5 @@ describe("card labels", () => {
 
   it("names where an asset was found, meta icons as a meta tag", () => {
     expect(foundInLabel(["icon-link", "meta-icon"])).toBe('<link rel="icon">, Meta tag');
-  });
-
-  it("keeps the extension apart for middle truncation", () => {
-    expect(splitExtension("linear-homepage-og.jpg")).toEqual(["linear-homepage-og", ".jpg"]);
-    expect(splitExtension("README")).toEqual(["README", ""]);
   });
 });

@@ -50,12 +50,6 @@ export function assetMetaParts(asset: Asset): string[] {
 
 export const assetMeta = (asset: Asset) => assetMetaParts(asset).join(" · ");
 
-/** Splits `name.ext` so the base can truncate while the extension stays visible. */
-export function splitExtension(filename: string): [string, string] {
-  const dot = filename.lastIndexOf(".");
-  return dot > 0 && filename.length - dot <= 6 ? [filename.slice(0, dot), filename.slice(dot)] : [filename, ""];
-}
-
 /** Each reason as `[one, many]`: a single hidden file reads `1 hidden: a tracking pixel`, not `1 hidden: tracking pixels`. */
 const HIDDEN_PHRASES: Record<HiddenReason, [string, string]> = {
   tracker: ["a tracking pixel", "tracking pixels"],

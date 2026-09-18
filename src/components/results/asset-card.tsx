@@ -1,7 +1,7 @@
 "use client";
 
 import { CheckIcon, CodeXml, Download } from "lucide-react";
-import { memo, useState, type CSSProperties, type MouseEvent, type PointerEvent } from "react";
+import { memo, useState, type MouseEvent, type PointerEvent } from "react";
 import { Badge } from "@/components/common/badge";
 import { cn } from "@/components/common/cn";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -10,7 +10,7 @@ import { assetKey, type SectionId } from "@/lib/client/filters";
 import { appStore, useApp } from "@/lib/client/store";
 import { copySvgCode, downloadAsset } from "./asset-actions";
 import { AssetPreview, WELL_CLASSES, wellBackground } from "./asset-preview";
-import { assetMetaParts, roleBadge, splitExtension } from "./labels";
+import { assetMetaParts, roleBadge } from "./labels";
 
 /**
  * Spec 12.4 click model: checkbox or Cmd/Ctrl+click toggles, Shift+click selects a range in visual order, and once
@@ -54,7 +54,6 @@ export const AssetCard = memo(function AssetCard({ asset, section }: { asset: As
   const background = useApp((s) => s.background);
   const well = wellBackground(asset.tone, background);
   const badge = roleBadge(asset, section);
-  const [base, extension] = splitExtension(asset.filename);
   // Spec 12.3: GIFs play on hover only (touch has no hover: tiles keep the still frame, the detail view plays them).
   const [hovered, setHovered] = useState(false);
   const hover = asset.format === "gif" ? (on: boolean) => (event: PointerEvent) => event.pointerType !== "touch" && setHovered(on) : null;
@@ -120,9 +119,10 @@ export const AssetCard = memo(function AssetCard({ asset, section }: { asset: As
        */}
       <div className="pointer-events-none relative z-10 flex min-w-0 flex-col gap-0.5 border-t border-border p-3">
         {/*
-         * The name is one line of inline boxes, never a flex row: flex items are blockified, and a selection across
-         * two of them serializes with a line break, so copying the name pasted `linear\n.svg`. The base keeps the
-         * ellipsis and reserves the width of the extension (`--ext` characters), which stays whole.
+         * One text node, never two boxes: the name used to be a flex row of stem and extension, both blockified by
+         * the flex container, and a selection across them serialized with a line break (`linear\n.svg` pasted into a
+         * rename field is two lines). A name too long for the tile now ends in an ellipsis, extension included, and
+         * the format stays on the meta line below it.
          */}
         <span
           data-testid="asset-filename"
@@ -131,11 +131,9 @@ export const AssetCard = memo(function AssetCard({ asset, section }: { asset: As
             if (window.getSelection()?.toString()) return;
             activateItem(key, event, () => appStore.getState().openDetail(asset.id));
           }}
-          style={{ "--ext": extension.length } as CSSProperties}
-          className="pointer-events-auto block max-w-fit min-w-0 cursor-text overflow-hidden text-small whitespace-nowrap text-text select-text"
+          className="pointer-events-auto block max-w-fit min-w-0 cursor-text truncate text-small text-text select-text"
         >
-          <span className="inline-block max-w-[calc(100%-var(--ext)*1ch)] truncate align-bottom">{base}</span>
-          <span>{extension}</span>
+          {asset.filename}
         </span>
         {/*
          * One line of whole parts, most useful first: a part that does not fit wraps onto a hidden second line, so a
