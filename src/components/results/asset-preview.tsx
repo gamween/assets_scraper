@@ -37,6 +37,9 @@ export const WELL_CLASSES: Record<WellBackground, string> = {
   plain: "bg-well",
 };
 
+/** The fraction of the detail well a preview fills. The detail dialog opens at a height computed from it. */
+export const DETAIL_FRAME = 0.82;
+
 /**
  * Vectors scale to 76 percent of the well, at most 6x their size. Rasters are never enlarged beyond 2x.
  * The box is sized in CSS and the image fits inside it with `object-fit: contain`.
@@ -51,7 +54,7 @@ function frameStyle(asset: Asset, variant: "tile" | "detail"): CSSProperties {
   const width = source?.width ?? asset.width;
   const height = source?.height ?? asset.height;
   if (asset.kind === "svg") {
-    const box = variant === "tile" ? "76%" : "82%";
+    const box = variant === "tile" ? "76%" : `${DETAIL_FRAME * 100}%`;
     return { width: width ? `min(${box}, ${width * 6}px)` : box, height: height ? `min(${box}, ${height * 6}px)` : box };
   }
   const box = variant === "tile" ? "calc(100% - 24px)" : "calc(100% - 48px)";

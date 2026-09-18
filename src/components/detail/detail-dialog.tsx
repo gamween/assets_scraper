@@ -7,7 +7,7 @@ import { Badge } from "@/components/common/badge";
 import { cn } from "@/components/common/cn";
 import { Kbd } from "@/components/common/kbd";
 import { copySvgCode, copyWithToast, downloadAsset, openSource, sourceUrl, svgMarkup } from "@/components/results/asset-actions";
-import { AssetPreview, WELL_CLASSES, wellBackground } from "@/components/results/asset-preview";
+import { AssetPreview, DETAIL_FRAME, WELL_CLASSES, wellBackground } from "@/components/results/asset-preview";
 import { BackgroundControl } from "@/components/results/filter-bar";
 import { foundInLabel, roleLabel } from "@/components/results/labels";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -187,7 +187,7 @@ function DetailBody({ asset }: { asset: Asset }) {
   // The grid row is explicit: an implicit `auto` row makes `md:h-full` on the preview column cyclic, so the column
   // grew to the height of the asset (1243 px inside an 860 px dialog) and the dialog clipped what did not fit.
   return (
-    <div className="flex h-full min-h-0 flex-col md:grid md:grid-cols-[minmax(0,1fr)_340px] md:grid-rows-[minmax(0,1fr)]">
+    <div className="flex h-full min-h-0 flex-col md:grid md:grid-cols-[minmax(0,1fr)_var(--detail-panel)] md:grid-rows-[minmax(0,1fr)]">
       <div className={cn("relative h-[44dvh] shrink-0 md:h-full md:min-h-0", WELL_CLASSES[well])} data-testid="detail-well" data-background={well}>
         <div className="absolute inset-x-3 top-3 z-10 flex items-center justify-between gap-3">
           <BackgroundControl value={background} onChange={setOverride} className="bg-well/95" />
@@ -272,6 +272,18 @@ const DIALOG_MIN_HEIGHT = 460;
 const DIALOG_MAX_HEIGHT = 880;
 
 /**
+ * The geometry `dialogHeight` reasons about, shared with the layout so the two cannot drift: `DIALOG_WIDTH` and
+ * `PANEL_WIDTH` reach the popup as `--detail-width` and `--detail-panel` and are read by `md:w-[...]` and the grid
+ * columns of `DetailBody`, and `DETAIL_FRAME` is the fraction of the well a detail preview fills (asset-preview).
+ * `WELL_PADDING` mirrors `p-6` on the well (24 px a side) and `CONTROL_BAND` the 56 px control band with its padding;
+ * both are plain Tailwind classes, so an edit there belongs here too.
+ */
+const DIALOG_WIDTH = 1120;
+const PANEL_WIDTH = 340;
+const WELL_PADDING = 48;
+const CONTROL_BAND = 104;
+
+/**
  * Height the dialog opens at. It used to be 880 px whatever the asset, so a 60x25 logo sat in a 780x845 white void
  * with 420 px of empty panel under its six metadata rows. The preview the asset will get decides instead, clamped so
  * the panel always has room and the dialog never leaves the screen.
@@ -281,12 +293,12 @@ function dialogHeight(asset: Asset): number {
   const width = source?.width ?? asset.width ?? 0;
   const height = source?.height ?? asset.height ?? 0;
   if (!width || !height) return DIALOG_MAX_HEIGHT;
-  // The preview column is 780 px wide at the reference 1120 px dialog, less its 48 px of padding, and the frame takes
-  // 82 percent of the well: a wide asset runs out of width before it reaches its 6x (vectors) or 2x (rasters).
-  const room = (780 - 48) * 0.82;
+  // The preview column is what the dialog leaves beside the panel, less its padding, and the frame takes 82 percent of
+  // the well: a wide asset runs out of width before it reaches its 6x (vectors) or 2x (rasters).
+  const room = (DIALOG_WIDTH - PANEL_WIDTH - WELL_PADDING) * DETAIL_FRAME;
   const shown = Math.min(height * (asset.kind === "svg" ? 6 : 2), (room * height) / width);
-  // Back out the well the frame needs, plus the 56 px control band and the padding around it.
-  return Math.round(Math.min(DIALOG_MAX_HEIGHT, Math.max(DIALOG_MIN_HEIGHT, shown / 0.82 + 104)));
+  // Back out the well the frame needs, plus the control band and the padding around it.
+  return Math.round(Math.min(DIALOG_MAX_HEIGHT, Math.max(DIALOG_MIN_HEIGHT, shown / DETAIL_FRAME + CONTROL_BAND)));
 }
 
 /**
@@ -359,10 +371,10 @@ export function DetailDialog() {
           initialFocus={popupRef}
           finalFocus={() => (shown ? (document.querySelector<HTMLElement>(`[data-asset-id="${CSS.escape(shown.id)}"] [data-card-main]`) ?? true) : true)}
           data-testid="detail-popup"
-          style={{ "--detail-height": `${shown ? dialogHeight(shown) : DIALOG_MAX_HEIGHT}px` } as CSSProperties}
+          style={{ "--detail-height": `${shown ? dialogHeight(shown) : DIALOG_MAX_HEIGHT}px`, "--detail-width": `${DIALOG_WIDTH}px`, "--detail-panel": `${PANEL_WIDTH}px` } as CSSProperties}
           className={cn(
             "fixed inset-0 z-50 flex flex-col overflow-hidden bg-surface text-text outline-none",
-            "md:inset-auto md:top-1/2 md:left-1/2 md:h-[min(calc(100dvh-96px),var(--detail-height))] md:w-[min(1120px,calc(100vw-48px))] md:-translate-x-1/2 md:-translate-y-1/2 md:rounded-xl md:border md:border-border md:shadow-float",
+            "md:inset-auto md:top-1/2 md:left-1/2 md:h-[min(calc(100dvh-96px),var(--detail-height))] md:w-[min(var(--detail-width),calc(100vw-48px))] md:-translate-x-1/2 md:-translate-y-1/2 md:rounded-xl md:border md:border-border md:shadow-float",
             "transition-[opacity,scale] duration-150 ease-enter data-ending-style:scale-[0.98] data-ending-style:opacity-0 data-ending-style:duration-100 data-ending-style:ease-exit data-starting-style:scale-[0.98] data-starting-style:opacity-0",
           )}
         >
