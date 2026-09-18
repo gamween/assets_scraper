@@ -13,6 +13,8 @@ describe("hiddenSummary", () => {
     expect(hiddenSummary({ tracker: 1 })).toBe("1 hidden: a tracking pixel");
     expect(hiddenSummary({ "tiny-svg": 1 })).toBe("1 hidden: a tiny SVG");
     expect(hiddenSummary({ "future-reason": 1 })).toBe("1 hidden: another file");
+    // The overflow phrase covers one file here, whatever the three phrases before it hold.
+    expect(hiddenSummary({ tracker: 5, spacer: 4, consent: 3, "tiny-svg": 1 })).toBe("13 hidden: tracking pixels, spacer images, consent banners and another file");
   });
 
   it("counts unknown reasons toward the total", () => {

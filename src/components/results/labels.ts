@@ -102,7 +102,10 @@ export function hiddenSummary(hidden: Record<string, number>): string | null {
   if (!total) return null;
   const counted = [...byPhrase.entries()].sort((a, b) => b[1].count - a[1].count);
   const shown = counted.slice(0, 3).map(([many, entry]) => (entry.count === 1 ? entry.one : many));
-  if (counted.length > 3 || unknown > 0) shown.push(OTHER_PHRASE[unknown === 1 && counted.length <= 3 ? 0 : 1]);
+  // The last phrase stands for every file left: the reasons past the third and the ones this version cannot name.
+  // Its number is what decides the plural, not how many reasons ended up in it.
+  const others = counted.slice(3).reduce((sum, [, entry]) => sum + entry.count, unknown);
+  if (others > 0) shown.push(OTHER_PHRASE[others === 1 ? 0 : 1]);
   return `${formatCount(total)} hidden: ${joinPhrases(shown)}`;
 }
 
