@@ -113,6 +113,20 @@ describe("assembleAssets hidden counts", () => {
     expect(collector.noise).toEqual({ "lottie-frame": 3, "unreferenced-symbol": 2, "svg-too-large": 1 });
   });
 
+  it("keeps an unescaped SVG data URI that carries a literal percent", async () => {
+    // Legal and common in gradients and percentage geometry, and Chrome paints it: dropping it reports a real asset
+    // as a broken file.
+    const gradient =
+      "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120'>" +
+      "<defs><linearGradient id='g' x1='0%' y1='0%' x2='100%' y2='0%'><stop offset='0%' stop-color='%23ff0000'/>" +
+      "<stop offset='100%' stop-color='%230000ff'/></linearGradient></defs><rect width='120' height='120' fill='url(%23g)'/></svg>";
+    const { assets, hidden } = await run(collectorOutput({ candidates: [candidate(gradient, 1, 1, { visible: true })] }));
+    expect(assets.map((asset) => [asset.kind, asset.width, asset.height])).toEqual([["svg", 120, 120]]);
+    expect(assets[0].inline?.text).toContain("stop-color='#ff0000'");
+    expect(assets[0].inline?.text).toContain("x1='0%'");
+    expect(hidden).toEqual({});
+  });
+
   it("does not count a missing /favicon.ico the page never declared", async () => {
     const collector = collectorOutput({
       candidates: [candidate(`${PAGE}hero.png`, 1, 1), candidate(`${PAGE}lazy.png`, 2, 2, { foundIn: "lazy-attribute" })],

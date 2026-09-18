@@ -118,8 +118,16 @@ describe("decodeDataUri", () => {
     expect(decodeDataUri("data:,hello")?.mime).toBe("text/plain");
   });
 
-  it("returns null for anything else", () => {
+  it("keeps a literal percent, the way a browser does", () => {
+    // An unescaped SVG data URI uses raw percent signs in gradients and percentage geometry, and Chrome paints it.
+    const svg = decodeDataUri("data:image/svg+xml,<svg width='120' height='120'><stop offset='0%' stop-color='%23ff0000'/><rect fill='url(%23g)'/></svg>");
+    expect(svg?.mime).toBe("image/svg+xml");
+    expect(svg!.buffer.toString("utf8")).toBe("<svg width='120' height='120'><stop offset='0%' stop-color='#ff0000'/><rect fill='url(#g)'/></svg>");
+    // A truncated escape is bytes too, not a reason to drop the URI.
+    expect([...decodeDataUri("data:image/svg+xml,%E0%A4%A")!.buffer]).toEqual([0xe0, 0xa4, 0x25, 0x41]);
+  });
+
+  it("returns null for anything that is not a data URI", () => {
     expect(decodeDataUri("https://a.example/x.png")).toBeNull();
-    expect(decodeDataUri("data:image/svg+xml,%E0%A4%A")).toBeNull();
   });
 });

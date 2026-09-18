@@ -1,5 +1,6 @@
 import { tokenize, tokenTypes as T } from "css-tree/tokenizer";
 import { ByteStack } from "../byte-stack";
+import { percentDecode } from "../percent";
 
 /**
  * Parsers shared by post-processing. The in-page collector (`inpage/collector.src.ts`) cannot import app code, so it
@@ -202,17 +203,16 @@ export function extractStylesheetUrls(cssText: string, baseUrl: string): Stylesh
   return out;
 }
 
-/** Decodes a `data:` URI into its media type and bytes, or null when it is not a valid data URI. */
+/**
+ * Decodes a `data:` URI into its media type and bytes, or null when it is not a valid data URI. The payload is decoded
+ * byte by byte the way a browser does, so a lone `%` is a literal byte rather than a reason to drop the whole URI: an
+ * unescaped SVG data URI carries raw percent signs in gradients and percentage geometry.
+ */
 export function decodeDataUri(uri: string): { mime: string; buffer: Buffer } | null {
   const match = /^data:([^;,]*)((?:;[^;,]*)*),([\s\S]*)$/i.exec(uri);
   if (!match) return null;
   const mime = (match[1] || "text/plain").trim().toLowerCase();
-  try {
-    const buffer = /;base64/i.test(match[2])
-      ? Buffer.from(decodeURIComponent(match[3]).replace(/\s+/g, ""), "base64")
-      : Buffer.from(decodeURIComponent(match[3]), "utf8");
-    return { mime, buffer };
-  } catch {
-    return null;
-  }
+  const raw = percentDecode(match[3]);
+  const buffer = /;base64/i.test(match[2]) ? Buffer.from(raw.toString("latin1").replace(/\s+/g, ""), "base64") : raw;
+  return { mime, buffer };
 }
