@@ -205,12 +205,12 @@ function BackgroundSelect({ value, onChange, className }: { value: Background; o
 function SelectionToggle({ className }: { className?: string }) {
   const selectionMode = useApp((s) => s.selectionMode);
   const setSelectionMode = useApp((s) => s.setSelectionMode);
-  const clearSelection = useApp((s) => s.clearSelection);
   return (
     <button
       type="button"
       aria-pressed={selectionMode}
-      onClick={() => (selectionMode ? clearSelection() : setSelectionMode(true))}
+      // Done leaves selection mode and keeps what is ticked: the bar's own Clear is the one explicit discard.
+      onClick={() => setSelectionMode(!selectionMode)}
       className={cn(
         "h-8 shrink-0 items-center gap-1.5 rounded-md border px-2.5 text-body",
         selectionMode ? "border-accent bg-accent-soft text-text" : "border-border bg-surface text-text-2",

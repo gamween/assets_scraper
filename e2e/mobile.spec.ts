@@ -65,6 +65,18 @@ test.describe("phone toolbar", () => {
     await expect(page.getByTestId("asset-card").first().getByRole("checkbox")).toBeVisible();
   });
 
+  test("Done leaves selection mode and keeps the selection", async ({ page }) => {
+    await openResults(page);
+    await page.getByRole("button", { name: "Select" }).click();
+    for (const index of [0, 1, 2]) await page.getByTestId("asset-card").nth(index).getByRole("checkbox").click();
+    const bar = page.getByRole("region", { name: "Selection" });
+    await expect(bar.getByTestId("selection-count")).toContainText("3 selected");
+    // Done says the picking is over, not that the picks are thrown away: Clear is the explicit discard.
+    await page.getByRole("button", { name: "Done" }).click();
+    await expect(bar.getByTestId("selection-count")).toContainText("3 selected");
+    await expect(bar.getByRole("button", { name: "Download ZIP" })).toBeVisible();
+  });
+
   test("a toast never covers the selection bar", ({ page }) => expectToastClearOfTheBar(page));
 
   test("the detail arrows do not share a band with the asset", async ({ page }) => {
