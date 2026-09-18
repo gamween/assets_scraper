@@ -29,7 +29,7 @@ export interface ScanEngineDeps {
   createSigner: (options?: { max?: number }) => Signer;
   assembleAssets: (input: PostInput) => Promise<AssetsOutput>;
   buildFontFamilies: (input: PostInput) => Promise<FontsOutput>;
-  /** `onNull` tells why the palette is null, for the logs. */
+  /** `onNull` tells why the palette is null, for the logs and for `diagnostics.paletteNull`. */
   extractPalette: (page: Page, options: { fetch: SafeFetch; signal: AbortSignal; timeBudgetMs: number; onNull?: (reason: string, error?: unknown) => void }) => Promise<Palette | null>;
   /** Bundled in-page collector that defines `globalThis.__assetsScraper.collect`. */
   collectorSource: string;
@@ -611,7 +611,12 @@ async function runBrowserStage(input: ScanContext & {
         step("collect", "start");
         await timed("prepare", () => prepareForCollection(page, { signal }));
         const collectEnds = Date.now() + limits.collectMs;
-        const noPalette = (reason: string, error?: unknown) => console.warn(`Scan ${diagnostics.scanId} has no palette (${reason})`, ...(error === undefined ? [] : [error]));
+        // The reason goes into diagnostics, not only the runtime log: spec 16 keeps Hobby logs for one hour, so a
+        // null palette seen in a scan result is otherwise indistinguishable from a page that has no palette at all.
+        const noPalette = (reason: string, error?: unknown) => {
+          diagnostics.paletteNull = reason;
+          console.warn(`Scan ${diagnostics.scanId} has no palette (${reason})`, ...(error === undefined ? [] : [error]));
+        };
         const stopped = Symbol("palette stopped");
         const paletteCapMs = paletteCap();
         const extraction = deps

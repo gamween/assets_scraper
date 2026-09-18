@@ -208,6 +208,9 @@ export const Diagnostics = z.object({
     .object({ attempted: z.number(), adopted: z.number(), captured: z.number(), failed: z.number(), noise: z.number(), skipped: z.number() })
     .optional(),
   blockReason: z.string().optional(),
+  // Why the palette event carried null (spec 16: diagnostics travel in the stream because a Hobby runtime log is
+  // kept for one hour and cannot be read after the fact). Absent when a palette was sent.
+  paletteNull: z.string().optional(),
   // `none`: the collector never started (a blocked page, a failed navigation, a scan stopped before collection).
   collector: z.enum(["isolated", "main", "none"]),
   version: z.string(),
