@@ -88,6 +88,8 @@ test.describe("results", () => {
     const headings = page.getByTestId("results").getByRole("heading", { level: 2 });
     await expect(headings.first()).toHaveText("Logos");
     await expect(section(page, "Logos").getByTestId("asset-card").first()).toHaveAttribute("data-role", "site-logo");
+    // The badge would repeat the section header on every card in here, so it is dropped (spec 12.3).
+    await expect(section(page, "Logos").getByText("Logo", { exact: true })).toHaveCount(0);
 
     await page.getByRole("tab", { name: /^SVG/ }).click();
     await expect(section(page, "Logos")).toHaveCount(0);
@@ -178,7 +180,8 @@ test.describe("results", () => {
     const card = page.locator(`[data-asset-id="${logo.id}"]`);
     await expect(card.getByTestId("asset-filename")).toHaveText(logo.filename);
     await expect(card.getByTestId("asset-meta")).toHaveText(`SVG · ${formatDimensions(logo.width, logo.height)} · ${formatBytes(logo.bytes!)} · Inline`);
-    await expect(card.getByText("Logo", { exact: true })).toBeVisible();
+    // In `All` this card sits under the `Logos` header, so it carries no badge; on the SVG tab it does.
+    await expect(card.getByText("Logo", { exact: true })).toHaveCount(0);
 
     const og = findAsset(linear, (a) => a.role === "social");
     const ogCard = page.locator(`[data-asset-id="${og.id}"]`);

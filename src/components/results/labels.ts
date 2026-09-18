@@ -1,13 +1,17 @@
 import { HiddenReason, type Asset, type FoundIn } from "@/lib/contract";
 import { formatBytes, formatCount, formatDimensions } from "@/lib/format";
-import { assetBytes } from "@/lib/client/filters";
+import { assetBytes, type SectionId } from "@/lib/client/filters";
 
-/** Card badges (spec 12.3): only roles worth calling out. */
-export function roleBadge(asset: Asset): string | null {
+/**
+ * Card badges (spec 12.3): only roles worth calling out, and never the one that repeats the section header above the
+ * card. Inside `Logos`, every card would carry a `Logo` badge and none of them would say anything; `Favicon` still
+ * does, because that section holds both.
+ */
+export function roleBadge(asset: Asset, section?: SectionId): string | null {
   switch (asset.role) {
     case "site-logo":
     case "logo":
-      return "Logo";
+      return section === "logos" ? null : "Logo";
     case "favicon":
       return "Favicon";
     case "social":

@@ -36,7 +36,7 @@ function SectionBlock({ section }: { section: Section }) {
       {collapsed ? null : section.kind === "assets" ? (
         <div id={`${id}-body`} className="asset-grid">
           {section.items.map((asset) => (
-            <AssetCard key={asset.id} asset={asset} />
+            <AssetCard key={asset.id} asset={asset} section={section.id} />
           ))}
         </div>
       ) : (

@@ -6,7 +6,7 @@ import { Badge } from "@/components/common/badge";
 import { cn } from "@/components/common/cn";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { Asset } from "@/lib/contract";
-import { assetKey } from "@/lib/client/filters";
+import { assetKey, type SectionId } from "@/lib/client/filters";
 import { appStore, useApp } from "@/lib/client/store";
 import { copySvgCode, downloadAsset } from "./asset-actions";
 import { AssetPreview, WELL_CLASSES, wellBackground } from "./asset-preview";
@@ -47,13 +47,13 @@ function IconAction({ label, onClick, children }: { label: string; onClick: () =
   );
 }
 
-export const AssetCard = memo(function AssetCard({ asset }: { asset: Asset }) {
+export const AssetCard = memo(function AssetCard({ asset, section }: { asset: Asset; section?: SectionId }) {
   const key = assetKey(asset.id);
   const selected = useApp((s) => s.selection.has(key));
   const selecting = useApp((s) => s.selection.size > 0 || s.selectionMode);
   const background = useApp((s) => s.background);
   const well = wellBackground(asset.tone, background);
-  const badge = roleBadge(asset);
+  const badge = roleBadge(asset, section);
   const [base, extension] = splitExtension(asset.filename);
   // Spec 12.3: GIFs play on hover only (touch has no hover: tiles keep the still frame, the detail view plays them).
   const [hovered, setHovered] = useState(false);

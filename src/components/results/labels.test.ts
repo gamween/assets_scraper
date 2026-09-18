@@ -34,6 +34,9 @@ describe("card labels", () => {
     const roles = ["site-logo", "logo", "favicon", "social", "icon", "illustration", "image", "sprite-symbol"] as const;
     expect(roles.map((role) => roleLabel({ role }))).toEqual(["Site logo", "Logo", "Favicon", "OG image", "Icon", "Illustration", "Image", "Sprite symbol"]);
     expect(roles.map((role) => roleBadge(makeAsset({ id: role, role })))).toEqual(["Logo", "Logo", "Favicon", "OG image", null, null, null, null]);
+    // Inside `Logos` the badge would repeat the section header on every card, so only `Favicon` is left.
+    expect(roles.map((role) => roleBadge(makeAsset({ id: role, role }), "logos"))).toEqual([null, null, "Favicon", "OG image", null, null, null, null]);
+    expect(roleBadge(makeAsset({ id: "svg-logo", role: "logo" }), "svg")).toBe("Logo");
   });
 
   it("names where an asset was found, meta icons as a meta tag", () => {
