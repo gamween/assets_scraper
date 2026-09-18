@@ -281,7 +281,7 @@ Rules:
 4. `checkBotId()`; a bot gets `bot` (403).
 5. `SCAN_DISABLED=1` gives `disabled` (503). When `ACCESS_CODE` is set, header `x-access-code` must match (timing-safe), otherwise `access-code` (401).
 6. URL policy on the normalized URL: http or https, port 80 or 443, no credentials, not an own host, not a private IP literal.
-7. Budget, last so a request that never becomes a scan spends nothing: a per-client daily counter keyed by the caller's address (`SCANS_PER_IP_PER_DAY`), then the shared daily and monthly counters (`SCANS_PER_DAY`, `SCANS_PER_MONTH`). Over budget gives `budget` (429). A client over its own quota is refused before the shared counters move, so one address cannot empty the day for everyone.
+7. Budget, last so a request that never becomes a scan spends nothing: a per-client daily counter keyed by the caller's address (`SCANS_PER_IP_PER_DAY`), then the shared daily and monthly counters (`SCANS_PER_DAY`, `SCANS_PER_MONTH`). Over budget gives `budget` (429). A client over its own quota is refused before the shared counters move, so one address cannot empty the day for everyone. A scan that ends as `busy` (the queue timed out, or the health gate refused the launch) gives its unit back: it never reached a browser, and the client retries once.
 
 ### 7.2 Phases and budgets
 

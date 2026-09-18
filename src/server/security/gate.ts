@@ -6,7 +6,8 @@ import { normalizeInputUrl, type UrlInputResult } from "@/lib/url";
 import { isOwnHost, isTestAllowed, privateHostReason } from "@/server/net/ip";
 import { takeScanBudget } from "./budget";
 
-export type GateResult = { ok: true; url: string; host: string; ops: boolean } | { ok: false; response: Response };
+/** `client` is the caller's address, the key of its own daily quota; null off Vercel. */
+export type GateResult = { ok: true; url: string; host: string; ops: boolean; client: string | null } | { ok: false; response: Response };
 
 const MAX_BODY_BYTES = 16 * 1024;
 const MIN_OPS_TOKEN_LENGTH = 32;
@@ -146,6 +147,7 @@ export async function gateScanRequest(request: Request): Promise<GateResult> {
   }
   // Last, so a request that never becomes a scan (a typo, a blocked address) does not spend a unit of the shared
   // budget. The client address carries a per-address daily quota; it is undefined off Vercel, which skips that quota.
-  if (!ops && !(await takeScanBudget(ipAddress(request) ?? null))) return fail(429, "budget", "Daily scan limit reached.");
-  return { ok: true, url: normalized.url, host: normalized.host, ops };
+  const client = ipAddress(request) ?? null;
+  if (!ops && !(await takeScanBudget(client))) return fail(429, "budget", "Daily scan limit reached.");
+  return { ok: true, url: normalized.url, host: normalized.host, ops, client };
 }

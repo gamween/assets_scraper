@@ -128,6 +128,19 @@ export async function takeScanBudget(client: string | null = null, now: Date = n
   return (await incr(`scan:m:${iso.slice(0, 7)}`, 1, SCAN_MONTH_TTL)) <= limits.scansPerMonth;
 }
 
+/**
+ * Hands one scan back to every counter `takeScanBudget` moved, for a unit that bought nothing: a scan refused as
+ * `busy` never reached a browser. A refund that crosses UTC midnight credits the new day, the same rounding the proxy
+ * meter accepts.
+ */
+export async function refundScanBudget(client: string | null = null, now: Date = new Date()): Promise<void> {
+  const iso = now.toISOString();
+  const day = iso.slice(0, 10);
+  if (client) await incr(`scan:d:${day}:${client}`, -1, SCAN_DAY_TTL);
+  await incr(`scan:d:${day}`, -1, SCAN_DAY_TTL);
+  await incr(`scan:m:${iso.slice(0, 7)}`, -1, SCAN_MONTH_TTL);
+}
+
 const proxyKey = (now: Date) => `proxy:d:${now.toISOString().slice(0, 10)}`;
 const byteCount = (bytes: number) => (Number.isFinite(bytes) && bytes > 0 ? Math.ceil(bytes) : 0);
 

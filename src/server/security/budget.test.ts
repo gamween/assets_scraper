@@ -68,6 +68,7 @@ import {
   RuntimeCacheBudgetStore,
   setBudgetStoreForTests,
   takeProxyBytes,
+  refundScanBudget,
   takeScanBudget,
   UpstashBudgetStore,
   type BudgetStore,
@@ -120,6 +121,17 @@ describe("budget", () => {
     expect(await takeScanBudget(null, day2)).toBe(true);
     expect(await takeScanBudget(null, day3)).toBe(false);
     expect(await takeScanBudget(null, new Date("2026-10-01T00:00:00Z"))).toBe(true);
+  });
+
+  it("hands a scan back to every counter it moved", async () => {
+    // A `busy` scan never reaches a browser, and the client retries once, so a unit that bought nothing must go back.
+    vi.stubEnv("SCANS_PER_DAY", "2");
+    vi.stubEnv("SCANS_PER_IP_PER_DAY", "1");
+    expect(await takeScanBudget("203.0.113.9", day1)).toBe(true);
+    await refundScanBudget("203.0.113.9", day1);
+    expect(await takeScanBudget("203.0.113.9", day1)).toBe(true);
+    expect(await takeScanBudget("203.0.113.9", day1)).toBe(false);
+    expect(await takeMany(2, day1)).toEqual([true, false]);
   });
 
   it("sums proxied bytes per day without counting a refused take", async () => {

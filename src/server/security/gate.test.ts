@@ -131,8 +131,8 @@ describe("gateScanRequest", () => {
 
   it("lets an exact test allowlist entry through on its own port, never in production", async () => {
     vi.stubEnv("SCAN_TEST_ALLOW_HOSTS", "127.0.0.1:8787,[::1]:9000");
-    expect(await gateScanRequest(scanRequest({ url: "http://127.0.0.1:8787/fixture#top" }))).toEqual({ ok: true, url: "http://127.0.0.1:8787/fixture", host: "127.0.0.1", ops: false });
-    expect(await gateScanRequest(scanRequest({ url: " http://user:pass@[::1]:9000 " }))).toEqual({ ok: true, url: "http://[::1]:9000/", host: "[::1]", ops: false });
+    expect(await gateScanRequest(scanRequest({ url: "http://127.0.0.1:8787/fixture#top" }))).toEqual({ ok: true, url: "http://127.0.0.1:8787/fixture", host: "127.0.0.1", ops: false, client: null });
+    expect(await gateScanRequest(scanRequest({ url: " http://user:pass@[::1]:9000 " }))).toEqual({ ok: true, url: "http://[::1]:9000/", host: "[::1]", ops: false, client: null });
     await expectFailure(await gateScanRequest(scanRequest({ url: "http://127.0.0.1:8788/" })), 422, "unsupported-port");
     await expectFailure(await gateScanRequest(scanRequest({ url: "http://127.0.0.1/" })), 422, "blocked-address");
     await expectFailure(await gateScanRequest(scanRequest({ url: "ftp://127.0.0.1:8787/" })), 400, "invalid-url");
@@ -148,7 +148,7 @@ describe("gateScanRequest", () => {
     vi.stubEnv("SCANS_PER_DAY", "1");
     botid.checkBotId.mockResolvedValue({ isBot: true, isHuman: false, isVerifiedBot: false, bypassed: false });
     const result = await gateScanRequest(scanRequest({ url: "linear.app" }, { headers: { origin: null, "x-ops-token": OPS_TOKEN } }));
-    expect(result).toEqual({ ok: true, url: "https://linear.app/", host: "linear.app", ops: true });
+    expect(result).toEqual({ ok: true, url: "https://linear.app/", host: "linear.app", ops: true, client: null });
     expect((await gateScanRequest(scanRequest({ url: "linear.app" }, { headers: { origin: null, "x-ops-token": OPS_TOKEN } }))).ok).toBe(true);
     expect(botid.checkBotId).not.toHaveBeenCalled();
     expect(budgetCalls).toBe(0);
@@ -164,7 +164,7 @@ describe("gateScanRequest", () => {
   });
 
   it("accepts a valid request", async () => {
-    expect(await gateScanRequest(scanRequest({ url: "https://linear.app" }))).toEqual({ ok: true, url: "https://linear.app/", host: "linear.app", ops: false });
+    expect(await gateScanRequest(scanRequest({ url: "https://linear.app" }))).toEqual({ ok: true, url: "https://linear.app/", host: "linear.app", ops: false, client: null });
     expect(botid.checkBotId).toHaveBeenCalledTimes(1);
     expect(budgetCalls).toBe(2);
   });
