@@ -617,7 +617,11 @@ async function runBrowserStage(input: ScanContext & {
       async (session) => {
         startWatchdog();
         Object.assign(diagnostics, { cold: session.cold, queueMs: session.queueMs, ...session.health });
+        // The cold-start cost sits in `resolve` (the @sparticuz/chromium inflate) and `sweep`, not in `launch`.
+        diagnostics.phases.resolve = session.resolveMs;
+        diagnostics.phases.sweep = session.sweepMs;
         diagnostics.phases.launch = session.launchMs;
+        diagnostics.phases.setup = session.setupMs;
         const { page } = session;
 
         capture = startCapture(page, { signal });
