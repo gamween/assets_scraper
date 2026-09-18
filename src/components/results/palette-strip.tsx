@@ -88,14 +88,30 @@ export function PaletteStrip() {
           Copy all
         </button>
       </div>
-      <div className="-ml-3.5 flex flex-wrap items-start">
-        {palette.brand.map((swatch, index) => (
-          <SwatchButton key={`b${index}${swatch.hex}`} swatch={swatch} group="brand" />
-        ))}
-        {palette.brand.length && palette.neutrals.length ? <span aria-hidden="true" className="mx-2 mt-1 hidden h-8 w-px bg-border sm:block" /> : null}
-        {palette.neutrals.map((swatch, index) => (
-          <SwatchButton key={`n${index}${swatch.hex}`} swatch={swatch} group="neutral" />
-        ))}
+      {/*
+       * Two groups, not one list with a rule in it: below 640 the swatches wrap onto their own rows and the inline
+       * divider is hidden, so the grouping disappeared. Each group wraps on its own and the neutrals name themselves
+       * when they land on a row of their own.
+       */}
+      <div className="flex flex-wrap items-start gap-x-3 gap-y-2">
+        <div className="-ml-3.5 flex flex-wrap items-start">
+          {palette.brand.map((swatch, index) => (
+            <SwatchButton key={`b${index}${swatch.hex}`} swatch={swatch} group="brand" />
+          ))}
+        </div>
+        {palette.brand.length && palette.neutrals.length ? <span aria-hidden="true" className="mt-1 hidden h-8 w-px bg-border sm:block" /> : null}
+        <div className="flex flex-col">
+          {palette.brand.length && palette.neutrals.length ? (
+            <span aria-hidden="true" className="text-mono-xs text-text-3 sm:hidden">
+              Neutrals
+            </span>
+          ) : null}
+          <div className="-ml-3.5 flex flex-wrap items-start">
+            {palette.neutrals.map((swatch, index) => (
+              <SwatchButton key={`n${index}${swatch.hex}`} swatch={swatch} group="neutral" />
+            ))}
+          </div>
+        </div>
       </div>
     </section>
   );

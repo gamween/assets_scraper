@@ -102,7 +102,8 @@ export const FontRow = memo(function FontRow({ font }: { font: FontFamily }) {
             data-state={state}
             data-font-alias={alias}
             className={cn(
-              "truncate text-[32px] leading-[42px] text-text transition-opacity duration-150",
+              // Below 480 the specimen is set smaller and wraps to two lines instead of being cut mid word.
+              "line-clamp-2 text-[22px] leading-[30px] text-text transition-opacity duration-150 xs:truncate xs:text-[32px] xs:leading-[42px]",
               state === "failed" && "hidden",
               state === "loading" && "opacity-0",
             )}
@@ -117,7 +118,10 @@ export const FontRow = memo(function FontRow({ font }: { font: FontFamily }) {
             </div>
           ) : null}
           <p
-            className={cn("mt-1 truncate text-[16px] leading-6 text-text-2 transition-opacity duration-150", state !== "ready" && "opacity-0")}
+            data-testid="font-alphabet"
+            // The alphabet line exists to show the glyph set, so on a phone it wraps: truncating it ate the numerals,
+            // which is what anyone checking a mono face looks at first.
+            className={cn("mt-1 text-[13px] leading-5 break-words text-text-2 transition-opacity duration-150 xs:truncate xs:text-[16px] xs:leading-6", state !== "ready" && "opacity-0")}
             style={{ fontFamily: `"${alias}", ui-sans-serif, system-ui` }}
             aria-hidden={state !== "ready"}
           >

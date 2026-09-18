@@ -40,4 +40,17 @@ test.describe("phone toolbar", () => {
     await expect(page.getByRole("button", { name: "Done" })).toBeVisible();
     await expect(page.getByTestId("asset-card").first().getByRole("checkbox")).toBeVisible();
   });
+
+  test("the font specimen and the palette stay readable", async ({ page }) => {
+    await openResults(page);
+    await page.getByRole("tab", { name: /^Fonts/ }).click();
+    // The alphabet line exists to show the glyph set: truncating it ate the numerals.
+    const alphabet = page.getByTestId("font-row").first().getByTestId("font-alphabet");
+    expect(await alphabet.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+    await expect(alphabet).toContainText("0123456789");
+
+    await page.getByRole("tab", { name: /^All/ }).click();
+    // The neutrals name themselves when the inline divider is hidden and they wrap onto their own row.
+    await expect(page.getByRole("region", { name: "Palette" })).toContainText("Neutrals");
+  });
 });
