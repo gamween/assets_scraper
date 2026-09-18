@@ -342,13 +342,50 @@ test.describe("results", () => {
     expect(src).toMatch(/^blob:/);
   });
 
-  test("the footer counts hidden noise", async ({ page }) => {
+  test("the footer counts hidden noise, where images are on screen", async ({ page }) => {
     await openResults(page, linear);
-    await expect(page.getByText("9 hidden: tracking pixels and spacer images")).toBeVisible();
+    const footer = page.getByText("9 hidden: tracking pixels and spacer images");
+    await expect(footer).toBeVisible();
+
+    // It counts dropped images, so it says nothing useful on the Fonts tab or under an empty state.
+    await page.getByRole("tab", { name: /^Fonts/ }).click();
+    await expect(footer).toHaveCount(0);
+    await page.getByRole("tab", { name: /^Images/ }).click();
+    await expect(footer).toBeVisible();
+    await page.getByLabel("Filter by name or URL").fill("zzzznomatch");
+    await expect(page.getByText('Nothing matches "zzzznomatch"')).toBeVisible();
+    await expect(footer).toHaveCount(0);
+  });
+
+  test("brand resources keep to one line, with the rest behind a +N", async ({ page }) => {
+    const many = ["/brand", "/press", "/media-kit", "/logos", "/identity", "/newsroom"].map((path) => ({ href: `https://linear.app${path}`, text: path.slice(1) }));
+    const events = linear.map((event) => (event.type === "page" ? { ...event, page: { ...event.page, brandLinks: many } } : event));
+    await openResults(page, events);
+    const group = page.getByRole("group", { name: "Brand resources on this site" });
+    await expect(group.getByRole("button")).toHaveText(["brand", "press", "media-kit", "+3"]);
+
+    await group.getByRole("button", { name: "Show 3 more brand resources" }).click();
+    await expect(group.getByRole("button")).toHaveText(many.map((link) => link.text));
   });
 
   test.describe("on a phone", () => {
     test.use({ viewport: { width: 390, height: 844 } });
+
+    test("brand resources are one closed disclosure", async ({ page }) => {
+      const many = ["/brand", "/press", "/media-kit", "/logos", "/identity", "/newsroom"].map((path) => ({ href: `https://linear.app${path}`, text: path.slice(1) }));
+      const events = linear.map((event) => (event.type === "page" ? { ...event, page: { ...event.page, brandLinks: many } } : event));
+      await openResults(page, events);
+      const group = page.getByRole("group", { name: "Brand resources on this site" });
+      const toggle = group.getByRole("button", { name: /^Brand resources/ });
+      await expect(toggle).toHaveAttribute("aria-expanded", "false");
+      await expect(group.getByRole("button", { name: "brand", exact: true })).toBeHidden();
+      // 220 px of chips no longer push the first tile off an 844 px screen.
+      const firstCard = (await page.getByTestId("asset-card").first().boundingBox())!;
+      expect(firstCard.y).toBeLessThan(640);
+
+      await toggle.click();
+      await expect(group.getByRole("button", { name: "brand", exact: true })).toBeVisible();
+    });
 
     test("the background control is a compact select next to the tabs", async ({ page }) => {
       await openResults(page, linear);
