@@ -119,11 +119,19 @@ describe("collector on the fixture page", () => {
     expect(frame.markup).toContain("purple");
   });
 
-  it("expands referenced sprite symbols", () => {
+  it("expands referenced sprite symbols with the attributes the symbol declares", () => {
     const symbols = output.svgs.filter((s) => s.source === "sprite-symbol");
-    expect(symbols).toHaveLength(1);
+    expect(symbols).toHaveLength(2);
     expect(symbols[0]).toMatchObject({ referenced: true, visible: false, label: "sym-check" });
     expect(symbols[0].markup).toContain('viewBox="0 0 24 24"');
+    // A sprite generator hoists the presentation attributes onto the symbol; without them the star is a black blob.
+    const star = symbols.find((s) => s.label === "sym-star")!;
+    expect(star.markup).toContain('viewBox="0 0 24 24"');
+    expect(star.markup).toContain('fill="none"');
+    expect(star.markup).toContain('stroke="currentColor"');
+    expect(star.markup).toContain('stroke-width="2"');
+    expect(star.markup).not.toContain("aria-hidden");
+    expect(star.markup).not.toContain('id="sym-star"');
   });
 
   it("finds every image candidate with its element group", () => {

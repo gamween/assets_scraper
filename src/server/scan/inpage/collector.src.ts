@@ -1059,8 +1059,19 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
             }
             const standalone = document.createElementNS(SVG_NS, "svg");
             standalone.setAttribute("xmlns", SVG_NS);
-            const viewBox = symbol.getAttribute("viewBox");
-            if (viewBox) standalone.setAttribute("viewBox", viewBox);
+            // A sprite generator hoists the source root's presentation attributes onto the <symbol> (fill="none",
+            // stroke="currentColor", stroke-width), so the standalone copy needs them or an outlined icon renders as
+            // a black silhouette. viewBox arrives through the same loop. `id` would collide with the ids inside the
+            // copied children and means nothing on the root, refX and refY are symbol-only, and the rest is dropped
+            // for the reason normalizeSvg drops it (the label was read above).
+            for (const attribute of symbol.attributes) {
+              const name = attribute.name;
+              if (name === "xmlns" || name === "id" || name === "refX" || name === "refY") continue;
+              if (/^on/i.test(name) || name.startsWith("data-") || name.startsWith("aria-") || REMOVED_ATTRIBUTES.has(name)) continue;
+              standalone.setAttribute(name, attribute.value);
+            }
+            if (standalone.getAttribute("display") === "none") standalone.removeAttribute("display");
+            if (standalone.getAttribute("visibility") === "hidden") standalone.removeAttribute("visibility");
             for (const child of symbol.childNodes) standalone.appendChild(child.cloneNode(true));
             for (const script of standalone.querySelectorAll("script")) script.remove();
             const markup = new XMLSerializer().serializeToString(standalone);
