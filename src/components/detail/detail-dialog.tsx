@@ -152,9 +152,11 @@ function DetailBody({ asset }: { asset: Asset }) {
   const formatLabel = (asset.original?.format ?? asset.format).toUpperCase();
   const { nextDetail, previousDetail } = appStore.getState();
 
+  // The grid row is explicit: an implicit `auto` row makes `md:h-full` on the preview column cyclic, so the column
+  // grew to the height of the asset (1243 px inside an 860 px dialog) and the dialog clipped what did not fit.
   return (
-    <div className="flex h-full min-h-0 flex-col md:grid md:grid-cols-[minmax(0,1fr)_340px]">
-      <div className={cn("relative h-[44dvh] shrink-0 md:h-full", WELL_CLASSES[well])} data-testid="detail-well" data-background={well}>
+    <div className="flex h-full min-h-0 flex-col md:grid md:grid-cols-[minmax(0,1fr)_340px] md:grid-rows-[minmax(0,1fr)]">
+      <div className={cn("relative h-[44dvh] shrink-0 md:h-full md:min-h-0", WELL_CLASSES[well])} data-testid="detail-well" data-background={well}>
         <div className="absolute inset-x-3 top-3 z-10 flex items-center justify-between gap-3">
           <BackgroundControl value={background} onChange={setOverride} className="bg-well/95" />
           {index >= 0 ? (
@@ -163,8 +165,8 @@ function DetailBody({ asset }: { asset: Asset }) {
             </span>
           ) : null}
         </div>
-        <div className="grid h-full w-full place-items-center overflow-hidden p-6 pt-14">
-          <div className="relative grid size-full place-items-center">
+        <div className="absolute inset-0 overflow-hidden p-6 pt-14">
+          <div className="relative size-full">
             <AssetPreview key={asset.id} asset={asset} variant="detail" />
             {/*
              * Spec 11.4: a blob: URL of a scraped SVG is never opened in a tab. This layer takes the pointer, so the
