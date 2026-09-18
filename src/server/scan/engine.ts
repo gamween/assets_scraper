@@ -587,7 +587,10 @@ async function runBrowserStage(input: ScanContext & {
     if (!read || watchdogTimer) return;
     watchdogTimer = setInterval(async () => {
       const available = await read().catch(() => undefined);
-      if (available !== undefined && available < limits.watchdogMemMb) watchdog.abort(new LowMemory());
+      if (available !== undefined && available < limits.watchdogMemMb) {
+        console.warn(`Scan ${diagnostics.scanId} stopped: MemAvailable ${available} MB`);
+        watchdog.abort(new LowMemory());
+      }
     }, WATCHDOG_INTERVAL_MS);
   };
 
@@ -729,6 +732,12 @@ async function runBrowserStage(input: ScanContext & {
     if (cancel.aborted) throw cancel.reason;
     if (error instanceof BlockedPage || error instanceof BusyError) throw error;
     const interrupted = input.deadline.aborted || watchdog.signal.aborted;
+    // Which of the two stopped the page, since both end as `timeout` or as the same `partial` warning. When both
+    // fired, the cause that actually stopped the work wins.
+    if (interrupted) {
+      const lowMemory = watchdog.signal.aborted && (!input.deadline.aborted || error instanceof LowMemory);
+      diagnostics.stoppedBy = lowMemory ? "low-memory" : "deadline";
+    }
     if (!interrupted || !nav) throw interrupted ? new ScanFailure("timeout", "The page took too long to load") : error;
     partial = true;
   } finally {

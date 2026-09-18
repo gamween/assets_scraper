@@ -217,6 +217,9 @@ export const Diagnostics = z.object({
   paletteNull: z.string().optional(),
   // Set instead when collection was cut short at this step and the palette was built from the signals already read.
   paletteSalvaged: z.string().optional(),
+  // Why page work stopped early (spec 7.3): the page-work deadline, or the memory watchdog. Absent when the browser
+  // stage ran to its end.
+  stoppedBy: z.enum(["deadline", "low-memory"]).optional(),
   // `none`: the collector never started (a blocked page, a failed navigation, a scan stopped before collection).
   collector: z.enum(["isolated", "main", "none"]),
   version: z.string(),

@@ -931,11 +931,17 @@ describe("scan engine", () => {
         return available;
       },
     });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const events = await scan(deps, `${fixture.origin}/`);
+    const warnings = warn.mock.calls.map(([message]) => String(message));
+    warn.mockRestore();
     const done = events.at(-1);
     if (done?.type !== "done") throw new Error(`expected done, got ${done && describeEvent(done)}`);
     expect(done.partial).toBe(true);
     expect(readings).toContain(200);
+    // A low-memory abort reads as a timeout everywhere else, so diagnostics are the only place it can be told apart.
+    expect(done.diagnostics.stoppedBy).toBe("low-memory");
+    expect(warnings).toContainEqual(expect.stringMatching(/^Scan [0-9a-f-]{36} stopped: MemAvailable 200 MB$/));
     expect(events.find((event) => event.type === "assets")).toMatchObject({ items: [{ id: "photo" }] });
     expect(pids).toHaveLength(1);
     await expect.poll(() => isProcessAlive(pids[0]), { timeout: 5000 }).toBe(false);

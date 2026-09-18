@@ -247,6 +247,7 @@ export interface Diagnostics {
   bodyTimeouts: number;
   skippedBodies: number;            // responses the capture never read
   blockReason?: string;
+  stoppedBy?: "deadline" | "low-memory";     // why page work stopped early; absent when the browser stage ran to its end
   collector: "isolated" | "main" | "none";   // none: the collector never ran
   version: string;                  // git SHA
 }
