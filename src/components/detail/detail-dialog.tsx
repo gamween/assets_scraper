@@ -146,7 +146,7 @@ function CodeBlock({ asset }: { asset: Asset }) {
   );
 }
 
-function NavButton({ direction, onClick }: { direction: "previous" | "next"; onClick: () => void }) {
+function NavButton({ direction, onClick, className }: { direction: "previous" | "next"; onClick: () => void; className?: string }) {
   const Icon = direction === "previous" ? ChevronLeft : ChevronRight;
   return (
     <Tooltip>
@@ -157,8 +157,8 @@ function NavButton({ direction, onClick }: { direction: "previous" | "next"; onC
             aria-label={direction === "previous" ? "Previous" : "Next"}
             onClick={onClick}
             className={cn(
-              "absolute top-1/2 z-10 grid size-9 -translate-y-1/2 place-items-center rounded-md border border-border bg-surface/95 text-text-2 transition-colors hover:border-border-strong hover:text-text focus-ring",
-              direction === "previous" ? "left-3" : "right-3",
+              "z-10 grid size-9 place-items-center rounded-md border border-border bg-surface/95 text-text-2 transition-colors hover:border-border-strong hover:text-text focus-ring",
+              className,
             )}
           />
         }
@@ -191,11 +191,19 @@ function DetailBody({ asset }: { asset: Asset }) {
       <div className={cn("relative h-[44dvh] shrink-0 md:h-full md:min-h-0", WELL_CLASSES[well])} data-testid="detail-well" data-background={well}>
         <div className="absolute inset-x-3 top-3 z-10 flex items-center justify-between gap-3">
           <BackgroundControl value={background} onChange={setOverride} className="bg-well/95" />
-          {index >= 0 ? (
-            <span data-testid="detail-counter" className="rounded-md border border-border bg-surface/95 px-2 py-1 font-mono text-mono text-text-2 tabular-nums">
-              {index + 1} of {list.length}
-            </span>
-          ) : null}
+          {/*
+           * On a phone the well is 44dvh over a 390 px screen and the arrows sat inside it, about 7 px from the
+           * artwork on each side. They ride with the counter instead, out of the band the asset is in.
+           */}
+          <div className="flex items-center gap-1.5">
+            {list.length > 1 ? <NavButton direction="previous" onClick={previousDetail} className="md:hidden" /> : null}
+            {index >= 0 ? (
+              <span data-testid="detail-counter" className="rounded-md border border-border bg-surface/95 px-2 py-1 font-mono text-mono text-text-2 tabular-nums">
+                {index + 1} of {list.length}
+              </span>
+            ) : null}
+            {list.length > 1 ? <NavButton direction="next" onClick={nextDetail} className="md:hidden" /> : null}
+          </div>
         </div>
         <div className="absolute inset-0 overflow-hidden p-6 pt-14">
           <div className="relative size-full">
@@ -209,8 +217,8 @@ function DetailBody({ asset }: { asset: Asset }) {
         </div>
         {list.length > 1 ? (
           <>
-            <NavButton direction="previous" onClick={previousDetail} />
-            <NavButton direction="next" onClick={nextDetail} />
+            <NavButton direction="previous" onClick={previousDetail} className="absolute top-1/2 left-3 hidden -translate-y-1/2 md:grid" />
+            <NavButton direction="next" onClick={nextDetail} className="absolute top-1/2 right-3 hidden -translate-y-1/2 md:grid" />
           </>
         ) : null}
       </div>

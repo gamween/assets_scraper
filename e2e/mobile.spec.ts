@@ -41,6 +41,21 @@ test.describe("phone toolbar", () => {
     await expect(page.getByTestId("asset-card").first().getByRole("checkbox")).toBeVisible();
   });
 
+  test("the detail arrows do not share a band with the asset", async ({ page }) => {
+    await openResults(page);
+    await page.locator("[data-card-main]").first().click();
+    const detail = page.getByRole("dialog");
+    await expect(detail).toBeVisible();
+    const image = (await page.getByTestId("detail-well").locator("img").boundingBox())!;
+    for (const name of ["Previous", "Next"]) {
+      const arrow = (await detail.getByRole("button", { name }).boundingBox())!;
+      const overlaps = arrow.x < image.x + image.width && image.x < arrow.x + arrow.width && arrow.y < image.y + image.height && image.y < arrow.y + arrow.height;
+      expect(overlaps, `${name} must not sit over the preview`).toBe(false);
+    }
+    await detail.getByRole("button", { name: "Next" }).click();
+    await expect(detail.getByTestId("detail-counter")).toHaveText(/^2 of /);
+  });
+
   test("the font specimen and the palette stay readable", async ({ page }) => {
     await openResults(page);
     await page.getByRole("tab", { name: /^Fonts/ }).click();
