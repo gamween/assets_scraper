@@ -1,4 +1,5 @@
 import type { AssetFormat } from "@/lib/contract";
+import { sniffContentType } from "@/server/security/sniff";
 
 const BY_MIME: Record<string, AssetFormat> = {
   "image/svg+xml": "svg",
@@ -47,19 +48,18 @@ const startsWith = (buffer: Uint8Array, offset: number, text: string) => {
   return true;
 };
 
-/** Format from magic bytes, for `application/octet-stream` responses. SVG is recognized as text. */
+/**
+ * Format from magic bytes, for `application/octet-stream` responses. SVG is recognized as text. The magic bytes are
+ * the asset proxy's sniffer, so the two cannot drift: a hand-maintained second copy read an Illustrator SVG, whose
+ * DOCTYPE carries an internal subset, as `other` and dropped the original the CDN served.
+ */
 export function sniffFormat(buffer: Uint8Array): AssetFormat {
-  const b = buffer;
-  if (b.length >= 8 && b[0] === 0x89 && startsWith(b, 1, "PNG\r\n") && b[6] === 0x1a && b[7] === 0x0a) return "png";
-  if (b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return "jpg";
-  if (startsWith(b, 0, "GIF87a") || startsWith(b, 0, "GIF89a")) return "gif";
-  if (startsWith(b, 0, "RIFF") && startsWith(b, 8, "WEBP")) return "webp";
-  if (startsWith(b, 4, "ftypavif") || startsWith(b, 4, "ftypavis")) return "avif";
-  if (b.length >= 6 && b[0] === 0 && b[1] === 0 && b[2] === 1 && b[3] === 0 && b[4] + b[5] * 256 > 0) return "ico";
-  if (b.length >= 10 && startsWith(b, 0, "BM")) return "bmp";
-  const head = Buffer.from(b.subarray(0, 1024)).toString("utf8").replace(/^\uFEFF/, "");
-  const rest = head.replace(/^(?:\s|<\?xml[^>]*>|<!--[\s\S]*?-->|<!DOCTYPE[^>]*>)*/i, "");
-  return /^<svg[\s>/]/i.test(rest) ? "svg" : "other";
+  // BMP is not a type the asset proxy serves, so `sniffContentType` does not know it.
+  if (buffer.length >= 10 && startsWith(buffer, 0, "BM")) return "bmp";
+  // An ICO that declares no image is not an ICO; the proxy does not care, an asset does.
+  if (startsWith(buffer, 0, "\x00\x00\x01\x00") && !(buffer.length >= 6 && buffer[4] + buffer[5] * 256 > 0)) return "other";
+  const mime = sniffContentType(buffer);
+  return (mime === null ? undefined : BY_MIME[mime]) ?? "other";
 }
 
 /** File extension for a format. */

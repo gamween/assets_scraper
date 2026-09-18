@@ -66,6 +66,38 @@ test.describe("landing", () => {
     await expect(page).toHaveURL(/\/\?url=https%3A%2F%2Flinear\.app%2F$/);
   });
 
+  test("pasting into the autofocused field starts a scan too", async ({ page }) => {
+    const events = loadFixture("linear");
+    await mockAssetRoutes(page, events);
+    await mockScan(page, events);
+    await page.goto("/");
+    // The field is autofocused on a fine pointer, so the document listener never sees this paste. The footer promises
+    // that a paste scans, and it has to hold in the state the page loads in.
+    const input = page.getByRole("textbox", { name: "Page URL" });
+    await expect(input).toBeFocused();
+    await input.evaluate((element) => {
+      const data = new DataTransfer();
+      data.setData("text/plain", "linear.app");
+      element.dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }));
+    });
+    await expect(page).toHaveURL(/\/\?url=https%3A%2F%2Flinear\.app%2F$/);
+  });
+
+  test("pasting into a partly typed field only inserts the text", async ({ page }) => {
+    const scan = await mockScan(page, []);
+    await page.goto("/");
+    const input = page.getByRole("textbox", { name: "Page URL" });
+    await input.fill("stripe");
+    await input.evaluate((element: HTMLInputElement) => {
+      element.setSelectionRange(element.value.length, element.value.length);
+      const data = new DataTransfer();
+      data.setData("text/plain", "linear.app");
+      element.dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }));
+    });
+    await expect(page).toHaveURL(/\/$/);
+    expect(scan.bodies).toEqual([]);
+  });
+
   test("pasting text that is not a URL does nothing", async ({ page }) => {
     const scan = await mockScan(page, []);
     await page.goto("/");

@@ -30,7 +30,7 @@ const family = {
 
 const diagnostics = {
   scanId: "s1", cold: true, phases: { open: 1200, collect: 800 }, queueMs: 0, tmpFreeMb: 400, memAvailableMb: 1500,
-  egress: { bytes: 1_000_000, blocked: 2 }, bodyTimeouts: 1, blockReason: "http-403", collector: "isolated", version: "dev",
+  egress: { bytes: 1_000_000, blocked: 2, refused: 3 }, bodyTimeouts: 1, skippedBodies: 4, blockReason: "http-403", collector: "isolated", version: "dev",
 };
 
 describe("contract", () => {

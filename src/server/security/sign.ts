@@ -29,12 +29,14 @@ function getSecret(): string {
   return processSecret;
 }
 
-const mac = (secret: string, expiry: number, url: string) =>
-  createHmac("sha256", secret).update(`v1\n${expiry}\n${url}`).digest("base64url").slice(0, 32);
+const mac = (secret: string, expiry: number, url: string, dl = "") =>
+  createHmac("sha256", secret).update(`v1\n${expiry}\n${url}\n${dl}`).digest("base64url").slice(0, 32);
 
 /**
  * Signs asset proxy paths for one scan. The expiry is bucketed by hour and lands 6 to 7 hours ahead, so the same URL
- * signed within an hour gives the same path and CDN cache keys repeat. At most `max` distinct URLs per signer.
+ * signed within an hour gives the same path and CDN cache keys repeat. A download name is signed with the URL and
+ * appended as `dl`, so a name cannot be swapped in to turn one link into unlimited cache misses. At most `max`
+ * distinct URL and name pairs per signer.
  */
 export function createSigner(options: { secret?: string; now?: number; max?: number } = {}): Signer {
   const now = options.now ?? Date.now();
@@ -44,13 +46,15 @@ export function createSigner(options: { secret?: string; now?: number; max?: num
   let secret = options.secret;
 
   return {
-    sign(url: string): string {
-      const existing = signed.get(url);
+    sign(url: string, dl?: string): string {
+      const key = dl === undefined ? url : `${url}\n${dl}`;
+      const existing = signed.get(key);
       if (existing) return existing;
       if (signed.size >= max) throw new SignLimitError(`More than ${max} signed URLs in one scan`);
       secret ??= getSecret();
-      const path = `/api/asset?u=${Buffer.from(url, "utf8").toString("base64url")}&e=${expiry}&s=${mac(secret, expiry, url)}`;
-      signed.set(url, path);
+      const name = dl === undefined ? "" : `&dl=${encodeURIComponent(dl)}`;
+      const path = `/api/asset?u=${Buffer.from(url, "utf8").toString("base64url")}&e=${expiry}&s=${mac(secret, expiry, url, dl ?? "")}${name}`;
+      signed.set(key, path);
       return path;
     },
     get count() {
@@ -63,8 +67,11 @@ const invalid = (message: string) => new HttpError(400, "invalid-params", messag
 
 /**
  * Verifies `/api/asset` query params. 400 for unknown, repeated, missing or malformed params (checked before the
- * secret is needed), 403 for a bad signature or an expired link. `dl` and `fmt` are not signed: `dl` is only a file
- * name, and `fmt=ttf` is checked against the font licence by the proxy.
+ * secret is needed), 403 for a bad signature or an expired link. `dl` is part of the MAC: it is part of the request
+ * URL and therefore part of the CDN cache key, so an unsigned one turns a single signed link into unlimited cache
+ * misses, each a fresh invocation and a fresh upstream fetch. The signer never appends `dl`, so any request carrying
+ * one fails the signature today; a named download link would have to sign the name with the URL. `fmt` stays out of
+ * the MAC: the client appends `&fmt=ttf`, it has two values, and the proxy checks it against the font licence.
  */
 export function verifyAssetParams(params: URLSearchParams, now: number = Date.now(), secret?: string): { url: string; dl?: string; fmt?: "ttf" } {
   for (const key of new Set(params.keys())) {
@@ -84,7 +91,7 @@ export function verifyAssetParams(params: URLSearchParams, now: number = Date.no
   if (fmt !== null && fmt !== "ttf") throw invalid("Unsupported format");
 
   const expiry = Number(e);
-  const expected = Buffer.from(mac(secret ?? getSecret(), expiry, url));
+  const expected = Buffer.from(mac(secret ?? getSecret(), expiry, url, dl ?? ""));
   if (!timingSafeEqual(Buffer.from(s), expected)) throw new HttpError(403, "bad-signature", "Invalid signature");
   if (expiry * 1000 <= now) throw new HttpError(403, "expired", "Link expired");
 

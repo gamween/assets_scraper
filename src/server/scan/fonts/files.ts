@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { FontFamily, FontFormat, InlineBytes } from "@/lib/contract";
+import { percentDecode } from "../percent";
 import type { CapturedFont, FontBinaryMeta } from "../types";
 import { parseFontBinary, sniffFontFormat } from "./binary";
 
@@ -139,22 +140,6 @@ function estimateDataUriBytes(uri: string): number {
 export function fontDataUri(uri: string): string | null {
   const href = URL.parse(uri)?.href;
   return href !== undefined && href.length <= uri.length && isDataUri(href) && estimateDataUriBytes(href) <= MAX_INLINE_BYTES ? href : null;
-}
-
-function percentDecode(value: string): Buffer {
-  const input = Buffer.from(value, "utf8");
-  const output = Buffer.alloc(input.length);
-  let length = 0;
-  for (let i = 0; i < input.length; i += 1) {
-    const hex = input[i] === 0x25 ? input.toString("latin1", i + 1, i + 3) : "";
-    if (/^[0-9a-f]{2}$/i.test(hex)) {
-      output[length++] = parseInt(hex, 16);
-      i += 2;
-    } else {
-      output[length++] = input[i];
-    }
-  }
-  return output.subarray(0, length);
 }
 
 /** Registrable domain approximation: the last two labels, or three under `co.uk`-like suffixes. IPs stay whole. */

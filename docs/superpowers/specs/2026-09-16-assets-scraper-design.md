@@ -243,9 +243,11 @@ export interface Diagnostics {
   queueMs: number;
   tmpFreeMb?: number;
   memAvailableMb?: number;
-  egress: { bytes: number; blocked: number };
+  egress: { bytes: number; blocked: number; refused: number };   // refused: capacity, never an SSRF block
   bodyTimeouts: number;
+  skippedBodies: number;            // responses the capture never read
   blockReason?: string;
+  stoppedBy?: "deadline" | "low-memory";     // why page work stopped early; absent when the browser stage ran to its end
   collector: "isolated" | "main" | "none";   // none: the collector never ran
   version: string;                  // git SHA
 }
@@ -267,7 +269,7 @@ Rules:
 - Errors found by the gate, before streaming starts, return JSON `{ "error": { "code": ErrorCode, "message": string } }` with the HTTP status from section 13.
 - Once streaming starts the HTTP status is 200 and failures arrive as an `error` event, which is always the last line.
 - `assets` and `fonts` events arrive after all post-processing, so the client never patches an asset.
-- Asset proxy: `GET /api/asset?u=<base64url url>&e=<unix seconds>&s=<hmac>[&dl=<filename>]`. Unknown parameters are rejected.
+- Asset proxy: `GET /api/asset?u=<base64url url>&e=<unix seconds>&s=<hmac>[&dl=<filename>][&fmt=ttf]`. Unknown parameters are rejected. `dl` is covered by the signature, since it is part of the CDN cache key and an unsigned name would turn one link into unlimited cache misses; `fmt` is not, it has two values and the proxy checks it against the font licence.
 
 ## 7. Scan pipeline
 
@@ -278,8 +280,8 @@ Rules:
 3. Body `{ url: string }` validated with zod, at most 2,048 characters.
 4. `checkBotId()`; a bot gets `bot` (403).
 5. `SCAN_DISABLED=1` gives `disabled` (503). When `ACCESS_CODE` is set, header `x-access-code` must match (timing-safe), otherwise `access-code` (401).
-6. Budget: daily and monthly scan counters (`SCANS_PER_DAY`, `SCANS_PER_MONTH`). Over budget gives `budget` (429).
-7. URL policy on the normalized URL: http or https, port 80 or 443, no credentials, not an own host, not a private IP literal.
+6. URL policy on the normalized URL: http or https, port 80 or 443, no credentials, not an own host, not a private IP literal.
+7. Budget, last so a request that never becomes a scan spends nothing: a per-client daily counter keyed by the caller's address (`SCANS_PER_IP_PER_DAY`), then the shared daily and monthly counters (`SCANS_PER_DAY`, `SCANS_PER_MONTH`). Over budget gives `budget` (429). A client over its own quota is refused before the shared counters move, so one address cannot empty the day for everyone. A scan that ends as `busy` (the queue timed out, or the health gate refused the launch) gives its unit back: it never reached a browser, and the client retries once.
 
 ### 7.2 Phases and budgets
 
@@ -371,6 +373,7 @@ Verification: `safeFetch` GET with `Range: bytes=0-262143`, `Accept: image/png,i
 
 ### 8.5 Roles and relevance
 
+- Logo word: `logo`, `wordmark` or `logotype` anywhere in the name, and `brand` only at the end of a token (`navbar-brand`, `.brand`), never as a qualifier inside a compound name (`card-brand-content`).
 - `logoScore` = logo word 3 + link to home 3 + header or nav 2 + site word 2 + top under 160 px and visible 1 + footer 1.
 - `site-logo`: score >= 6 and rendered at most 120,000 px2, or a JSON-LD logo at any size. The score reaches 6 on position alone (link to home, header, top of the page), which is also what a hero picture under a nav looks like, and the logo signals are shared across a group, so past that area only an explicit declaration promotes.
 - `logo`: logo word, logo wall, or `alt` containing "logo".
@@ -457,7 +460,7 @@ The palette module is a port of the validated lab code (v2 with every fix enable
 
 ### 11.2 Asset proxy
 
-- HMAC-SHA256 with `ASSET_URL_SECRET` over `v1\n<expiry>\n<url>`, truncated to 32 base64url characters, timing-safe comparison. Expiry is bucketed by hour, 6 to 7 hours of life, so CDN cache keys repeat. Development without the secret uses a random per-process key.
+- HMAC-SHA256 with `ASSET_URL_SECRET` over `v1\n<expiry>\n<url>\n<dl>`, truncated to 32 base64url characters, timing-safe comparison. Expiry is bucketed by hour, 6 to 7 hours of life, so CDN cache keys repeat. Development without the secret uses a random per-process key.
 - At most 2,000 signed URLs per scan, one signer shared by the assets and the fonts. Assets sign first (`http:` sources first, then by score), font files after them: files of loaded faces, then Basic-Latin files of unloaded faces, then the rest. Past the cap a source or file keeps its `url` with `proxy: ""` and the scan emits a `truncated` warning.
 - `Sec-Fetch-Site` must be `same-origin` or `none`, with `Vary: Sec-Fetch-Site`.
 - `safeFetch` with `Referer` set to the page origin, 25 MB cap, 20 s timeout, 5 redirects. Content types allowed: `image/*`, `font/*`, `application/font-*`, `application/x-font-*`, and `application/octet-stream` after magic-byte sniffing.
@@ -628,7 +631,7 @@ All in `src/server/config/limits.ts`, env-overridable.
 - Vercel project `assets-scraper` (existing), framework Next.js, Node 24.x, Fluid on, region `iad1`. Deploys through the Vercel CLI (remote builds on x64; never `--prebuilt` from Apple Silicon).
 - `next.config.ts`: `outputFileTracingIncludes` for `/api/scan` with the real (symlink-resolved) paths of `@sparticuz/chromium/bin/**` and `playwright-core/browsers.json`; security headers; `typedRoutes`; React Compiler.
 - `vercel.json`: `{ "fluid": true, "regions": ["iad1"], "functions": { "src/app/api/scan/route.ts": { "maxDuration": 120, "supportsCancellation": true }, "src/app/api/asset/route.ts": { "maxDuration": 30, "supportsCancellation": true } } }`.
-- Env: `ASSET_URL_SECRET` (required in production), optional `SCAN_DISABLED`, `ACCESS_CODE`, `SCANS_PER_DAY`, `SCANS_PER_MONTH`, `PROXY_BYTES_PER_DAY`, `APP_HOSTS`, `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`. `.env.example` lists them with `OPS_TOKEN` and the test-only `SCAN_TEST_ALLOW_HOSTS`. The CI e2e job sets `ASSET_URL_SECRET` to a fixed test value, since `next start` runs in production mode.
+- Env: `ASSET_URL_SECRET` (required in production), optional `SCAN_DISABLED`, `ACCESS_CODE`, `SCANS_PER_DAY`, `SCANS_PER_MONTH`, `SCANS_PER_IP_PER_DAY`, `PROXY_BYTES_PER_DAY`, `APP_HOSTS`, `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`. `.env.example` lists them with `OPS_TOKEN` and the test-only `SCAN_TEST_ALLOW_HOSTS`. The CI e2e job sets `ASSET_URL_SECRET` to a fixed test value, since `next start` runs in production mode.
 - Firewall: one rate-limit rule (section 7.1), BotID enabled.
 - Diagnostics travel in `done` and `error` events because Hobby keeps runtime logs for one hour. `GET /api/health` returns the build SHA and flags, never URLs.
 - Dependency policy: `@sparticuz/chromium` and `playwright-core` pinned exactly and bumped together within a week of each Chrome security release.
@@ -637,4 +640,5 @@ All in `src/server/config/limits.ts`, env-overridable.
 
 - Measure whether Chromium CPU counts toward Active CPU on Hobby (dashboard usage after a known number of scans) and tune the daily budget.
 - A/B single-process vs multi-process Chromium on Vercel during the first production validation (memory, CPU, `/tmp`).
+- Bound `/api/asset` and `/api/health` invocations at the edge. Nothing inside a function can do it (a per-client counter still costs the invocation), the byte budget bounds bytes served and charges nothing on an error path, and Hobby allows one firewall rule, currently on `/api/scan`.
 - Confirm on the first deploy that the `functions` glob in `vercel.json` matches the route, that BotID works with a streaming POST, and whether Vercel Runtime Cache is available on Hobby.

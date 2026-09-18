@@ -22,6 +22,12 @@ export interface BrowserSession {
   cold: boolean;
   queueMs: number;
   launchMs: number;
+  /** Resolving the Chromium binary: on a cold serverless instance this is the @sparticuz/chromium inflate. */
+  resolveMs: number;
+  /** Stale-browser kill, /tmp sweep and the health read that run before the launch. */
+  sweepMs: number;
+  /** Browser context and page setup, bounded by limits.browserSetupMs. */
+  setupMs: number;
   health: { tmpFreeMb?: number; memAvailableMb?: number };
   /** PID of the Chromium process, read from the pidfile its wrapper script writes. */
   pid?: number;
@@ -425,8 +431,12 @@ export async function withBrowser<T>(options: WithBrowserOptions, fn: (session: 
   try {
     if (queueMs > 0) options.onDequeued?.(queueMs);
     signal.throwIfAborted();
+    const resolveStarted = performance.now();
     const executable = await resolveExecutable();
+    const resolveMs = Math.round(performance.now() - resolveStarted);
+    const sweepStarted = performance.now();
     const health = await prepareLaunch(slot, executable.binary);
+    const sweepMs = Math.round(performance.now() - sweepStarted);
     signal.throwIfAborted();
     const egressPort = typeof options.egressPort === "number" ? options.egressPort : await options.egressPort();
     signal.throwIfAborted();
@@ -456,9 +466,12 @@ export async function withBrowser<T>(options: WithBrowserOptions, fn: (session: 
       return { context, page };
     };
     // Without its own bound, a hang in context or page setup would wait out the page deadline and read as a slow page.
+    // The mark precedes the call, since `setup()` starts its promise inside `timeoutAfter`.
+    const setupStarted = performance.now();
     const settingUp = timeoutAfter(setup(), limits.browserSetupMs, () => new Error(`Browser context setup took more than ${limits.browserSetupMs} ms`));
     const { context, page } = await untilAborted(settingUp, signal);
-    const result = await untilAborted(fn({ browser, context, page, cold, queueMs, launchMs, health, pid: launched.pid }), signal);
+    const setupMs = Math.round(performance.now() - setupStarted);
+    const result = await untilAborted(fn({ browser, context, page, cold, queueMs, launchMs, resolveMs, sweepMs, setupMs, health, pid: launched.pid }), signal);
     succeeded = true;
     return result;
   } finally {

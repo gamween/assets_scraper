@@ -82,7 +82,9 @@ export function ResultsHeader({ actions = true }: { actions?: boolean }) {
               Cancel
             </button>
           ) : null}
-          <Button variant={selecting ? "secondary" : "primary"} onClick={downloadAll} disabled={downloadAllCount === 0 || (zip !== null && !zippingAll)} aria-live="polite">
+          {/* No live region on the label: saveZip reports once per entry, so a 44 file ZIP queued 44 announcements
+              that outlived it, and the same operation from the selection bar was silent. */}
+          <Button variant={selecting ? "secondary" : "primary"} onClick={downloadAll} disabled={downloadAllCount === 0 || (zip !== null && !zippingAll)}>
             {zippingAll ? <LoaderCircle className="spinner" aria-hidden="true" /> : <Download aria-hidden="true" />}
             <span className="tabular-nums">{zippingAll ? `Zipping ${zip.done} of ${zip.total}` : `Download all ${downloadAllCount}`}</span>
           </Button>

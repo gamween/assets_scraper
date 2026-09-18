@@ -82,6 +82,7 @@ beforeAll(async () => {
     "/chunked-big": (_q, s) => { s.writeHead(200, { "content-type": "image/png" }); s.write(png); s.end(Buffer.alloc(4096)); },
     "/chunked-big-untyped": (_q, s) => { s.writeHead(200, { "content-type": "application/octet-stream" }); s.write(png); s.end(Buffer.alloc(4096)); },
     "/counted.png": (q, s) => { hits.set(q.url ?? "", (hits.get(q.url ?? "") ?? 0) + 1); s.writeHead(200, { "content-type": "image/png" }); s.end(png); },
+    "/dl-counted.png": (q, s) => { hits.set("/dl-counted.png", (hits.get("/dl-counted.png") ?? 0) + 1); s.writeHead(200, { "content-type": "image/png" }); s.end(png); },
     // a typed image that sends its first bytes, then nothing for a long time
     "/png-slow": (_q, s) => { s.writeHead(200, { "content-type": "image/png" }); s.write(png.subarray(0, 64)); },
     "/big.woff2": (_q, s) => {
@@ -138,10 +139,17 @@ const SAME_ORIGIN = { "sec-fetch-site": "same-origin" };
 /** Today's proxied bytes in `store`. */
 const spentIn = (store: MemoryBudgetStore) => store.incr(`proxy:d:${new Date().toISOString().slice(0, 10)}`, 0, 60);
 
-/** A request for the signed proxy path of an upstream asset, from this app's own pages unless `site` says otherwise. */
+/**
+ * A request for the signed proxy path of an upstream asset, from this app's own pages unless `site` says otherwise.
+ * A `dl` in `extra` goes through the signer, since the download name is part of the MAC.
+ */
 function proxied(assetPath: string, extra = "", site: string | null = "same-origin"): Request {
-  const signed = createSigner().sign(`${upstream.origin}${assetPath}`);
-  return new Request(`https://app.local${signed}${extra}`, { headers: site === null ? {} : { "sec-fetch-site": site } });
+  const params = new URLSearchParams(extra.replace(/^&/, ""));
+  const dl = params.get("dl");
+  params.delete("dl");
+  const signed = createSigner().sign(`${upstream.origin}${assetPath}`, dl ?? undefined);
+  const rest = params.toString();
+  return new Request(`https://app.local${signed}${rest ? `&${rest}` : ""}`, { headers: site === null ? {} : { "sec-fetch-site": site } });
 }
 
 /** Reads a whole body and returns how many bytes arrived before it ended or failed; 0 for a response that is not 200. */
@@ -268,6 +276,20 @@ describe("handleAssetRequest", () => {
       expect(streamed.status, path).toBe(200);
       await expect(streamed.arrayBuffer(), path).rejects.toThrow();
     }
+  });
+
+  it("refuses a swapped download name, so dl cannot bust the CDN cache", async () => {
+    // dl is part of the request URL and therefore part of the cache key: unsigned, every name is a fresh miss, a
+    // fresh invocation and a fresh upstream fetch on one signature.
+    const signed = proxied("/dl-counted.png", "&dl=logo.png");
+    expect((await handleAssetRequest(signed)).status).toBe(200);
+    for (const name of ["a1", "a2", "a3"]) {
+      const busted = new URL(signed.url);
+      busted.searchParams.set("dl", name);
+      const response = await handleAssetRequest(new Request(busted, { headers: SAME_ORIGIN }));
+      expect(await errorOf(response), name).toMatchObject({ status: 403, code: "bad-signature" });
+    }
+    expect(hits.get("/dl-counted.png")).toBe(1);
   });
 
   it("sanitizes the download name", async () => {

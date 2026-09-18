@@ -80,8 +80,12 @@ const defined = <T extends object>(value: T): T =>
 
 /** Width and height of an SVG from its root attributes, else from its viewBox. */
 export function svgSize(markup: string): { width?: number; height?: number } {
-  const root = /<svg\b[^>]*>/i.exec(markup)?.[0] ?? "";
-  const attribute = (name: string) => Number(new RegExp(`\\s${name}\\s*=\\s*["']\\s*(\\d*\\.?\\d+)(?:px)?\\s*["']`, "i").exec(root)?.[1]) || undefined;
+  // The slice bounds every regex below, the way preflight caps a tag: a real <svg> root tag is never near 4 KB, and a
+  // scraped one can be megabytes of junk.
+  const root = (/<svg\b[^>]*>/i.exec(markup)?.[0] ?? "").slice(0, 4096);
+  // The digit runs are bounded so the alternatives at each start position stay constant: an unbounded `\d*\.?\d+`
+  // backtracks quadratically over a long digit run that never reaches the closing quote.
+  const attribute = (name: string) => Number(new RegExp(`\\s${name}\\s*=\\s*["']\\s*(\\d{1,10}(?:\\.\\d{1,10})?|\\.\\d{1,10})(?:px)?\\s*["']`, "i").exec(root)?.[1]) || undefined;
   const width = attribute("width");
   const height = attribute("height");
   if (width && height) return { width, height };
@@ -223,7 +227,7 @@ export async function assembleAssets(input: PostInput): Promise<AssetsOutput> {
 
     const drafts = rank([...fileDrafts.filter((draft): draft is Draft => draft !== null), ...inlineSvgAssets(input, hide)], warnings);
     // Tones last, in relevance order: the time budget only counts tone work, never the fetches above.
-    await applyTones(drafts);
+    await applyTones(drafts, input.signal);
     return { assets: finish(drafts, input, warnings), hidden, warnings: [...warnings], originals };
   } finally {
     limiter.close();
@@ -693,9 +697,13 @@ function rank(drafts: Draft[], warnings: Set<WarningCode>): Draft[] {
   return kept;
 }
 
-/** Tones in the order of `drafts` (relevance) within the scan tone budget (spec 8.8). */
-async function applyTones(drafts: Draft[]): Promise<void> {
-  const budget = createToneBudget();
+/**
+ * Tones in the order of `drafts` (relevance) within the scan tone budget (spec 8.8). The budget takes the
+ * post-processing signal, like the capture side: a librsvg render cannot be interrupted and the render slots are
+ * process-wide, so an abandoned scan would otherwise keep both of them while the next scan waits for one.
+ */
+async function applyTones(drafts: Draft[], signal: AbortSignal): Promise<void> {
+  const budget = createToneBudget({ signal });
   await Promise.all(
     drafts.map(async ({ asset, toneJob: job }) => {
       if (!job) return;

@@ -1,4 +1,5 @@
 import type { FoundIn, HiddenReason } from "@/lib/contract";
+import { OUTPUT_LISTS } from "./lists";
 import type {
   CandidateContext,
   CollectorOptions,
@@ -44,7 +45,12 @@ const BRAND_LINK = /(?:^|[^a-z])(?:brand|press(?!ure)|media[- _]?kit|newsroom|id
 const isBrandLink = (text: string) => BRAND_LINK.test(text) || BRAND_LINK.test(text.replace(/([a-z])(?=[A-Z])/g, "$1 "));
 /** Second-level labels under a two-letter country code that are public suffixes: shop.co.uk, shop.com.au. */
 const SECOND_LEVEL_LABELS = /^(?:ac|co|com|edu|go|gov|ne|net|or|org)$/;
-const LOGO_WORD = /logo|brand|wordmark|logotype/;
+/**
+ * "brand" only counts at the end of a token (navbar-brand, .brand, header__brand), never as a qualifier inside a
+ * compound name, because a page wraps ordinary photos in names like
+ * payments-graphic__checkout-item-card-brand-content and every one of them would be filed as a logo.
+ */
+const LOGO_WORD = /logo|wordmark|logotype|brand(?:s|mark)?(?![a-z]|[-_][a-z])/;
 
 const STYLE_PROPS = [
   "fill", "fill-opacity", "fill-rule", "stroke", "stroke-width", "stroke-opacity", "stroke-linecap", "stroke-linejoin",
@@ -108,8 +114,11 @@ function parseSrcset(value: string | null | undefined): { url: string; w?: numbe
       i++;
     }
     if (!url) continue;
-    const w = descriptor.match(/(\d+)w\b/);
-    const x = descriptor.match(/(\d*\.?\d+)x\b/);
+    // The digit runs are bounded and the alternation removes the `\d*`/`\d+` overlap: the unbounded form is cubic in
+    // the descriptor length, so one long digit run blocks the caller for minutes. Nine digits is far beyond any real
+    // descriptor, and a longer run is not a number `Number()` could use.
+    const w = descriptor.match(/(\d{1,9})w\b/);
+    const x = descriptor.match(/(\d{1,9}(?:\.\d{1,9})?|\.\d{1,9})x\b/);
     if (w) out.push({ url, w: Number(w[1]) });
     else out.push({ url, x: x ? Number(x[1]) : 1 });
   }
@@ -1056,9 +1065,43 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
             }
             const standalone = document.createElementNS(SVG_NS, "svg");
             standalone.setAttribute("xmlns", SVG_NS);
-            const viewBox = symbol.getAttribute("viewBox");
-            if (viewBox) standalone.setAttribute("viewBox", viewBox);
+            // A sprite generator hoists the source root's presentation attributes onto the <symbol> (fill="none",
+            // stroke="currentColor", stroke-width), so the standalone copy needs them or an outlined icon renders as
+            // a black silhouette. viewBox arrives through the same loop. `id` would collide with the ids inside the
+            // copied children and means nothing on the root, refX and refY are symbol-only, and the rest is dropped
+            // for the reason normalizeSvg drops it (the label was read above).
+            for (const attribute of symbol.attributes) {
+              const name = attribute.name;
+              if (name === "xmlns" || name === "id" || name === "refX" || name === "refY") continue;
+              if (/^on/i.test(name) || name.startsWith("data-") || name.startsWith("aria-") || REMOVED_ATTRIBUTES.has(name)) continue;
+              standalone.setAttribute(name, attribute.value);
+            }
+            if (standalone.getAttribute("display") === "none") standalone.removeAttribute("display");
+            if (standalone.getAttribute("visibility") === "hidden") standalone.removeAttribute("visibility");
             for (const child of symbol.childNodes) standalone.appendChild(child.cloneNode(true));
+            // A sprite keeps its gradients, filters and clip paths in a shared <defs> next to the symbols, so a copy
+            // that takes only the symbol renders blank. Same resolution as normalizeSvg, scoped to the symbol: the
+            // guard is `symbol.contains`, not the sprite root, since the target is meant to sit elsewhere in it.
+            // Four passes cover a chain (clip-path to a path to a gradient); addSvg still holds the byte caps.
+            const scope = symbol.getRootNode() as Document | ShadowRoot;
+            let symbolDefs: Element | null = null;
+            for (let pass = 0; pass < 4; pass++) {
+              let added = 0;
+              for (const id of referencedIds(standalone)) {
+                if (standalone.querySelector(`#${cssEscape(id)}`)) continue;
+                let target: Element | null = null;
+                try {
+                  target = scope.getElementById ? scope.getElementById(id) : (scope as ParentNode).querySelector(`#${cssEscape(id)}`);
+                } catch {
+                  target = null;
+                }
+                if (!target || symbol.contains(target)) continue;
+                if (!symbolDefs) standalone.insertBefore((symbolDefs = document.createElementNS(SVG_NS, "defs")), standalone.firstChild);
+                symbolDefs.appendChild(target.cloneNode(true));
+                added++;
+              }
+              if (!added) break;
+            }
             for (const script of standalone.querySelectorAll("script")) script.remove();
             const markup = new XMLSerializer().serializeToString(standalone);
             addSvg({
@@ -1209,7 +1252,6 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
   return output;
 }
 
-const OUTPUT_LISTS = ["candidates", "svgs", "fontFaces", "fontStatuses", "fontUsage", "unreadableSheets", "blobs", "brandLinks"] as const;
 
 /**
  * Cuts the output lists until the output is at most `maxChars` characters of JSON, and says whether it cut anything.

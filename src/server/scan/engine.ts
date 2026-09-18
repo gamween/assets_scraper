@@ -14,13 +14,14 @@ import { startCapture, type CaptureHandle } from "./capture";
 import { buildFallback, directAsset } from "./fallback";
 import { buildFontFamilies, signFontFiles } from "./fonts";
 import { COLLECTOR_SOURCE } from "./inpage/generated/collector";
+import { OUTPUT_LISTS } from "./inpage/lists";
 import { InPageTimeoutError, runInPage } from "./inpage/run";
 import { loadAndScroll, MAX_TITLE_CHARS, openPage, prepareForCollection, readPageFacts, type NavigationResult } from "./navigate";
 import { extractPalette } from "./palette";
 import { assembleAssets } from "./post/assemble";
 import { cutText, MAX_SITE_NAME_CHARS, preflight, type PreflightResult } from "./preflight";
 import { NO_ORIGINAL_PROBES } from "./types";
-import type { AssetsOutput, CapturedNetwork, CollectorOptions, FontsOutput, PageContext, PostInput, RawCollectorOutput, SafeFetch, ScanBackend, Signer } from "./types";
+import type { AssetsOutput, CapturedNetwork, CollectorOptions, FontsOutput, PageContext, PostInput, RawCandidate, RawCollectorOutput, RawSvg, SafeFetch, ScanBackend, Signer } from "./types";
 
 export interface ScanEngineDeps {
   fetch: SafeFetch;
@@ -63,7 +64,6 @@ const WATCHDOG_INTERVAL_MS = 500;
 
 /** The fitted output can differ from the budget by a few characters (see FIT_COLLECTOR_OUTPUT). */
 const COLLECTOR_RESULT_SLACK_CHARS = 1_024;
-const COLLECTOR_LISTS = ["candidates", "svgs", "fontFaces", "fontStatuses", "fontUsage", "unreadableSheets", "blobs", "brandLinks"] as const;
 
 /**
  * In-page code (a function of the collector output and a budget) that runs right after the collector, in its world.
@@ -99,7 +99,7 @@ export const FIT_COLLECTOR_OUTPUT = `(output, budget) => {
   const items = [];
   const urls = new Set();
   let total = 0;
-  for (const key of ${JSON.stringify(COLLECTOR_LISTS)}) {
+  for (const key of ${JSON.stringify(OUTPUT_LISTS)}) {
     const list = output[key];
     if (!Array.isArray(list)) continue;
     shell[key] = [];
@@ -169,7 +169,34 @@ function emptyCollectorOutput(nav: NavigationResult, network: CapturedNetwork): 
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
-/** The top-level shape of collector output. A main-world page can overwrite the collector, and a bug can return nothing. */
+const isCandidate = (value: unknown): value is RawCandidate =>
+  isRecord(value) &&
+  typeof value.url === "string" &&
+  typeof value.foundIn === "string" &&
+  typeof value.visible === "boolean" &&
+  typeof value.declaredOnly === "boolean" &&
+  Number.isFinite(value.group) &&
+  Number.isFinite(value.order) &&
+  isRecord(value.context);
+
+const isSvg = (value: unknown): value is RawSvg =>
+  isRecord(value) &&
+  typeof value.markup === "string" &&
+  typeof value.hash === "string" &&
+  typeof value.visible === "boolean" &&
+  typeof value.referenced === "boolean" &&
+  typeof value.hasLiveText === "boolean" &&
+  Number.isFinite(value.order) &&
+  Number.isFinite(value.usedCount) &&
+  Number.isFinite(value.elementCount) &&
+  isRecord(value.context);
+
+/**
+ * The shape of collector output. A main-world page can overwrite the collector, and a bug can return nothing, so the
+ * items of `candidates` and `svgs` are checked too: post-processing walks both and dereferences their fields, and a
+ * TypeError there would end a recoverable scan as an `internal` error instead of the network-only partial result every
+ * other collector failure degrades to. The other five lists are checked by post-processing itself.
+ */
 function isCollectorOutput(value: unknown): value is RawCollectorOutput {
   if (!isRecord(value) || !isRecord(value.page) || !isRecord(value.noise) || !isRecord(value.stats)) return false;
   const { page, stats } = value;
@@ -178,7 +205,9 @@ function isCollectorOutput(value: unknown): value is RawCollectorOutput {
     typeof page.baseUrl === "string" &&
     typeof page.elementCount === "number" &&
     typeof stats.truncated === "boolean" &&
-    COLLECTOR_LISTS.every((key) => Array.isArray(value[key]))
+    OUTPUT_LISTS.every((key) => Array.isArray(value[key])) &&
+    (value.candidates as unknown[]).every(isCandidate) &&
+    (value.svgs as unknown[]).every(isSvg)
   );
 }
 
@@ -324,8 +353,9 @@ async function runScan({ url, deps, cancel, emit }: ScanContext): Promise<void> 
     cold: false,
     phases: {},
     queueMs: 0,
-    egress: { bytes: 0, blocked: 0 },
+    egress: { bytes: 0, blocked: 0, refused: 0 },
     bodyTimeouts: 0,
+    skippedBodies: 0,
     originals: NO_ORIGINAL_PROBES,
     // Set by the collector when it starts in a world (see onWorld below).
     collector: "none",
@@ -557,7 +587,10 @@ async function runBrowserStage(input: ScanContext & {
     if (!read || watchdogTimer) return;
     watchdogTimer = setInterval(async () => {
       const available = await read().catch(() => undefined);
-      if (available !== undefined && available < limits.watchdogMemMb) watchdog.abort(new LowMemory());
+      if (available !== undefined && available < limits.watchdogMemMb) {
+        console.warn(`Scan ${diagnostics.scanId} stopped: MemAvailable ${available} MB`);
+        watchdog.abort(new LowMemory());
+      }
     }, WATCHDOG_INTERVAL_MS);
   };
 
@@ -584,7 +617,11 @@ async function runBrowserStage(input: ScanContext & {
       async (session) => {
         startWatchdog();
         Object.assign(diagnostics, { cold: session.cold, queueMs: session.queueMs, ...session.health });
+        // The cold-start cost sits in `resolve` (the @sparticuz/chromium inflate) and `sweep`, not in `launch`.
+        diagnostics.phases.resolve = session.resolveMs;
+        diagnostics.phases.sweep = session.sweepMs;
         diagnostics.phases.launch = session.launchMs;
+        diagnostics.phases.setup = session.setupMs;
         const { page } = session;
 
         capture = startCapture(page, { signal });
@@ -699,6 +736,12 @@ async function runBrowserStage(input: ScanContext & {
     if (cancel.aborted) throw cancel.reason;
     if (error instanceof BlockedPage || error instanceof BusyError) throw error;
     const interrupted = input.deadline.aborted || watchdog.signal.aborted;
+    // Which of the two stopped the page, since both end as `timeout` or as the same `partial` warning. When both
+    // fired, the cause that actually stopped the work wins.
+    if (interrupted) {
+      const lowMemory = watchdog.signal.aborted && (!input.deadline.aborted || error instanceof LowMemory);
+      diagnostics.stoppedBy = lowMemory ? "low-memory" : "deadline";
+    }
     if (!interrupted || !nav) throw interrupted ? new ScanFailure("timeout", "The page took too long to load") : error;
     partial = true;
   } finally {
@@ -707,7 +750,7 @@ async function runBrowserStage(input: ScanContext & {
     if (egress) {
       const proxy = egress;
       const stats = proxy.stats();
-      diagnostics.egress = { bytes: stats.bytes, blocked: stats.blocked };
+      diagnostics.egress = { bytes: stats.bytes, blocked: stats.blocked, refused: stats.refused };
       // Not awaited past its cap: a close that hangs finishes in the background.
       await orAfter((async () => proxy.close())().catch(() => {}), limits.egressCloseMs, undefined);
     }
@@ -716,6 +759,7 @@ async function runBrowserStage(input: ScanContext & {
   if (!nav) throw new ScanFailure("timeout", "The page took too long to load");
   network ??= await (capture as CaptureHandle | undefined)?.settle(0) ?? { images: [], fonts: [], sheets: [], bodyTimeouts: 0, skippedBodies: 0 };
   diagnostics.bodyTimeouts = network.bodyTimeouts;
+  diagnostics.skippedBodies = network.skippedBodies;
   for (const id of openSteps) emit({ type: "step", step: id, state: "done" });
   return { nav, palette, collector, network, partial };
 }

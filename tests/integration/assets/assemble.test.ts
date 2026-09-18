@@ -130,7 +130,15 @@ describe("assembleAssets on the fixture page", () => {
   it("gives inline SVGs roles and counts", () => {
     const icons = output.assets.filter((a) => a.inline && "text" in a.inline && a.inline.text.includes("rgb(0, 170, 119)"));
     expect(icons).toEqual([expect.objectContaining({ role: "icon", usedCount: 2, renderedWidth: 40, renderedHeight: 40, width: 40, height: 40, tone: "mixed" })]);
-    expect(output.assets.filter((a) => a.role === "sprite-symbol" && a.inline)).toEqual([expect.objectContaining({ visible: false, foundIn: ["sprite-symbol"] })]);
+    // Two referenced symbols in the fixture sprite: the plain check, and the outlined star that carries its own
+    // presentation attributes.
+    const symbols = output.assets.filter((a) => a.role === "sprite-symbol" && a.inline);
+    expect(symbols).toEqual([
+      expect.objectContaining({ visible: false, foundIn: ["sprite-symbol"] }),
+      expect.objectContaining({ visible: false, foundIn: ["sprite-symbol"] }),
+    ]);
+    const star = symbols.find((a) => a.inline && "text" in a.inline && a.inline.text.includes("M12 2l3 7h7"))!;
+    expect(star.inline && "text" in star.inline && star.inline.text).toContain('stroke-width="2"');
   });
 
   it("ranks an external sprite sheet file with the sprite symbols", () => {

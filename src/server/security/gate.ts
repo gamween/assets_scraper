@@ -1,11 +1,13 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { checkBotId } from "botid/server";
+import { ipAddress } from "@vercel/functions";
 import { ScanRequest, type ApiError, type ErrorCode } from "@/lib/contract";
 import { normalizeInputUrl, type UrlInputResult } from "@/lib/url";
 import { isOwnHost, isTestAllowed, privateHostReason } from "@/server/net/ip";
 import { takeScanBudget } from "./budget";
 
-export type GateResult = { ok: true; url: string; host: string; ops: boolean } | { ok: false; response: Response };
+/** `client` is the caller's address, the key of its own daily quota; null off Vercel. */
+export type GateResult = { ok: true; url: string; host: string; ops: boolean; client: string | null } | { ok: false; response: Response };
 
 const MAX_BODY_BYTES = 16 * 1024;
 const MIN_OPS_TOKEN_LENGTH = 32;
@@ -100,7 +102,7 @@ function normalizeTestUrl(input: string): UrlInputResult | null {
 
 /**
  * Request gate for `POST /api/scan`, in the order of spec 7.1 (the WAF rule runs before the function): method, JSON
- * content type and same Origin, body, BotID, kill switch and access code, budget, then the URL policy. A valid
+ * content type and same Origin, body, BotID, kill switch and access code, the URL policy, then the budget. A valid
  * `x-ops-token` (OPS_TOKEN, at least 32 characters) skips BotID and the budget and may omit Origin.
  */
 export async function gateScanRequest(request: Request): Promise<GateResult> {
@@ -129,8 +131,6 @@ export async function gateScanRequest(request: Request): Promise<GateResult> {
   const accessCode = process.env.ACCESS_CODE;
   if (accessCode && !safeEqual(request.headers.get("x-access-code") ?? "", accessCode)) return fail(401, "access-code", "Enter the access code.");
 
-  if (!ops && !(await takeScanBudget())) return fail(429, "budget", "Daily scan limit reached.");
-
   let normalized = normalizeInputUrl(input);
   if (!normalized.ok && normalized.code === "unsupported-port") normalized = normalizeTestUrl(input) ?? normalized;
   if (!normalized.ok) {
@@ -145,5 +145,9 @@ export async function gateScanRequest(request: Request): Promise<GateResult> {
   if (privateHostReason(hostname) && !isTestAllowed(hostname, port)) {
     return fail(422, "blocked-address", "Local and private network addresses are blocked.");
   }
-  return { ok: true, url: normalized.url, host: normalized.host, ops };
+  // Last, so a request that never becomes a scan (a typo, a blocked address) does not spend a unit of the shared
+  // budget. The client address carries a per-address daily quota; it is undefined off Vercel, which skips that quota.
+  const client = ipAddress(request) ?? null;
+  if (!ops && !(await takeScanBudget(client))) return fail(429, "budget", "Daily scan limit reached.");
+  return { ok: true, url: normalized.url, host: normalized.host, ops, client };
 }

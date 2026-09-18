@@ -238,9 +238,14 @@ describe("scan engine", () => {
     expect(done.partial).toBe(false);
     // The collector's drop reaches stats.hidden once, through assembleAssets.
     expect(done.stats).toMatchObject({ assets: 1, svg: 0, images: 1, fonts: 0, hidden: { spacer: 2, "unreferenced-symbol": 1 } });
-    expect(done.diagnostics).toMatchObject({ collector: "isolated", version: "dev", bodyTimeouts: 0 });
+    expect(done.diagnostics).toMatchObject({ collector: "isolated", version: "dev", bodyTimeouts: 0, skippedBodies: 0 });
     expect(done.diagnostics.egress.bytes).toBeGreaterThan(0);
-    expect(Object.keys(done.diagnostics.phases)).toEqual(expect.arrayContaining(["preflight", "launch", "open", "load", "scroll", "collect", "process"]));
+    // Capacity refusals and bodies the capture never read are the only trace of a page that came back thin.
+    expect(done.diagnostics.egress.refused).toBe(0);
+    // resolve and sweep are the cold-start cost that used to sit outside every phase.
+    expect(Object.keys(done.diagnostics.phases)).toEqual(
+      expect.arrayContaining(["preflight", "resolve", "sweep", "launch", "setup", "open", "load", "scroll", "collect", "process"]),
+    );
     expect(pids).toHaveLength(1);
     await expect.poll(() => isProcessAlive(pids[0]), { timeout: 5000 }).toBe(false);
   });
@@ -890,6 +895,32 @@ describe("scan engine", () => {
     }
   });
 
+  it("keeps the network results when a collector returns items of the wrong shape", async () => {
+    // A page that owns globalThis.__assetsScraper through an accessor can answer with anything (spec 7.3). Items that
+    // post-processing would dereference have to be refused here, or the scan ends as an internal error instead of the
+    // network-only partial result every other collector failure degrades to.
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const hostile = `globalThis.__assetsScraper = { collect: async () => ({
+      page: { title: "Hostile", baseUrl: location.href, elementCount: 1 },
+      candidates: [{ url: "https://cdn.example/x.png", group: "x", foundIn: null, order: NaN, visible: 1, declaredOnly: 0 }],
+      svgs: [{ markup: null, hash: 7 }],
+      fontFaces: [], fontStatuses: [], fontUsage: [], unreadableSheets: [], blobs: [], brandLinks: [],
+      noise: {}, stats: { elements: 1, ms: 1, truncated: false },
+    }) };`;
+    try {
+      // The real post-processing, since the point is that it dereferences what the collector returned.
+      const events = await scan(testDeps({ collectorSource: hostile, assembleAssets }).deps, `${fixture.origin}/`);
+      const done = events.at(-1);
+      if (done?.type !== "done") throw new Error(`expected done, got ${done && describeEvent(done)}`);
+      expect(done.partial).toBe(true);
+      const assets = events.find((event) => event.type === "assets");
+      expect(assets?.type === "assets" && assets.items.length).toBeGreaterThan(0);
+      expect(log).toHaveBeenCalledWith(expect.stringMatching(/^Scan [0-9a-f-]{36} collector failed in the \w+ world$/), expect.anything());
+    } finally {
+      log.mockRestore();
+    }
+  });
+
   it("stops page work when memory runs low, kills Chrome and returns partial results", async () => {
     vi.stubEnv("COLLECT_MS", "60000");
     let collecting = false;
@@ -903,11 +934,17 @@ describe("scan engine", () => {
         return available;
       },
     });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const events = await scan(deps, `${fixture.origin}/`);
+    const warnings = warn.mock.calls.map(([message]) => String(message));
+    warn.mockRestore();
     const done = events.at(-1);
     if (done?.type !== "done") throw new Error(`expected done, got ${done && describeEvent(done)}`);
     expect(done.partial).toBe(true);
     expect(readings).toContain(200);
+    // A low-memory abort reads as a timeout everywhere else, so diagnostics are the only place it can be told apart.
+    expect(done.diagnostics.stoppedBy).toBe("low-memory");
+    expect(warnings).toContainEqual(expect.stringMatching(/^Scan [0-9a-f-]{36} stopped: MemAvailable 200 MB$/));
     expect(events.find((event) => event.type === "assets")).toMatchObject({ items: [{ id: "photo" }] });
     expect(pids).toHaveLength(1);
     await expect.poll(() => isProcessAlive(pids[0]), { timeout: 5000 }).toBe(false);

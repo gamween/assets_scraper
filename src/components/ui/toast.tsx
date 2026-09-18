@@ -6,7 +6,7 @@ import { XIcon } from "lucide-react";
 
 /**
  * One app-wide toast manager (spec 12.6: surface, border, float shadow, radius 12, 13 px text, at most one action).
- * Toasts sit bottom left so they never cover the selection bar in the bottom center.
+ * Toasts sit bottom left, and step over the selection bar in the bottom center while it is up (see globals.css).
  */
 const toast = ToastPrimitive.createToastManager();
 
@@ -56,7 +56,7 @@ function Toaster({ children }: { children?: React.ReactNode }) {
     <ToastPrimitive.Provider toastManager={toast} limit={1} timeout={2000}>
       {children}
       <ToastPrimitive.Portal>
-        <ToastPrimitive.Viewport className="fixed bottom-[calc(16px+env(safe-area-inset-bottom,0px))] left-4 z-[60] w-[min(360px,calc(100vw-32px))] outline-none">
+        <ToastPrimitive.Viewport data-toast-viewport className="fixed bottom-[calc(16px+env(safe-area-inset-bottom,0px))] left-4 z-[60] w-[min(360px,calc(100vw-32px))] outline-none">
           <ToastList />
         </ToastPrimitive.Viewport>
       </ToastPrimitive.Portal>

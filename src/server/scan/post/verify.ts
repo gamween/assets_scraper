@@ -148,7 +148,12 @@ async function attempt(url: string, options: VerifyOptions, ranged: boolean): Pr
       await response.cancel().catch(() => {});
       return { ok: false, reason: "not-image", status: response.status };
     }
-    const { body, complete } = await readPrefix(response.stream(), VERIFY_RANGE_BYTES);
+    const { body, complete: read } = await readPrefix(response.stream(), VERIFY_RANGE_BYTES);
+    // The prefix is the whole file when the declared size matches what was read. The stream ending is not enough on
+    // its own: a ranged response ends at the range boundary whatever the file's size, so a file of exactly
+    // VERIFY_RANGE_BYTES read whole would otherwise be reported incomplete, with no tone and, for an SVG, no size.
+    const bytes = totalBytes(response.headers, response.status, body, read);
+    const complete = read || bytes === body.length;
     const format = generic ? sniffFormat(body) : formatFromContentType(contentType, response.url || url);
     if (generic && format === "other") return { ok: false, reason: "not-image", status: response.status };
     return {
@@ -156,7 +161,7 @@ async function attempt(url: string, options: VerifyOptions, ranged: boolean): Pr
       url: response.url || url,
       contentType,
       format,
-      bytes: totalBytes(response.headers, response.status, body, complete),
+      bytes,
       ...(await imageDimensions(body, format, complete)),
       complete,
       ...(complete ? { body } : {}),

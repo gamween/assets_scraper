@@ -30,7 +30,7 @@ const done = {
   type: "done",
   partial: false,
   stats: { assets: 0, svg: 0, images: 0, fonts: 0, hidden: {}, durationMs: 10 },
-  diagnostics: { scanId: "s1", cold: false, phases: {}, queueMs: 0, egress: { bytes: 0, blocked: 0 }, bodyTimeouts: 0, collector: "isolated", version: "x" },
+  diagnostics: { scanId: "s1", cold: false, phases: {}, queueMs: 0, egress: { bytes: 0, blocked: 0, refused: 0 }, bodyTimeouts: 0, skippedBodies: 0, collector: "isolated", version: "x" },
 } satisfies ScanEvent;
 
 function recorder() {
@@ -51,6 +51,8 @@ describe("startScan", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
   });
 
   it("POSTs JSON with the stored access code and streams events in order", async () => {
@@ -117,6 +119,24 @@ describe("startScan", () => {
     await startScan("https://g2.com/", rec.handlers).done;
     expect(rec.events.map((e) => e.type)).toEqual(["accepted"]);
     expect(rec.errors).toEqual([{ code: "blocked", message: "blocked", fallback: [], diagnostics: done.diagnostics }]);
+  });
+
+  it("rejects a malformed event outside production, and passes it through inside it", async () => {
+    // The contract check exists for a deploy that changes an event shape under a stale tab, which is production only,
+    // so both halves of the policy are pinned here rather than only the half the test run happens to take.
+    const malformed = { type: "done", partial: false };
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.stubEnv("NODE_ENV", "development");
+    vi.stubGlobal("fetch", vi.fn(async () => ndjsonResponse([malformed]).response));
+    const strict = recorder();
+    await startScan("https://x.com/", strict.handlers).done;
+    expect(strict.errors).toEqual([{ code: "internal", message: "The scan returned an unexpected response." }]);
+
+    vi.stubEnv("NODE_ENV", "production");
+    const lenient = recorder();
+    await startScan("https://x.com/", lenient.handlers).done;
+    expect(lenient.events).toEqual([malformed]);
+    expect(lenient.errors).toEqual([]);
   });
 
   it("reports a stream that ends without done or error", async () => {

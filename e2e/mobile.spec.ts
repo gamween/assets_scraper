@@ -11,6 +11,27 @@ async function openResults(page: Page) {
   await expect(page.getByTestId("results")).toBeVisible();
 }
 
+/** The 360 px toast and the bottom centre bar share the bottom edge on a narrow window, and the toast wins on z-index. */
+async function expectToastClearOfTheBar(page: Page) {
+  await openResults(page);
+  const select = page.getByRole("button", { name: "Select" });
+  if (await select.isVisible()) await select.click();
+  const card = page.getByTestId("asset-card").first();
+  await card.locator("[data-card-main]").hover();
+  await card.getByRole("checkbox").click();
+  const bar = page.getByRole("region", { name: "Selection" });
+  await expect(bar).toBeVisible();
+  // Any toast will do.
+  await page.getByRole("region", { name: "Palette" }).getByRole("button", { name: /^Copy #/ }).first().click();
+  const toast = page.getByTestId("toast");
+  await expect(toast).toBeVisible();
+  const box = (await toast.boundingBox())!;
+  const over = (await bar.boundingBox())!;
+  const overlaps = box.x < over.x + over.width && over.x < box.x + box.width && box.y < over.y + over.height && over.y < box.y + box.height;
+  expect(overlaps, "the toast must not cover the selection bar").toBe(false);
+  await expect(bar.getByRole("button", { name: "Download ZIP" })).toBeVisible();
+}
+
 test.describe("phone toolbar", () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
 
@@ -43,6 +64,25 @@ test.describe("phone toolbar", () => {
     await expect(page.getByRole("button", { name: "Done" })).toBeVisible();
     await expect(page.getByTestId("asset-card").first().getByRole("checkbox")).toBeVisible();
   });
+
+  test("the home link keeps its name when its label is hidden", async ({ page }) => {
+    await openResults(page);
+    await expect(page.getByRole("link", { name: "Assets Scraper" })).toBeVisible();
+  });
+
+  test("Done leaves selection mode and keeps the selection", async ({ page }) => {
+    await openResults(page);
+    await page.getByRole("button", { name: "Select" }).click();
+    for (const index of [0, 1, 2]) await page.getByTestId("asset-card").nth(index).getByRole("checkbox").click();
+    const bar = page.getByRole("region", { name: "Selection" });
+    await expect(bar.getByTestId("selection-count")).toContainText("3 selected");
+    // Done says the picking is over, not that the picks are thrown away: Clear is the explicit discard.
+    await page.getByRole("button", { name: "Done" }).click();
+    await expect(bar.getByTestId("selection-count")).toContainText("3 selected");
+    await expect(bar.getByRole("button", { name: "Download ZIP" })).toBeVisible();
+  });
+
+  test("a toast never covers the selection bar", ({ page }) => expectToastClearOfTheBar(page));
 
   test("the detail arrows do not share a band with the asset", async ({ page }) => {
     await openResults(page);
@@ -80,4 +120,10 @@ test.describe("phone toolbar", () => {
     expect(rule.y).toBeLessThan(first.y + first.height);
     expect(first.y).toBeLessThan(rule.y + rule.height);
   });
+});
+
+test.describe("tablet width", () => {
+  test.use({ viewport: { width: 768, height: 1024 } });
+
+  test("a toast never covers the selection bar", ({ page }) => expectToastClearOfTheBar(page));
 });

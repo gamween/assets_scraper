@@ -49,7 +49,7 @@ export const DETAIL_FRAME = 0.82;
  * cyclic. The browser then drops it and keeps only the pixel half of the `min()`, so a 308 px tall raster painted at
  * 308 px inside a 164 px well and `overflow-hidden` cut half the artwork away.
  */
-function frameStyle(asset: Asset, variant: "tile" | "detail"): CSSProperties {
+export function frameStyle(asset: Asset, variant: "tile" | "detail"): CSSProperties {
   const source = variant === "tile" ? (asset.display ?? asset.original) : (asset.original ?? asset.display);
   const width = source?.width ?? asset.width;
   const height = source?.height ?? asset.height;

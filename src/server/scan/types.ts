@@ -167,7 +167,8 @@ export interface PageContext {
 }
 
 export interface Signer {
-  sign(url: string): string;
+  /** A signed `/api/asset` path. `dl` is the download file name, signed with the URL and appended as `&dl=`. */
+  sign(url: string, dl?: string): string;
   readonly count: number;
 }
 

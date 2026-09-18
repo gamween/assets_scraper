@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { decodeDataUri, extractCssUrls, extractStylesheetUrls, forEachStylesheetUrl, parseSrcset } from "./parse";
 
@@ -14,6 +15,22 @@ describe("parseSrcset", () => {
   it("reads fractional densities, trailing commas and extra whitespace", () => {
     expect(parseSrcset("  a.png 1.5x ,b.png,  ")).toEqual([{ url: "a.png", x: 1.5 }, { url: "b.png", x: 1 }]);
     expect(parseSrcset("a.png 100w 50h, b.png")).toEqual([{ url: "a.png", w: 100 }, { url: "b.png", x: 1 }]);
+  });
+
+  it("keeps the in-page copy of the descriptor patterns in sync", () => {
+    // collector.src.ts cannot import this module, so its parseSrcset is a copy. The bounded digit runs are what keep
+    // both copies linear, so a drift here is the cubic blowup coming back in the renderer.
+    const descriptors = (source: string) => source.match(/descriptor\.match\(\/.+?\/\);/g);
+    const inPage = readFileSync(new URL("../inpage/collector.src.ts", import.meta.url), "utf8");
+    expect(descriptors(inPage)).toEqual(descriptors(readFileSync(new URL("./parse.ts", import.meta.url), "utf8")));
+    expect(descriptors(inPage)).toHaveLength(2);
+  });
+
+  it("stays fast on a long digit run in a descriptor", () => {
+    // An unbounded `\d*\.?\d+` in the x descriptor is cubic in the descriptor length: 4000 digits took 8 seconds.
+    const started = performance.now();
+    expect(parseSrcset(`a.png ${"9".repeat(4_000)}y`)).toEqual([{ url: "a.png", x: 1 }]);
+    expect(performance.now() - started).toBeLessThan(200);
   });
 });
 
@@ -101,8 +118,16 @@ describe("decodeDataUri", () => {
     expect(decodeDataUri("data:,hello")?.mime).toBe("text/plain");
   });
 
-  it("returns null for anything else", () => {
+  it("keeps a literal percent, the way a browser does", () => {
+    // An unescaped SVG data URI uses raw percent signs in gradients and percentage geometry, and Chrome paints it.
+    const svg = decodeDataUri("data:image/svg+xml,<svg width='120' height='120'><stop offset='0%' stop-color='%23ff0000'/><rect fill='url(%23g)'/></svg>");
+    expect(svg?.mime).toBe("image/svg+xml");
+    expect(svg!.buffer.toString("utf8")).toBe("<svg width='120' height='120'><stop offset='0%' stop-color='#ff0000'/><rect fill='url(#g)'/></svg>");
+    // A truncated escape is bytes too, not a reason to drop the URI.
+    expect([...decodeDataUri("data:image/svg+xml,%E0%A4%A")!.buffer]).toEqual([0xe0, 0xa4, 0x25, 0x41]);
+  });
+
+  it("returns null for anything that is not a data URI", () => {
     expect(decodeDataUri("https://a.example/x.png")).toBeNull();
-    expect(decodeDataUri("data:image/svg+xml,%E0%A4%A")).toBeNull();
   });
 });

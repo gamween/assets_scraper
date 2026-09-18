@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useId, useRef } from "react";
+import { pastedScanUrl } from "@/components/app/shortcuts";
 import { Wordmark } from "@/components/app-shell/wordmark";
 import { Kbd } from "@/components/common/kbd";
 import { usePlatformModifier } from "@/components/common/use-platform";
@@ -59,6 +60,17 @@ export function Landing() {
               aria-label="Page URL"
               value={input}
               onChange={(event) => setInput(event.target.value)}
+              onPaste={(event) => {
+                // The field is autofocused, so the global Cmd/Ctrl+V handler never sees a landing paste. Honour the
+                // footer hint here: a paste that replaces the whole value with a URL scans straight away, while a
+                // paste into a partly typed value still just inserts text.
+                const field = event.currentTarget;
+                if (field.selectionStart !== 0 || field.selectionEnd !== field.value.length) return;
+                const url = pastedScanUrl(event.clipboardData.getData("text/plain"));
+                if (!url) return;
+                event.preventDefault();
+                submitUrl(url);
+              }}
               placeholder="linear.app"
               autoComplete="off"
               autoCapitalize="off"

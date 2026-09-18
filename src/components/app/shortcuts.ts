@@ -4,6 +4,7 @@ import { useEffect } from "react";
 import { formatCount } from "@/lib/format";
 import { submitUrl } from "@/lib/client/scan-session";
 import { appStore, useApp, type AppState } from "@/lib/client/store";
+import { SEARCH_INPUT_ID } from "@/components/results/filter-bar";
 import { displayHost, normalizeInputUrl } from "@/lib/url";
 
 export function isEditableTarget(target: EventTarget | null): boolean {
@@ -13,15 +14,25 @@ export function isEditableTarget(target: EventTarget | null): boolean {
   return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
 }
 
+/**
+ * The URL a paste should scan, or null when the text is not one URL-like token. Shared with the landing field, which
+ * is autofocused and so never reaches the document listener below.
+ */
+export function pastedScanUrl(text: string | undefined): string | null {
+  const trimmed = text?.trim() ?? "";
+  if (!trimmed || trimmed.length > 2048 || /\s/.test(trimmed) || !normalizeInputUrl(trimmed).ok) return null;
+  return trimmed;
+}
+
 /** Spec 12.5: Cmd/Ctrl+V anywhere (no field focused) with something URL-like starts a scan. */
 export function useGlobalShortcuts() {
   useEffect(() => {
     const onPaste = (event: ClipboardEvent) => {
       if (isEditableTarget(document.activeElement) || appStore.getState().detailId) return;
-      const text = event.clipboardData?.getData("text/plain")?.trim() ?? "";
-      if (!text || text.length > 2048 || /\s/.test(text) || !normalizeInputUrl(text).ok) return;
+      const url = pastedScanUrl(event.clipboardData?.getData("text/plain"));
+      if (!url) return;
       event.preventDefault();
-      submitUrl(text);
+      submitUrl(url);
     };
     document.addEventListener("paste", onPaste);
     return () => document.removeEventListener("paste", onPaste);
@@ -85,7 +96,7 @@ export function useResultsShortcuts() {
       }
       if (modifier) return;
       if (event.key === "/") {
-        const search = document.getElementById("results-search");
+        const search = document.getElementById(SEARCH_INPUT_ID);
         if (search) {
           event.preventDefault();
           search.focus();

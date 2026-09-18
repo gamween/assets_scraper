@@ -19,10 +19,15 @@ beforeAll(async () => {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       res.end(`<!doctype html><html><head><title>Edge</title><link rel="stylesheet" href="/assets/style.css"><link rel="manifest" href="/site.webmanifest"></head><body>
         <div class="lottie-player"><svg width="100" height="100"><g id="__lottie_element_1"><rect width="100" height="100"/></g></svg></div>
-        <svg style="display:none"><symbol id="used" viewBox="0 0 8 8"><path d="M0 0h8v8z"/></symbol><symbol id="unused" viewBox="0 0 8 8"><circle cx="4" cy="4" r="4"/></symbol></svg>
+        <svg style="display:none"><symbol id="used" viewBox="0 0 8 8"><path d="M0 0h8v8z"/></symbol><symbol id="unused" viewBox="0 0 8 8"><circle cx="4" cy="4" r="4"/></symbol>
+        <symbol id="shared" viewBox="0 0 24 24"><rect width="24" height="24" fill="url(#shared-grad)"/></symbol>
+        <defs><linearGradient id="shared-grad"><stop offset="0" stop-color="#f00"/><stop offset="1" stop-color="#00f"/></linearGradient></defs></svg>
         <svg width="16" height="16"><use href="#used"/></svg>
+        <svg width="24" height="24"><use href="#shared"/></svg>
         <svg width="120" height="30"><text x="0" y="20" style="font-family: '__Inter_d65c78'">Brand</text></svg>
         <svg width="120" height="30"><text x="0" y="20" style="font-family: serif">Plain</text></svg>
+        <div class="card-brand-content"><img src="/assets/photo-small.png" width="40" height="40"></div>
+        <div class="navbar-brand"><img src="/assets/touch.png" width="40" height="40"></div>
         <a href="/logout">Log out</a> <a href="/wordpress-tips">Tips</a> <a href="/impressum">Impressum</a> <a href="/express">Express shipping</a>
         <a href="/brand-assets">Assets</a> <a href="/brand-assets#top">Assets again</a> <a href="/brandassets">Downloads</a> <a href="/logopack">Pack</a>
       </body></html>`);
@@ -119,11 +124,19 @@ describe("collector on the fixture page", () => {
     expect(frame.markup).toContain("purple");
   });
 
-  it("expands referenced sprite symbols", () => {
+  it("expands referenced sprite symbols with the attributes the symbol declares", () => {
     const symbols = output.svgs.filter((s) => s.source === "sprite-symbol");
-    expect(symbols).toHaveLength(1);
+    expect(symbols).toHaveLength(2);
     expect(symbols[0]).toMatchObject({ referenced: true, visible: false, label: "sym-check" });
     expect(symbols[0].markup).toContain('viewBox="0 0 24 24"');
+    // A sprite generator hoists the presentation attributes onto the symbol; without them the star is a black blob.
+    const star = symbols.find((s) => s.label === "sym-star")!;
+    expect(star.markup).toContain('viewBox="0 0 24 24"');
+    expect(star.markup).toContain('fill="none"');
+    expect(star.markup).toContain('stroke="currentColor"');
+    expect(star.markup).toContain('stroke-width="2"');
+    expect(star.markup).not.toContain("aria-hidden");
+    expect(star.markup).not.toContain('id="sym-star"');
   });
 
   it("finds every image candidate with its element group", () => {
@@ -203,7 +216,11 @@ describe("collector noise and edge cases", () => {
     const edge = await runCollector(page, collectorOptions(server.host, "Fixture"));
     await context.close();
     expect(edge.noise).toMatchObject({ "lottie-frame": 1, "unreferenced-symbol": 1 });
-    expect(edge.svgs.filter((s) => s.source === "sprite-symbol").map((s) => s.label)).toEqual(["used"]);
+    expect(edge.svgs.filter((s) => s.source === "sprite-symbol").map((s) => s.label)).toEqual(["used", "shared"]);
+    // A symbol that paints with the sprite's shared defs carries them, or the downloaded file renders blank.
+    const shared = edge.svgs.find((s) => s.label === "shared")!;
+    expect(shared.markup).toContain('linearGradient id="shared-grad"');
+    expect(shared.markup).toContain('fill="url(#shared-grad)"');
     expect(edge.svgs.find((s) => s.markup.includes("<text"))).toMatchObject({ hasLiveText: true });
     expect(edge.svgs.find((s) => s.markup.includes("Plain"))).toMatchObject({ hasLiveText: false });
     expect(edge.brandLinks).toEqual([
@@ -212,6 +229,10 @@ describe("collector noise and edge cases", () => {
       { href: `${server.origin}/logopack`, text: "Pack" },
     ]);
     expect(edge.manifestUrl).toBe(`${server.origin}/site.webmanifest`);
+    // "brand" inside a compound name qualifies the thing, it does not name a logo: a product photo is not a logo.
+    const logoWordOf = (name: string) => edge.candidates.find((c) => c.url.endsWith(name) && !c.declaredOnly)?.context.logoWord;
+    expect(logoWordOf("photo-small.png")).toBe(false);
+    expect(logoWordOf("touch.png")).toBe(true);
   });
 });
 

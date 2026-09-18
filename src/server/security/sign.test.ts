@@ -39,13 +39,30 @@ describe("sign", () => {
     expect(() => verifyAssetParams(extra, now, secret)).toThrow(HttpError);
   });
 
-  it("accepts dl and fmt=ttf, rejects other fmt", () => {
-    const params = new URL(createSigner({ secret, now }).sign("https://a.com/f.woff2"), "https://app.local").searchParams;
-    params.set("dl", "inter.woff2");
+  it("accepts a signed dl and fmt=ttf, rejects other fmt", () => {
+    const params = new URL(createSigner({ secret, now }).sign("https://a.com/f.woff2", "inter.woff2"), "https://app.local").searchParams;
     params.set("fmt", "ttf");
     expect(verifyAssetParams(params, now, secret)).toEqual({ url: "https://a.com/f.woff2", dl: "inter.woff2", fmt: "ttf" });
     params.set("fmt", "png");
     expect(() => verifyAssetParams(params, now, secret)).toThrow(HttpError);
+  });
+
+  it("covers dl with the signature, since it is part of the CDN cache key", () => {
+    // An unsigned name turns one signed link into unlimited cache misses, each a fresh invocation and upstream fetch.
+    const signer = createSigner({ secret, now });
+    const plain = new URL(signer.sign("https://a.com/x.png"), "https://app.local").searchParams;
+    expect(verifyAssetParams(plain, now, secret)).toEqual({ url: "https://a.com/x.png" });
+    const swapped = new URLSearchParams(plain);
+    swapped.set("dl", "x.png");
+    expect(statusOf(() => verifyAssetParams(swapped, now, secret))).toBe(403);
+
+    const named = new URL(signer.sign("https://a.com/x.png", "Logo dark.png"), "https://app.local").searchParams;
+    expect(named.get("dl")).toBe("Logo dark.png");
+    expect(named.get("s")).not.toBe(plain.get("s"));
+    expect(verifyAssetParams(named, now, secret)).toEqual({ url: "https://a.com/x.png", dl: "Logo dark.png" });
+    const renamed = new URLSearchParams(named);
+    renamed.set("dl", "Logo light.png");
+    expect(statusOf(() => verifyAssetParams(renamed, now, secret))).toBe(403);
   });
 
   it("caps signed URLs per scan", () => {

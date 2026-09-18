@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import type { Asset, Diagnostics, FontFamily, ScanEvent } from "../../src/lib/contract";
+import { ScanEvent } from "../../src/lib/contract";
+import type { Asset, Diagnostics, FontFamily } from "../../src/lib/contract";
 
 /**
  * NDJSON fixtures built from the 2026-09-16 lab scans of linear.app, stripe.com and framer.com, converted to the
@@ -14,7 +15,9 @@ export function loadFixture(name: FixtureName): ScanEvent[] {
   return readFileSync(path.join(FIXTURES, `${name}.ndjson`), "utf8")
     .split("\n")
     .filter(Boolean)
-    .map((line) => JSON.parse(line) as ScanEvent);
+    // A real parse, so a fixture cannot drift from the contract in silence. It costs nothing: this runs in the
+    // harness, not in the browser.
+    .map((line) => ScanEvent.parse(JSON.parse(line)));
 }
 
 export const toNdjson = (events: ScanEvent[]) => events.map((event) => `${JSON.stringify(event)}\n`).join("");
@@ -49,8 +52,9 @@ export const diagnostics: Diagnostics = {
   cold: true,
   phases: { preflight: 300 },
   queueMs: 0,
-  egress: { bytes: 0, blocked: 0 },
+  egress: { bytes: 0, blocked: 0, refused: 0 },
   bodyTimeouts: 0,
+  skippedBodies: 0,
   collector: "isolated",
   version: "e2e",
 };

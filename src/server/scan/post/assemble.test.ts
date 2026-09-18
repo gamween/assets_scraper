@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { limits } from "@/server/config/limits";
 import { SignLimitError } from "@/server/security/sign";
 import type { CandidateContext, CapturedImage, CapturedSheet, PostInput, RawCandidate, RawCollectorOutput, SafeFetch, Signer } from "../types";
-import { assembleAssets, siteLabel } from "./assemble";
+import { assembleAssets, siteLabel, svgSize } from "./assemble";
 
 // Counts the image header reads of inline rasters, and how many run at once
 const metadataCalls = vi.hoisted(() => ({ total: 0, active: 0, peak: 0 }));
@@ -111,6 +111,22 @@ describe("assembleAssets hidden counts", () => {
     // Only the collector sees Lottie frames and unreferenced symbols: the engine takes them from here (spec 8.1, 8.2).
     expect(hidden).toEqual({ "lottie-frame": 3, "unreferenced-symbol": 2, "svg-too-large": 2, tracker: 1 });
     expect(collector.noise).toEqual({ "lottie-frame": 3, "unreferenced-symbol": 2, "svg-too-large": 1 });
+  });
+
+  it("keeps an unescaped SVG data URI that carries a literal percent", async () => {
+    // Legal and common in gradients and percentage geometry, and Chrome paints it: dropping it reports a real asset
+    // as a broken file.
+    const gradient =
+      "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120'>" +
+      "<defs><linearGradient id='g' x1='0%' y1='0%' x2='100%' y2='0%'><stop offset='0%' stop-color='%23ff0000'/>" +
+      "<stop offset='100%' stop-color='%230000ff'/></linearGradient></defs><rect width='120' height='120' fill='url(%23g)'/></svg>";
+    const { assets, hidden } = await run(collectorOutput({ candidates: [candidate(gradient, 1, 1, { visible: true })] }));
+    expect(assets.map((asset) => [asset.kind, asset.width, asset.height])).toEqual([["svg", 120, 120]]);
+    const inline = assets[0].inline;
+    const text = inline && "text" in inline ? inline.text : "";
+    expect(text).toContain("stop-color='#ff0000'");
+    expect(text).toContain("x1='0%'");
+    expect(hidden).toEqual({});
   });
 
   it("does not count a missing /favicon.ico the page never declared", async () => {
@@ -364,5 +380,23 @@ describe("assembleAssets inline rasters", () => {
     expect(hidden["tiny-data-uri"]).toBe(5_020);
     expect(metadataCalls.total).toBe(20);
     expect(metadataCalls.peak).toBeLessThanOrEqual(2);
+  });
+});
+
+describe("svgSize", () => {
+  it("reads the root attributes, then falls back to the viewBox", () => {
+    expect(svgSize(`<svg width="24" height="24"></svg>`)).toEqual({ width: 24, height: 24 });
+    expect(svgSize(`<svg width=" 24px " height='1.5'></svg>`)).toEqual({ width: 24, height: 1.5 });
+    expect(svgSize(`<svg WIDTH=".5" HEIGHT=".25"></svg>`)).toEqual({ width: 0.5, height: 0.25 });
+    expect(svgSize(`<svg viewBox="0 0 16 32"></svg>`)).toEqual({ width: 16, height: 32 });
+    expect(svgSize(`<svg width="0" height="0" viewBox="0 0 16 32"></svg>`)).toEqual({ width: 16, height: 32 });
+    expect(svgSize(`<svg width="24"></svg>`)).toEqual({});
+  });
+
+  it("stays fast on a root tag carrying a long digit run", () => {
+    // An unbounded digit run in the width pattern backtracks quadratically, which blocks the scan past every deadline.
+    const started = performance.now();
+    expect(svgSize(`<svg width='${"9".repeat(200_000)}x'><rect width="10" height="10"/></svg>`)).toEqual({});
+    expect(performance.now() - started).toBeLessThan(100);
   });
 });

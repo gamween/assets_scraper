@@ -198,7 +198,9 @@ export async function handleAssetRequest(request: Request, options: AssetProxyOp
     if (request.method !== "GET") return errorResponse(405, "method", "Use GET.", { allow: "GET" });
 
     // Spec 11.2: only this app's pages (same-origin) or a link opened directly (none). A missing header is refused
-    // too, so every browser with Fetch Metadata is covered; scripts can forge the header, the byte budget bounds them.
+    // too, so every browser with Fetch Metadata is covered. A script can forge the header, and nothing in the function
+    // bounds invocations: the byte budget below bounds bytes served, and charges nothing on an error path. Only an
+    // edge rule can bound invocations (spec 17).
     const site = request.headers.get("sec-fetch-site");
     if (site !== "same-origin" && site !== "none") return errorResponse(403, "cross-site", "Only this app can load proxied assets.");
 
