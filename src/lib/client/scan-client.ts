@@ -34,8 +34,6 @@ export interface ScanHandle {
 /** 1 to 3 seconds, so two clients that hit the same busy instance do not retry together. */
 const retryDelay = () => 1000 + Math.random() * 2000;
 
-const validate = process.env.NODE_ENV !== "production";
-
 type Attempt = { kind: "finished" } | { kind: "busy"; error: ScanErrorInfo } | { kind: "aborted" };
 
 export function startScan(url: string, handlers: ScanHandlers): ScanHandle {
@@ -144,8 +142,12 @@ export function startScan(url: string, handlers: ScanHandlers): ScanHandle {
   };
 }
 
+/**
+ * Production stays lenient: a deploy that changes an event shape would otherwise turn every stale tab into an error
+ * panel. The env is read inline so tests can reach both halves; Next replaces it statically in the client build.
+ */
 function parseEvent(raw: unknown): ScanEvent | null {
-  if (!validate) return raw as ScanEvent;
+  if (process.env.NODE_ENV === "production") return raw as ScanEvent;
   const result = ScanEvent.safeParse(raw);
   if (result.success) return result.data;
   console.error("Invalid scan event", result.error.issues, raw);
