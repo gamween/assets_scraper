@@ -15,7 +15,8 @@ export interface ZipFailure {
 
 export interface ZipOptions {
   signal?: AbortSignal;
-  onProgress?: (done: number, total: number) => void;
+  /** `bytes` is what the entries loaded so far weigh: the only size the client knows for files the scan never sized. */
+  onProgress?: (done: number, total: number, bytes: number) => void;
   concurrency?: number;
 }
 
@@ -76,6 +77,7 @@ export function buildZip(items: ZipItem[], host: string, options: ZipOptions = {
     try {
       const pending = new Map<number, Promise<Loaded>>();
       let next = 0;
+      let bytes = 0;
       for (let i = 0; i < plan.length; i++) {
         signal?.throwIfAborted();
         while (next < plan.length && next < i + concurrency) {
@@ -92,7 +94,8 @@ export function buildZip(items: ZipItem[], host: string, options: ZipOptions = {
         const loaded = await pending.get(i)!;
         pending.delete(i);
         signal?.throwIfAborted();
-        onProgress?.(i + 1, plan.length);
+        if (loaded.ok) bytes += loaded.blob.size;
+        onProgress?.(i + 1, plan.length, bytes);
         if (!loaded.ok) {
           failed.push({ name: plan[i].label, path: plan[i].path });
           continue;

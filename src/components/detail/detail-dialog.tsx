@@ -2,12 +2,12 @@
 
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import { ChevronDown, ChevronLeft, ChevronRight, CodeXml, Copy, Download, ExternalLink, XIcon } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { Badge } from "@/components/common/badge";
 import { cn } from "@/components/common/cn";
 import { Kbd } from "@/components/common/kbd";
-import { copySvgCode, downloadAsset, openSource, sourceUrl, svgMarkup } from "@/components/results/asset-actions";
-import { AssetPreview, WELL_CLASSES, wellBackground } from "@/components/results/asset-preview";
+import { copySvgCode, copyWithToast, downloadAsset, openSource, sourceUrl, svgMarkup } from "@/components/results/asset-actions";
+import { AssetPreview, DETAIL_FRAME, WELL_CLASSES, wellBackground } from "@/components/results/asset-preview";
 import { BackgroundControl } from "@/components/results/filter-bar";
 import { foundInLabel, roleLabel } from "@/components/results/labels";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -18,7 +18,7 @@ import { syncDetailToLocation } from "@/lib/client/scan-session";
 import { appStore, findAsset, getDetailList, useApp } from "@/lib/client/store";
 
 const ACTION_CLASS =
-  "group/action flex h-9 w-full items-center gap-2.5 rounded-md border px-3 text-body font-medium transition-colors duration-100 outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent [&_svg]:size-4 [&_svg]:shrink-0";
+  "group/action flex h-9 w-full items-center gap-2.5 rounded-md border px-3 text-body font-medium transition-colors duration-100 focus-ring [&_svg]:size-4 [&_svg]:shrink-0";
 
 function ActionButton({ label, shortcut, primary = false, onClick, icon }: { label: string; shortcut?: string; primary?: boolean; onClick: () => void; icon: React.ReactNode }) {
   return (
@@ -35,16 +35,6 @@ function ActionButton({ label, shortcut, primary = false, onClick, icon }: { lab
   );
 }
 
-function shortUrl(url: string): string {
-  try {
-    const parsed = new URL(url);
-    const path = `${parsed.pathname}${parsed.search}`;
-    return `${parsed.host}${path.length > 42 ? `${path.slice(0, 20)}…${path.slice(-18)}` : path}`;
-  } catch {
-    return url;
-  }
-}
-
 function Metadata({ asset }: { asset: Asset }) {
   const source = sourceUrl(asset);
   const bytes = assetBytes(asset);
@@ -58,9 +48,34 @@ function Metadata({ asset }: { asset: Asset }) {
   rows.push([
     "Source",
     source ? (
-      <a href={source} target="_blank" rel="noopener noreferrer" className="break-all underline decoration-border-strong underline-offset-4 hover:decoration-text" title={source}>
-        {shortUrl(source)}
-      </a>
+      // The URL used to be middle-truncated and then wrapped anyway, so it was cut for nothing. It now reads as far as
+      // three lines of the real address, with the whole value on hover and one click to copy it.
+      <span className="flex items-start gap-1.5">
+        <a
+          href={source}
+          target="_blank"
+          rel="noopener noreferrer"
+          title={source}
+          className="line-clamp-3 min-w-0 break-all underline decoration-border-strong underline-offset-4 hover:decoration-text"
+        >
+          {source}
+        </a>
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <button
+                type="button"
+                aria-label="Copy source URL"
+                onClick={() => copyWithToast(source, "Source URL copied")}
+                className="focus-ring-tight -mt-0.5 grid size-5 shrink-0 place-items-center rounded-sm text-text-3 transition-colors hover:bg-well hover:text-text"
+              />
+            }
+          >
+            <Copy className="size-3.5" aria-hidden="true" />
+          </TooltipTrigger>
+          <TooltipContent>Copy source URL</TooltipContent>
+        </Tooltip>
+      </span>
     ) : (
       "Inline in the page"
     ),
@@ -82,6 +97,11 @@ function CodeBlock({ asset }: { asset: Asset }) {
   const [open, setOpen] = useState(false);
   const [text, setText] = useState<string | null>(asset.inline && "text" in asset.inline ? asset.inline.text : null);
   const [failed, setFailed] = useState(false);
+  // The block is 240 px tall over markup that is usually far longer, and it used to cut the last line through the
+  // glyphs with nothing saying so. A fade marks the edge until the end of the markup is on screen. The same
+  // measurement runs from the ref and from the scroll handler, so a re-render cannot disagree with a scroll.
+  const [moreBelow, setMoreBelow] = useState(false);
+  const measure = (element: HTMLElement | null) => setMoreBelow(!!element && element.scrollTop + element.clientHeight < element.scrollHeight - 1);
 
   return (
     <div className="rounded-lg border border-border">
@@ -96,25 +116,37 @@ function CodeBlock({ asset }: { asset: Asset }) {
               .catch(() => setFailed(true));
           }
         }}
-        className="flex h-9 w-full items-center gap-2 rounded-lg px-3 text-body font-medium text-text outline-none hover:bg-well/60 focus-visible:outline-2 focus-visible:outline-accent"
+        className="flex h-9 w-full items-center gap-2 rounded-lg px-3 text-body font-medium text-text hover:bg-well/60 focus-ring"
       >
         <CodeXml className="size-4 text-text-3" aria-hidden="true" />
         <span className="flex-1 text-left">Code</span>
         <ChevronDown className={cn("size-4 text-text-3 transition-transform duration-150", open && "rotate-180")} aria-hidden="true" />
       </button>
       {open ? (
-        <pre
-          data-testid="detail-code"
-          className="max-h-[240px] overflow-auto border-t border-border bg-bg px-3 py-2.5 font-mono text-mono-xs leading-[17px] font-normal tracking-normal break-all whitespace-pre-wrap text-text-2"
-        >
-          {failed ? "The markup couldn't be loaded." : (text ?? "Loading")}
-        </pre>
+        <div className="relative">
+          <pre
+            data-testid="detail-code"
+            onScroll={(event) => measure(event.currentTarget)}
+            ref={measure}
+            className="scrollbar-thin max-h-[240px] overflow-auto border-t border-border bg-bg px-3 py-2.5 font-mono text-mono-xs leading-[17px] font-normal tracking-normal break-all whitespace-pre-wrap text-text-2"
+          >
+            {failed ? "The markup couldn't be loaded." : (text ?? "Loading")}
+          </pre>
+          <span
+            aria-hidden="true"
+            data-testid="detail-code-fade"
+            className={cn(
+              "pointer-events-none absolute inset-x-px bottom-px h-6 rounded-b-lg bg-linear-to-b from-transparent to-bg transition-opacity duration-100",
+              !moreBelow && "opacity-0",
+            )}
+          />
+        </div>
       ) : null}
     </div>
   );
 }
 
-function NavButton({ direction, onClick }: { direction: "previous" | "next"; onClick: () => void }) {
+function NavButton({ direction, onClick, className }: { direction: "previous" | "next"; onClick: () => void; className?: string }) {
   const Icon = direction === "previous" ? ChevronLeft : ChevronRight;
   return (
     <Tooltip>
@@ -125,8 +157,8 @@ function NavButton({ direction, onClick }: { direction: "previous" | "next"; onC
             aria-label={direction === "previous" ? "Previous" : "Next"}
             onClick={onClick}
             className={cn(
-              "absolute top-1/2 z-10 grid size-9 -translate-y-1/2 place-items-center rounded-md border border-border bg-surface/95 text-text-2 transition-colors hover:border-border-strong hover:text-text focus-visible:outline-2 focus-visible:outline-accent",
-              direction === "previous" ? "left-3" : "right-3",
+              "z-10 grid size-9 place-items-center rounded-md border border-border bg-surface/95 text-text-2 transition-colors hover:border-border-strong hover:text-text focus-ring",
+              className,
             )}
           />
         }
@@ -152,19 +184,29 @@ function DetailBody({ asset }: { asset: Asset }) {
   const formatLabel = (asset.original?.format ?? asset.format).toUpperCase();
   const { nextDetail, previousDetail } = appStore.getState();
 
+  // The grid row is explicit: an implicit `auto` row makes `md:h-full` on the preview column cyclic, so the column
+  // grew to the height of the asset (1243 px inside an 860 px dialog) and the dialog clipped what did not fit.
   return (
-    <div className="flex h-full min-h-0 flex-col md:grid md:grid-cols-[minmax(0,1fr)_340px]">
-      <div className={cn("relative h-[44dvh] shrink-0 md:h-full", WELL_CLASSES[well])} data-testid="detail-well" data-background={well}>
+    <div className="flex h-full min-h-0 flex-col md:grid md:grid-cols-[minmax(0,1fr)_var(--detail-panel)] md:grid-rows-[minmax(0,1fr)]">
+      <div className={cn("relative h-[44dvh] shrink-0 md:h-full md:min-h-0", WELL_CLASSES[well])} data-testid="detail-well" data-background={well}>
         <div className="absolute inset-x-3 top-3 z-10 flex items-center justify-between gap-3">
           <BackgroundControl value={background} onChange={setOverride} className="bg-well/95" />
-          {index >= 0 ? (
-            <span data-testid="detail-counter" className="rounded-md border border-border bg-surface/95 px-2 py-1 font-mono text-mono text-text-2 tabular-nums">
-              {index + 1} of {list.length}
-            </span>
-          ) : null}
+          {/*
+           * On a phone the well is 44dvh over a 390 px screen and the arrows sat inside it, about 7 px from the
+           * artwork on each side. They ride with the counter instead, out of the band the asset is in.
+           */}
+          <div className="flex shrink-0 items-center gap-1.5">
+            {list.length > 1 ? <NavButton direction="previous" onClick={previousDetail} className="md:hidden" /> : null}
+            {index >= 0 ? (
+              <span data-testid="detail-counter" className="rounded-md border border-border bg-surface/95 px-2 py-1 font-mono text-mono whitespace-nowrap text-text-2 tabular-nums">
+                {index + 1} of {list.length}
+              </span>
+            ) : null}
+            {list.length > 1 ? <NavButton direction="next" onClick={nextDetail} className="md:hidden" /> : null}
+          </div>
         </div>
-        <div className="grid h-full w-full place-items-center overflow-hidden p-6 pt-14">
-          <div className="relative grid size-full place-items-center">
+        <div className="absolute inset-0 overflow-hidden p-6 pt-14">
+          <div className="relative size-full">
             <AssetPreview key={asset.id} asset={asset} variant="detail" />
             {/*
              * Spec 11.4: a blob: URL of a scraped SVG is never opened in a tab. This layer takes the pointer, so the
@@ -175,8 +217,8 @@ function DetailBody({ asset }: { asset: Asset }) {
         </div>
         {list.length > 1 ? (
           <>
-            <NavButton direction="previous" onClick={previousDetail} />
-            <NavButton direction="next" onClick={nextDetail} />
+            <NavButton direction="previous" onClick={previousDetail} className="absolute top-1/2 left-3 hidden -translate-y-1/2 md:grid" />
+            <NavButton direction="next" onClick={nextDetail} className="absolute top-1/2 right-3 hidden -translate-y-1/2 md:grid" />
           </>
         ) : null}
       </div>
@@ -196,7 +238,7 @@ function DetailBody({ asset }: { asset: Asset }) {
           </div>
           <DialogPrimitive.Close
             aria-label="Close"
-            className="-mt-1 -mr-2 grid size-8 shrink-0 place-items-center rounded-md text-text-3 transition-colors hover:bg-well hover:text-text focus-visible:outline-2 focus-visible:outline-accent"
+            className="-mt-1 -mr-2 grid size-8 shrink-0 place-items-center rounded-md text-text-3 transition-colors hover:bg-well hover:text-text focus-ring"
           >
             <XIcon className="size-4" aria-hidden="true" />
           </DialogPrimitive.Close>
@@ -223,6 +265,40 @@ function DetailBody({ asset }: { asset: Asset }) {
       </div>
     </div>
   );
+}
+
+/** Below this the info panel starts scrolling for no reason; above it the dialog leaves the screen. */
+const DIALOG_MIN_HEIGHT = 460;
+const DIALOG_MAX_HEIGHT = 880;
+
+/**
+ * The geometry `dialogHeight` reasons about, shared with the layout so the two cannot drift: `DIALOG_WIDTH` and
+ * `PANEL_WIDTH` reach the popup as `--detail-width` and `--detail-panel` and are read by `md:w-[...]` and the grid
+ * columns of `DetailBody`, and `DETAIL_FRAME` is the fraction of the well a detail preview fills (asset-preview).
+ * `WELL_PADDING` mirrors `p-6` on the well (24 px a side) and `CONTROL_BAND` the 56 px control band with its padding;
+ * both are plain Tailwind classes, so an edit there belongs here too.
+ */
+const DIALOG_WIDTH = 1120;
+const PANEL_WIDTH = 340;
+const WELL_PADDING = 48;
+const CONTROL_BAND = 104;
+
+/**
+ * Height the dialog opens at. It used to be 880 px whatever the asset, so a 60x25 logo sat in a 780x845 white void
+ * with 420 px of empty panel under its six metadata rows. The preview the asset will get decides instead, clamped so
+ * the panel always has room and the dialog never leaves the screen.
+ */
+function dialogHeight(asset: Asset): number {
+  const source = asset.original ?? asset.display;
+  const width = source?.width ?? asset.width ?? 0;
+  const height = source?.height ?? asset.height ?? 0;
+  if (!width || !height) return DIALOG_MAX_HEIGHT;
+  // The preview column is what the dialog leaves beside the panel, less its padding, and the frame takes 82 percent of
+  // the well: a wide asset runs out of width before it reaches its 6x (vectors) or 2x (rasters).
+  const room = (DIALOG_WIDTH - PANEL_WIDTH - WELL_PADDING) * DETAIL_FRAME;
+  const shown = Math.min(height * (asset.kind === "svg" ? 6 : 2), (room * height) / width);
+  // Back out the well the frame needs, plus the control band and the padding around it.
+  return Math.round(Math.min(DIALOG_MAX_HEIGHT, Math.max(DIALOG_MIN_HEIGHT, shown / DETAIL_FRAME + CONTROL_BAND)));
 }
 
 /**
@@ -294,9 +370,11 @@ export function DetailDialog() {
           ref={popupRef}
           initialFocus={popupRef}
           finalFocus={() => (shown ? (document.querySelector<HTMLElement>(`[data-asset-id="${CSS.escape(shown.id)}"] [data-card-main]`) ?? true) : true)}
+          data-testid="detail-popup"
+          style={{ "--detail-height": `${shown ? dialogHeight(shown) : DIALOG_MAX_HEIGHT}px`, "--detail-width": `${DIALOG_WIDTH}px`, "--detail-panel": `${PANEL_WIDTH}px` } as CSSProperties}
           className={cn(
             "fixed inset-0 z-50 flex flex-col overflow-hidden bg-surface text-text outline-none",
-            "md:inset-auto md:top-1/2 md:left-1/2 md:h-[min(calc(100dvh-96px),880px)] md:w-[min(1120px,calc(100vw-48px))] md:-translate-x-1/2 md:-translate-y-1/2 md:rounded-xl md:border md:border-border md:shadow-float",
+            "md:inset-auto md:top-1/2 md:left-1/2 md:h-[min(calc(100dvh-96px),var(--detail-height))] md:w-[min(var(--detail-width),calc(100vw-48px))] md:-translate-x-1/2 md:-translate-y-1/2 md:rounded-xl md:border md:border-border md:shadow-float",
             "transition-[opacity,scale] duration-150 ease-enter data-ending-style:scale-[0.98] data-ending-style:opacity-0 data-ending-style:duration-100 data-ending-style:ease-exit data-starting-style:scale-[0.98] data-starting-style:opacity-0",
           )}
         >

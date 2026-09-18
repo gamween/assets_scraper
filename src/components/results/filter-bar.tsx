@@ -3,6 +3,7 @@
 import { ChevronDown, Search, SquareCheck, XIcon } from "lucide-react";
 import { useRef } from "react";
 import { cn } from "@/components/common/cn";
+import { useMediaQuery } from "@/components/common/use-media-query";
 import { Kbd } from "@/components/common/kbd";
 import { BACKGROUNDS, SORT_KEYS, TABS, tabCounts, type Background, type SortKey, type Tab } from "@/lib/client/filters";
 import { useApp } from "@/lib/client/store";
@@ -34,7 +35,7 @@ function Tabs() {
             aria-keyshortcuts={String(index + 1)}
             onClick={() => setTab(id)}
             className={cn(
-              "relative flex shrink-0 items-center gap-1.5 border-b-2 text-body font-medium whitespace-nowrap transition-colors duration-150 outline-none focus-visible:text-text focus-visible:after:absolute focus-visible:after:inset-x-[-6px] focus-visible:after:inset-y-2.5 focus-visible:after:rounded-md focus-visible:after:outline-2 focus-visible:after:outline-accent",
+              "relative flex shrink-0 items-center gap-1.5 border-b-2 text-body font-medium whitespace-nowrap transition-colors duration-150 outline-none focus-visible:text-text focus-ring-tab",
               active ? "border-ink text-text" : "border-transparent text-text-2 hover:text-text",
               counts[id] === 0 && !active && "text-text-3",
             )}
@@ -52,6 +53,9 @@ function SearchField() {
   const query = useApp((s) => s.query);
   const setQuery = useApp((s) => s.setQuery);
   const inputRef = useRef<HTMLInputElement>(null);
+  // Below 480 the row is the input, the sort control and, on touch, the Select button: the full placeholder does not
+  // fit what is left and was cut to `Filter by nan`. The accessible name stays the long one.
+  const narrow = useMediaQuery("(max-width: 479px)");
 
   return (
     <div className="relative min-w-0 flex-1 sm:max-w-[280px] lg:w-[280px] lg:flex-none">
@@ -62,7 +66,7 @@ function SearchField() {
         type="search"
         aria-label="Filter by name or URL"
         aria-keyshortcuts="/"
-        placeholder="Filter by name or URL"
+        placeholder={narrow ? "Filter" : "Filter by name or URL"}
         value={query}
         autoComplete="off"
         spellCheck={false}
@@ -90,7 +94,7 @@ function SearchField() {
           <XIcon className="size-3.5" aria-hidden="true" />
         </button>
       ) : (
-        <Kbd className="pointer-events-none absolute top-1/2 right-2 -translate-y-1/2 peer-focus-visible:opacity-0">/</Kbd>
+        <Kbd className="pointer-events-none absolute top-1/2 right-2 -translate-y-1/2 peer-focus-visible:opacity-0 pointer-coarse:hidden">/</Kbd>
       )}
     </div>
   );
@@ -146,7 +150,7 @@ export function BackgroundControl({ value, onChange, className }: { value: Backg
             tabIndex={active ? 0 : -1}
             onClick={() => onChange(option)}
             className={cn(
-              "h-full rounded-[4px] border px-2.5 text-small transition-colors duration-100 outline-none focus-visible:outline-2 focus-visible:outline-accent",
+              "h-full rounded-[4px] border px-2.5 text-small transition-colors duration-100 focus-ring-tight",
               active ? "border-border bg-surface font-medium text-text" : "border-transparent text-text-2 hover:text-text",
             )}
           >
@@ -197,6 +201,28 @@ function BackgroundSelect({ value, onChange, className }: { value: Background; o
   );
 }
 
+/** Spec 12.4 `Select` button, on touch devices only: the checkboxes need a hover the device does not have. */
+function SelectionToggle({ className }: { className?: string }) {
+  const selectionMode = useApp((s) => s.selectionMode);
+  const setSelectionMode = useApp((s) => s.setSelectionMode);
+  const clearSelection = useApp((s) => s.clearSelection);
+  return (
+    <button
+      type="button"
+      aria-pressed={selectionMode}
+      onClick={() => (selectionMode ? clearSelection() : setSelectionMode(true))}
+      className={cn(
+        "h-8 shrink-0 items-center gap-1.5 rounded-md border px-2.5 text-body",
+        selectionMode ? "border-accent bg-accent-soft text-text" : "border-border bg-surface text-text-2",
+        className,
+      )}
+    >
+      <SquareCheck className="size-4" aria-hidden="true" />
+      {selectionMode ? "Done" : "Select"}
+    </button>
+  );
+}
+
 /**
  * Spec 12.2 sticky filter row: tabs with counts, search (`/`), sort and the preview background control. One row from
  * 1024 px; below, the tabs sit over the controls, and phones pick the background from a compact select next to the tabs.
@@ -204,14 +230,11 @@ function BackgroundSelect({ value, onChange, className }: { value: Background; o
 export function FilterBar() {
   const background = useApp((s) => s.background);
   const setBackground = useApp((s) => s.setBackground);
-  const selectionMode = useApp((s) => s.selectionMode);
-  const setSelectionMode = useApp((s) => s.setSelectionMode);
-  const clearSelection = useApp((s) => s.clearSelection);
 
   return (
     <div className="sticky top-[calc(var(--top-bar-height)+env(safe-area-inset-top,0px))] z-30 mt-6 border-b border-border bg-bg">
       <div className="page-x flex flex-wrap items-stretch gap-x-6 lg:h-(--filter-bar-height) lg:flex-nowrap">
-        <div className="flex h-11 min-w-0 flex-1 items-stretch lg:h-auto lg:flex-none">
+        <div className="flex h-11 min-w-0 flex-1 items-stretch gap-2 lg:h-auto lg:flex-none">
           <Tabs />
           <BackgroundSelect value={background} onChange={setBackground} className="ml-auto self-center sm:hidden" />
         </div>
@@ -219,18 +242,7 @@ export function FilterBar() {
           <SearchField />
           <SortSelect />
           <BackgroundControl value={background} onChange={setBackground} className="hidden sm:flex" />
-          <button
-            type="button"
-            aria-pressed={selectionMode}
-            onClick={() => (selectionMode ? clearSelection() : setSelectionMode(true))}
-            className={cn(
-              "hidden h-8 shrink-0 items-center gap-1.5 rounded-md border px-2.5 text-body pointer-coarse:inline-flex",
-              selectionMode ? "border-accent bg-accent-soft text-text" : "border-border bg-surface text-text-2",
-            )}
-          >
-            <SquareCheck className="size-4" aria-hidden="true" />
-            {selectionMode ? "Done" : "Select"}
-          </button>
+          <SelectionToggle className="hidden pointer-coarse:inline-flex" />
         </div>
       </div>
     </div>

@@ -23,8 +23,19 @@ export function selectedItems(state: AppState = appStore.getState()): ZipItem[] 
   ];
 }
 
-export function itemsBytes(items: ZipItem[]): number {
-  return items.reduce((sum, item) => sum + (item.type === "asset" ? assetBytes(item.asset) : fontBytes(item.font)), 0);
+/**
+ * Total bytes of the files these items download, or `null` when the scan recorded no size for at least one of them:
+ * a partial sum reads as the whole and is worse than no number at all (three stripe.com assets summed to 3.2 KB for
+ * a 4.2 MB ZIP). Callers print a size only for a number.
+ */
+export function itemsBytes(items: ZipItem[]): number | null {
+  let sum = 0;
+  for (const item of items) {
+    const bytes = item.type === "asset" ? assetBytes(item.asset) : fontBytes(item.font);
+    if (!bytes) return null;
+    sum += bytes;
+  }
+  return sum;
 }
 
 /** Stays until dismissed or replaced, so a keyboard user has the time to reach `Show` (F6, then Tab). */
@@ -51,17 +62,27 @@ function startZip(items: ZipItem[], source: ZipProgress["source"]) {
     notify("Nothing here can be downloaded");
     return;
   }
+  // Only the blob path holds the whole archive in memory. The planned size is unknown whenever one file was never
+  // sized by the scan, so the same warning also watches what the entries actually weigh as they load, which the
+  // `Cancel` link can still act on.
+  const buffered = typeof (globalThis as { showSaveFilePicker?: unknown }).showSaveFilePicker !== "function";
   const bytes = itemsBytes(items);
-  if (bytes > LARGE_ZIP_BYTES && typeof (globalThis as { showSaveFilePicker?: unknown }).showSaveFilePicker !== "function") {
-    notify(`Large ZIP (${formatBytes(bytes)})`, { description: "Your browser keeps it in memory until it is saved." });
-  }
+  let warned = false;
+  const warnLarge = (size: number) => {
+    warned = true;
+    notify(`Large ZIP (${formatBytes(size)})`, { description: "Your browser keeps it in memory until it is saved." });
+  };
+  if (buffered && bytes !== null && bytes > LARGE_ZIP_BYTES) warnLarge(bytes);
 
   const current = new AbortController();
   controller = current;
   state.setZip({ source, done: 0, total });
   void saveZip(items, host, {
     signal: current.signal,
-    onProgress: (done, count) => appStore.getState().setZip({ source, done, total: count }),
+    onProgress: (done, count, loaded) => {
+      appStore.getState().setZip({ source, done, total: count });
+      if (buffered && !warned && loaded > LARGE_ZIP_BYTES) warnLarge(loaded);
+    },
   })
     .then(({ failed }) => {
       if (failed.length) showFailures(failed);

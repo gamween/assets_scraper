@@ -11,7 +11,7 @@ export function HostChips({ label, hosts, removable = false }: { label: string; 
         {label}
       </span>
       {hosts.map((host) => (
-        <span key={host} className="group/chip inline-flex h-7 items-stretch overflow-hidden rounded-md border border-border bg-surface transition-colors duration-100 hover:border-border-strong">
+        <span key={host} className="group/chip focus-ring-within inline-flex h-7 items-stretch overflow-hidden rounded-md border border-border bg-surface transition-colors duration-100 hover:border-border-strong">
           <button
             type="button"
             onClick={() => submitUrl(host)}

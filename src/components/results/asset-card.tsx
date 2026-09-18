@@ -6,11 +6,11 @@ import { Badge } from "@/components/common/badge";
 import { cn } from "@/components/common/cn";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { Asset } from "@/lib/contract";
-import { assetKey } from "@/lib/client/filters";
+import { assetKey, type SectionId } from "@/lib/client/filters";
 import { appStore, useApp } from "@/lib/client/store";
 import { copySvgCode, downloadAsset } from "./asset-actions";
 import { AssetPreview, WELL_CLASSES, wellBackground } from "./asset-preview";
-import { assetMetaParts, roleBadge, splitExtension } from "./labels";
+import { assetMetaParts, roleBadge } from "./labels";
 
 /**
  * Spec 12.4 click model: checkbox or Cmd/Ctrl+click toggles, Shift+click selects a range in visual order, and once
@@ -36,7 +36,7 @@ function IconAction({ label, onClick, children }: { label: string; onClick: () =
               event.stopPropagation();
               onClick();
             }}
-            className="grid size-7 place-items-center rounded-md border border-border bg-surface text-text-2 transition-colors duration-100 hover:border-border-strong hover:text-text focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent [&_svg]:size-3.5"
+            className="grid size-7 place-items-center rounded-md border border-border bg-surface text-text-2 transition-colors duration-100 hover:border-border-strong hover:text-text focus-ring-tight [&_svg]:size-3.5"
           />
         }
       >
@@ -47,14 +47,13 @@ function IconAction({ label, onClick, children }: { label: string; onClick: () =
   );
 }
 
-export const AssetCard = memo(function AssetCard({ asset }: { asset: Asset }) {
+export const AssetCard = memo(function AssetCard({ asset, section }: { asset: Asset; section?: SectionId }) {
   const key = assetKey(asset.id);
   const selected = useApp((s) => s.selection.has(key));
   const selecting = useApp((s) => s.selection.size > 0 || s.selectionMode);
   const background = useApp((s) => s.background);
   const well = wellBackground(asset.tone, background);
-  const badge = roleBadge(asset);
-  const [base, extension] = splitExtension(asset.filename);
+  const badge = roleBadge(asset, section);
   // Spec 12.3: GIFs play on hover only (touch has no hover: tiles keep the still frame, the detail view plays them).
   const [hovered, setHovered] = useState(false);
   const hover = asset.format === "gif" ? (on: boolean) => (event: PointerEvent) => event.pointerType !== "touch" && setHovered(on) : null;
@@ -94,7 +93,7 @@ export const AssetCard = memo(function AssetCard({ asset }: { asset: Asset }) {
             else appStore.getState().toggle(key);
           }}
           className={cn(
-            "absolute top-2 right-2 z-10 grid size-5 place-items-center rounded-sm border-[1.5px] transition-[opacity,background-color,border-color] duration-100 focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent",
+            "absolute top-2 right-2 z-10 grid size-5 place-items-center rounded-sm border-[1.5px] transition-[opacity,background-color,border-color] duration-100 focus-visible:opacity-100 focus-ring-tight",
             selected ? "border-accent bg-accent text-accent-fg" : "border-border-strong bg-surface text-transparent hover:border-text-3",
             selected || selecting ? "opacity-100" : "opacity-0 group-hover/card:opacity-100",
           )}
@@ -113,10 +112,28 @@ export const AssetCard = memo(function AssetCard({ asset }: { asset: Asset }) {
           </IconAction>
         </div>
       </div>
-      <div className="flex min-w-0 flex-col gap-0.5 border-t border-border p-3">
-        <span data-testid="asset-filename" className="flex min-w-0 text-small text-text">
-          <span className="truncate">{base}</span>
-          <span className="shrink-0">{extension}</span>
+      {/*
+       * The overlay button below covers the whole tile, so the name used to be unselectable with the mouse: the drag
+       * started on the button. The footer is lifted above it and only the name takes the pointer, with the click
+       * forwarded so the tile still behaves as one control. A click that ends a drag-selection is left alone.
+       */}
+      <div className="pointer-events-none relative z-10 flex min-w-0 flex-col gap-0.5 border-t border-border p-3">
+        {/*
+         * One text node, never two boxes: the name used to be a flex row of stem and extension, both blockified by
+         * the flex container, and a selection across them serialized with a line break (`linear\n.svg` pasted into a
+         * rename field is two lines). A name too long for the tile now ends in an ellipsis, extension included, and
+         * the format stays on the meta line below it.
+         */}
+        <span
+          data-testid="asset-filename"
+          title={asset.filename}
+          onClick={(event) => {
+            if (window.getSelection()?.toString()) return;
+            activateItem(key, event, () => appStore.getState().openDetail(asset.id));
+          }}
+          className="pointer-events-auto block max-w-fit min-w-0 cursor-text truncate text-small text-text select-text"
+        >
+          {asset.filename}
         </span>
         {/*
          * One line of whole parts, most useful first: a part that does not fit wraps onto a hidden second line, so a

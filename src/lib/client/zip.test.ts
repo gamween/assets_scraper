@@ -50,11 +50,14 @@ function mockFetch() {
     "https://cdn.test/hero.png": () => new Response("HERO"),
     "https://cdn.test/other.png": () => new Response("OTHER"),
     [broken.original!.proxy]: () => new Response("gone", { status: 404 }),
+    // Font files go through the proxy: a direct cross-origin fetch of a font is blocked by CORS. The direct URL is
+    // still served here, for the file past the signing cap that has no proxy path.
     "https://static.linear.app/fonts/InterVariable.woff2": () => new Response("WOFF2-REGULAR"),
-    "https://static.linear.app/fonts/InterVariable-Italic.woff2": () => new Response("WOFF2-ITALIC"),
+    [interRegular.proxy]: () => new Response("WOFF2-REGULAR"),
+    [interItalic.proxy]: () => new Response("WOFF2-ITALIC"),
     [`${interRegular.proxy}&fmt=ttf`]: () => new Response("TTF-REGULAR"),
     [`${interItalic.proxy}&fmt=ttf`]: () => new Response("TTF-ITALIC"),
-    "https://static.linear.app/fonts/Berkeley-Mono.woff2": () => new Response("WOFF2-MONO"),
+    "/api/asset?u=bW9ubw&e=1&s=c": () => new Response("WOFF2-MONO"),
   };
   const fetchMock = vi.fn(async (url: string) => {
     const respond = responses[url];
@@ -82,8 +85,8 @@ describe("buildZip", () => {
       { type: "font", font: dataUri },
       { type: "font", font: adobe },
     ];
-    const progress: [number, number][] = [];
-    const { response, result } = buildZip(items, "linear.app", { onProgress: (done, total) => progress.push([done, total]) });
+    const progress: [number, number, number][] = [];
+    const { response, result } = buildZip(items, "linear.app", { onProgress: (done, total, bytes) => progress.push([done, total, bytes]) });
     const entries = readZip(new Uint8Array(await response.arrayBuffer()));
     const { failed } = await result;
 
@@ -107,7 +110,11 @@ describe("buildZip", () => {
     expect(Buffer.from(byName.get("brand-serif-400.woff2")!)).toEqual(interWoff2);
 
     expect(failed).toEqual([{ name: "Broken image", path: "linear.app-assets/images/linear-broken.png" }]);
-    expect(progress.at(-1)).toEqual([10, 10]);
+    // The running byte count is the only size a caller has for files the scan never sized: it skips the entry that
+    // failed and grows to what the archive holds.
+    const loaded = entries.reduce((sum, entry) => sum + entry.data.length, 0);
+    expect(progress.at(-1)).toEqual([10, 10, loaded]);
+    expect(progress.map(([, , bytes]) => bytes)).toEqual([...progress].map(([, , bytes]) => bytes).sort((a, b) => a - b));
     expect(fetchMock.mock.calls.some((call) => String(call[0]).startsWith("https://static.linear.app/fonts/Berkeley") && String(call[0]).includes("fmt"))).toBe(false);
   });
 

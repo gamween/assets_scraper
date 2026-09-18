@@ -57,3 +57,10 @@ export function normalizeInputUrl(raw: string): UrlInputResult {
   if (!u.hash.startsWith("#/") && !u.hash.startsWith("#!/")) u.hash = "";
   return { ok: true, url: u.toString(), host };
 }
+
+/**
+ * Host as the interface shows it. A `www.` the user did not type is noise, and it made the results header
+ * (`www.framer.com`, from the final URL) disagree with the tab title (`framer.com`, from the requested one).
+ * The real host stays in the ZIP folder name and in `Copy link`.
+ */
+export const displayHost = (host: string): string => host.replace(/^www\./i, "");

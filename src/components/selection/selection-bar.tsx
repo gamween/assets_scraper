@@ -8,10 +8,13 @@ import { formatBytes, formatCount } from "@/lib/format";
 import { useApp } from "@/lib/client/store";
 import { cancelZip, downloadSelection, itemsBytes, selectedItems } from "./zip-actions";
 
-/** `8 selected · 2.4 MB`: the selector returns numbers, so the bar only re-renders when they change. */
-function useSelectionSummary(): { count: number; bytes: number } {
+/**
+ * `8 selected · 2.4 MB`: the selector returns numbers, so the bar only re-renders when they change. `bytes` is null
+ * when any selected file has no recorded size, and the bar then shows the count alone rather than a partial sum.
+ */
+function useSelectionSummary(): { count: number; bytes: number | null } {
   const count = useApp((s) => s.selection.size);
-  const bytes = useApp((s) => (s.selection.size ? itemsBytes(selectedItems(s)) : 0));
+  const bytes = useApp((s) => (s.selection.size ? itemsBytes(selectedItems(s)) : null));
   return { count, bytes };
 }
 
@@ -38,7 +41,7 @@ export function SelectionBar() {
         )}
       >
         <span data-testid="selection-count" className="mr-auto inline-flex h-8 min-w-0 items-center truncate rounded-md bg-accent-soft px-2.5 font-mono text-mono whitespace-nowrap text-text tabular-nums sm:mr-3" aria-live="polite">
-          {formatCount(count)} selected{bytes > 0 ? ` · ${formatBytes(bytes)}` : ""}
+          {formatCount(count)} selected{bytes ? ` · ${formatBytes(bytes)}` : ""}
         </span>
         {zipping ? (
           <button type="button" onClick={cancelZip} className="h-8 rounded-md px-2 text-body text-text-2 underline decoration-border-strong underline-offset-4 hover:text-text">

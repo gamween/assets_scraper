@@ -28,7 +28,8 @@ test.describe("results", () => {
     await expect(page.getByTestId("results-meta")).toHaveText(`linear.app · ${stats.assets} assets · 11s`);
     await expect(page).toHaveTitle(`${stats.assets} assets · linear.app`);
     await expect(page.getByRole("button", { name: "Rescan" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Download all" })).toBeVisible();
+    // The button carries the number of files it would zip: its scope is the whole tab, not the filtered grid.
+    await expect(page.getByRole("button", { name: /^Download all \d+$/ })).toBeVisible();
 
     await page.getByRole("button", { name: "Copy link" }).click();
     await expect(page.getByTestId("toast")).toContainText("Link copied");
@@ -82,11 +83,47 @@ test.describe("results", () => {
     await expect(page.getByRole("tab", { name: /^All/ })).toHaveAttribute("aria-selected", "true");
   });
 
+  test("Auto never picks the checkerboard, and a pale swatch is still a swatch", async ({ page }) => {
+    await openResults(page, linear);
+    // Spec 12.3: light on dark, dark on light, everything else on the plain well. The checkerboard is opt-in.
+    await expect(page.locator('[data-testid="preview-well"][data-background="grid"]')).toHaveCount(0);
+    await expect(page.locator('[data-testid="preview-well"][data-background="plain"]').first()).toBeVisible();
+
+    const contrasts = await page.getByTestId("swatch-chip").evaluateAll((chips) => {
+      const channel = (value: number) => (value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4);
+      const luminance = (color: string) => {
+        const [r, g, b] = color.match(/[\d.]+/g)!.slice(0, 3).map((part) => channel(Number(part) / 255));
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      };
+      const ratio = (a: string, b: string) => (Math.max(luminance(a), luminance(b)) + 0.05) / (Math.min(luminance(a), luminance(b)) + 0.05);
+      const ground = getComputedStyle(document.body).backgroundColor;
+      return chips.map((chip) => {
+        const style = getComputedStyle(chip);
+        // Either the fill itself is distinguishable from the page, or the border carries the boundary.
+        return Math.max(ratio(style.backgroundColor, ground), ratio(style.borderTopColor, ground));
+      });
+    });
+    expect(contrasts.length).toBeGreaterThan(3);
+    for (const contrast of contrasts) expect(contrast).toBeGreaterThanOrEqual(3);
+  });
+
+  test("the header and the tab title both drop a www the user did not type", async ({ page }) => {
+    const wwwHost = linear.map((event) =>
+      event.type === "page" ? { ...event, page: { ...event.page, host: "www.linear.app", finalUrl: "https://www.linear.app/" } } : event,
+    );
+    await openResults(page, wwwHost);
+    await expect(page.getByTestId("results-meta")).toContainText("linear.app · ");
+    await expect(page.getByTestId("results-meta")).not.toContainText("www.");
+    await expect(page).toHaveTitle(/^\d+ assets · linear\.app$/);
+  });
+
   test("Logos lead All, and the SVG tab has no Logos section", async ({ page }) => {
     await openResults(page, linear);
     const headings = page.getByTestId("results").getByRole("heading", { level: 2 });
     await expect(headings.first()).toHaveText("Logos");
     await expect(section(page, "Logos").getByTestId("asset-card").first()).toHaveAttribute("data-role", "site-logo");
+    // The badge would repeat the section header on every card in here, so it is dropped (spec 12.3).
+    await expect(section(page, "Logos").getByText("Logo", { exact: true })).toHaveCount(0);
 
     await page.getByRole("tab", { name: /^SVG/ }).click();
     await expect(section(page, "Logos")).toHaveCount(0);
@@ -177,12 +214,45 @@ test.describe("results", () => {
     const card = page.locator(`[data-asset-id="${logo.id}"]`);
     await expect(card.getByTestId("asset-filename")).toHaveText(logo.filename);
     await expect(card.getByTestId("asset-meta")).toHaveText(`SVG · ${formatDimensions(logo.width, logo.height)} · ${formatBytes(logo.bytes!)} · Inline`);
-    await expect(card.getByText("Logo", { exact: true })).toBeVisible();
+    // In `All` this card sits under the `Logos` header, so it carries no badge; on the SVG tab it does.
+    await expect(card.getByText("Logo", { exact: true })).toHaveCount(0);
 
     const og = findAsset(linear, (a) => a.role === "social");
     const ogCard = page.locator(`[data-asset-id="${og.id}"]`);
     await expect(ogCard.getByTestId("asset-meta")).toHaveText(`${og.format.toUpperCase()} · ${formatDimensions(og.width, og.height)} · ${formatBytes(og.bytes!)}`);
     await expect(ogCard.getByText("OG image", { exact: true })).toBeVisible();
+  });
+
+  test("the file name can be selected with the mouse, and still opens the tile", async ({ page }) => {
+    await openResults(page, linear);
+    const logo = findAsset(linear, (a) => a.role === "site-logo" && a.width === 88);
+    const name = page.locator(`[data-asset-id="${logo.id}"]`).getByTestId("asset-filename");
+    await expect(name).toHaveAttribute("title", logo.filename);
+
+    const box = (await name.boundingBox())!;
+    await page.mouse.move(box.x + 1, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width - 1, box.y + box.height / 2, { steps: 8 });
+    await page.mouse.up();
+    // What comes out must be the file name and nothing else: two flex items serialize with a line break between them,
+    // and `linear\n.svg` pasted into a rename field is two lines.
+    expect(await page.evaluate(() => window.getSelection()?.toString() ?? "")).toBe(logo.filename);
+    expect(
+      await name.evaluate((span) => {
+        const range = document.createRange();
+        range.selectNodeContents(span);
+        const selection = window.getSelection()!;
+        selection.removeAllRanges();
+        selection.addRange(range);
+        return selection.toString();
+      }),
+    ).toBe(logo.filename);
+    // The drag must not have opened the detail view on mouse up.
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+
+    await page.evaluate(() => window.getSelection()?.removeAllRanges());
+    await name.click();
+    await expect(page.getByRole("dialog")).toBeVisible();
   });
 
   test("a remote image that fails loads through the proxy", async ({ page }) => {
@@ -284,13 +354,50 @@ test.describe("results", () => {
     expect(src).toMatch(/^blob:/);
   });
 
-  test("the footer counts hidden noise", async ({ page }) => {
+  test("the footer counts hidden noise, where images are on screen", async ({ page }) => {
     await openResults(page, linear);
-    await expect(page.getByText("9 hidden: tracking pixels and spacer images")).toBeVisible();
+    const footer = page.getByText("9 hidden: tracking pixels and spacer images");
+    await expect(footer).toBeVisible();
+
+    // It counts dropped images, so it says nothing useful on the Fonts tab or under an empty state.
+    await page.getByRole("tab", { name: /^Fonts/ }).click();
+    await expect(footer).toHaveCount(0);
+    await page.getByRole("tab", { name: /^Images/ }).click();
+    await expect(footer).toBeVisible();
+    await page.getByLabel("Filter by name or URL").fill("zzzznomatch");
+    await expect(page.getByText('Nothing matches "zzzznomatch"')).toBeVisible();
+    await expect(footer).toHaveCount(0);
+  });
+
+  test("brand resources keep to one line, with the rest behind a +N", async ({ page }) => {
+    const many = ["/brand", "/press", "/media-kit", "/logos", "/identity", "/newsroom"].map((path) => ({ href: `https://linear.app${path}`, text: path.slice(1) }));
+    const events = linear.map((event) => (event.type === "page" ? { ...event, page: { ...event.page, brandLinks: many } } : event));
+    await openResults(page, events);
+    const group = page.getByRole("group", { name: "Brand resources on this site" });
+    await expect(group.getByRole("button")).toHaveText(["brand", "press", "media-kit", "+3"]);
+
+    await group.getByRole("button", { name: "Show 3 more brand resources" }).click();
+    await expect(group.getByRole("button")).toHaveText(many.map((link) => link.text));
   });
 
   test.describe("on a phone", () => {
     test.use({ viewport: { width: 390, height: 844 } });
+
+    test("brand resources are one closed disclosure", async ({ page }) => {
+      const many = ["/brand", "/press", "/media-kit", "/logos", "/identity", "/newsroom"].map((path) => ({ href: `https://linear.app${path}`, text: path.slice(1) }));
+      const events = linear.map((event) => (event.type === "page" ? { ...event, page: { ...event.page, brandLinks: many } } : event));
+      await openResults(page, events);
+      const group = page.getByRole("group", { name: "Brand resources on this site" });
+      const toggle = group.getByRole("button", { name: /^Brand resources/ });
+      await expect(toggle).toHaveAttribute("aria-expanded", "false");
+      await expect(group.getByRole("button", { name: "brand", exact: true })).toBeHidden();
+      // 220 px of chips no longer push the first tile off an 844 px screen.
+      const firstCard = (await page.getByTestId("asset-card").first().boundingBox())!;
+      expect(firstCard.y).toBeLessThan(640);
+
+      await toggle.click();
+      await expect(group.getByRole("button", { name: "brand", exact: true })).toBeVisible();
+    });
 
     test("the background control is a compact select next to the tabs", async ({ page }) => {
       await openResults(page, linear);

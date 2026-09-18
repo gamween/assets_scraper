@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { expect, test, type Page } from "@playwright/test";
 import type { ScanEvent } from "../src/lib/contract";
 import { formatBytes } from "../src/lib/format";
-import { findAsset, fontsOf, loadFixture } from "./support/fixtures";
+import { findAsset, fontsOf, loadFixture, mapAssets } from "./support/fixtures";
 import { mockAssetRoutes, mockScan, type AssetRouteOptions } from "./support/routes";
 import { readZip } from "./support/zip";
 
@@ -97,6 +97,18 @@ test.describe("selection and ZIP", () => {
     await expect(selectionBar(page)).toHaveCount(0);
   });
 
+  test("the bar drops the size when the scan never sized one of the files", async ({ page }) => {
+    // The scan records no size for plenty of CDN originals: summing the rest reported 3.2 KB for a 4.2 MB ZIP.
+    const unsized = mapAssets(linear, (asset) => (asset.id === photo.id && asset.original ? { ...asset, original: { ...asset.original, bytes: undefined } } : asset));
+    await openResults(page, {}, unsized);
+    await cardOf(page, siteLogo.id).hover();
+    await cardOf(page, siteLogo.id).getByRole("checkbox").click();
+    await expect(selectionBar(page).getByTestId("selection-count")).toHaveText(`1 selected · ${formatBytes(siteLogo.bytes!)}`);
+
+    await cardOf(page, photo.id).locator("[data-card-main]").click();
+    await expect(selectionBar(page).getByTestId("selection-count")).toHaveText("2 selected");
+  });
+
   test("a file that fails ends in a toast with Show", async ({ page }) => {
     const path = new URL(photo.original!.url).pathname;
     await openResults(page, { failDirect: [path], failProxy: [path] });
@@ -152,6 +164,21 @@ test.describe("selection and ZIP", () => {
     expect(downloaded).toBe(false);
   });
 
+  test("only one near-black button is on screen at a time", async ({ page }) => {
+    await openResults(page);
+    const nearBlack = async () =>
+      page.locator("button").evaluateAll((buttons) =>
+        buttons.filter((button) => button.checkVisibility() && getComputedStyle(button).backgroundColor === "rgb(24, 24, 27)").map((button) => button.textContent),
+      );
+    await expect.poll(nearBlack).toEqual([expect.stringContaining("Download all")]);
+
+    await cardOf(page, siteLogo.id).getByRole("checkbox").click();
+    await expect(selectionBar(page)).toBeVisible();
+    // Spec 12.6 reserves near black for the primary action: with a selection, that is `Download ZIP`.
+    // Polled: the button colour is transitioned, so it is still ink for the first 100 ms after the click.
+    await expect.poll(nearBlack).toEqual([expect.stringContaining("Download ZIP")]);
+  });
+
   test("Download all zips the current tab whatever the search, small icons only when expanded", async ({ page }) => {
     await openResults(page);
     await page.getByRole("tab", { name: /^SVG/ }).click();
@@ -163,11 +190,23 @@ test.describe("selection and ZIP", () => {
     expect(filenames).not.toContain(smallIcon.filename);
     expect(filenames).not.toContain(cssOnly.filename);
 
-    // Spec 12.4: the search narrows the grid and select-all, not Download all.
+    // Spec 12.4: the search narrows the grid and select-all, not Download all. The button prints what it would take,
+    // so the two numbers never contradict each other in silence.
+    const downloadAll = page.getByRole("button", { name: /^Download all/ });
+    await expect(downloadAll).toHaveAccessibleName(`Download all ${filenames.length + 1}`);
     const search = page.getByRole("searchbox", { name: "Filter by name or URL" });
     await search.fill(siteLogo.filename);
     await expect(page.getByTestId("asset-card")).not.toHaveCount(filenames.length);
-    const zip = await zipEntries(page, () => page.getByRole("button", { name: "Download all" }).click());
+    await expect(downloadAll).toHaveAccessibleName(`Download all ${filenames.length + 1}`);
+
+    // The loudest control on an empty grid still says how many files it would zip, and stays enabled.
+    await search.fill("zzzznomatch");
+    await expect(page.getByText('Nothing matches "zzzznomatch"')).toBeVisible();
+    await expect(downloadAll).toBeEnabled();
+    await expect(downloadAll).toHaveAccessibleName(`Download all ${filenames.length + 1}`);
+
+    await search.fill(siteLogo.filename);
+    const zip = await zipEntries(page, () => downloadAll.click());
     expect(zip.name).toBe("linear.app-assets.zip");
     // Every file of the tab, stylesheet-only files included; small icons wait for Show.
     expect(zip.entries.sort()).toEqual([...filenames, cssOnly.filename].map((name) => `linear.app-assets/svg/${name}`).sort());
@@ -175,7 +214,9 @@ test.describe("selection and ZIP", () => {
 
     await search.fill("");
     await page.getByRole("region", { name: "Small icons", exact: true }).getByRole("button", { name: "Show" }).click();
-    const expanded = await zipEntries(page, () => page.getByRole("button", { name: "Download all" }).click());
+    const expanded = await zipEntries(page, () => downloadAll.click());
+    // Expanding the small icons adds them to what Download all takes, so the printed count matches the ZIP.
+    await expect(downloadAll).toHaveAccessibleName(`Download all ${expanded.entries.length}`);
     expect(expanded.entries).toContain(`linear.app-assets/svg/${smallIcon.filename}`);
   });
 });

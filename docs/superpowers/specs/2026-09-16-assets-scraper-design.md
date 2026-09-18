@@ -498,7 +498,7 @@ No analytics, no public listing, `noindex` everywhere, no server-side storage of
 
 **Results.**
 
-- Header: favicon, page title, mono meta `linear.app · 48 assets · 11s`, actions `Copy link`, `Rescan`, `Download all`.
+- Header: favicon, page title, mono meta `linear.app · 48 assets · 11s`, actions `Copy link`, `Rescan`, `Download all 48`.
 - Palette strip: brand swatches then neutrals, each a 32 px square with its hex in mono under it, click copies the hex, `Copy all` copies one `#hex role` per line.
 - Brand links: `Brand resources on this site` chips that start a scan of that page.
 - Sticky filter row: tabs `All`, `SVG`, `Images`, `Fonts` with counts, search `Filter by name or URL` (key `/`), sort (`Relevance`, `Page order`, `Largest`, `File size`, `Name`), background control `Auto · Light · Dark · Grid`.
@@ -518,14 +518,14 @@ No analytics, no public listing, `noindex` everywhere, no server-side storage of
 - Grid tiles share a frame: 1 px border, radius 8, 4:3 preview well, footer on the surface color with the filename (13 px, middle truncation that keeps the extension) and a mono meta line (`SVG · 88×22 · 3.0 KB · Inline`, `JPG · 1200×630 · 352 KB`).
 - Role badge top left (`Logo`, `Favicon`, `OG image`). Checkbox top right, visible on hover and always once something is selected. Hover actions bottom right: `Copy SVG code` for SVG, `Download` for all.
 - Previews: inline SVG and inline bytes through blob URLs, remote images through `<img src={display.url} referrerPolicy="no-referrer" loading="lazy" decoding="async">`, falling back to the proxy on error, `http:` always through the proxy. Vectors scale to 76 percent of the well, capped at 6x. Rasters are never enlarged beyond 2x. Animated GIFs play on hover only.
-- Background: `Auto` maps tone `light` to the dark preview color, `dark` to light, `opaque` to the plain well, `mixed` and `unknown` to the checkerboard. The global control and the detail control override it.
+- Background: `Auto` maps tone `light` to the dark preview color, `dark` to light, and `opaque`, `mixed` and `unknown` to the plain well. It never picks the checkerboard: on a real page most assets are `mixed` or `unknown`, so the checkerboard interleaved with three other treatments down every grid row, and it claimed transparency for formats that have no alpha channel. The explicit `Grid` control and the detail control still select it.
 - Font rows span the full width: specimen line in the real font (the page title, else an alphabet line) at 32 px, alphabet line at 16 px, family name, weights (`Regular 400, Medium 500, Bold 700` or `Variable 100 to 900`), format and size, source and licence badge, checkbox, actions. The font loads through `new FontFace(uniqueAlias, bytes)` from `getAssetBlob`. On failure: family name in the UI font with `Preview unavailable`.
 
 ### 12.4 Selection and ZIP
 
 - Checkbox click or `Cmd/Ctrl+click` toggles, `Shift+click` selects a range in visual order, once something is selected a plain click toggles. Touch uses a `Select` button. `Cmd/Ctrl+A` selects everything visible in the current tab and search (collapsed sections excluded). `Esc` clears.
 - Floating bar at the bottom center, 52 px, 12 px above the edge plus the safe area: `8 selected · 2.4 MB`, `Clear`, `Download ZIP`.
-- `Download all` zips every asset of the current tab, small icons only when expanded.
+- `Download all` zips every asset of the current tab, small icons only when expanded. The button prints that count (`Download all 48`) and is disabled only when the count is zero, so a search that hides every tile never makes the button look narrower than it is.
 - ZIP built in the browser with client-zip from an async generator, 6 fetches at a time through `getAssetBlob(asset, "original")`. `showSaveFilePicker` streaming when available, blob download otherwise, with a warning above 300 MB. Progress in the button (`Zipping 18 of 48`) and a `Cancel` link. Failed entries end in a toast (`2 files couldn't be downloaded`, `Show`).
 - Layout: `<host>-assets/svg/`, `<host>-assets/images/`, `<host>-assets/fonts/<family>/`. Open-licence WOFF2 fonts that have a proxy path also get a converted `.ttf` next to them. Data-URI fonts are added from their own bytes in their original format only.
 

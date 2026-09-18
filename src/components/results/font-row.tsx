@@ -102,7 +102,8 @@ export const FontRow = memo(function FontRow({ font }: { font: FontFamily }) {
             data-state={state}
             data-font-alias={alias}
             className={cn(
-              "truncate text-[32px] leading-[42px] text-text transition-opacity duration-150",
+              // Below 480 the specimen is set smaller and wraps to two lines instead of being cut mid word.
+              "line-clamp-2 text-[22px] leading-[30px] text-text transition-opacity duration-150 xs:truncate xs:text-[32px] xs:leading-[42px]",
               state === "failed" && "hidden",
               state === "loading" && "opacity-0",
             )}
@@ -117,7 +118,10 @@ export const FontRow = memo(function FontRow({ font }: { font: FontFamily }) {
             </div>
           ) : null}
           <p
-            className={cn("mt-1 truncate text-[16px] leading-6 text-text-2 transition-opacity duration-150", state !== "ready" && "opacity-0")}
+            data-testid="font-alphabet"
+            // The alphabet line exists to show the glyph set, so on a phone it wraps: truncating it ate the numerals,
+            // which is what anyone checking a mono face looks at first.
+            className={cn("mt-1 text-[13px] leading-5 break-words text-text-2 transition-opacity duration-150 xs:truncate xs:text-[16px] xs:leading-6", state !== "ready" && "opacity-0")}
             style={{ fontFamily: `"${alias}", ui-sans-serif, system-ui` }}
             aria-hidden={state !== "ready"}
           >
@@ -126,8 +130,8 @@ export const FontRow = memo(function FontRow({ font }: { font: FontFamily }) {
         </div>
 
         <div className="min-w-0 lg:border-l lg:border-border lg:pl-6">
-          <div className="flex items-start justify-between gap-3">
-            <h3 className="truncate text-title font-semibold text-text">{font.name}</h3>
+          {/* The checkbox sits against the family name it selects, not 325 px away at the far edge of the column. */}
+          <div className="flex items-start gap-2.5">
             <button
               type="button"
               role="checkbox"
@@ -135,13 +139,14 @@ export const FontRow = memo(function FontRow({ font }: { font: FontFamily }) {
               aria-label={`Select ${font.name}`}
               onClick={(event) => (event.shiftKey ? appStore.getState().selectRange(key) : appStore.getState().toggle(key))}
               className={cn(
-                "mt-0.5 grid size-5 shrink-0 place-items-center rounded-sm border-[1.5px] transition-[opacity,background-color,border-color] duration-100 focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent",
+                "mt-[3px] grid size-5 shrink-0 place-items-center rounded-sm border-[1.5px] transition-[opacity,background-color,border-color] duration-100 focus-visible:opacity-100 focus-ring-tight",
                 selected ? "border-accent bg-accent text-accent-fg" : "border-border-strong bg-surface text-transparent hover:border-text-3",
                 selected || selecting ? "opacity-100" : "opacity-0 group-hover/font:opacity-100 pointer-coarse:opacity-100",
               )}
             >
               <CheckIcon className="size-3" strokeWidth={3} aria-hidden="true" />
             </button>
+            <h3 className="min-w-0 truncate text-title font-semibold text-text">{font.name}</h3>
           </div>
           <p data-testid="font-weights" className="mt-0.5 text-small text-text-2">
             {weightsSummary(font)}

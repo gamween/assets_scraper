@@ -18,6 +18,24 @@ const card = (page: Page, id: string) => page.locator(`[data-asset-id="${id}"] [
 const dialog = (page: Page) => page.getByRole("dialog");
 
 test.describe("detail view", () => {
+  test("the Source row shows the whole URL and copies it in one click", async ({ page, context }) => {
+    await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+    await openResults(page);
+    await card(page, photo.id).click();
+    const detail = dialog(page);
+    await expect(detail).toBeVisible();
+    const source = (photo.original ?? photo.display)!.url;
+    const link = detail.getByTestId("detail-meta").getByRole("link");
+    // The URL is not shortened: what is on screen is the address itself, and the title carries all of it.
+    await expect(link).toHaveText(source);
+    await expect(link).toHaveAttribute("title", source);
+    await expect(link).toHaveAttribute("href", source);
+
+    await detail.getByRole("button", { name: "Copy source URL" }).click();
+    await expect(page.getByTestId("toast")).toContainText("Source URL copied");
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(source);
+  });
+
   test("opens with name, badge, metadata and counter, and arrows move within the tab", async ({ page }) => {
     await openResults(page);
     const cards = page.getByTestId("asset-card");
@@ -217,6 +235,24 @@ test.describe("detail view", () => {
     await expect(code).toContainText("<svg");
     expect(await code.locator("svg, path").count()).toBe(0);
     expect(await code.evaluate((el) => el.textContent?.startsWith("<svg"))).toBe(true);
+  });
+
+  test("the Code block says it has more below the fold", async ({ page }) => {
+    // Markup far taller than the 240 px block, so the last visible line is cut through the glyphs.
+    const long = mapAssets(linear, (asset) =>
+      asset.id === siteLogo.id ? { ...asset, inline: { mime: "image/svg+xml" as const, text: `<svg>${"\n<path d='M0 0' />".repeat(60)}</svg>` } } : asset,
+    );
+    await openResults(page, long);
+    await card(page, siteLogo.id).click();
+    await dialog(page).getByRole("button", { name: "Code", exact: true }).click();
+    const code = dialog(page).getByTestId("detail-code");
+    await expect(code).toBeVisible();
+    expect(await code.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true);
+
+    const fade = dialog(page).getByTestId("detail-code-fade");
+    await expect(fade).toHaveCSS("opacity", "1");
+    await code.evaluate((el) => el.scrollTo(0, el.scrollHeight));
+    await expect(fade).toHaveCSS("opacity", "0");
   });
 
   test("is a full-screen sheet on phones", async ({ page }) => {

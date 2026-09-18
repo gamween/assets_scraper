@@ -60,7 +60,10 @@ function SectionsOrEmpty() {
 export function ResultsView() {
   const partial = useApp((s) => s.done?.partial ?? false);
   const empty = useApp((s) => s.assets.length + s.fonts.length === 0);
+  // The footer counts images the scan dropped, so it belongs where images are on screen: not on the Fonts tab, and not
+  // under an empty state that a search produced, where it described a grid the user cannot see.
   const hidden = useApp((s) => (s.done ? hiddenSummary(s.done.stats.hidden) : null));
+  const showHidden = useApp((s) => (s.tab === "all" || s.tab === "images") && s.query.trim() === "");
 
   if (empty) {
     return (
@@ -89,7 +92,7 @@ export function ResultsView() {
       <FilterBar />
       <div className="page-x">
         <SectionsOrEmpty />
-        {hidden ? <p className="mt-12 text-small text-text-3">{hidden}</p> : null}
+        {hidden && showHidden ? <p className="mt-12 text-small text-text-3">{hidden}</p> : null}
       </div>
     </div>
   );

@@ -1,12 +1,20 @@
 import { describe, expect, it } from "vitest";
 import { makeAsset, remoteSource } from "@/lib/client/testing";
-import { assetMeta, foundInLabel, hiddenSummary, roleBadge, roleLabel, splitExtension } from "./labels";
+import { assetMeta, foundInLabel, hiddenSummary, roleBadge, roleLabel } from "./labels";
 
 describe("hiddenSummary", () => {
   it("names the reasons by count", () => {
     expect(hiddenSummary({ tracker: 6, spacer: 3 })).toBe("9 hidden: tracking pixels and spacer images");
-    expect(hiddenSummary({ spacer: 1, tracker: 2, pixel: 5 })).toBe("8 hidden: tracking pixels and spacer images");
-    expect(hiddenSummary({ consent: 1, tracker: 4, "tiny-svg": 2 })).toBe("7 hidden: tracking pixels, tiny SVGs and consent banners");
+    expect(hiddenSummary({ spacer: 1, tracker: 2, pixel: 5 })).toBe("8 hidden: tracking pixels and a spacer image");
+    expect(hiddenSummary({ consent: 1, tracker: 4, "tiny-svg": 2 })).toBe("7 hidden: tracking pixels, tiny SVGs and a consent banner");
+  });
+
+  it("reads as a singular for a single file", () => {
+    expect(hiddenSummary({ tracker: 1 })).toBe("1 hidden: a tracking pixel");
+    expect(hiddenSummary({ "tiny-svg": 1 })).toBe("1 hidden: a tiny SVG");
+    expect(hiddenSummary({ "future-reason": 1 })).toBe("1 hidden: another file");
+    // The overflow phrase covers one file here, whatever the three phrases before it hold.
+    expect(hiddenSummary({ tracker: 5, spacer: 4, consent: 3, "tiny-svg": 1 })).toBe("13 hidden: tracking pixels, spacer images, consent banners and another file");
   });
 
   it("counts unknown reasons toward the total", () => {
@@ -34,14 +42,12 @@ describe("card labels", () => {
     const roles = ["site-logo", "logo", "favicon", "social", "icon", "illustration", "image", "sprite-symbol"] as const;
     expect(roles.map((role) => roleLabel({ role }))).toEqual(["Site logo", "Logo", "Favicon", "OG image", "Icon", "Illustration", "Image", "Sprite symbol"]);
     expect(roles.map((role) => roleBadge(makeAsset({ id: role, role })))).toEqual(["Logo", "Logo", "Favicon", "OG image", null, null, null, null]);
+    // Inside `Logos` the badge would repeat the section header on every card, so only `Favicon` is left.
+    expect(roles.map((role) => roleBadge(makeAsset({ id: role, role }), "logos"))).toEqual([null, null, "Favicon", "OG image", null, null, null, null]);
+    expect(roleBadge(makeAsset({ id: "svg-logo", role: "logo" }), "svg")).toBe("Logo");
   });
 
   it("names where an asset was found, meta icons as a meta tag", () => {
     expect(foundInLabel(["icon-link", "meta-icon"])).toBe('<link rel="icon">, Meta tag');
-  });
-
-  it("keeps the extension apart for middle truncation", () => {
-    expect(splitExtension("linear-homepage-og.jpg")).toEqual(["linear-homepage-og", ".jpg"]);
-    expect(splitExtension("README")).toEqual(["README", ""]);
   });
 });

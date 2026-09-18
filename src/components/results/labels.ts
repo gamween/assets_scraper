@@ -1,13 +1,17 @@
 import { HiddenReason, type Asset, type FoundIn } from "@/lib/contract";
 import { formatBytes, formatCount, formatDimensions } from "@/lib/format";
-import { assetBytes } from "@/lib/client/filters";
+import { assetBytes, type SectionId } from "@/lib/client/filters";
 
-/** Card badges (spec 12.3): only roles worth calling out. */
-export function roleBadge(asset: Asset): string | null {
+/**
+ * Card badges (spec 12.3): only roles worth calling out, and never the one that repeats the section header above the
+ * card. Inside `Logos`, every card would carry a `Logo` badge and none of them would say anything; `Favicon` still
+ * does, because that section holds both.
+ */
+export function roleBadge(asset: Asset, section?: SectionId): string | null {
   switch (asset.role) {
     case "site-logo":
     case "logo":
-      return "Logo";
+      return section === "logos" ? null : "Logo";
     case "favicon":
       return "Favicon";
     case "social":
@@ -46,29 +50,25 @@ export function assetMetaParts(asset: Asset): string[] {
 
 export const assetMeta = (asset: Asset) => assetMetaParts(asset).join(" · ");
 
-/** Splits `name.ext` so the base can truncate while the extension stays visible. */
-export function splitExtension(filename: string): [string, string] {
-  const dot = filename.lastIndexOf(".");
-  return dot > 0 && filename.length - dot <= 6 ? [filename.slice(0, dot), filename.slice(dot)] : [filename, ""];
-}
-
-const HIDDEN_PHRASES: Record<HiddenReason, string> = {
-  tracker: "tracking pixels",
-  pixel: "tracking pixels",
-  spacer: "spacer images",
-  "tiny-data-uri": "spacer images",
-  placeholder: "placeholders",
-  "not-image": "broken files",
-  consent: "consent banners",
-  widget: "third-party widgets",
-  "probe-failed": "unreachable files",
-  "probe-skipped": "unchecked files",
-  "blob-unavailable": "unreadable images",
-  "lottie-frame": "animation frames",
-  "tiny-svg": "tiny SVGs",
-  "svg-too-large": "oversized SVGs",
-  "unreferenced-symbol": "unused sprite symbols",
+/** Each reason as `[one, many]`: a single hidden file reads `1 hidden: a tracking pixel`, not `1 hidden: tracking pixels`. */
+const HIDDEN_PHRASES: Record<HiddenReason, [string, string]> = {
+  tracker: ["a tracking pixel", "tracking pixels"],
+  pixel: ["a tracking pixel", "tracking pixels"],
+  spacer: ["a spacer image", "spacer images"],
+  "tiny-data-uri": ["a spacer image", "spacer images"],
+  placeholder: ["a placeholder", "placeholders"],
+  "not-image": ["a broken file", "broken files"],
+  consent: ["a consent banner", "consent banners"],
+  widget: ["a third-party widget", "third-party widgets"],
+  "probe-failed": ["an unreachable file", "unreachable files"],
+  "probe-skipped": ["an unchecked file", "unchecked files"],
+  "blob-unavailable": ["an unreadable image", "unreadable images"],
+  "lottie-frame": ["an animation frame", "animation frames"],
+  "tiny-svg": ["a tiny SVG", "tiny SVGs"],
+  "svg-too-large": ["an oversized SVG", "oversized SVGs"],
+  "unreferenced-symbol": ["an unused sprite symbol", "unused sprite symbols"],
 };
+const OTHER_PHRASE: [string, string] = ["another file", "other files"];
 
 const joinPhrases = (phrases: string[]) =>
   phrases.length <= 1 ? (phrases[0] ?? "") : `${phrases.slice(0, -1).join(", ")} and ${phrases.at(-1)}`;
@@ -78,7 +78,8 @@ const joinPhrases = (phrases: string[]) =>
  * phrase add up, phrases are ordered by count, and unknown reasons count toward the total as "other files".
  */
 export function hiddenSummary(hidden: Record<string, number>): string | null {
-  const byPhrase = new Map<string, number>();
+  // Keyed by the plural, which is what reasons that share a phrase (`tracker` and `pixel`) have in common.
+  const byPhrase = new Map<string, { one: string; count: number }>();
   let total = 0;
   let unknown = 0;
   for (const [reason, count] of Object.entries(hidden)) {
@@ -89,13 +90,16 @@ export function hiddenSummary(hidden: Record<string, number>): string | null {
       unknown += count;
       continue;
     }
-    const phrase = HIDDEN_PHRASES[parsed.data];
-    byPhrase.set(phrase, (byPhrase.get(phrase) ?? 0) + count);
+    const [one, many] = HIDDEN_PHRASES[parsed.data];
+    byPhrase.set(many, { one, count: (byPhrase.get(many)?.count ?? 0) + count });
   }
   if (!total) return null;
-  const phrases = [...byPhrase.entries()].sort((a, b) => b[1] - a[1]).map(([phrase]) => phrase);
-  const shown = phrases.slice(0, 3);
-  if (phrases.length > 3 || unknown > 0) shown.push("other files");
+  const counted = [...byPhrase.entries()].sort((a, b) => b[1].count - a[1].count);
+  const shown = counted.slice(0, 3).map(([many, entry]) => (entry.count === 1 ? entry.one : many));
+  // The last phrase stands for every file left: the reasons past the third and the ones this version cannot name.
+  // Its number is what decides the plural, not how many reasons ended up in it.
+  const others = counted.slice(3).reduce((sum, [, entry]) => sum + entry.count, unknown);
+  if (others > 0) shown.push(OTHER_PHRASE[others === 1 ? 0 : 1]);
   return `${formatCount(total)} hidden: ${joinPhrases(shown)}`;
 }
 
