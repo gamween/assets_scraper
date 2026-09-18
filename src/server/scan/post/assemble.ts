@@ -80,8 +80,12 @@ const defined = <T extends object>(value: T): T =>
 
 /** Width and height of an SVG from its root attributes, else from its viewBox. */
 export function svgSize(markup: string): { width?: number; height?: number } {
-  const root = /<svg\b[^>]*>/i.exec(markup)?.[0] ?? "";
-  const attribute = (name: string) => Number(new RegExp(`\\s${name}\\s*=\\s*["']\\s*(\\d*\\.?\\d+)(?:px)?\\s*["']`, "i").exec(root)?.[1]) || undefined;
+  // The slice bounds every regex below, the way preflight caps a tag: a real <svg> root tag is never near 4 KB, and a
+  // scraped one can be megabytes of junk.
+  const root = (/<svg\b[^>]*>/i.exec(markup)?.[0] ?? "").slice(0, 4096);
+  // The digit runs are bounded so the alternatives at each start position stay constant: an unbounded `\d*\.?\d+`
+  // backtracks quadratically over a long digit run that never reaches the closing quote.
+  const attribute = (name: string) => Number(new RegExp(`\\s${name}\\s*=\\s*["']\\s*(\\d{1,10}(?:\\.\\d{1,10})?|\\.\\d{1,10})(?:px)?\\s*["']`, "i").exec(root)?.[1]) || undefined;
   const width = attribute("width");
   const height = attribute("height");
   if (width && height) return { width, height };

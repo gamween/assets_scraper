@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { limits } from "@/server/config/limits";
 import { SignLimitError } from "@/server/security/sign";
 import type { CandidateContext, CapturedImage, CapturedSheet, PostInput, RawCandidate, RawCollectorOutput, SafeFetch, Signer } from "../types";
-import { assembleAssets, siteLabel } from "./assemble";
+import { assembleAssets, siteLabel, svgSize } from "./assemble";
 
 // Counts the image header reads of inline rasters, and how many run at once
 const metadataCalls = vi.hoisted(() => ({ total: 0, active: 0, peak: 0 }));
@@ -364,5 +364,23 @@ describe("assembleAssets inline rasters", () => {
     expect(hidden["tiny-data-uri"]).toBe(5_020);
     expect(metadataCalls.total).toBe(20);
     expect(metadataCalls.peak).toBeLessThanOrEqual(2);
+  });
+});
+
+describe("svgSize", () => {
+  it("reads the root attributes, then falls back to the viewBox", () => {
+    expect(svgSize(`<svg width="24" height="24"></svg>`)).toEqual({ width: 24, height: 24 });
+    expect(svgSize(`<svg width=" 24px " height='1.5'></svg>`)).toEqual({ width: 24, height: 1.5 });
+    expect(svgSize(`<svg WIDTH=".5" HEIGHT=".25"></svg>`)).toEqual({ width: 0.5, height: 0.25 });
+    expect(svgSize(`<svg viewBox="0 0 16 32"></svg>`)).toEqual({ width: 16, height: 32 });
+    expect(svgSize(`<svg width="0" height="0" viewBox="0 0 16 32"></svg>`)).toEqual({ width: 16, height: 32 });
+    expect(svgSize(`<svg width="24"></svg>`)).toEqual({});
+  });
+
+  it("stays fast on a root tag carrying a long digit run", () => {
+    // An unbounded digit run in the width pattern backtracks quadratically, which blocks the scan past every deadline.
+    const started = performance.now();
+    expect(svgSize(`<svg width='${"9".repeat(200_000)}x'><rect width="10" height="10"/></svg>`)).toEqual({});
+    expect(performance.now() - started).toBeLessThan(100);
   });
 });
