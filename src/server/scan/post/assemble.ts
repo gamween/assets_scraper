@@ -227,7 +227,7 @@ export async function assembleAssets(input: PostInput): Promise<AssetsOutput> {
 
     const drafts = rank([...fileDrafts.filter((draft): draft is Draft => draft !== null), ...inlineSvgAssets(input, hide)], warnings);
     // Tones last, in relevance order: the time budget only counts tone work, never the fetches above.
-    await applyTones(drafts);
+    await applyTones(drafts, input.signal);
     return { assets: finish(drafts, input, warnings), hidden, warnings: [...warnings], originals };
   } finally {
     limiter.close();
@@ -697,9 +697,13 @@ function rank(drafts: Draft[], warnings: Set<WarningCode>): Draft[] {
   return kept;
 }
 
-/** Tones in the order of `drafts` (relevance) within the scan tone budget (spec 8.8). */
-async function applyTones(drafts: Draft[]): Promise<void> {
-  const budget = createToneBudget();
+/**
+ * Tones in the order of `drafts` (relevance) within the scan tone budget (spec 8.8). The budget takes the
+ * post-processing signal, like the capture side: a librsvg render cannot be interrupted and the render slots are
+ * process-wide, so an abandoned scan would otherwise keep both of them while the next scan waits for one.
+ */
+async function applyTones(drafts: Draft[], signal: AbortSignal): Promise<void> {
+  const budget = createToneBudget({ signal });
   await Promise.all(
     drafts.map(async ({ asset, toneJob: job }) => {
       if (!job) return;
