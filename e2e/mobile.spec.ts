@@ -18,6 +18,9 @@ test.describe("phone toolbar", () => {
     await openResults(page);
     // Touch emulation is what brings the `Select` button on screen, and what used to squeeze the input.
     await expect(page.getByRole("button", { name: "Select" })).toBeVisible();
+    // Every tab still reads without scrolling the strip sideways.
+    const tabs = page.getByRole("tablist");
+    expect(await tabs.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
 
     const room = await page.getByLabel("Filter by name or URL").evaluate((element: HTMLInputElement) => {
       const style = getComputedStyle(element);

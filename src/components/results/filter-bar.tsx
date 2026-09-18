@@ -3,6 +3,7 @@
 import { ChevronDown, Search, SquareCheck, XIcon } from "lucide-react";
 import { useRef } from "react";
 import { cn } from "@/components/common/cn";
+import { useMediaQuery } from "@/components/common/use-media-query";
 import { Kbd } from "@/components/common/kbd";
 import { BACKGROUNDS, SORT_KEYS, TABS, tabCounts, type Background, type SortKey, type Tab } from "@/lib/client/filters";
 import { useApp } from "@/lib/client/store";
@@ -52,6 +53,9 @@ function SearchField() {
   const query = useApp((s) => s.query);
   const setQuery = useApp((s) => s.setQuery);
   const inputRef = useRef<HTMLInputElement>(null);
+  // Below 480 the row is the input, the sort control and, on touch, the Select button: the full placeholder does not
+  // fit what is left and was cut to `Filter by nan`. The accessible name stays the long one.
+  const narrow = useMediaQuery("(max-width: 479px)");
 
   return (
     <div className="relative min-w-0 flex-1 sm:max-w-[280px] lg:w-[280px] lg:flex-none">
@@ -62,7 +66,7 @@ function SearchField() {
         type="search"
         aria-label="Filter by name or URL"
         aria-keyshortcuts="/"
-        placeholder="Filter by name or URL"
+        placeholder={narrow ? "Filter" : "Filter by name or URL"}
         value={query}
         autoComplete="off"
         spellCheck={false}
@@ -232,20 +236,13 @@ export function FilterBar() {
       <div className="page-x flex flex-wrap items-stretch gap-x-6 lg:h-(--filter-bar-height) lg:flex-nowrap">
         <div className="flex h-11 min-w-0 flex-1 items-stretch gap-2 lg:h-auto lg:flex-none">
           <Tabs />
-          {/*
-           * Below 640 the `Select` button rides with the tabs, not with the search field: on a touch phone it and the
-           * sort control together left the input about 150 px wide, which cut the placeholder to `Filter by nan`.
-           */}
-          <div className="ml-auto flex shrink-0 items-center gap-2 self-center">
-            <SelectionToggle className="hidden pointer-coarse:inline-flex sm:pointer-coarse:hidden" />
-            <BackgroundSelect value={background} onChange={setBackground} className="sm:hidden" />
-          </div>
+          <BackgroundSelect value={background} onChange={setBackground} className="ml-auto self-center sm:hidden" />
         </div>
         <div className="flex w-full items-center gap-2 pb-2.5 lg:ml-auto lg:w-auto lg:pb-0">
           <SearchField />
           <SortSelect />
           <BackgroundControl value={background} onChange={setBackground} className="hidden sm:flex" />
-          <SelectionToggle className="hidden sm:pointer-coarse:inline-flex" />
+          <SelectionToggle className="hidden pointer-coarse:inline-flex" />
         </div>
       </div>
     </div>
