@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findSection, isSmallIcon, sectionize, tabCounts, visibleItems } from "./filters";
+import { assetBytes, findSection, isSmallIcon, sectionize, tabCounts, visibleItems } from "./filters";
 import { makeAsset, makeFont, makeFontFile, remoteSource } from "./testing";
 
 const siteLogo = makeAsset({ id: "site-logo", kind: "svg", role: "site-logo", name: "Linear logo", score: 1140, order: 3 });
@@ -91,7 +91,8 @@ describe("sectionize", () => {
       ids(findSection(sectionize(assets, fonts, { tab: "images", query: "", sort }), "images")?.items);
     expect(images("page-order")).toEqual(["og", "favicon", "hero", "avatar"]);
     expect(images("largest")).toEqual(["og", "hero", "avatar", "favicon"]);
-    expect(images("file-size")).toEqual(["og", "hero", "avatar", "favicon"]);
+    // `hero` has an original whose probe recorded no size, so its size is unknown and it sorts with the unsized.
+    expect(images("file-size")).toEqual(["og", "avatar", "favicon", "hero"]);
     expect(images("name")).toEqual(["og", "avatar", "hero", "favicon"]);
 
     const fontNames = (sort: "relevance" | "name" | "file-size") =>
@@ -112,5 +113,26 @@ describe("sectionize", () => {
     expect(keys).toEqual(["asset:site-logo", "asset:logo", "asset:favicon", "asset:illu", "asset:og", "asset:hero", "asset:avatar", "font:inter", "font:mono"]);
     const expanded = visibleItems(sections, new Set(["small-icons"])).map((item) => item.key);
     expect(expanded.slice(-2)).toEqual(["asset:tiny", "asset:chevron"]);
+  });
+});
+
+describe("assetBytes", () => {
+  it("reports the original, never the display derivative", () => {
+    const asset = makeAsset({
+      id: "aerial",
+      kind: "image",
+      bytes: 205_658,
+      display: { ...remoteSource("https://cdn.test/aerial.webp"), format: "webp", width: 1632, height: 703, bytes: 205_658 },
+      original: { ...remoteSource("https://cdn.test/aerial.png"), width: 2460, height: 1060 },
+    });
+    // The download delivers the 2460x1060 original; 205 658 is the WebP the page showed, a different file.
+    expect(assetBytes(asset)).toBe(0);
+    expect(assetBytes({ ...asset, original: { ...asset.original!, bytes: 4_274_919 } })).toBe(4_274_919);
+  });
+
+  it("falls back to the page's own bytes when there is no original", () => {
+    expect(assetBytes(makeAsset({ id: "inline", kind: "svg", bytes: 3_040 }))).toBe(3_040);
+    expect(assetBytes(makeAsset({ id: "display-only", display: { ...remoteSource("https://cdn.test/a.png"), bytes: 1_200 } }))).toBe(1_200);
+    expect(assetBytes(makeAsset({ id: "nothing" }))).toBe(0);
   });
 });

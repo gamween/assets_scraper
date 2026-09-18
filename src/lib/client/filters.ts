@@ -96,7 +96,13 @@ const area = (asset: Asset) => {
   return width * height;
 };
 
-export const assetBytes = (asset: Asset) => asset.original?.bytes ?? asset.bytes ?? asset.display?.bytes ?? 0;
+/**
+ * Bytes of the file `Download` hands back, which is the original. When an original exists but its probe recorded no
+ * size the answer is 0, shown as `Unknown` and left out of the card meta: never the display derivative, which is a
+ * different file. On stripe.com that fallback reported 201 KB for an asset that came out of the ZIP at 4.2 MB, and
+ * the same number drives the detail row, the selection bar, the large-ZIP warning and the `File size` sort.
+ */
+export const assetBytes = (asset: Asset) => (asset.original ? (asset.original.bytes ?? 0) : (asset.bytes ?? asset.display?.bytes ?? 0));
 
 export const fontBytes = (font: FontFamily) =>
   font.faces.reduce((sum, face) => sum + face.files.reduce((total, file) => total + (file.bytes ?? 0), 0), 0);
