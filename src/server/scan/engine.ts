@@ -353,8 +353,9 @@ async function runScan({ url, deps, cancel, emit }: ScanContext): Promise<void> 
     cold: false,
     phases: {},
     queueMs: 0,
-    egress: { bytes: 0, blocked: 0 },
+    egress: { bytes: 0, blocked: 0, refused: 0 },
     bodyTimeouts: 0,
+    skippedBodies: 0,
     originals: NO_ORIGINAL_PROBES,
     // Set by the collector when it starts in a world (see onWorld below).
     collector: "none",
@@ -736,7 +737,7 @@ async function runBrowserStage(input: ScanContext & {
     if (egress) {
       const proxy = egress;
       const stats = proxy.stats();
-      diagnostics.egress = { bytes: stats.bytes, blocked: stats.blocked };
+      diagnostics.egress = { bytes: stats.bytes, blocked: stats.blocked, refused: stats.refused };
       // Not awaited past its cap: a close that hangs finishes in the background.
       await orAfter((async () => proxy.close())().catch(() => {}), limits.egressCloseMs, undefined);
     }
@@ -745,6 +746,7 @@ async function runBrowserStage(input: ScanContext & {
   if (!nav) throw new ScanFailure("timeout", "The page took too long to load");
   network ??= await (capture as CaptureHandle | undefined)?.settle(0) ?? { images: [], fonts: [], sheets: [], bodyTimeouts: 0, skippedBodies: 0 };
   diagnostics.bodyTimeouts = network.bodyTimeouts;
+  diagnostics.skippedBodies = network.skippedBodies;
   for (const id of openSteps) emit({ type: "step", step: id, state: "done" });
   return { nav, palette, collector, network, partial };
 }

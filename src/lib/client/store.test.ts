@@ -9,8 +9,9 @@ const diagnostics: Diagnostics = {
   cold: false,
   phases: {},
   queueMs: 0,
-  egress: { bytes: 0, blocked: 0 },
+  egress: { bytes: 0, blocked: 0, refused: 0 },
   bodyTimeouts: 0,
+  skippedBodies: 0,
   collector: "isolated",
   version: "test",
 };

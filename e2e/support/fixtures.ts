@@ -49,8 +49,9 @@ export const diagnostics: Diagnostics = {
   cold: true,
   phases: { preflight: 300 },
   queueMs: 0,
-  egress: { bytes: 0, blocked: 0 },
+  egress: { bytes: 0, blocked: 0, refused: 0 },
   bodyTimeouts: 0,
+  skippedBodies: 0,
   collector: "isolated",
   version: "e2e",
 };

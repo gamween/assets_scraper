@@ -238,8 +238,10 @@ describe("scan engine", () => {
     expect(done.partial).toBe(false);
     // The collector's drop reaches stats.hidden once, through assembleAssets.
     expect(done.stats).toMatchObject({ assets: 1, svg: 0, images: 1, fonts: 0, hidden: { spacer: 2, "unreferenced-symbol": 1 } });
-    expect(done.diagnostics).toMatchObject({ collector: "isolated", version: "dev", bodyTimeouts: 0 });
+    expect(done.diagnostics).toMatchObject({ collector: "isolated", version: "dev", bodyTimeouts: 0, skippedBodies: 0 });
     expect(done.diagnostics.egress.bytes).toBeGreaterThan(0);
+    // Capacity refusals and bodies the capture never read are the only trace of a page that came back thin.
+    expect(done.diagnostics.egress.refused).toBe(0);
     expect(Object.keys(done.diagnostics.phases)).toEqual(expect.arrayContaining(["preflight", "launch", "open", "load", "scroll", "collect", "process"]));
     expect(pids).toHaveLength(1);
     await expect.poll(() => isProcessAlive(pids[0]), { timeout: 5000 }).toBe(false);

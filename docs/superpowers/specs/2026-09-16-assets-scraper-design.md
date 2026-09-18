@@ -243,8 +243,9 @@ export interface Diagnostics {
   queueMs: number;
   tmpFreeMb?: number;
   memAvailableMb?: number;
-  egress: { bytes: number; blocked: number };
+  egress: { bytes: number; blocked: number; refused: number };   // refused: capacity, never an SSRF block
   bodyTimeouts: number;
+  skippedBodies: number;            // responses the capture never read
   blockReason?: string;
   collector: "isolated" | "main" | "none";   // none: the collector never ran
   version: string;                  // git SHA

@@ -198,8 +198,12 @@ export const Diagnostics = z.object({
   queueMs: z.number(),
   tmpFreeMb: z.number().optional(),
   memAvailableMb: z.number().optional(),
-  egress: z.object({ bytes: z.number(), blocked: z.number() }),
+  // `refused` is capacity, never an SSRF block: the socket cap, the byte cap, or a proxy already closed. `skippedBodies`
+  // is a response the capture never read (multipart, over a body cap, past the record cap). Both explain a thin scan
+  // that otherwise reads as a page with fewer assets, and a Hobby runtime log is gone an hour later (spec 16).
+  egress: z.object({ bytes: z.number(), blocked: z.number(), refused: z.number() }),
   bodyTimeouts: z.number(),
+  skippedBodies: z.number(),
   // Outcome of every CDN original probe (spec 8.4): a group that adopts none falls back to the page's own bytes,
   // which looks identical from the result whatever went wrong, so these counters are the only way to tell why.
   // `attempted` counts requests that went out; `captured` is the separate case of an original the page declared and

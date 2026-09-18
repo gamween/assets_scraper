@@ -30,7 +30,7 @@ const done = {
   type: "done",
   partial: false,
   stats: { assets: 0, svg: 0, images: 0, fonts: 0, hidden: {}, durationMs: 10 },
-  diagnostics: { scanId: "s1", cold: false, phases: {}, queueMs: 0, egress: { bytes: 0, blocked: 0 }, bodyTimeouts: 0, collector: "isolated", version: "x" },
+  diagnostics: { scanId: "s1", cold: false, phases: {}, queueMs: 0, egress: { bytes: 0, blocked: 0, refused: 0 }, bodyTimeouts: 0, skippedBodies: 0, collector: "isolated", version: "x" },
 } satisfies ScanEvent;
 
 function recorder() {
