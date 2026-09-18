@@ -32,6 +32,9 @@ export function TopBar() {
       <div className="page-x flex h-full items-center gap-3 sm:gap-5">
         <Link
           href="/"
+          // Below 640 px the label is display:none and the mark is aria-hidden, which left the only way back to the
+          // landing with no accessible name.
+          aria-label="Assets Scraper"
           onClick={(event) => {
             if (event.metaKey || event.ctrlKey || event.shiftKey) return;
             event.preventDefault();

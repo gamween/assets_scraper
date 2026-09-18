@@ -65,6 +65,11 @@ test.describe("phone toolbar", () => {
     await expect(page.getByTestId("asset-card").first().getByRole("checkbox")).toBeVisible();
   });
 
+  test("the home link keeps its name when its label is hidden", async ({ page }) => {
+    await openResults(page);
+    await expect(page.getByRole("link", { name: "Assets Scraper" })).toBeVisible();
+  });
+
   test("Done leaves selection mode and keeps the selection", async ({ page }) => {
     await openResults(page);
     await page.getByRole("button", { name: "Select" }).click();
