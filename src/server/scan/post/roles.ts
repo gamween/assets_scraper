@@ -6,10 +6,11 @@ import type { CandidateContext, Rect } from "../types";
 const ICON_MAX_SIDE = 48;
 const LOGO_TOP_PX = 160;
 /**
- * Rendered area above which positional evidence alone no longer means the site logo. `logoScore` reaches the promotion
+ * Rendered area above which nothing but a JSON-LD declaration makes the site logo. `logoScore` reaches the promotion
  * threshold of 6 on a link to home in the header near the top of the page with nothing logo specific about it, which is
  * also what a hero picture under a nav looks like: apple.com ranked a 3008x692 iPhone photo above its own 14x44
- * wordmark. Past this a real logo would fill a third of a laptop viewport, so the promotion asks for logo evidence.
+ * wordmark. Past this a real logo would fill a third of a laptop viewport. The logo evidence of `hasLogoEvidence` does
+ * not lift the limit: it is shared across a group, and on apple.com the hero carries it while still being a hero.
  */
 const LOGO_MAX_AREA = 120_000;
 const DRAWABLE = /<(?:path|circle|rect|ellipse|line|polyline|polygon|text|image|use)\b/i;
@@ -53,7 +54,7 @@ const hasLogoEvidence = (input: RoleInput): boolean => input.logoWord || input.l
 export function assignRole(input: RoleInput): AssetRole {
   const found = new Set(input.foundIn);
   const oversized = (input.rendered?.width ?? 0) * (input.rendered?.height ?? 0) > LOGO_MAX_AREA;
-  if (found.has("json-ld") || (input.logoScore >= 6 && (!oversized || hasLogoEvidence(input)))) return "site-logo";
+  if (found.has("json-ld") || (input.logoScore >= 6 && !oversized)) return "site-logo";
   if (found.has("icon-link") || found.has("meta-icon") || found.has("manifest")) return "favicon";
   if (found.has("og-image") || found.has("twitter-image")) return "social";
   if (hasLogoEvidence(input)) return "logo";
