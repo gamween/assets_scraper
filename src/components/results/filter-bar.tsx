@@ -79,7 +79,7 @@ function SearchField() {
             else inputRef.current?.blur();
           }
         }}
-        className="peer h-8 w-full rounded-md border border-border bg-surface pr-8 pl-8 text-body text-text transition-[border-color,box-shadow] duration-100 outline-none placeholder:text-text-3/80 hover:border-border-strong focus-visible:border-accent focus-visible:shadow-[0_0_0_3px_var(--accent-soft)] [&::-webkit-search-cancel-button]:hidden"
+        className="peer h-8 w-full rounded-md border border-border bg-surface pr-8 pl-8 text-body text-text transition-[border-color,box-shadow] duration-100 outline-none placeholder:text-text-3 hover:border-border-strong focus-visible:border-accent focus-visible:shadow-[0_0_0_3px_var(--accent-soft)] [&::-webkit-search-cancel-button]:hidden"
       />
       {query ? (
         <button
