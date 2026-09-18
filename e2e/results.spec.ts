@@ -189,6 +189,26 @@ test.describe("results", () => {
     await expect(ogCard.getByText("OG image", { exact: true })).toBeVisible();
   });
 
+  test("the file name can be selected with the mouse, and still opens the tile", async ({ page }) => {
+    await openResults(page, linear);
+    const logo = findAsset(linear, (a) => a.role === "site-logo" && a.width === 88);
+    const name = page.locator(`[data-asset-id="${logo.id}"]`).getByTestId("asset-filename");
+    await expect(name).toHaveAttribute("title", logo.filename);
+
+    const box = (await name.boundingBox())!;
+    await page.mouse.move(box.x + 1, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width - 1, box.y + box.height / 2, { steps: 8 });
+    await page.mouse.up();
+    expect(await page.evaluate(() => window.getSelection()?.toString() ?? "")).not.toBe("");
+    // The drag must not have opened the detail view on mouse up.
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+
+    await page.evaluate(() => window.getSelection()?.removeAllRanges());
+    await name.click();
+    await expect(page.getByRole("dialog")).toBeVisible();
+  });
+
   test("a remote image that fails loads through the proxy", async ({ page }) => {
     const hero = findAsset(linear, (a) => a.kind === "image" && a.role === "image" && a.visible && !!a.display && (a.renderedWidth ?? 0) > 100);
     const directPath = new URL(hero.display!.url).pathname;

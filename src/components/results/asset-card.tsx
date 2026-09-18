@@ -113,8 +113,21 @@ export const AssetCard = memo(function AssetCard({ asset, section }: { asset: As
           </IconAction>
         </div>
       </div>
-      <div className="flex min-w-0 flex-col gap-0.5 border-t border-border p-3">
-        <span data-testid="asset-filename" className="flex min-w-0 text-small text-text">
+      {/*
+       * The overlay button below covers the whole tile, so the name used to be unselectable with the mouse: the drag
+       * started on the button. The footer is lifted above it and only the name takes the pointer, with the click
+       * forwarded so the tile still behaves as one control. A click that ends a drag-selection is left alone.
+       */}
+      <div className="pointer-events-none relative z-10 flex min-w-0 flex-col gap-0.5 border-t border-border p-3">
+        <span
+          data-testid="asset-filename"
+          title={asset.filename}
+          onClick={(event) => {
+            if (window.getSelection()?.toString()) return;
+            activateItem(key, event, () => appStore.getState().openDetail(asset.id));
+          }}
+          className="pointer-events-auto flex max-w-fit min-w-0 cursor-text text-small text-text select-text"
+        >
           <span className="truncate">{base}</span>
           <span className="shrink-0">{extension}</span>
         </span>
