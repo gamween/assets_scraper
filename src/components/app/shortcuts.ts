@@ -4,6 +4,7 @@ import { useEffect } from "react";
 import { formatCount } from "@/lib/format";
 import { submitUrl } from "@/lib/client/scan-session";
 import { appStore, useApp, type AppState } from "@/lib/client/store";
+import { SEARCH_INPUT_ID } from "@/components/results/filter-bar";
 import { displayHost, normalizeInputUrl } from "@/lib/url";
 
 export function isEditableTarget(target: EventTarget | null): boolean {
@@ -95,7 +96,7 @@ export function useResultsShortcuts() {
       }
       if (modifier) return;
       if (event.key === "/") {
-        const search = document.getElementById("results-search");
+        const search = document.getElementById(SEARCH_INPUT_ID);
         if (search) {
           event.preventDefault();
           search.focus();
