@@ -237,6 +237,24 @@ test.describe("detail view", () => {
     expect(await code.evaluate((el) => el.textContent?.startsWith("<svg"))).toBe(true);
   });
 
+  test("the Code block says it has more below the fold", async ({ page }) => {
+    // Markup far taller than the 240 px block, so the last visible line is cut through the glyphs.
+    const long = mapAssets(linear, (asset) =>
+      asset.id === siteLogo.id ? { ...asset, inline: { mime: "image/svg+xml" as const, text: `<svg>${"\n<path d='M0 0' />".repeat(60)}</svg>` } } : asset,
+    );
+    await openResults(page, long);
+    await card(page, siteLogo.id).click();
+    await dialog(page).getByRole("button", { name: "Code", exact: true }).click();
+    const code = dialog(page).getByTestId("detail-code");
+    await expect(code).toBeVisible();
+    expect(await code.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true);
+
+    const fade = dialog(page).getByTestId("detail-code-fade");
+    await expect(fade).toHaveCSS("opacity", "1");
+    await code.evaluate((el) => el.scrollTo(0, el.scrollHeight));
+    await expect(fade).toHaveCSS("opacity", "0");
+  });
+
   test("is a full-screen sheet on phones", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await openResults(page);

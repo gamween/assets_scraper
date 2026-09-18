@@ -97,6 +97,11 @@ function CodeBlock({ asset }: { asset: Asset }) {
   const [open, setOpen] = useState(false);
   const [text, setText] = useState<string | null>(asset.inline && "text" in asset.inline ? asset.inline.text : null);
   const [failed, setFailed] = useState(false);
+  // The block is 240 px tall over markup that is usually far longer, and it used to cut the last line through the
+  // glyphs with nothing saying so. A fade marks the edge until the end of the markup is on screen. The same
+  // measurement runs from the ref and from the scroll handler, so a re-render cannot disagree with a scroll.
+  const [moreBelow, setMoreBelow] = useState(false);
+  const measure = (element: HTMLElement | null) => setMoreBelow(!!element && element.scrollTop + element.clientHeight < element.scrollHeight - 1);
 
   return (
     <div className="rounded-lg border border-border">
@@ -118,12 +123,24 @@ function CodeBlock({ asset }: { asset: Asset }) {
         <ChevronDown className={cn("size-4 text-text-3 transition-transform duration-150", open && "rotate-180")} aria-hidden="true" />
       </button>
       {open ? (
-        <pre
-          data-testid="detail-code"
-          className="max-h-[240px] overflow-auto border-t border-border bg-bg px-3 py-2.5 font-mono text-mono-xs leading-[17px] font-normal tracking-normal break-all whitespace-pre-wrap text-text-2"
-        >
-          {failed ? "The markup couldn't be loaded." : (text ?? "Loading")}
-        </pre>
+        <div className="relative">
+          <pre
+            data-testid="detail-code"
+            onScroll={(event) => measure(event.currentTarget)}
+            ref={measure}
+            className="scrollbar-thin max-h-[240px] overflow-auto border-t border-border bg-bg px-3 py-2.5 font-mono text-mono-xs leading-[17px] font-normal tracking-normal break-all whitespace-pre-wrap text-text-2"
+          >
+            {failed ? "The markup couldn't be loaded." : (text ?? "Loading")}
+          </pre>
+          <span
+            aria-hidden="true"
+            data-testid="detail-code-fade"
+            className={cn(
+              "pointer-events-none absolute inset-x-px bottom-px h-6 rounded-b-lg bg-linear-to-b from-transparent to-bg transition-opacity duration-100",
+              !moreBelow && "opacity-0",
+            )}
+          />
+        </div>
       ) : null}
     </div>
   );

@@ -1,5 +1,6 @@
 "use client";
 
+import { cn } from "@/components/common/cn";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { Swatch } from "@/lib/contract";
 import { useApp } from "@/lib/client/store";
@@ -12,6 +13,29 @@ const ROLE_LABELS: Record<NonNullable<Swatch["role"]>, string> = {
   surface: "Surface",
   text: "Text",
 };
+
+const channel = (value: number) => (value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4);
+
+function luminance(hex: string): number | null {
+  const match = /^#([0-9a-f]{6})$/i.exec(hex.trim());
+  if (!match) return null;
+  const value = Number.parseInt(match[1], 16);
+  const [r, g, b] = [(value >> 16) & 255, (value >> 8) & 255, value & 255].map((part) => channel(part / 255));
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+/** Relative luminance of `--bg` (#fafafa), the ground every swatch is painted on. */
+const PAGE_LUMINANCE = luminance("#fafafa")!;
+
+/**
+ * True when the fill cannot be told from the page it sits on, so the border has to carry the boundary by itself.
+ * A `#ffffff` swatch differs from the page by 5 of 255 and read as a hole in the palette row.
+ */
+function needsStrongEdge(hex: string): boolean {
+  const own = luminance(hex);
+  if (own === null) return false;
+  return (Math.max(own, PAGE_LUMINANCE) + 0.05) / (Math.min(own, PAGE_LUMINANCE) + 0.05) < 3;
+}
 
 function SwatchButton({ swatch, group }: { swatch: Swatch; group: "brand" | "neutral" }) {
   const label = swatch.role ? ROLE_LABELS[swatch.role] : group === "brand" ? "Brand" : "Neutral";
@@ -29,7 +53,11 @@ function SwatchButton({ swatch, group }: { swatch: Swatch; group: "brand" | "neu
       >
         <span
           aria-hidden="true"
-          className="size-8 rounded-md border border-swatch-edge transition-transform duration-100 ease-enter group-hover/swatch:scale-[1.06] motion-reduce:transform-none"
+          data-testid="swatch-chip"
+          className={cn(
+            "size-8 rounded-md border transition-transform duration-100 ease-enter group-hover/swatch:scale-[1.06] motion-reduce:transform-none",
+            needsStrongEdge(swatch.hex) ? "border-swatch-edge-strong" : "border-swatch-edge",
+          )}
           style={{ backgroundColor: swatch.hex }}
         />
         <span className="font-mono text-mono-xs text-text-3 transition-colors group-hover/swatch:text-text">{swatch.hex}</span>

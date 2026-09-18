@@ -83,6 +83,30 @@ test.describe("results", () => {
     await expect(page.getByRole("tab", { name: /^All/ })).toHaveAttribute("aria-selected", "true");
   });
 
+  test("Auto never picks the checkerboard, and a pale swatch is still a swatch", async ({ page }) => {
+    await openResults(page, linear);
+    // Spec 12.3: light on dark, dark on light, everything else on the plain well. The checkerboard is opt-in.
+    await expect(page.locator('[data-testid="preview-well"][data-background="grid"]')).toHaveCount(0);
+    await expect(page.locator('[data-testid="preview-well"][data-background="plain"]').first()).toBeVisible();
+
+    const contrasts = await page.getByTestId("swatch-chip").evaluateAll((chips) => {
+      const channel = (value: number) => (value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4);
+      const luminance = (color: string) => {
+        const [r, g, b] = color.match(/[\d.]+/g)!.slice(0, 3).map((part) => channel(Number(part) / 255));
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      };
+      const ratio = (a: string, b: string) => (Math.max(luminance(a), luminance(b)) + 0.05) / (Math.min(luminance(a), luminance(b)) + 0.05);
+      const ground = getComputedStyle(document.body).backgroundColor;
+      return chips.map((chip) => {
+        const style = getComputedStyle(chip);
+        // Either the fill itself is distinguishable from the page, or the border carries the boundary.
+        return Math.max(ratio(style.backgroundColor, ground), ratio(style.borderTopColor, ground));
+      });
+    });
+    expect(contrasts.length).toBeGreaterThan(3);
+    for (const contrast of contrasts) expect(contrast).toBeGreaterThanOrEqual(3);
+  });
+
   test("the header and the tab title both drop a www the user did not type", async ({ page }) => {
     const wwwHost = linear.map((event) =>
       event.type === "page" ? { ...event, page: { ...event.page, host: "www.linear.app", finalUrl: "https://www.linear.app/" } } : event,

@@ -42,6 +42,8 @@
   --success-line: color-mix(in srgb, var(--success) 20%, var(--surface));
   /* Edge of a color swatch: reads on white and on near-black swatches alike. */
   --swatch-edge: color-mix(in srgb, var(--ink) 10%, transparent);
+  /* A pale swatch is told from the page by its border alone, so that border carries the 3:1 a boundary needs. */
+  --swatch-edge-strong: color-mix(in srgb, var(--ink) 61%, var(--bg));
 
   --top-bar-height: 56px;
   --filter-bar-height: 52px;
@@ -72,6 +74,7 @@
   --color-success-soft: var(--success-soft);
   --color-success-line: var(--success-line);
   --color-swatch-edge: var(--swatch-edge);
+  --color-swatch-edge-strong: var(--swatch-edge-strong);
   --color-preview-light: var(--preview-light);
   --color-preview-dark: var(--preview-dark);
   --color-grid-a: var(--grid-a);
@@ -262,6 +265,11 @@
 
   .fade-in {
     animation: fade-in 120ms var(--ease-enter) both;
+  }
+
+  /* A scroll container whose overflow is not otherwise visible keeps a thin scrollbar as the hint that it has more. */
+  .scrollbar-thin {
+    scrollbar-width: thin;
   }
 
   .scrollbar-none {
