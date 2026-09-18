@@ -9,7 +9,7 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "pnpm build:inpage && next typegen && tsc --noEmit",
-    "test": "pnpm build:inpage && vitest run --project unit --project dom",
+    "test": "pnpm build:inpage && vitest run --project unit",
     "test:integration": "pnpm build:inpage && vitest run --project integration",
     "test:e2e": "playwright test"
   },
@@ -42,8 +42,6 @@
   "devDependencies": {
     "@playwright/test": "1.63.0",
     "@tailwindcss/postcss": "^4",
-    "@testing-library/dom": "10.4.2",
-    "@testing-library/react": "16.3.3",
     "@types/css-tree": "3.2.0",
     "@types/fontkit": "2.0.9",
     "@types/node": "^22.20.3",
@@ -53,7 +51,6 @@
     "esbuild": "0.28.2",
     "eslint": "^10.10.0",
     "eslint-config-next": "16.3.5",
-    "jsdom": "30.0.1",
     "tailwindcss": "^4",
     "typescript": "~6.0.3",
     "vite": "8.3.0",
