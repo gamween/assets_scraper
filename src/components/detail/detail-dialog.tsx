@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { Badge } from "@/components/common/badge";
 import { cn } from "@/components/common/cn";
 import { Kbd } from "@/components/common/kbd";
-import { copySvgCode, downloadAsset, openSource, sourceUrl, svgMarkup } from "@/components/results/asset-actions";
+import { copySvgCode, copyWithToast, downloadAsset, openSource, sourceUrl, svgMarkup } from "@/components/results/asset-actions";
 import { AssetPreview, WELL_CLASSES, wellBackground } from "@/components/results/asset-preview";
 import { BackgroundControl } from "@/components/results/filter-bar";
 import { foundInLabel, roleLabel } from "@/components/results/labels";
@@ -35,16 +35,6 @@ function ActionButton({ label, shortcut, primary = false, onClick, icon }: { lab
   );
 }
 
-function shortUrl(url: string): string {
-  try {
-    const parsed = new URL(url);
-    const path = `${parsed.pathname}${parsed.search}`;
-    return `${parsed.host}${path.length > 42 ? `${path.slice(0, 20)}…${path.slice(-18)}` : path}`;
-  } catch {
-    return url;
-  }
-}
-
 function Metadata({ asset }: { asset: Asset }) {
   const source = sourceUrl(asset);
   const bytes = assetBytes(asset);
@@ -58,9 +48,34 @@ function Metadata({ asset }: { asset: Asset }) {
   rows.push([
     "Source",
     source ? (
-      <a href={source} target="_blank" rel="noopener noreferrer" className="break-all underline decoration-border-strong underline-offset-4 hover:decoration-text" title={source}>
-        {shortUrl(source)}
-      </a>
+      // The URL used to be middle-truncated and then wrapped anyway, so it was cut for nothing. It now reads as far as
+      // three lines of the real address, with the whole value on hover and one click to copy it.
+      <span className="flex items-start gap-1.5">
+        <a
+          href={source}
+          target="_blank"
+          rel="noopener noreferrer"
+          title={source}
+          className="line-clamp-3 min-w-0 break-all underline decoration-border-strong underline-offset-4 hover:decoration-text"
+        >
+          {source}
+        </a>
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <button
+                type="button"
+                aria-label="Copy source URL"
+                onClick={() => copyWithToast(source, "Source URL copied")}
+                className="focus-ring-tight -mt-0.5 grid size-5 shrink-0 place-items-center rounded-sm text-text-3 transition-colors hover:bg-well hover:text-text"
+              />
+            }
+          >
+            <Copy className="size-3.5" aria-hidden="true" />
+          </TooltipTrigger>
+          <TooltipContent>Copy source URL</TooltipContent>
+        </Tooltip>
+      </span>
     ) : (
       "Inline in the page"
     ),

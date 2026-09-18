@@ -18,6 +18,24 @@ const card = (page: Page, id: string) => page.locator(`[data-asset-id="${id}"] [
 const dialog = (page: Page) => page.getByRole("dialog");
 
 test.describe("detail view", () => {
+  test("the Source row shows the whole URL and copies it in one click", async ({ page, context }) => {
+    await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+    await openResults(page);
+    await card(page, photo.id).click();
+    const detail = dialog(page);
+    await expect(detail).toBeVisible();
+    const source = (photo.original ?? photo.display)!.url;
+    const link = detail.getByTestId("detail-meta").getByRole("link");
+    // The URL is not shortened: what is on screen is the address itself, and the title carries all of it.
+    await expect(link).toHaveText(source);
+    await expect(link).toHaveAttribute("title", source);
+    await expect(link).toHaveAttribute("href", source);
+
+    await detail.getByRole("button", { name: "Copy source URL" }).click();
+    await expect(page.getByTestId("toast")).toContainText("Source URL copied");
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(source);
+  });
+
   test("opens with name, badge, metadata and counter, and arrows move within the tab", async ({ page }) => {
     await openResults(page);
     const cards = page.getByTestId("asset-card");
