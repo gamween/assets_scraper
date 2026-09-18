@@ -25,6 +25,18 @@ describe("assignRole", () => {
     expect(role({ foundIn: ["json-ld"] })).toBe("site-logo");
   });
 
+  it("does not promote a hero picture the size of the viewport on position alone", () => {
+    // apple.com: a link to home, in the header, near the top scores exactly 6 with nothing logo specific about it.
+    const score = logoScore(context({ header: true, homeLink: true }), true, { x: 0, y: 0, width: 3008, height: 692 });
+    expect(score).toBe(6);
+    expect(role({ logoScore: score, label: "iPhone 18 Pro", rendered: { width: 3008, height: 692 } })).toBe("image");
+    // The wordmark beside it, and a large logo that says it is one, still are the site logo.
+    expect(role({ kind: "svg", foundIn: ["inline-svg"], logoScore: score, label: "Apple", rendered: { width: 14, height: 44 } })).toBe("site-logo");
+    expect(role({ logoScore: score, logoWord: true, rendered: { width: 3008, height: 692 } })).toBe("site-logo");
+    // The limit is generous: a banner sized wordmark on position alone is still the site logo.
+    expect(role({ logoScore: score, rendered: { width: 600, height: 200 } })).toBe("site-logo");
+  });
+
   it("recognizes favicons, social images and logos", () => {
     expect(role({ foundIn: ["og-image"] })).toBe("social");
     expect(role({ foundIn: ["img", "twitter-image"], rendered: { width: 24, height: 24 } })).toBe("social");
