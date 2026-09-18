@@ -195,10 +195,10 @@ function DetailBody({ asset }: { asset: Asset }) {
            * On a phone the well is 44dvh over a 390 px screen and the arrows sat inside it, about 7 px from the
            * artwork on each side. They ride with the counter instead, out of the band the asset is in.
            */}
-          <div className="flex items-center gap-1.5">
+          <div className="flex shrink-0 items-center gap-1.5">
             {list.length > 1 ? <NavButton direction="previous" onClick={previousDetail} className="md:hidden" /> : null}
             {index >= 0 ? (
-              <span data-testid="detail-counter" className="rounded-md border border-border bg-surface/95 px-2 py-1 font-mono text-mono text-text-2 tabular-nums">
+              <span data-testid="detail-counter" className="rounded-md border border-border bg-surface/95 px-2 py-1 font-mono text-mono whitespace-nowrap text-text-2 tabular-nums">
                 {index + 1} of {list.length}
               </span>
             ) : null}
