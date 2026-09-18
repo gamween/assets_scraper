@@ -93,3 +93,30 @@ test.describe("preview sizing", () => {
     }
   });
 });
+
+test.describe("dialog height", () => {
+  test("a small asset gets a small dialog and a big one still fills the screen", async ({ page }) => {
+    const small = findAsset(linear, (asset) => asset.kind === "svg" && asset.role === "site-logo");
+    const events = mapAssets(linear, (asset) => (asset.id === small.id ? resize(asset, 60, 25) : asset.id === tallRaster.id ? resize(asset, 2000, 2000) : asset));
+    await openResults(page, events);
+
+    const heightOf = async (id: string) => {
+      await page.locator(`[data-asset-id="${id}"] [data-card-main]`).click();
+      const popup = page.getByTestId("detail-popup");
+      await expect(popup).toBeVisible();
+      await popup.evaluate((element) => Promise.all(element.getAnimations().map((a) => a.finished.catch(() => {}))).then(() => {}));
+      const box = (await popup.boundingBox())!;
+      await page.keyboard.press("Escape");
+      await expect(popup).toBeHidden();
+      return box.height;
+    };
+
+    const tiny = await heightOf(small.id);
+    const large = await heightOf(tallRaster.id);
+    // A 60x25 logo used to open the same 860 px dialog as a 2000x2000 photograph.
+    expect(tiny).toBeLessThan(large);
+    expect(tiny).toBeLessThanOrEqual(560);
+    expect(tiny).toBeGreaterThanOrEqual(440);
+    expect(large).toBeGreaterThan(800);
+  });
+});

@@ -2,7 +2,7 @@
 
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import { ChevronDown, ChevronLeft, ChevronRight, CodeXml, Copy, Download, ExternalLink, XIcon } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { Badge } from "@/components/common/badge";
 import { cn } from "@/components/common/cn";
 import { Kbd } from "@/components/common/kbd";
@@ -259,6 +259,28 @@ function DetailBody({ asset }: { asset: Asset }) {
   );
 }
 
+/** Below this the info panel starts scrolling for no reason; above it the dialog leaves the screen. */
+const DIALOG_MIN_HEIGHT = 460;
+const DIALOG_MAX_HEIGHT = 880;
+
+/**
+ * Height the dialog opens at. It used to be 880 px whatever the asset, so a 60x25 logo sat in a 780x845 white void
+ * with 420 px of empty panel under its six metadata rows. The preview the asset will get decides instead, clamped so
+ * the panel always has room and the dialog never leaves the screen.
+ */
+function dialogHeight(asset: Asset): number {
+  const source = asset.original ?? asset.display;
+  const width = source?.width ?? asset.width ?? 0;
+  const height = source?.height ?? asset.height ?? 0;
+  if (!width || !height) return DIALOG_MAX_HEIGHT;
+  // The preview column is 780 px wide at the reference 1120 px dialog, less its 48 px of padding, and the frame takes
+  // 82 percent of the well: a wide asset runs out of width before it reaches its 6x (vectors) or 2x (rasters).
+  const room = (780 - 48) * 0.82;
+  const shown = Math.min(height * (asset.kind === "svg" ? 6 : 2), (room * height) / width);
+  // Back out the well the frame needs, plus the 56 px control band and the padding around it.
+  return Math.round(Math.min(DIALOG_MAX_HEIGHT, Math.max(DIALOG_MIN_HEIGHT, shown / 0.82 + 104)));
+}
+
 /**
  * Spec 12.2 detail: a 1120 px modal (preview left, 340 px info right), a full-screen sheet on phones. Keys: arrows move
  * within the current tab and search, D downloads, C copies SVG code, O opens remote sources, Esc closes.
@@ -328,9 +350,11 @@ export function DetailDialog() {
           ref={popupRef}
           initialFocus={popupRef}
           finalFocus={() => (shown ? (document.querySelector<HTMLElement>(`[data-asset-id="${CSS.escape(shown.id)}"] [data-card-main]`) ?? true) : true)}
+          data-testid="detail-popup"
+          style={{ "--detail-height": `${shown ? dialogHeight(shown) : DIALOG_MAX_HEIGHT}px` } as CSSProperties}
           className={cn(
             "fixed inset-0 z-50 flex flex-col overflow-hidden bg-surface text-text outline-none",
-            "md:inset-auto md:top-1/2 md:left-1/2 md:h-[min(calc(100dvh-96px),880px)] md:w-[min(1120px,calc(100vw-48px))] md:-translate-x-1/2 md:-translate-y-1/2 md:rounded-xl md:border md:border-border md:shadow-float",
+            "md:inset-auto md:top-1/2 md:left-1/2 md:h-[min(calc(100dvh-96px),var(--detail-height))] md:w-[min(1120px,calc(100vw-48px))] md:-translate-x-1/2 md:-translate-y-1/2 md:rounded-xl md:border md:border-border md:shadow-float",
             "transition-[opacity,scale] duration-150 ease-enter data-ending-style:scale-[0.98] data-ending-style:opacity-0 data-ending-style:duration-100 data-ending-style:ease-exit data-starting-style:scale-[0.98] data-starting-style:opacity-0",
           )}
         >
