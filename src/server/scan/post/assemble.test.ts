@@ -122,8 +122,10 @@ describe("assembleAssets hidden counts", () => {
       "<stop offset='100%' stop-color='%230000ff'/></linearGradient></defs><rect width='120' height='120' fill='url(%23g)'/></svg>";
     const { assets, hidden } = await run(collectorOutput({ candidates: [candidate(gradient, 1, 1, { visible: true })] }));
     expect(assets.map((asset) => [asset.kind, asset.width, asset.height])).toEqual([["svg", 120, 120]]);
-    expect(assets[0].inline?.text).toContain("stop-color='#ff0000'");
-    expect(assets[0].inline?.text).toContain("x1='0%'");
+    const inline = assets[0].inline;
+    const text = inline && "text" in inline ? inline.text : "";
+    expect(text).toContain("stop-color='#ff0000'");
+    expect(text).toContain("x1='0%'");
     expect(hidden).toEqual({});
   });
 
