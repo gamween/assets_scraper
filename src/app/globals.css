@@ -204,13 +204,16 @@
   }
 }
 
-@layer components {
-  /* The 360 px toast and the bottom centre bar share the bottom edge below about 1156 px, and the toast wins on
-     z-index: at 390 px it covered the whole bar, Download ZIP included. 76 = 12 offset + 52 bar + 12 gap. */
+/* The 360 px toast and the bottom centre bar share the bottom edge below about 1156 px, and the toast wins on
+   z-index: at 390 px it covered the whole bar, Download ZIP included. 76 = 12 offset + 52 bar + 12 gap. In the
+   utilities layer, and not in components, so it beats the viewport's own `bottom-*` utility. */
+@layer utilities {
   body:has([data-selection-bar]) [data-toast-viewport] {
     bottom: calc(76px + env(safe-area-inset-bottom, 0px));
   }
+}
 
+@layer components {
   /* Transparency checker, 8 px squares. */
   .bg-grid {
     background: repeating-conic-gradient(var(--grid-b) 0 25%, var(--grid-a) 0 50%) 0 0 / 16px 16px;
