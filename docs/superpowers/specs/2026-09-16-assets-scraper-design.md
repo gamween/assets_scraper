@@ -373,6 +373,7 @@ Verification: `safeFetch` GET with `Range: bytes=0-262143`, `Accept: image/png,i
 
 ### 8.5 Roles and relevance
 
+- Logo word: `logo`, `wordmark` or `logotype` anywhere in the name, and `brand` only at the end of a token (`navbar-brand`, `.brand`), never as a qualifier inside a compound name (`card-brand-content`).
 - `logoScore` = logo word 3 + link to home 3 + header or nav 2 + site word 2 + top under 160 px and visible 1 + footer 1.
 - `site-logo`: score >= 6 and rendered at most 120,000 px2, or a JSON-LD logo at any size. The score reaches 6 on position alone (link to home, header, top of the page), which is also what a hero picture under a nav looks like, and the logo signals are shared across a group, so past that area only an explicit declaration promotes.
 - `logo`: logo word, logo wall, or `alt` containing "logo".

@@ -44,7 +44,12 @@ const BRAND_LINK = /(?:^|[^a-z])(?:brand|press(?!ure)|media[- _]?kit|newsroom|id
 const isBrandLink = (text: string) => BRAND_LINK.test(text) || BRAND_LINK.test(text.replace(/([a-z])(?=[A-Z])/g, "$1 "));
 /** Second-level labels under a two-letter country code that are public suffixes: shop.co.uk, shop.com.au. */
 const SECOND_LEVEL_LABELS = /^(?:ac|co|com|edu|go|gov|ne|net|or|org)$/;
-const LOGO_WORD = /logo|brand|wordmark|logotype/;
+/**
+ * "brand" only counts at the end of a token (navbar-brand, .brand, header__brand), never as a qualifier inside a
+ * compound name, because a page wraps ordinary photos in names like
+ * payments-graphic__checkout-item-card-brand-content and every one of them would be filed as a logo.
+ */
+const LOGO_WORD = /logo|wordmark|logotype|brand(?:s|mark)?(?![a-z]|[-_][a-z])/;
 
 const STYLE_PROPS = [
   "fill", "fill-opacity", "fill-rule", "stroke", "stroke-width", "stroke-opacity", "stroke-linecap", "stroke-linejoin",

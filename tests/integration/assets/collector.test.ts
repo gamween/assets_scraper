@@ -26,6 +26,8 @@ beforeAll(async () => {
         <svg width="24" height="24"><use href="#shared"/></svg>
         <svg width="120" height="30"><text x="0" y="20" style="font-family: '__Inter_d65c78'">Brand</text></svg>
         <svg width="120" height="30"><text x="0" y="20" style="font-family: serif">Plain</text></svg>
+        <div class="card-brand-content"><img src="/assets/photo-small.png" width="40" height="40"></div>
+        <div class="navbar-brand"><img src="/assets/touch.png" width="40" height="40"></div>
         <a href="/logout">Log out</a> <a href="/wordpress-tips">Tips</a> <a href="/impressum">Impressum</a> <a href="/express">Express shipping</a>
         <a href="/brand-assets">Assets</a> <a href="/brand-assets#top">Assets again</a> <a href="/brandassets">Downloads</a> <a href="/logopack">Pack</a>
       </body></html>`);
@@ -227,6 +229,10 @@ describe("collector noise and edge cases", () => {
       { href: `${server.origin}/logopack`, text: "Pack" },
     ]);
     expect(edge.manifestUrl).toBe(`${server.origin}/site.webmanifest`);
+    // "brand" inside a compound name qualifies the thing, it does not name a logo: a product photo is not a logo.
+    const logoWordOf = (name: string) => edge.candidates.find((c) => c.url.endsWith(name) && !c.declaredOnly)?.context.logoWord;
+    expect(logoWordOf("photo-small.png")).toBe(false);
+    expect(logoWordOf("touch.png")).toBe(true);
   });
 });
 
