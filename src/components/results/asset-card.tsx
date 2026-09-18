@@ -1,7 +1,7 @@
 "use client";
 
 import { CheckIcon, CodeXml, Download } from "lucide-react";
-import { memo, useState, type MouseEvent, type PointerEvent } from "react";
+import { memo, useState, type CSSProperties, type MouseEvent, type PointerEvent } from "react";
 import { Badge } from "@/components/common/badge";
 import { cn } from "@/components/common/cn";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -119,6 +119,11 @@ export const AssetCard = memo(function AssetCard({ asset, section }: { asset: As
        * forwarded so the tile still behaves as one control. A click that ends a drag-selection is left alone.
        */}
       <div className="pointer-events-none relative z-10 flex min-w-0 flex-col gap-0.5 border-t border-border p-3">
+        {/*
+         * The name is one line of inline boxes, never a flex row: flex items are blockified, and a selection across
+         * two of them serializes with a line break, so copying the name pasted `linear\n.svg`. The base keeps the
+         * ellipsis and reserves the width of the extension (`--ext` characters), which stays whole.
+         */}
         <span
           data-testid="asset-filename"
           title={asset.filename}
@@ -126,10 +131,11 @@ export const AssetCard = memo(function AssetCard({ asset, section }: { asset: As
             if (window.getSelection()?.toString()) return;
             activateItem(key, event, () => appStore.getState().openDetail(asset.id));
           }}
-          className="pointer-events-auto flex max-w-fit min-w-0 cursor-text text-small text-text select-text"
+          style={{ "--ext": extension.length } as CSSProperties}
+          className="pointer-events-auto block max-w-fit min-w-0 cursor-text overflow-hidden text-small whitespace-nowrap text-text select-text"
         >
-          <span className="truncate">{base}</span>
-          <span className="shrink-0">{extension}</span>
+          <span className="inline-block max-w-[calc(100%-var(--ext)*1ch)] truncate align-bottom">{base}</span>
+          <span>{extension}</span>
         </span>
         {/*
          * One line of whole parts, most useful first: a part that does not fit wraps onto a hidden second line, so a

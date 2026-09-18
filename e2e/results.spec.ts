@@ -234,7 +234,19 @@ test.describe("results", () => {
     await page.mouse.down();
     await page.mouse.move(box.x + box.width - 1, box.y + box.height / 2, { steps: 8 });
     await page.mouse.up();
-    expect(await page.evaluate(() => window.getSelection()?.toString() ?? "")).not.toBe("");
+    // What comes out must be the file name and nothing else: two flex items serialize with a line break between them,
+    // and `linear\n.svg` pasted into a rename field is two lines.
+    expect(await page.evaluate(() => window.getSelection()?.toString() ?? "")).toBe(logo.filename);
+    expect(
+      await name.evaluate((span) => {
+        const range = document.createRange();
+        range.selectNodeContents(span);
+        const selection = window.getSelection()!;
+        selection.removeAllRanges();
+        selection.addRange(range);
+        return selection.toString();
+      }),
+    ).toBe(logo.filename);
     // The drag must not have opened the detail view on mouse up.
     await expect(page.getByRole("dialog")).toHaveCount(0);
 
