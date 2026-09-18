@@ -29,8 +29,17 @@ export interface ScanEngineDeps {
   createSigner: (options?: { max?: number }) => Signer;
   assembleAssets: (input: PostInput) => Promise<AssetsOutput>;
   buildFontFamilies: (input: PostInput) => Promise<FontsOutput>;
-  /** `onNull` tells why the palette is null, for the logs and for `diagnostics.paletteNull`. */
-  extractPalette: (page: Page, options: { fetch: SafeFetch; signal: AbortSignal; timeBudgetMs: number; onNull?: (reason: string, error?: unknown) => void }) => Promise<Palette | null>;
+  /** `onNull` tells why the palette is null and `onSalvaged` why it is degraded, for the logs and for `diagnostics`. */
+  extractPalette: (
+    page: Page,
+    options: {
+      fetch: SafeFetch;
+      signal: AbortSignal;
+      timeBudgetMs: number;
+      onNull?: (reason: string, error?: unknown) => void;
+      onSalvaged?: (reason: string, error?: unknown) => void;
+    },
+  ) => Promise<Palette | null>;
   /** Bundled in-page collector that defines `globalThis.__assetsScraper.collect`. */
   collectorSource: string;
   /** MemAvailable in MB for the memory watchdog (spec 7.3); the watchdog is off without it. */
@@ -617,10 +626,14 @@ async function runBrowserStage(input: ScanContext & {
           diagnostics.paletteNull = reason;
           console.warn(`Scan ${diagnostics.scanId} has no palette (${reason})`, ...(error === undefined ? [] : [error]));
         };
+        const salvagedPalette = (reason: string) => {
+          diagnostics.paletteSalvaged = reason;
+          console.warn(`Scan ${diagnostics.scanId} salvaged the palette (${reason})`);
+        };
         const stopped = Symbol("palette stopped");
         const paletteCapMs = paletteCap();
         const extraction = deps
-          .extractPalette(page, { fetch: deps.fetch, signal: AbortSignal.any([signal, AbortSignal.timeout(paletteCapMs)]), timeBudgetMs: limits.paletteBudgetMs, onNull: noPalette })
+          .extractPalette(page, { fetch: deps.fetch, signal: AbortSignal.any([signal, AbortSignal.timeout(paletteCapMs)]), timeBudgetMs: limits.paletteBudgetMs, onNull: noPalette, onSalvaged: salvagedPalette })
           .catch((error: unknown) => {
             noPalette("error", error);
             return null;
