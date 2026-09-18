@@ -16,6 +16,8 @@ let server: FixtureServer;
 let bigPng: Buffer;
 let webp: Buffer;
 let gif: Buffer;
+let exactPng: Buffer;
+let exactSvg: Buffer;
 const requests: http.IncomingHttpHeaders[] = [];
 const rangeResetRequests: http.IncomingHttpHeaders[] = [];
 
@@ -24,6 +26,15 @@ beforeAll(async () => {
   webp = await noise(640, 360).webp().toBuffer();
   gif = await noise(400, 300).gif().toBuffer();
   expect(bigPng.length).toBeGreaterThan(262_144);
+  // Exactly VERIFY_RANGE_BYTES, padded with a PNG text chunk and an XML comment respectively.
+  const png = await noise(300, 200).png({ compressionLevel: 0 }).toBuffer();
+  expect(png.length).toBeLessThan(262_144);
+  exactPng = Buffer.concat([png, Buffer.alloc(262_144 - png.length)]);
+  const svgHead = `<svg xmlns="http://www.w3.org/2000/svg" width="120" height="60"><!--`;
+  const svgTail = `--><rect width="120" height="60"/></svg>`;
+  exactSvg = Buffer.from(`${svgHead}${"x".repeat(262_144 - svgHead.length - svgTail.length)}${svgTail}`, "utf8");
+  expect(exactPng).toHaveLength(262_144);
+  expect(exactSvg).toHaveLength(262_144);
   server = await serveAssetsFixture({
     "/ranged.png": (req, res) => {
       requests.push(req.headers);
@@ -62,6 +73,15 @@ beforeAll(async () => {
       res.writeHead(200, { "content-type": "image/png", "content-length": String(bigPng.length) });
       res.end(bigPng);
     },
+    // A file of exactly the range prefix: the stream ends at the range boundary, so only the declared size says it is whole.
+    "/exact.png": (_req, res) => {
+      res.writeHead(206, { "content-type": "image/png", "content-range": `bytes 0-262143/262144` });
+      res.end(exactPng);
+    },
+    "/exact.svg": (_req, res) => {
+      res.writeHead(206, { "content-type": "image/svg+xml", "content-range": `bytes 0-262143/262144` });
+      res.end(exactSvg);
+    },
     "/partial.gif": (_req, res) => {
       res.writeHead(206, { "content-type": "image/gif", "content-range": `bytes 0-1023/${gif.length}` });
       res.end(gif.subarray(0, 1024));
@@ -82,6 +102,14 @@ describe("verifyUrl", () => {
     expect(headers.referer).toBe(`${server.origin}/`);
     expect(headers["user-agent"]).toMatch(/Chrome\/\d+/);
     expect(headers["user-agent"]).not.toMatch(/Headless/);
+  });
+
+  it("reports a file of exactly the range prefix as complete", async () => {
+    const png = await verifyUrl(`${server.origin}/exact.png`, options());
+    expect(png).toMatchObject({ ok: true, format: "png", bytes: 262_144, width: 300, height: 200, complete: true });
+    expect(png.ok && png.body).toBeInstanceOf(Buffer);
+    // An SVG only gets its dimensions read when the bytes are complete.
+    expect(await verifyUrl(`${server.origin}/exact.svg`, options())).toMatchObject({ ok: true, format: "svg", complete: true, width: 120, height: 60 });
   });
 
   it("retries without the range when the ranged request is reset mid-body", async () => {
