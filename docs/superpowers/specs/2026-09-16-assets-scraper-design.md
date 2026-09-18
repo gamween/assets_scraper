@@ -278,8 +278,8 @@ Rules:
 3. Body `{ url: string }` validated with zod, at most 2,048 characters.
 4. `checkBotId()`; a bot gets `bot` (403).
 5. `SCAN_DISABLED=1` gives `disabled` (503). When `ACCESS_CODE` is set, header `x-access-code` must match (timing-safe), otherwise `access-code` (401).
-6. Budget: daily and monthly scan counters (`SCANS_PER_DAY`, `SCANS_PER_MONTH`). Over budget gives `budget` (429).
-7. URL policy on the normalized URL: http or https, port 80 or 443, no credentials, not an own host, not a private IP literal.
+6. URL policy on the normalized URL: http or https, port 80 or 443, no credentials, not an own host, not a private IP literal.
+7. Budget, last so a request that never becomes a scan spends nothing: a per-client daily counter keyed by the caller's address (`SCANS_PER_IP_PER_DAY`), then the shared daily and monthly counters (`SCANS_PER_DAY`, `SCANS_PER_MONTH`). Over budget gives `budget` (429). A client over its own quota is refused before the shared counters move, so one address cannot empty the day for everyone.
 
 ### 7.2 Phases and budgets
 
@@ -628,7 +628,7 @@ All in `src/server/config/limits.ts`, env-overridable.
 - Vercel project `assets-scraper` (existing), framework Next.js, Node 24.x, Fluid on, region `iad1`. Deploys through the Vercel CLI (remote builds on x64; never `--prebuilt` from Apple Silicon).
 - `next.config.ts`: `outputFileTracingIncludes` for `/api/scan` with the real (symlink-resolved) paths of `@sparticuz/chromium/bin/**` and `playwright-core/browsers.json`; security headers; `typedRoutes`; React Compiler.
 - `vercel.json`: `{ "fluid": true, "regions": ["iad1"], "functions": { "src/app/api/scan/route.ts": { "maxDuration": 120, "supportsCancellation": true }, "src/app/api/asset/route.ts": { "maxDuration": 30, "supportsCancellation": true } } }`.
-- Env: `ASSET_URL_SECRET` (required in production), optional `SCAN_DISABLED`, `ACCESS_CODE`, `SCANS_PER_DAY`, `SCANS_PER_MONTH`, `PROXY_BYTES_PER_DAY`, `APP_HOSTS`, `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`. `.env.example` lists them with `OPS_TOKEN` and the test-only `SCAN_TEST_ALLOW_HOSTS`. The CI e2e job sets `ASSET_URL_SECRET` to a fixed test value, since `next start` runs in production mode.
+- Env: `ASSET_URL_SECRET` (required in production), optional `SCAN_DISABLED`, `ACCESS_CODE`, `SCANS_PER_DAY`, `SCANS_PER_MONTH`, `SCANS_PER_IP_PER_DAY`, `PROXY_BYTES_PER_DAY`, `APP_HOSTS`, `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`. `.env.example` lists them with `OPS_TOKEN` and the test-only `SCAN_TEST_ALLOW_HOSTS`. The CI e2e job sets `ASSET_URL_SECRET` to a fixed test value, since `next start` runs in production mode.
 - Firewall: one rate-limit rule (section 7.1), BotID enabled.
 - Diagnostics travel in `done` and `error` events because Hobby keeps runtime logs for one hour. `GET /api/health` returns the build SHA and flags, never URLs.
 - Dependency policy: `@sparticuz/chromium` and `playwright-core` pinned exactly and bumped together within a week of each Chrome security release.

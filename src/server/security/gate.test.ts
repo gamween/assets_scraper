@@ -108,6 +108,14 @@ describe("gateScanRequest", () => {
     await expectFailure(await gateScanRequest(scanRequest()), 429, "budget");
   });
 
+  it("charges the budget only for a request that becomes a scan", async () => {
+    vi.stubEnv("SCANS_PER_DAY", "1");
+    await expectFailure(await gateScanRequest(scanRequest({ url: "not a url" })), 400, "invalid-url");
+    await expectFailure(await gateScanRequest(scanRequest({ url: "http://127.0.0.1/" })), 422, "blocked-address");
+    expect(budgetCalls).toBe(0);
+    expect((await gateScanRequest(scanRequest())).ok).toBe(true);
+  });
+
   it("applies the URL policy last", async () => {
     vi.stubEnv("APP_HOSTS", "assets.example.com");
     await expectFailure(await gateScanRequest(scanRequest({ url: "http://127.0.0.1/" })), 422, "blocked-address");

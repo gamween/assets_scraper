@@ -79,7 +79,7 @@ const day3 = new Date("2026-09-18T10:00:00Z");
 
 async function takeMany(count: number, now: Date): Promise<boolean[]> {
   const results: boolean[] = [];
-  for (let i = 0; i < count; i++) results.push(await takeScanBudget(now));
+  for (let i = 0; i < count; i++) results.push(await takeScanBudget(null, now));
   return results;
 }
 
@@ -98,16 +98,28 @@ describe("budget", () => {
   it("limits scans per UTC day", async () => {
     vi.stubEnv("SCANS_PER_DAY", "2");
     expect(await takeMany(3, day1)).toEqual([true, true, false]);
-    expect(await takeScanBudget(day2)).toBe(true);
+    expect(await takeScanBudget(null, day2)).toBe(true);
+  });
+
+  it("limits scans per client per day without spending the shared budget", async () => {
+    vi.stubEnv("SCANS_PER_DAY", "10");
+    vi.stubEnv("SCANS_PER_IP_PER_DAY", "2");
+    expect(await takeScanBudget("203.0.113.7", day1)).toBe(true);
+    expect(await takeScanBudget("203.0.113.7", day1)).toBe(true);
+    expect(await takeScanBudget("203.0.113.7", day1)).toBe(false);
+    // Another client still has its own quota, and the two the first client spent are all it took from the day.
+    expect(await takeScanBudget("203.0.113.8", day1)).toBe(true);
+    expect(await takeMany(8, day1)).toEqual([true, true, true, true, true, true, true, false]);
+    expect(await takeScanBudget("203.0.113.7", day2)).toBe(true);
   });
 
   it("limits scans per month without spending the month on attempts refused for the day", async () => {
     vi.stubEnv("SCANS_PER_DAY", "1");
     vi.stubEnv("SCANS_PER_MONTH", "2");
     expect(await takeMany(4, day1)).toEqual([true, false, false, false]);
-    expect(await takeScanBudget(day2)).toBe(true);
-    expect(await takeScanBudget(day3)).toBe(false);
-    expect(await takeScanBudget(new Date("2026-10-01T00:00:00Z"))).toBe(true);
+    expect(await takeScanBudget(null, day2)).toBe(true);
+    expect(await takeScanBudget(null, day3)).toBe(false);
+    expect(await takeScanBudget(null, new Date("2026-10-01T00:00:00Z"))).toBe(true);
   });
 
   it("sums proxied bytes per day without counting a refused take", async () => {
@@ -188,7 +200,7 @@ describe("budget", () => {
     const seen: [string, number, number][] = [];
     const recording: BudgetStore = { incr: async (key, by, ttl) => { seen.push([key, by, ttl]); return 1; } };
     setBudgetStoreForTests(recording);
-    await takeScanBudget(day1);
+    await takeScanBudget(null, day1);
     await takeProxyBytes(123, day1);
     const meter = meterProxyBytes(day1);
     await meter.take(45);
@@ -224,15 +236,15 @@ describe("budget", () => {
     expect(await takeMany(3, day1)).toEqual([true, true, true]);
     expect(calls).toBe(1);
     vi.setSystemTime(day1.getTime() + 29_000);
-    await takeScanBudget(day1);
+    await takeScanBudget(null, day1);
     expect(calls).toBe(1);
     down = false;
     vi.setSystemTime(day1.getTime() + 31_000);
-    await takeScanBudget(day1);
+    await takeScanBudget(null, day1);
     expect(calls).toBe(3);
     // the in-memory counter kept every scan taken meanwhile
     vi.stubEnv("SCANS_PER_DAY", "5");
-    expect(await takeScanBudget(day1)).toBe(false);
+    expect(await takeScanBudget(null, day1)).toBe(false);
   });
 
   it("still enforces the limit when a store silently loses counts", async () => {
@@ -319,6 +331,6 @@ describe("budget stores", () => {
     vi.stubEnv("UPSTASH_REDIS_REST_TOKEN", "token");
     vi.stubEnv("SCANS_PER_DAY", "1");
     upstash.totals.set("scan:d:2026-09-16", 5);
-    expect(await takeScanBudget(day1)).toBe(false);
+    expect(await takeScanBudget(null, day1)).toBe(false);
   });
 });

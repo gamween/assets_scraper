@@ -114,10 +114,17 @@ async function incr(key: string, by: number, ttlSeconds: number): Promise<number
   }
 }
 
-/** Takes one scan from the daily and monthly budgets. A scan refused for the day does not count toward the month. */
-export async function takeScanBudget(now: Date = new Date()): Promise<boolean> {
+/**
+ * Takes one scan from the client's daily budget, then from the shared daily and monthly budgets. A scan refused for
+ * the day does not count toward the month, and a client over its own quota spends nothing from the shared budget, so
+ * one address cannot empty the day for everyone. A null client (local dev, tests, any host with no client address)
+ * skips the per-client check.
+ */
+export async function takeScanBudget(client: string | null = null, now: Date = new Date()): Promise<boolean> {
   const iso = now.toISOString();
-  if ((await incr(`scan:d:${iso.slice(0, 10)}`, 1, SCAN_DAY_TTL)) > limits.scansPerDay) return false;
+  const day = iso.slice(0, 10);
+  if (client && (await incr(`scan:d:${day}:${client}`, 1, SCAN_DAY_TTL)) > limits.scansPerIpPerDay) return false;
+  if ((await incr(`scan:d:${day}`, 1, SCAN_DAY_TTL)) > limits.scansPerDay) return false;
   return (await incr(`scan:m:${iso.slice(0, 7)}`, 1, SCAN_MONTH_TTL)) <= limits.scansPerMonth;
 }
 

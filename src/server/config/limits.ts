@@ -135,6 +135,8 @@ const defaults = {
   // Budgets (spec 11.3)
   scansPerDay: 80,
   scansPerMonth: 800,
+  // Raise SCANS_PER_IP_PER_DAY when a shared NAT (a school, an office) has to share one address.
+  scansPerIpPerDay: 20,
   proxyBytesPerDay: 300 * MB,
 };
 
