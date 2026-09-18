@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { expect, test, type Page } from "@playwright/test";
 import type { ScanEvent } from "../src/lib/contract";
 import { formatBytes } from "../src/lib/format";
-import { findAsset, fontsOf, loadFixture } from "./support/fixtures";
+import { findAsset, fontsOf, loadFixture, mapAssets } from "./support/fixtures";
 import { mockAssetRoutes, mockScan, type AssetRouteOptions } from "./support/routes";
 import { readZip } from "./support/zip";
 
@@ -95,6 +95,18 @@ test.describe("selection and ZIP", () => {
 
     await selectionBar(page).getByRole("button", { name: "Clear" }).click();
     await expect(selectionBar(page)).toHaveCount(0);
+  });
+
+  test("the bar drops the size when the scan never sized one of the files", async ({ page }) => {
+    // The scan records no size for plenty of CDN originals: summing the rest reported 3.2 KB for a 4.2 MB ZIP.
+    const unsized = mapAssets(linear, (asset) => (asset.id === photo.id && asset.original ? { ...asset, original: { ...asset.original, bytes: undefined } } : asset));
+    await openResults(page, {}, unsized);
+    await cardOf(page, siteLogo.id).hover();
+    await cardOf(page, siteLogo.id).getByRole("checkbox").click();
+    await expect(selectionBar(page).getByTestId("selection-count")).toHaveText(`1 selected · ${formatBytes(siteLogo.bytes!)}`);
+
+    await cardOf(page, photo.id).locator("[data-card-main]").click();
+    await expect(selectionBar(page).getByTestId("selection-count")).toHaveText("2 selected");
   });
 
   test("a file that fails ends in a toast with Show", async ({ page }) => {

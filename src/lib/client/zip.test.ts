@@ -85,8 +85,8 @@ describe("buildZip", () => {
       { type: "font", font: dataUri },
       { type: "font", font: adobe },
     ];
-    const progress: [number, number][] = [];
-    const { response, result } = buildZip(items, "linear.app", { onProgress: (done, total) => progress.push([done, total]) });
+    const progress: [number, number, number][] = [];
+    const { response, result } = buildZip(items, "linear.app", { onProgress: (done, total, bytes) => progress.push([done, total, bytes]) });
     const entries = readZip(new Uint8Array(await response.arrayBuffer()));
     const { failed } = await result;
 
@@ -110,7 +110,11 @@ describe("buildZip", () => {
     expect(Buffer.from(byName.get("brand-serif-400.woff2")!)).toEqual(interWoff2);
 
     expect(failed).toEqual([{ name: "Broken image", path: "linear.app-assets/images/linear-broken.png" }]);
-    expect(progress.at(-1)).toEqual([10, 10]);
+    // The running byte count is the only size a caller has for files the scan never sized: it skips the entry that
+    // failed and grows to what the archive holds.
+    const loaded = entries.reduce((sum, entry) => sum + entry.data.length, 0);
+    expect(progress.at(-1)).toEqual([10, 10, loaded]);
+    expect(progress.map(([, , bytes]) => bytes)).toEqual([...progress].map(([, , bytes]) => bytes).sort((a, b) => a - b));
     expect(fetchMock.mock.calls.some((call) => String(call[0]).startsWith("https://static.linear.app/fonts/Berkeley") && String(call[0]).includes("fmt"))).toBe(false);
   });
 
