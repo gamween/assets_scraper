@@ -90,7 +90,7 @@ function SearchField() {
           <XIcon className="size-3.5" aria-hidden="true" />
         </button>
       ) : (
-        <Kbd className="pointer-events-none absolute top-1/2 right-2 -translate-y-1/2 peer-focus-visible:opacity-0">/</Kbd>
+        <Kbd className="pointer-events-none absolute top-1/2 right-2 -translate-y-1/2 peer-focus-visible:opacity-0 pointer-coarse:hidden">/</Kbd>
       )}
     </div>
   );
@@ -197,6 +197,28 @@ function BackgroundSelect({ value, onChange, className }: { value: Background; o
   );
 }
 
+/** Spec 12.4 `Select` button, on touch devices only: the checkboxes need a hover the device does not have. */
+function SelectionToggle({ className }: { className?: string }) {
+  const selectionMode = useApp((s) => s.selectionMode);
+  const setSelectionMode = useApp((s) => s.setSelectionMode);
+  const clearSelection = useApp((s) => s.clearSelection);
+  return (
+    <button
+      type="button"
+      aria-pressed={selectionMode}
+      onClick={() => (selectionMode ? clearSelection() : setSelectionMode(true))}
+      className={cn(
+        "h-8 shrink-0 items-center gap-1.5 rounded-md border px-2.5 text-body",
+        selectionMode ? "border-accent bg-accent-soft text-text" : "border-border bg-surface text-text-2",
+        className,
+      )}
+    >
+      <SquareCheck className="size-4" aria-hidden="true" />
+      {selectionMode ? "Done" : "Select"}
+    </button>
+  );
+}
+
 /**
  * Spec 12.2 sticky filter row: tabs with counts, search (`/`), sort and the preview background control. One row from
  * 1024 px; below, the tabs sit over the controls, and phones pick the background from a compact select next to the tabs.
@@ -204,33 +226,26 @@ function BackgroundSelect({ value, onChange, className }: { value: Background; o
 export function FilterBar() {
   const background = useApp((s) => s.background);
   const setBackground = useApp((s) => s.setBackground);
-  const selectionMode = useApp((s) => s.selectionMode);
-  const setSelectionMode = useApp((s) => s.setSelectionMode);
-  const clearSelection = useApp((s) => s.clearSelection);
 
   return (
     <div className="sticky top-[calc(var(--top-bar-height)+env(safe-area-inset-top,0px))] z-30 mt-6 border-b border-border bg-bg">
       <div className="page-x flex flex-wrap items-stretch gap-x-6 lg:h-(--filter-bar-height) lg:flex-nowrap">
-        <div className="flex h-11 min-w-0 flex-1 items-stretch lg:h-auto lg:flex-none">
+        <div className="flex h-11 min-w-0 flex-1 items-stretch gap-2 lg:h-auto lg:flex-none">
           <Tabs />
-          <BackgroundSelect value={background} onChange={setBackground} className="ml-auto self-center sm:hidden" />
+          {/*
+           * Below 640 the `Select` button rides with the tabs, not with the search field: on a touch phone it and the
+           * sort control together left the input about 150 px wide, which cut the placeholder to `Filter by nan`.
+           */}
+          <div className="ml-auto flex shrink-0 items-center gap-2 self-center">
+            <SelectionToggle className="hidden pointer-coarse:inline-flex sm:pointer-coarse:hidden" />
+            <BackgroundSelect value={background} onChange={setBackground} className="sm:hidden" />
+          </div>
         </div>
         <div className="flex w-full items-center gap-2 pb-2.5 lg:ml-auto lg:w-auto lg:pb-0">
           <SearchField />
           <SortSelect />
           <BackgroundControl value={background} onChange={setBackground} className="hidden sm:flex" />
-          <button
-            type="button"
-            aria-pressed={selectionMode}
-            onClick={() => (selectionMode ? clearSelection() : setSelectionMode(true))}
-            className={cn(
-              "hidden h-8 shrink-0 items-center gap-1.5 rounded-md border px-2.5 text-body pointer-coarse:inline-flex",
-              selectionMode ? "border-accent bg-accent-soft text-text" : "border-border bg-surface text-text-2",
-            )}
-          >
-            <SquareCheck className="size-4" aria-hidden="true" />
-            {selectionMode ? "Done" : "Select"}
-          </button>
+          <SelectionToggle className="hidden sm:pointer-coarse:inline-flex" />
         </div>
       </div>
     </div>
