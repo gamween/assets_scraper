@@ -23,7 +23,7 @@ function SwatchButton({ swatch, group }: { swatch: Swatch; group: "brand" | "neu
             type="button"
             aria-label={`Copy ${swatch.hex}`}
             onClick={() => copyWithToast(swatch.hex, `Copied ${swatch.hex}`)}
-            className="group/swatch flex w-[60px] flex-col items-center gap-1.5 rounded-md pt-1 pb-0.5 outline-none focus-visible:outline-2 focus-visible:outline-accent"
+            className="group/swatch flex w-[60px] flex-col items-center gap-1.5 rounded-md pt-1 pb-0.5 focus-ring"
           />
         }
       >
@@ -55,7 +55,7 @@ export function PaletteStrip() {
         <button
           type="button"
           onClick={() => copyWithToast(lines.join("\n"), "Palette copied")}
-          className="rounded-sm text-small text-text-3 underline decoration-border-strong underline-offset-4 outline-none hover:text-text hover:decoration-text focus-visible:outline-2 focus-visible:outline-accent"
+          className="rounded-sm text-small text-text-3 underline decoration-border-strong underline-offset-4 hover:text-text hover:decoration-text focus-ring"
         >
           Copy all
         </button>

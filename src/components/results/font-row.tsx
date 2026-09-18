@@ -135,7 +135,7 @@ export const FontRow = memo(function FontRow({ font }: { font: FontFamily }) {
               aria-label={`Select ${font.name}`}
               onClick={(event) => (event.shiftKey ? appStore.getState().selectRange(key) : appStore.getState().toggle(key))}
               className={cn(
-                "mt-0.5 grid size-5 shrink-0 place-items-center rounded-sm border-[1.5px] transition-[opacity,background-color,border-color] duration-100 focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent",
+                "mt-0.5 grid size-5 shrink-0 place-items-center rounded-sm border-[1.5px] transition-[opacity,background-color,border-color] duration-100 focus-visible:opacity-100 focus-ring-tight",
                 selected ? "border-accent bg-accent text-accent-fg" : "border-border-strong bg-surface text-transparent hover:border-text-3",
                 selected || selecting ? "opacity-100" : "opacity-0 group-hover/font:opacity-100 pointer-coarse:opacity-100",
               )}

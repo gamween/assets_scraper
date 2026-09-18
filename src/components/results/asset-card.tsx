@@ -36,7 +36,7 @@ function IconAction({ label, onClick, children }: { label: string; onClick: () =
               event.stopPropagation();
               onClick();
             }}
-            className="grid size-7 place-items-center rounded-md border border-border bg-surface text-text-2 transition-colors duration-100 hover:border-border-strong hover:text-text focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent [&_svg]:size-3.5"
+            className="grid size-7 place-items-center rounded-md border border-border bg-surface text-text-2 transition-colors duration-100 hover:border-border-strong hover:text-text focus-ring-tight [&_svg]:size-3.5"
           />
         }
       >
@@ -94,7 +94,7 @@ export const AssetCard = memo(function AssetCard({ asset }: { asset: Asset }) {
             else appStore.getState().toggle(key);
           }}
           className={cn(
-            "absolute top-2 right-2 z-10 grid size-5 place-items-center rounded-sm border-[1.5px] transition-[opacity,background-color,border-color] duration-100 focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent",
+            "absolute top-2 right-2 z-10 grid size-5 place-items-center rounded-sm border-[1.5px] transition-[opacity,background-color,border-color] duration-100 focus-visible:opacity-100 focus-ring-tight",
             selected ? "border-accent bg-accent text-accent-fg" : "border-border-strong bg-surface text-transparent hover:border-text-3",
             selected || selecting ? "opacity-100" : "opacity-0 group-hover/card:opacity-100",
           )}

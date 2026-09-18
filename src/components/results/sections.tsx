@@ -27,7 +27,7 @@ function SectionBlock({ section }: { section: Section }) {
             aria-expanded={expanded}
             aria-controls={`${id}-body`}
             onClick={() => toggleSection(section.id)}
-            className="ml-1 rounded-sm text-small text-text-2 underline decoration-border-strong underline-offset-4 outline-none hover:text-text hover:decoration-text focus-visible:outline-2 focus-visible:outline-accent"
+            className="ml-1 rounded-sm text-small text-text-2 underline decoration-border-strong underline-offset-4 hover:text-text hover:decoration-text focus-ring"
           >
             {expanded ? "Hide" : "Show"}
           </button>

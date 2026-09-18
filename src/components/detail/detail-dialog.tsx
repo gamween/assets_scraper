@@ -18,7 +18,7 @@ import { syncDetailToLocation } from "@/lib/client/scan-session";
 import { appStore, findAsset, getDetailList, useApp } from "@/lib/client/store";
 
 const ACTION_CLASS =
-  "group/action flex h-9 w-full items-center gap-2.5 rounded-md border px-3 text-body font-medium transition-colors duration-100 outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent [&_svg]:size-4 [&_svg]:shrink-0";
+  "group/action flex h-9 w-full items-center gap-2.5 rounded-md border px-3 text-body font-medium transition-colors duration-100 focus-ring [&_svg]:size-4 [&_svg]:shrink-0";
 
 function ActionButton({ label, shortcut, primary = false, onClick, icon }: { label: string; shortcut?: string; primary?: boolean; onClick: () => void; icon: React.ReactNode }) {
   return (
@@ -96,7 +96,7 @@ function CodeBlock({ asset }: { asset: Asset }) {
               .catch(() => setFailed(true));
           }
         }}
-        className="flex h-9 w-full items-center gap-2 rounded-lg px-3 text-body font-medium text-text outline-none hover:bg-well/60 focus-visible:outline-2 focus-visible:outline-accent"
+        className="flex h-9 w-full items-center gap-2 rounded-lg px-3 text-body font-medium text-text hover:bg-well/60 focus-ring"
       >
         <CodeXml className="size-4 text-text-3" aria-hidden="true" />
         <span className="flex-1 text-left">Code</span>
@@ -125,7 +125,7 @@ function NavButton({ direction, onClick }: { direction: "previous" | "next"; onC
             aria-label={direction === "previous" ? "Previous" : "Next"}
             onClick={onClick}
             className={cn(
-              "absolute top-1/2 z-10 grid size-9 -translate-y-1/2 place-items-center rounded-md border border-border bg-surface/95 text-text-2 transition-colors hover:border-border-strong hover:text-text focus-visible:outline-2 focus-visible:outline-accent",
+              "absolute top-1/2 z-10 grid size-9 -translate-y-1/2 place-items-center rounded-md border border-border bg-surface/95 text-text-2 transition-colors hover:border-border-strong hover:text-text focus-ring",
               direction === "previous" ? "left-3" : "right-3",
             )}
           />
@@ -196,7 +196,7 @@ function DetailBody({ asset }: { asset: Asset }) {
           </div>
           <DialogPrimitive.Close
             aria-label="Close"
-            className="-mt-1 -mr-2 grid size-8 shrink-0 place-items-center rounded-md text-text-3 transition-colors hover:bg-well hover:text-text focus-visible:outline-2 focus-visible:outline-accent"
+            className="-mt-1 -mr-2 grid size-8 shrink-0 place-items-center rounded-md text-text-3 transition-colors hover:bg-well hover:text-text focus-ring"
           >
             <XIcon className="size-4" aria-hidden="true" />
           </DialogPrimitive.Close>

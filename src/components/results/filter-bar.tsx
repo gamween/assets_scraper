@@ -34,7 +34,7 @@ function Tabs() {
             aria-keyshortcuts={String(index + 1)}
             onClick={() => setTab(id)}
             className={cn(
-              "relative flex shrink-0 items-center gap-1.5 border-b-2 text-body font-medium whitespace-nowrap transition-colors duration-150 outline-none focus-visible:text-text focus-visible:after:absolute focus-visible:after:inset-x-[-6px] focus-visible:after:inset-y-2.5 focus-visible:after:rounded-md focus-visible:after:outline-2 focus-visible:after:outline-accent",
+              "relative flex shrink-0 items-center gap-1.5 border-b-2 text-body font-medium whitespace-nowrap transition-colors duration-150 outline-none focus-visible:text-text focus-ring-tab",
               active ? "border-ink text-text" : "border-transparent text-text-2 hover:text-text",
               counts[id] === 0 && !active && "text-text-3",
             )}
@@ -146,7 +146,7 @@ export function BackgroundControl({ value, onChange, className }: { value: Backg
             tabIndex={active ? 0 : -1}
             onClick={() => onChange(option)}
             className={cn(
-              "h-full rounded-[4px] border px-2.5 text-small transition-colors duration-100 outline-none focus-visible:outline-2 focus-visible:outline-accent",
+              "h-full rounded-[4px] border px-2.5 text-small transition-colors duration-100 focus-ring-tight",
               active ? "border-border bg-surface font-medium text-text" : "border-transparent text-text-2 hover:text-text",
             )}
           >

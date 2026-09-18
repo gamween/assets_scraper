@@ -21,7 +21,7 @@ function ToastList() {
         "absolute bottom-0 left-0 z-[calc(1000-var(--toast-index))] w-full rounded-xl border border-border bg-surface text-small text-text shadow-float outline-none select-none",
         "[transform:translateY(calc(var(--toast-index)*-8px))_scale(calc(1-var(--toast-index)*0.04))] [transition:transform_200ms_var(--ease-enter),opacity_150ms_var(--ease-enter)]",
         "data-starting-style:[transform:translateY(8px)] data-starting-style:opacity-0 data-ending-style:opacity-0 data-limited:opacity-0",
-        "focus-visible:outline-2 focus-visible:outline-accent",
+        "focus-ring",
       )}
     >
       <ToastPrimitive.Content className="flex min-h-11 items-center gap-3 py-2 pr-2 pl-3.5">
@@ -30,11 +30,11 @@ function ToastList() {
           <ToastPrimitive.Description className="text-small text-text-2" />
         </div>
         {item.actionProps ? (
-          <ToastPrimitive.Action className="h-7 shrink-0 rounded-md px-2 text-small font-medium text-text underline decoration-border-strong underline-offset-4 hover:decoration-text focus-visible:outline-2 focus-visible:outline-accent" />
+          <ToastPrimitive.Action className="h-7 shrink-0 rounded-md px-2 text-small font-medium text-text underline decoration-border-strong underline-offset-4 hover:decoration-text focus-ring" />
         ) : null}
         <ToastPrimitive.Close
           aria-label="Dismiss"
-          className="grid size-7 shrink-0 place-items-center rounded-md text-text-3 hover:bg-well hover:text-text focus-visible:outline-2 focus-visible:outline-accent"
+          className="grid size-7 shrink-0 place-items-center rounded-md text-text-3 hover:bg-well hover:text-text focus-ring"
         >
           <XIcon className="size-3.5" aria-hidden="true" />
         </ToastPrimitive.Close>
