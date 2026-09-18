@@ -9,7 +9,15 @@ import { inlinePreviewUrl } from "@/lib/client/preview-urls";
 
 export type WellBackground = "light" | "dark" | "grid" | "plain";
 
-/** Spec 12.3 Auto: light assets show on the dark color, dark on light, opaque on the plain well, the rest on the grid. */
+/**
+ * Spec 12.3 Auto: light assets show on the dark color, dark on light, and everything else on the plain well.
+ *
+ * `mixed` and `unknown` used to take the checkerboard, which is most of what a page holds: on stripe.com the 158 tiles
+ * split into four well treatments that interleaved down every row, against spec 12.6's quiet neutral table, and a
+ * JPEG landed on a checkerboard claiming a transparency the format cannot carry. Auto no longer picks the
+ * checkerboard: a light or dark asset gets the ground it shows against, and the explicit `Grid` control is still
+ * there for anyone looking at transparency.
+ */
 export function wellBackground(tone: Tone, override: Background): WellBackground {
   if (override !== "auto") return override;
   switch (tone) {
@@ -17,10 +25,8 @@ export function wellBackground(tone: Tone, override: Background): WellBackground
       return "dark";
     case "dark":
       return "light";
-    case "opaque":
-      return "plain";
     default:
-      return "grid";
+      return "plain";
   }
 }
 
