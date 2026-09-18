@@ -267,7 +267,7 @@ Rules:
 - Errors found by the gate, before streaming starts, return JSON `{ "error": { "code": ErrorCode, "message": string } }` with the HTTP status from section 13.
 - Once streaming starts the HTTP status is 200 and failures arrive as an `error` event, which is always the last line.
 - `assets` and `fonts` events arrive after all post-processing, so the client never patches an asset.
-- Asset proxy: `GET /api/asset?u=<base64url url>&e=<unix seconds>&s=<hmac>[&dl=<filename>]`. Unknown parameters are rejected.
+- Asset proxy: `GET /api/asset?u=<base64url url>&e=<unix seconds>&s=<hmac>[&dl=<filename>][&fmt=ttf]`. Unknown parameters are rejected. `dl` is covered by the signature, since it is part of the CDN cache key and an unsigned name would turn one link into unlimited cache misses; `fmt` is not, it has two values and the proxy checks it against the font licence.
 
 ## 7. Scan pipeline
 
@@ -457,7 +457,7 @@ The palette module is a port of the validated lab code (v2 with every fix enable
 
 ### 11.2 Asset proxy
 
-- HMAC-SHA256 with `ASSET_URL_SECRET` over `v1\n<expiry>\n<url>`, truncated to 32 base64url characters, timing-safe comparison. Expiry is bucketed by hour, 6 to 7 hours of life, so CDN cache keys repeat. Development without the secret uses a random per-process key.
+- HMAC-SHA256 with `ASSET_URL_SECRET` over `v1\n<expiry>\n<url>\n<dl>`, truncated to 32 base64url characters, timing-safe comparison. Expiry is bucketed by hour, 6 to 7 hours of life, so CDN cache keys repeat. Development without the secret uses a random per-process key.
 - At most 2,000 signed URLs per scan, one signer shared by the assets and the fonts. Assets sign first (`http:` sources first, then by score), font files after them: files of loaded faces, then Basic-Latin files of unloaded faces, then the rest. Past the cap a source or file keeps its `url` with `proxy: ""` and the scan emits a `truncated` warning.
 - `Sec-Fetch-Site` must be `same-origin` or `none`, with `Vary: Sec-Fetch-Site`.
 - `safeFetch` with `Referer` set to the page origin, 25 MB cap, 20 s timeout, 5 redirects. Content types allowed: `image/*`, `font/*`, `application/font-*`, `application/x-font-*`, and `application/octet-stream` after magic-byte sniffing.
@@ -637,4 +637,5 @@ All in `src/server/config/limits.ts`, env-overridable.
 
 - Measure whether Chromium CPU counts toward Active CPU on Hobby (dashboard usage after a known number of scans) and tune the daily budget.
 - A/B single-process vs multi-process Chromium on Vercel during the first production validation (memory, CPU, `/tmp`).
+- Bound `/api/asset` and `/api/health` invocations at the edge. Nothing inside a function can do it (a per-client counter still costs the invocation), the byte budget bounds bytes served and charges nothing on an error path, and Hobby allows one firewall rule, currently on `/api/scan`.
 - Confirm on the first deploy that the `functions` glob in `vercel.json` matches the route, that BotID works with a streaming POST, and whether Vercel Runtime Cache is available on Hobby.
