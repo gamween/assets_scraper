@@ -202,9 +202,10 @@ Evidence: the app returns `#212121 #ffffff #ece9e2 #000000`, the lab `#ece9e2 #0
 colours, but the app leads with the near black where the lab leads with the warm off white that the page actually
 uses as its background.
 
-Open, and now known to be deterministic: run2 returns `#212121 #ffffff #ece9e2 #000000` again, so this is the
-ordering step inside the neutral ramp and not page drift. The UI shows the first neutral first, so the order is user
-visible.
+Open, and not deterministic. Two local runs returned `#212121 #ffffff #ece9e2 #000000`, which read as settled at the
+time, but the production sweep of 2026-09-18 returned the lab's own order, `#ece9e2 #000000 #212121 #ffffff`, with the
+warm off white first. So the same four colours come out in either order depending on what the page served that day,
+and two runs were not enough to call it. The UI shows the first neutral first, so the order is user visible.
 
 Not fixed here on purpose. The order comes out of the background and text selection in `palette/build.ts`, which is
 tuned against the whole palette lab; changing the thresholds to put the warm off white first on this page would need

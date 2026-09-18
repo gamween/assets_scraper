@@ -49,6 +49,13 @@ const hiddenCount = (target: Page) => target.evaluate(() => document.querySelect
 const NO_FRAME_HTML = `<!doctype html><html><head><link rel="stylesheet" href="/never.css"></head>
 <body style="margin:0;background:#ffffff;color:#141e28"><header style="background:#2f5bea;height:120px">Brand</header>
 <main><button style="background:#2f5bea;color:#fff">Start</button><p>Some text on the page</p></main></body></html>`;
+/** Same page with an icon, so the palette still has a page call to make after the screenshot has given up. */
+const SLOW_ICON_HTML = NO_FRAME_HTML.replace("<head>", `<head><link rel="icon" href="/icon.png">`);
+/** Smallest valid PNG: the palette only has to accept it as an icon and try to decode it in the page. */
+const ICON_PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+  "base64",
+);
 const pending: import("node:http").ServerResponse[] = [];
 
 let server: FixtureServer;
@@ -56,9 +63,17 @@ let browser: Browser;
 let context: BrowserContext;
 let page: Page;
 let reasons: PaletteNullReason[];
+let salvaged: PaletteNullReason[];
 const signal = new AbortController().signal;
 const extract = (target: Page, options: Partial<ExtractPaletteOptions> = {}) =>
-  extractPalette(target, { fetch: fakeFetch, signal, timeBudgetMs: 3000, onNull: (reason) => reasons.push(reason), ...options });
+  extractPalette(target, {
+    fetch: fakeFetch,
+    signal,
+    timeBudgetMs: 3000,
+    onNull: (reason) => reasons.push(reason),
+    onSalvaged: (reason) => salvaged.push(reason),
+    ...options,
+  });
 
 beforeAll(async () => {
   server = await serveFixture({
@@ -69,6 +84,14 @@ beforeAll(async () => {
     // Never answers, so the page never renders a frame
     "/never.css": (_req, res) => {
       pending.push(res);
+    },
+    "/slow-icon.html": (_req, res) => {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(SLOW_ICON_HTML);
+    },
+    "/icon.png": (_req, res) => {
+      res.writeHead(200, { "content-type": "image/png" });
+      res.end(ICON_PNG);
     },
     "/consent.html": (_req, res) => {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
@@ -87,6 +110,7 @@ afterAll(async () => {
 beforeEach(async () => {
   fetched.length = 0;
   reasons = [];
+  salvaged = [];
   context = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 });
   page = await context.newPage();
 });
@@ -229,6 +253,28 @@ describe("extractPalette", () => {
     expect(await page.evaluate(() => (window as unknown as { __hiddenSeen: boolean }).__hiddenSeen)).toBe(true);
     expect(await html(page)).toBe(before);
     expect(await page.locator("#onetrust-banner-sdk").isVisible()).toBe(true);
+  });
+
+  it("builds the palette from the walk when a later step outlasts the budget", async () => {
+    await page.goto(`${server.origin}/slow-icon.html`, { waitUntil: "domcontentloaded" });
+    // The page blocks its main thread from well after the walk has returned its signals until well past the budget, so
+    // the screenshot cannot render and the icon decode never answers. That used to throw the signals away with them.
+    await page.evaluate(() =>
+      setTimeout(() => {
+        const end = performance.now() + 6000;
+        while (performance.now() < end);
+      }, 800),
+    );
+    const timeBudgetMs = 4000;
+
+    const started = performance.now();
+    const palette = await extract(page, { timeBudgetMs });
+
+    expect(reasons).toEqual([]);
+    expect(salvaged).toEqual(["timeout"]);
+    expect(palette).not.toBeNull();
+    expect(near(palette!.brand, "#2f5bea")).toBe(true);
+    expect(performance.now() - started).toBeLessThan(timeBudgetMs + MARGIN_MS);
   });
 
   it("keeps the DOM signals when the screenshot times out because the page cannot render a frame", async () => {

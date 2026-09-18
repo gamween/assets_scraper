@@ -5,6 +5,13 @@ import type { CandidateContext, Rect } from "../types";
 
 const ICON_MAX_SIDE = 48;
 const LOGO_TOP_PX = 160;
+/**
+ * Rendered area above which positional evidence alone no longer means the site logo. `logoScore` reaches the promotion
+ * threshold of 6 on a link to home in the header near the top of the page with nothing logo specific about it, which is
+ * also what a hero picture under a nav looks like: apple.com ranked a 3008x692 iPhone photo above its own 14x44
+ * wordmark. Past this a real logo would fill a third of a laptop viewport, so the promotion asks for logo evidence.
+ */
+const LOGO_MAX_AREA = 120_000;
 const DRAWABLE = /<(?:path|circle|rect|ellipse|line|polyline|polygon|text|image|use)\b/i;
 
 /** An SVG file that only holds `<symbol>` definitions (an external sprite sheet), so it draws nothing by itself. */
@@ -40,12 +47,16 @@ export interface RoleInput {
 
 const longestSide = (size?: { width?: number; height?: number }) => Math.max(size?.width ?? 0, size?.height ?? 0);
 
+/** Evidence that the asset is a logo whatever its size or place: the word, a logo wall, or "logo" in its label. */
+const hasLogoEvidence = (input: RoleInput): boolean => input.logoWord || input.logoWall || /logo/i.test(input.label ?? "");
+
 export function assignRole(input: RoleInput): AssetRole {
   const found = new Set(input.foundIn);
-  if (input.logoScore >= 6 || found.has("json-ld")) return "site-logo";
+  const oversized = (input.rendered?.width ?? 0) * (input.rendered?.height ?? 0) > LOGO_MAX_AREA;
+  if (found.has("json-ld") || (input.logoScore >= 6 && (!oversized || hasLogoEvidence(input)))) return "site-logo";
   if (found.has("icon-link") || found.has("meta-icon") || found.has("manifest")) return "favicon";
   if (found.has("og-image") || found.has("twitter-image")) return "social";
-  if (input.logoWord || input.logoWall || /logo/i.test(input.label ?? "")) return "logo";
+  if (hasLogoEvidence(input)) return "logo";
   if (input.spriteSymbol) return "sprite-symbol";
   // The single small-icon rule: the rendered size when the asset is on screen, else its intrinsic size.
   const side = input.rendered && longestSide(input.rendered) > 0 ? longestSide(input.rendered) : longestSide(input.intrinsic);

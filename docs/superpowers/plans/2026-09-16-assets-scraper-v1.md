@@ -2333,7 +2333,18 @@ git push -u origin feat/ui && gh pr create --title "feat: results UI, selection 
 
 ### Task 3.3: Production checks
 
-- [ ] **Step 1:** Run `scripts/scan-sites.mjs --base https://assets-scraper.vercel.app` with `OPS_TOKEN`. Record cold and warm timings, partial rates, errors, `diagnostics` (memory, `/tmp`, egress). All unblocked sites must finish under 60 s without `internal` errors.
+How to run these against a deployment, learned from the 2026-09-18 sweep:
+
+- The rate-limit rule of spec 14 runs at the edge, before the gate: 20 requests per 10 minutes per IP, `/api/scan`,
+  counted whatever the request carries. `OPS_TOKEN` skips BotID and the daily budget, not this. The 23 reference sites
+  do not fit in one window, so pass `--pace 19` to `scan-sites.mjs`; a denial costs no CPU but scans nothing, and the
+  script now reports it as `edge-denied` rather than as a site failure.
+- Steps 1 to 4 share that window and cannot run at the same time from one IP. Run them in sequence and budget the
+  probe batches: step 2 alone is 8 requests.
+- Headless Chrome cannot scan production: BotID refuses it and the UI shows the blocked panel, whatever automation
+  flags are set. Step 4 runs in a headed browser (or sends `x-ops-token`, which skips BotID and so tests less).
+
+- [ ] **Step 1:** Run `scripts/scan-sites.mjs --base https://assets-scraper.vercel.app --pace 19` with `OPS_TOKEN`. Record cold and warm timings, partial rates, errors, `diagnostics` (memory, `/tmp`, egress). All unblocked sites must finish under 60 s without `internal` errors.
 - [ ] **Step 2:** SSRF probes with the ops token: `http://127.0.0.1/`, `http://169.254.169.254/latest/meta-data/`, `http://[::1]/`, `http://127.0.0.1.nip.io/`, `https://httpbin.org/redirect-to?url=http://127.0.0.1/`, `http://0x7f000001/`, `https://assets-scraper.vercel.app/` must all return `blocked-address` or `own-host` (gate) or an `error` event with those codes (preflight).
 - [ ] **Step 3:** Asset proxy abuse probes: unsigned `u` gives 403, cross-site `Sec-Fetch-Site` gives 403, HTML upstream gives 415.
 - [ ] **Step 4:** Browser check of the production UI at 1470x956 (scan linear.app, open detail, select 3 assets, download ZIP).

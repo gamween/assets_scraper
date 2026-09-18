@@ -49,6 +49,11 @@ export interface ExtractPaletteOptions {
   timeBudgetMs: number;
   /** Called once with the reason whenever the result is null, for logs and diagnostics. */
   onNull?: (reason: PaletteNullReason, error?: unknown) => void;
+  /**
+   * Called once when collection was cut short at `reason` but the DOM signals already read carried the palette, so a
+   * palette was built from them instead of being thrown away. For logs and diagnostics.
+   */
+  onSalvaged?: (reason: PaletteNullReason, error?: unknown) => void;
 }
 
 class InvalidSignalsError extends Error {
@@ -67,8 +72,9 @@ class InvalidSignalsError extends Error {
  * shadowed, so nothing is installed on the page either.
  *
  * Returns within about `timeBudgetMs`: collection gets the budget minus the restore wait and the post-processing
- * reserve. Returns null (see `onNull`) on any failure, when `signal` aborts, when the budget runs out, or when no color
- * was found. Overlays are always restored.
+ * reserve. Returns null (see `onNull`) when `signal` aborts, when the walk itself fails or runs out of budget, or when
+ * no color was found. A failure after the walk only costs the screenshot and the icon (see `onSalvaged`), because the
+ * DOM signals already read are enough to build a palette. Overlays are always restored.
  */
 export async function extractPalette(page: Page, options: ExtractPaletteOptions): Promise<Palette | null> {
   const fail = (reason: PaletteNullReason, error?: unknown): null => {
@@ -86,13 +92,22 @@ export async function extractPalette(page: Page, options: ExtractPaletteOptions)
 
   const budget = AbortSignal.any([options.signal, AbortSignal.timeout(collectMs)]);
   const scope = openPaletteScope(page);
+  // The DOM signals are the palette: the screenshot and the icon only refine it. Keeping them here means a step after
+  // the walk that overruns the budget, or a page that dies mid-screenshot, costs some precision and not the palette.
+  let walked: RawPaletteSignals | undefined;
   let collected: { signals: RawPaletteSignals; pixels: Pixels | null };
   try {
-    collected = await untilAborted(collectOnPage(page, scope, options.fetch, budget, collectMs), budget);
+    collected = await untilAborted(collectOnPage(page, scope, options.fetch, budget, collectMs, (signals) => (walked = signals)), budget);
   } catch (error) {
     if (options.signal.aborted) return fail("aborted", error);
-    if (budget.aborted) return fail("timeout", error);
-    return fail(error instanceof InvalidSignalsError ? "invalid-signals" : "page", error);
+    const reason = budget.aborted ? "timeout" : error instanceof InvalidSignalsError ? "invalid-signals" : "page";
+    if (!walked) return fail(reason, error);
+    try {
+      options.onSalvaged?.(reason, error);
+    } catch {
+      // a logging callback never fails the scan
+    }
+    collected = { signals: walked, pixels: null };
   } finally {
     await restoreOverlays(scope);
   }
@@ -123,6 +138,8 @@ async function collectOnPage(
   fetch: SafeFetch,
   budget: AbortSignal,
   collectMs: number,
+  /** Called with the DOM signals as soon as the walk returns them, so a later failure can still build on them. */
+  onWalked: (signals: RawPaletteSignals) => void,
 ): Promise<{ signals: RawPaletteSignals; pixels: Pixels | null }> {
   const deadline = Date.now() + collectMs;
   const remainingMs = () => Math.max(1, deadline - Date.now());
@@ -146,6 +163,7 @@ async function collectOnPage(
   };
   const signals = readSignals(await run(`collect(${JSON.stringify(collectOptions)})`));
   if (!signals) throw new InvalidSignalsError();
+  onWalked(signals);
   budget.throwIfAborted();
 
   const [pixels, extras] = await Promise.all([

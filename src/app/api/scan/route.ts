@@ -1,6 +1,6 @@
 import { scanEngine } from "@/server/scan/engine";
 import { eventsToResponse } from "@/server/scan/stream";
-import { gateScanRequest, type GateResult } from "@/server/security/gate";
+import { gateScanRequest, refuseScanMethod, type GateResult } from "@/server/security/gate";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
@@ -16,3 +16,15 @@ export async function POST(request: Request): Promise<Response> {
   if (!gate.ok) return gate.response;
   return eventsToResponse(scanEngine.scan({ url: gate.url }, { signal: request.signal }), request.signal);
 }
+
+/**
+ * Every other method answers with the gate's own refusal, so the 405 carries `allow: POST` and `cache-control:
+ * no-store` (spec 7.1 step 1). Without these exports the Next router answers first with a bare, cacheable 405 and the
+ * gate's method branch is dead code in production.
+ */
+export const GET = refuseScanMethod;
+export const HEAD = refuseScanMethod;
+export const PUT = refuseScanMethod;
+export const PATCH = refuseScanMethod;
+export const DELETE = refuseScanMethod;
+export const OPTIONS = refuseScanMethod;

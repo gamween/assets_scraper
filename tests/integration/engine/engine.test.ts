@@ -522,6 +522,40 @@ describe("scan engine", () => {
     expect(done.diagnostics.phases.palette).toBeGreaterThanOrEqual(4_900);
     expect(done.diagnostics.phases.palette).toBeLessThan(7_000);
     expect(logged).toContainEqual(expect.stringMatching(/^Scan [0-9a-f-]{36} has no palette \(timeout\)$/));
+    expect(done.diagnostics.paletteNull).toBe("timeout");
+  });
+
+  it("reports why the palette is null in diagnostics, not only in the runtime log", async () => {
+    vi.stubEnv("SCAN_DEADLINE_MS", "30000");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const extractPalette: ScanEngineDeps["extractPalette"] = async (_page, { onNull }) => {
+      onNull?.("no-colors");
+      return null;
+    };
+    const events = await scan(testDeps({ extractPalette }).deps, `${fixture.origin}/`);
+    warn.mockRestore();
+    const done = events.at(-1);
+    if (done?.type !== "done") throw new Error(`expected done, got ${done && describeEvent(done)}`);
+    expect(events.find((event) => event.type === "palette")).toEqual({ type: "palette", palette: null });
+    // The whole point: a page that genuinely has no color and a failed extraction are told apart from the stream.
+    expect(done.diagnostics.paletteNull).toBe("no-colors");
+    expect(done.diagnostics.paletteSalvaged).toBeUndefined();
+  });
+
+  it("records a salvaged palette in diagnostics", async () => {
+    vi.stubEnv("SCAN_DEADLINE_MS", "30000");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const extractPalette: ScanEngineDeps["extractPalette"] = async (_page, { onSalvaged }) => {
+      onSalvaged?.("timeout");
+      return PALETTE;
+    };
+    const events = await scan(testDeps({ extractPalette }).deps, `${fixture.origin}/`);
+    warn.mockRestore();
+    const done = events.at(-1);
+    if (done?.type !== "done") throw new Error(`expected done, got ${done && describeEvent(done)}`);
+    expect(events.find((event) => event.type === "palette")).toEqual({ type: "palette", palette: PALETTE });
+    expect(done.diagnostics.paletteSalvaged).toBe("timeout");
+    expect(done.diagnostics.paletteNull).toBeUndefined();
   });
 
   it("aborts extractPalette at its cap and lets it restore the page before the collector runs", async () => {
