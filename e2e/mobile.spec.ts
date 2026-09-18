@@ -69,7 +69,11 @@ test.describe("phone toolbar", () => {
     await expect(alphabet).toContainText("0123456789");
 
     await page.getByRole("tab", { name: /^All/ }).click();
-    // The neutrals name themselves when the inline divider is hidden and they wrap onto their own row.
-    await expect(page.getByRole("region", { name: "Palette" })).toContainText("Neutrals");
+    // The brand and neutral groups stay separated: the divider becomes the rule between their two rows.
+    const divider = page.getByTestId("palette-divider");
+    await expect(divider).toBeVisible();
+    const rule = (await divider.boundingBox())!;
+    expect(rule.width).toBeGreaterThan(100);
+    expect(rule.height).toBeLessThanOrEqual(2);
   });
 });

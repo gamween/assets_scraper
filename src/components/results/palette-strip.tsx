@@ -89,28 +89,21 @@ export function PaletteStrip() {
         </button>
       </div>
       {/*
-       * Two groups, not one list with a rule in it: below 640 the swatches wrap onto their own rows and the inline
-       * divider is hidden, so the grouping disappeared. Each group wraps on its own and the neutrals name themselves
-       * when they land on a row of their own.
+       * Two groups, not one list with a rule inside it: below 640 the swatches wrapped where they ran out of room and
+       * the inline divider was hidden outright, so the grouping went with it. Each group wraps on its own, and the
+       * divider becomes a full-width rule on a phone, where it separates two rows instead of two halves of one.
        */}
-      <div className="flex flex-wrap items-start gap-x-3 gap-y-2">
+      <div className="flex flex-wrap items-start gap-x-3 gap-y-1.5">
         <div className="-ml-3.5 flex flex-wrap items-start">
           {palette.brand.map((swatch, index) => (
             <SwatchButton key={`b${index}${swatch.hex}`} swatch={swatch} group="brand" />
           ))}
         </div>
-        {palette.brand.length && palette.neutrals.length ? <span aria-hidden="true" className="mt-1 hidden h-8 w-px bg-border sm:block" /> : null}
-        <div className="flex flex-col">
-          {palette.brand.length && palette.neutrals.length ? (
-            <span aria-hidden="true" className="text-mono-xs text-text-3 sm:hidden">
-              Neutrals
-            </span>
-          ) : null}
-          <div className="-ml-3.5 flex flex-wrap items-start">
-            {palette.neutrals.map((swatch, index) => (
-              <SwatchButton key={`n${index}${swatch.hex}`} swatch={swatch} group="neutral" />
-            ))}
-          </div>
+        {palette.brand.length && palette.neutrals.length ? <span aria-hidden="true" data-testid="palette-divider" className="mt-1 h-px w-full bg-border sm:h-8 sm:w-px" /> : null}
+        <div className="-ml-3.5 flex flex-wrap items-start">
+          {palette.neutrals.map((swatch, index) => (
+            <SwatchButton key={`n${index}${swatch.hex}`} swatch={swatch} group="neutral" />
+          ))}
         </div>
       </div>
     </section>
