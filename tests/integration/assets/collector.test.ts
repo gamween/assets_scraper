@@ -19,8 +19,11 @@ beforeAll(async () => {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       res.end(`<!doctype html><html><head><title>Edge</title><link rel="stylesheet" href="/assets/style.css"><link rel="manifest" href="/site.webmanifest"></head><body>
         <div class="lottie-player"><svg width="100" height="100"><g id="__lottie_element_1"><rect width="100" height="100"/></g></svg></div>
-        <svg style="display:none"><symbol id="used" viewBox="0 0 8 8"><path d="M0 0h8v8z"/></symbol><symbol id="unused" viewBox="0 0 8 8"><circle cx="4" cy="4" r="4"/></symbol></svg>
+        <svg style="display:none"><symbol id="used" viewBox="0 0 8 8"><path d="M0 0h8v8z"/></symbol><symbol id="unused" viewBox="0 0 8 8"><circle cx="4" cy="4" r="4"/></symbol>
+        <symbol id="shared" viewBox="0 0 24 24"><rect width="24" height="24" fill="url(#shared-grad)"/></symbol>
+        <defs><linearGradient id="shared-grad"><stop offset="0" stop-color="#f00"/><stop offset="1" stop-color="#00f"/></linearGradient></defs></svg>
         <svg width="16" height="16"><use href="#used"/></svg>
+        <svg width="24" height="24"><use href="#shared"/></svg>
         <svg width="120" height="30"><text x="0" y="20" style="font-family: '__Inter_d65c78'">Brand</text></svg>
         <svg width="120" height="30"><text x="0" y="20" style="font-family: serif">Plain</text></svg>
         <a href="/logout">Log out</a> <a href="/wordpress-tips">Tips</a> <a href="/impressum">Impressum</a> <a href="/express">Express shipping</a>
@@ -211,7 +214,11 @@ describe("collector noise and edge cases", () => {
     const edge = await runCollector(page, collectorOptions(server.host, "Fixture"));
     await context.close();
     expect(edge.noise).toMatchObject({ "lottie-frame": 1, "unreferenced-symbol": 1 });
-    expect(edge.svgs.filter((s) => s.source === "sprite-symbol").map((s) => s.label)).toEqual(["used"]);
+    expect(edge.svgs.filter((s) => s.source === "sprite-symbol").map((s) => s.label)).toEqual(["used", "shared"]);
+    // A symbol that paints with the sprite's shared defs carries them, or the downloaded file renders blank.
+    const shared = edge.svgs.find((s) => s.label === "shared")!;
+    expect(shared.markup).toContain('linearGradient id="shared-grad"');
+    expect(shared.markup).toContain('fill="url(#shared-grad)"');
     expect(edge.svgs.find((s) => s.markup.includes("<text"))).toMatchObject({ hasLiveText: true });
     expect(edge.svgs.find((s) => s.markup.includes("Plain"))).toMatchObject({ hasLiveText: false });
     expect(edge.brandLinks).toEqual([

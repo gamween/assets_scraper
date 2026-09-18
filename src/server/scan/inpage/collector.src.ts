@@ -1073,6 +1073,29 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
             if (standalone.getAttribute("display") === "none") standalone.removeAttribute("display");
             if (standalone.getAttribute("visibility") === "hidden") standalone.removeAttribute("visibility");
             for (const child of symbol.childNodes) standalone.appendChild(child.cloneNode(true));
+            // A sprite keeps its gradients, filters and clip paths in a shared <defs> next to the symbols, so a copy
+            // that takes only the symbol renders blank. Same resolution as normalizeSvg, scoped to the symbol: the
+            // guard is `symbol.contains`, not the sprite root, since the target is meant to sit elsewhere in it.
+            // Four passes cover a chain (clip-path to a path to a gradient); addSvg still holds the byte caps.
+            const scope = symbol.getRootNode() as Document | ShadowRoot;
+            let symbolDefs: Element | null = null;
+            for (let pass = 0; pass < 4; pass++) {
+              let added = 0;
+              for (const id of referencedIds(standalone)) {
+                if (standalone.querySelector(`#${cssEscape(id)}`)) continue;
+                let target: Element | null = null;
+                try {
+                  target = scope.getElementById ? scope.getElementById(id) : (scope as ParentNode).querySelector(`#${cssEscape(id)}`);
+                } catch {
+                  target = null;
+                }
+                if (!target || symbol.contains(target)) continue;
+                if (!symbolDefs) standalone.insertBefore((symbolDefs = document.createElementNS(SVG_NS, "defs")), standalone.firstChild);
+                symbolDefs.appendChild(target.cloneNode(true));
+                added++;
+              }
+              if (!added) break;
+            }
             for (const script of standalone.querySelectorAll("script")) script.remove();
             const markup = new XMLSerializer().serializeToString(standalone);
             addSvg({
