@@ -46,11 +46,12 @@ test.describe("phone toolbar", () => {
     await page.locator("[data-card-main]").first().click();
     const detail = page.getByRole("dialog");
     await expect(detail).toBeVisible();
-    const image = (await page.getByTestId("detail-well").locator("img").boundingBox())!;
+    // The shield spans exactly the box the artwork may fill, so an arrow inside it is an arrow an asset can touch.
+    const box = (await detail.getByTestId("detail-preview-shield").boundingBox())!;
     for (const name of ["Previous", "Next"]) {
       const arrow = (await detail.getByRole("button", { name }).boundingBox())!;
-      const overlaps = arrow.x < image.x + image.width && image.x < arrow.x + arrow.width && arrow.y < image.y + image.height && image.y < arrow.y + arrow.height;
-      expect(overlaps, `${name} must not sit over the preview`).toBe(false);
+      const overlaps = arrow.x < box.x + box.width && box.x < arrow.x + arrow.width && arrow.y < box.y + box.height && box.y < arrow.y + arrow.height;
+      expect(overlaps, `${name} must not share the band the asset fills`).toBe(false);
     }
     await detail.getByRole("button", { name: "Next" }).click();
     await expect(detail.getByTestId("detail-counter")).toHaveText(/^2 of /);
