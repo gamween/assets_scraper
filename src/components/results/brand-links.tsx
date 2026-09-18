@@ -7,11 +7,20 @@ import { Button } from "@/components/ui/button";
 import { submitUrl } from "@/lib/client/scan-session";
 import { useApp } from "@/lib/client/store";
 
+/**
+ * What a chip says. The link text when it has one, otherwise the last path segment in sentence case: the whole
+ * pathname (`/fr/newsroom/news/stripe-openai-instant-checkout`) is not a label, and printing it for some chips while
+ * others used their link text put two label styles in the same row.
+ */
 function linkLabel(link: { href: string; text: string }): string {
-  const text = link.text.trim();
-  if (text) return text.length > 40 ? `${text.slice(0, 39)}…` : text;
+  const text = link.text.trim().replace(/\s+/g, " ");
+  if (text) return text.length > 32 ? `${text.slice(0, 31)}…` : text;
   try {
-    return new URL(link.href).pathname.replace(/\/$/, "") || link.href;
+    const url = new URL(link.href);
+    const segment = url.pathname.replace(/\/+$/, "").split("/").pop() ?? "";
+    const words = segment.replace(/\.\w+$/, "").replace(/[-_]+/g, " ").trim();
+    if (!words) return url.host;
+    return `${words.charAt(0).toUpperCase()}${words.slice(1)}`;
   } catch {
     return link.href;
   }
@@ -36,7 +45,7 @@ export function BrandLinks() {
   const visible = expanded ? links : links.slice(0, INLINE_CHIPS);
 
   return (
-    <div role="group" aria-label="Brand resources on this site" className="flex min-w-0 flex-col gap-2 md:items-end">
+    <div role="group" aria-label="Brand resources on this site" className="flex min-w-0 flex-col gap-2">
       <button
         type="button"
         aria-expanded={expanded}
@@ -50,7 +59,7 @@ export function BrandLinks() {
       <span aria-hidden="true" className="hidden h-6 items-center text-small font-medium text-text-2 md:flex">
         Brand resources on this site
       </span>
-      <div className={cn("flex-wrap gap-2 md:flex md:justify-end", expanded ? "flex" : "hidden")}>
+      <div className={cn("flex-wrap gap-2 md:flex", expanded ? "flex" : "hidden")}>
         {visible.map((link) => (
           <Button key={link.href} variant="secondary" size="sm" title={`Scan ${link.href}`} onClick={() => submitUrl(link.href)}>
             {linkLabel(link)}

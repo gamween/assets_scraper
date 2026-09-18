@@ -256,6 +256,28 @@ describe("collector brand links", () => {
       { href: "https://www.shop.co.uk/about", text: "OurLogos" },
     ]);
   });
+
+  it("takes the press kit, not every article filed under it", async () => {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    await page.route("**/*", (route) =>
+      route.request().url() === "https://news.test/"
+        ? route.fulfill({
+            contentType: "text/html",
+            body: `<!doctype html><title>News</title>
+              <a href="/newsroom/news/one-and-two">One and two</a> <a href="/newsroom/news/three-and-four">Three and four</a>
+              <a href="/brand">Brand</a> <a href="/newsroom">Newsroom</a>`,
+          })
+        : route.fulfill({ status: 404 }),
+    );
+    await page.goto("https://news.test/");
+    const news = await runCollector(page, collectorOptions("news.test", ""));
+    await context.close();
+    expect(news.brandLinks).toEqual([
+      { href: "https://news.test/brand", text: "Brand" },
+      { href: "https://news.test/newsroom", text: "Newsroom" },
+    ]);
+  });
 });
 
 describe("collector labels", () => {

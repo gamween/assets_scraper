@@ -40,7 +40,7 @@ const LAZY_BACKGROUND_ATTR = /^data-(?:bg|background|background-image|bg-src|laz
  * /wordpress, /express and /impressum do not match, but it may run on (/brandassets, /logopack, /presse). /logout,
  * /logon and /pressure are left out.
  */
-const BRAND_LINK = /(?:^|[^a-z])(?:brand|press(?!ure)|media[- _]?kit|newsroom|logo(?!ut|n(?![a-z]))|guidelines)/i;
+const BRAND_LINK = /(?:^|[^a-z])(?:brand|press(?!ure)|media[- _]?kit|newsroom|identity|logo(?!ut|n(?![a-z]))|guidelines)/i;
 const isBrandLink = (text: string) => BRAND_LINK.test(text) || BRAND_LINK.test(text.replace(/([a-z])(?=[A-Z])/g, "$1 "));
 /** Second-level labels under a two-letter country code that are public suffixes: shop.co.uk, shop.com.au. */
 const SECOND_LEVEL_LABELS = /^(?:ac|co|com|edu|go|gov|ne|net|or|org)$/;
@@ -1170,7 +1170,10 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
       url.hash = "";
       if (siteOf(url.hostname) !== site || url.href === current || seen.has(url.href)) continue;
       const text = collapse(el.textContent, 80) || collapse(el.getAttribute("aria-label"), 80) || collapse(el.getAttribute("title"), 80);
-      if (!isBrandLink(decodeURIComponentSafe(url.pathname + url.search)) && !isBrandLink(text)) continue;
+      // Only the last path segment counts, not the whole path: `/newsroom/news/<headline>` is one press release out of
+      // many, not the press kit, and matching anywhere in the path filled stripe.com's row with five news articles.
+      const segment = decodeURIComponentSafe(url.pathname.replace(/\/+$/, "").split("/").pop() ?? "");
+      if (!isBrandLink(segment) && !isBrandLink(text)) continue;
       seen.add(url.href);
       brandLinks.push({ href: url.href, text });
     }
