@@ -140,11 +140,18 @@ describe("getFontFileBlob", () => {
     expect(fetchMock.mock.calls.map((call) => call[0])).toEqual(["https://fonts.test/capped.woff2"]);
   });
 
-  it("fetches remote font files like assets", async () => {
-    const fetchMock = vi.fn().mockRejectedValueOnce(new TypeError("CORS")).mockResolvedValueOnce(new Response(png));
+  it("fetches a remote font file through the proxy only: a direct fetch could only fail on CORS", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(png));
     vi.stubGlobal("fetch", fetchMock);
     const file = makeFontFile({ url: "https://fonts.test/inter.woff2", proxy: "/api/asset?u=aW50ZXI&e=1&s=sig" });
     await getFontFileBlob(file);
-    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual(["https://fonts.test/inter.woff2", "/api/asset?u=aW50ZXI&e=1&s=sig"]);
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual(["/api/asset?u=aW50ZXI&e=1&s=sig"]);
+  });
+
+  it("falls back to the direct URL for a file past the signing cap, which has no proxy path", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(png));
+    vi.stubGlobal("fetch", fetchMock);
+    await getFontFileBlob(makeFontFile({ url: "https://fonts.test/inter.woff2", proxy: "" }));
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual(["https://fonts.test/inter.woff2"]);
   });
 });

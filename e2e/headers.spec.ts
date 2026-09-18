@@ -11,6 +11,18 @@ test.describe("response headers", () => {
     expect(headers["x-powered-by"]).toBeUndefined();
   });
 
+  test("no CSP violation fires on a page load", async ({ page }) => {
+    await page.addInitScript(() => {
+      const seen: string[] = [];
+      (window as unknown as { __csp: string[] }).__csp = seen;
+      document.addEventListener("securitypolicyviolation", (event) => seen.push(`${event.violatedDirective} ${event.blockedURI}`));
+    });
+    await page.goto("/");
+    await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+    await page.waitForTimeout(500);
+    expect(await page.evaluate(() => (window as unknown as { __csp: string[] }).__csp)).toEqual([]);
+  });
+
   test("the asset proxy is left to set its own CSP", async ({ request }) => {
     // Next drops a route handler header that next.config already set, so the app CSP must not reach
     // /api/asset or it would replace the proxy's sandbox CSP (spec 11.2).

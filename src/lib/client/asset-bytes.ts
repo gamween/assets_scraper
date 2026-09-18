@@ -39,27 +39,48 @@ const isAbort = (error: unknown, signal?: AbortSignal) =>
  * Critic G3: direct CORS fetch first (no cookies, no referrer), then the signed proxy. Many CDNs allow any origin,
  * which saves proxy bytes; the rest (Sanity-style 403 on a foreign Origin, no CORS headers) fall back. A source past
  * the per-scan signing cap has `proxy: ""` (spec 11.2): it loads directly only, and is unavailable when that fails.
+ *
+ * `proxyFirst` reverses that for font files. A font file is only ever read with `fetch`, which is subject to CORS, and
+ * font CDNs do not send `Access-Control-Allow-Origin`, so the direct attempt could not succeed and only logged a CORS
+ * error, a failed request and a `Failed to load resource` line per file before the proxy answered. Images keep the
+ * direct-first order: they also load through `<img>`, which is not subject to CORS.
  */
-export async function fetchSourceBlob(source: Pick<AssetSource, "url" | "proxy">, id: string, options: BytesOptions = {}): Promise<Blob> {
-  const { signal } = options;
-  if (source.url.startsWith("https:")) {
+export async function fetchSourceBlob(
+  source: Pick<AssetSource, "url" | "proxy">,
+  id: string,
+  options: BytesOptions & { proxyFirst?: boolean } = {},
+): Promise<Blob> {
+  const { signal, proxyFirst = false } = options;
+
+  const direct = async (): Promise<Blob | null> => {
+    if (!source.url.startsWith("https:")) return null;
     try {
       const response = await fetch(source.url, { mode: "cors", credentials: "omit", referrerPolicy: "no-referrer", signal });
       if (response.ok) return await response.blob();
     } catch (error) {
       if (isAbort(error, signal)) throw error;
     }
-  }
+    return null;
+  };
+
+  const proxied = async (): Promise<Blob> => {
+    let response: Response;
+    try {
+      response = await fetch(source.proxy, { signal });
+    } catch (error) {
+      if (isAbort(error, signal)) throw error;
+      throw new AssetUnavailableError(id);
+    }
+    if (!response.ok) throw new AssetUnavailableError(id, response.status);
+    return response.blob();
+  };
+
+  // Past the signing cap there is no proxy path, so the direct fetch is the only route whatever the order.
+  if (proxyFirst && source.proxy) return proxied();
+  const blob = await direct();
+  if (blob) return blob;
   if (!source.proxy) throw new AssetUnavailableError(id);
-  let response: Response;
-  try {
-    response = await fetch(source.proxy, { signal });
-  } catch (error) {
-    if (isAbort(error, signal)) throw error;
-    throw new AssetUnavailableError(id);
-  }
-  if (!response.ok) throw new AssetUnavailableError(id, response.status);
-  return response.blob();
+  return proxied();
 }
 
 /** Tiles use `display`, detail, downloads and ZIP use `original`. Either falls back to the other when missing. */
@@ -70,8 +91,8 @@ export async function getAssetBlob(asset: Asset, which: "display" | "original", 
   return fetchSourceBlob(source, asset.id, options);
 }
 
-/** Inline (data URI) font files carry their bytes; remote ones load like assets. */
+/** Inline (data URI) font files carry their bytes; remote ones go through the proxy, which CORS does not block. */
 export async function getFontFileBlob(file: FontFile, options: BytesOptions = {}): Promise<Blob> {
   if (file.inline) return inlineToBlob(file.inline);
-  return fetchSourceBlob(file, file.url || "font", options);
+  return fetchSourceBlob(file, file.url || "font", { ...options, proxyFirst: true });
 }

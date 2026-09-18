@@ -50,11 +50,14 @@ function mockFetch() {
     "https://cdn.test/hero.png": () => new Response("HERO"),
     "https://cdn.test/other.png": () => new Response("OTHER"),
     [broken.original!.proxy]: () => new Response("gone", { status: 404 }),
+    // Font files go through the proxy: a direct cross-origin fetch of a font is blocked by CORS. The direct URL is
+    // still served here, for the file past the signing cap that has no proxy path.
     "https://static.linear.app/fonts/InterVariable.woff2": () => new Response("WOFF2-REGULAR"),
-    "https://static.linear.app/fonts/InterVariable-Italic.woff2": () => new Response("WOFF2-ITALIC"),
+    [interRegular.proxy]: () => new Response("WOFF2-REGULAR"),
+    [interItalic.proxy]: () => new Response("WOFF2-ITALIC"),
     [`${interRegular.proxy}&fmt=ttf`]: () => new Response("TTF-REGULAR"),
     [`${interItalic.proxy}&fmt=ttf`]: () => new Response("TTF-ITALIC"),
-    "https://static.linear.app/fonts/Berkeley-Mono.woff2": () => new Response("WOFF2-MONO"),
+    "/api/asset?u=bW9ubw&e=1&s=c": () => new Response("WOFF2-MONO"),
   };
   const fetchMock = vi.fn(async (url: string) => {
     const respond = responses[url];
