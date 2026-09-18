@@ -5,8 +5,14 @@ import { assetMeta, foundInLabel, hiddenSummary, roleBadge, roleLabel, splitExte
 describe("hiddenSummary", () => {
   it("names the reasons by count", () => {
     expect(hiddenSummary({ tracker: 6, spacer: 3 })).toBe("9 hidden: tracking pixels and spacer images");
-    expect(hiddenSummary({ spacer: 1, tracker: 2, pixel: 5 })).toBe("8 hidden: tracking pixels and spacer images");
-    expect(hiddenSummary({ consent: 1, tracker: 4, "tiny-svg": 2 })).toBe("7 hidden: tracking pixels, tiny SVGs and consent banners");
+    expect(hiddenSummary({ spacer: 1, tracker: 2, pixel: 5 })).toBe("8 hidden: tracking pixels and a spacer image");
+    expect(hiddenSummary({ consent: 1, tracker: 4, "tiny-svg": 2 })).toBe("7 hidden: tracking pixels, tiny SVGs and a consent banner");
+  });
+
+  it("reads as a singular for a single file", () => {
+    expect(hiddenSummary({ tracker: 1 })).toBe("1 hidden: a tracking pixel");
+    expect(hiddenSummary({ "tiny-svg": 1 })).toBe("1 hidden: a tiny SVG");
+    expect(hiddenSummary({ "future-reason": 1 })).toBe("1 hidden: another file");
   });
 
   it("counts unknown reasons toward the total", () => {

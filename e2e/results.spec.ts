@@ -83,6 +83,16 @@ test.describe("results", () => {
     await expect(page.getByRole("tab", { name: /^All/ })).toHaveAttribute("aria-selected", "true");
   });
 
+  test("the header and the tab title both drop a www the user did not type", async ({ page }) => {
+    const wwwHost = linear.map((event) =>
+      event.type === "page" ? { ...event, page: { ...event.page, host: "www.linear.app", finalUrl: "https://www.linear.app/" } } : event,
+    );
+    await openResults(page, wwwHost);
+    await expect(page.getByTestId("results-meta")).toContainText("linear.app · ");
+    await expect(page.getByTestId("results-meta")).not.toContainText("www.");
+    await expect(page).toHaveTitle(/^\d+ assets · linear\.app$/);
+  });
+
   test("Logos lead All, and the SVG tab has no Logos section", async ({ page }) => {
     await openResults(page, linear);
     const headings = page.getByTestId("results").getByRole("heading", { level: 2 });

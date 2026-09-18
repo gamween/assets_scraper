@@ -92,11 +92,14 @@ test.describe("landing", () => {
     await expect(page).toHaveURL(/\/$/);
     const recent = page.getByRole("group", { name: "Recent" });
     await expect(recent.getByRole("button", { name: "linear.app", exact: true })).toBeVisible();
+    // The same host is not offered twice: it left `Try` when it joined `Recent`, where it can be removed.
+    await expect(page.getByRole("group", { name: "Try" }).getByRole("button")).toHaveText(["stripe.com", "framer.com"]);
 
     await page.reload();
     await expect(recent.getByRole("button", { name: "linear.app", exact: true })).toBeVisible();
     await recent.getByRole("button", { name: "Remove linear.app" }).click();
     await expect(recent).toHaveCount(0);
+    await expect(page.getByRole("group", { name: "Try" }).getByRole("button")).toHaveText(["stripe.com", "linear.app", "framer.com"]);
   });
 
   test("the address bar URL scans on load", async ({ page }) => {

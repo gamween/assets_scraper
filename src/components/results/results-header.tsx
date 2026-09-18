@@ -4,6 +4,7 @@ import { Download, Globe, Link2, LoaderCircle, RotateCw } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { formatCount, formatDuration } from "@/lib/format";
+import { displayHost } from "@/lib/url";
 import { previewSrc } from "@/lib/client/asset-bytes";
 import { rescan, shareablePath } from "@/lib/client/scan-session";
 import { getDownloadAllCount, useApp } from "@/lib/client/store";
@@ -36,7 +37,7 @@ function SiteFavicon() {
 /** Spec 12.2 results header: favicon, page title, mono meta, `Copy link`, `Rescan`, `Download all`. */
 export function ResultsHeader({ actions = true }: { actions?: boolean }) {
   const title = useApp((s) => s.page?.title || s.page?.host || s.host || "");
-  const host = useApp((s) => s.page?.host ?? s.host ?? "");
+  const host = useApp((s) => displayHost(s.page?.host ?? s.host ?? ""));
   const url = useApp((s) => s.url);
   // Spec 12.2 meta `linear.app · 48 assets · 11s`: SVGs and images, like `stats.assets`. Fonts have their own tab count.
   const assetCount = useApp((s) => s.assets.length);

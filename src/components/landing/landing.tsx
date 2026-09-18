@@ -17,6 +17,7 @@ export function Landing() {
   const input = useApp((s) => s.input);
   const inputError = useApp((s) => s.inputError);
   const recent = useApp((s) => s.recent);
+  const tryHosts = TRY_HOSTS.filter((host) => !recent.includes(host));
   const setInput = useApp((s) => s.setInput);
   const inputRef = useRef<HTMLInputElement>(null);
   const errorId = useId();
@@ -78,7 +79,8 @@ export function Landing() {
           </p>
 
           <div className="mt-3 flex flex-col gap-2.5">
-            <HostChips label="Try" hosts={TRY_HOSTS} />
+            {/* A host that is both a suggestion and a recent scan is one chip, in `Recent`, where it can be removed. */}
+            {tryHosts.length ? <HostChips label="Try" hosts={tryHosts} /> : null}
             {recent.length ? <HostChips label="Recent" hosts={recent} removable /> : null}
           </div>
         </div>

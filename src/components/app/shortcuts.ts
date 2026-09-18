@@ -4,7 +4,7 @@ import { useEffect } from "react";
 import { formatCount } from "@/lib/format";
 import { submitUrl } from "@/lib/client/scan-session";
 import { appStore, useApp, type AppState } from "@/lib/client/store";
-import { normalizeInputUrl } from "@/lib/url";
+import { displayHost, normalizeInputUrl } from "@/lib/url";
 
 export function isEditableTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
@@ -34,7 +34,7 @@ export function useGlobalShortcuts() {
  */
 export function useDocumentTitle() {
   const title = useApp((s) => {
-    const host = s.host ?? "";
+    const host = displayHost(s.page?.host ?? s.host ?? "");
     if (s.phase === "scanning") return `Scanning ${host}`;
     if (s.phase === "results") return `${formatCount(s.assets.length, "asset")} · ${host}`;
     if (s.phase === "error") return `Scan failed · ${host}`;
