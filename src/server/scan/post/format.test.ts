@@ -48,6 +48,24 @@ describe("sniffFormat", () => {
   it("recognizes SVG text with a BOM, XML prolog, comments or doctype", () => {
     expect(sniffFormat(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>'))).toBe("svg");
     expect(sniffFormat(Buffer.from('\uFEFF  <?xml version="1.0"?>\n<!-- x --><!DOCTYPE svg><svg></svg>'))).toBe("svg");
+    // Illustrator writes an internal subset on every export, and a CDN often serves it as octet-stream.
+    expect(
+      sniffFormat(
+        Buffer.from(
+          '<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd" [\n<!ENTITY ns_extend "http://ns.adobe.com/Extensibility/1.0/">\n]>\n<svg version="1.1"/>',
+        ),
+      ),
+    ).toBe("svg");
+  });
+
+  it("reads the same bytes as the asset proxy sniffer", () => {
+    // AVIF with mif1 as the major brand and avif further down the compatible brands.
+    expect(sniffFormat(bytes(0, 0, 0, 0x1c, "ftypmif1", 0, 0, 0, 0, "avifmif1miaf"))).toBe("avif");
+    // A font is not an image: both sniffers know these, only one of them names an asset format for them.
+    expect(sniffFormat(bytes("wOF2", 0, 0, 0, 0))).toBe("other");
+    expect(sniffFormat(bytes(0, 1, 0, 0, 0, 0))).toBe("other");
+    // An ICO that declares no image is still not an ICO.
+    expect(sniffFormat(bytes(0, 0, 1, 0, 0, 0))).toBe("other");
   });
 
   it("returns other otherwise", () => {
