@@ -90,8 +90,10 @@ export function PaletteStrip() {
       </div>
       {/*
        * Two groups, not one list with a rule inside it: below 640 the swatches wrapped where they ran out of room and
-       * the inline divider was hidden outright, so the grouping went with it. Each group wraps on its own, and the
-       * divider becomes a full-width rule on a phone, where it separates two rows instead of two halves of one.
+       * the inline divider was hidden outright, so the grouping went with it. Each group wraps on its own and the rule
+       * stands between them at every width. It stays an inline rule on a phone: a full-width one forces the neutrals
+       * onto a row of their own even when both groups fit on one, which pushed the first tile 79 px down on
+       * linear.app.
        */}
       <div className="flex flex-wrap items-start gap-x-3 gap-y-1.5">
         <div className="-ml-3.5 flex flex-wrap items-start">
@@ -99,7 +101,7 @@ export function PaletteStrip() {
             <SwatchButton key={`b${index}${swatch.hex}`} swatch={swatch} group="brand" />
           ))}
         </div>
-        {palette.brand.length && palette.neutrals.length ? <span aria-hidden="true" data-testid="palette-divider" className="mt-1 h-px w-full bg-border sm:h-8 sm:w-px" /> : null}
+        {palette.brand.length && palette.neutrals.length ? <span aria-hidden="true" data-testid="palette-divider" className="mt-1 h-8 w-px bg-border" /> : null}
         <div className="-ml-3.5 flex flex-wrap items-start">
           {palette.neutrals.map((swatch, index) => (
             <SwatchButton key={`n${index}${swatch.hex}`} swatch={swatch} group="neutral" />

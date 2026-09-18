@@ -69,11 +69,15 @@ test.describe("phone toolbar", () => {
     await expect(alphabet).toContainText("0123456789");
 
     await page.getByRole("tab", { name: /^All/ }).click();
-    // The brand and neutral groups stay separated: the divider becomes the rule between their two rows.
+    // The brand and neutral groups stay separated by a rule the phone shows too, and it stays inline: a full-width
+    // rule would wrap the neutrals onto a row of their own even when both groups fit on one.
     const divider = page.getByTestId("palette-divider");
     await expect(divider).toBeVisible();
     const rule = (await divider.boundingBox())!;
-    expect(rule.width).toBeGreaterThan(100);
-    expect(rule.height).toBeLessThanOrEqual(2);
+    expect(rule.width).toBeLessThanOrEqual(2);
+    expect(rule.height).toBeGreaterThan(8);
+    const first = (await page.getByTestId("swatch-chip").first().boundingBox())!;
+    expect(rule.y).toBeLessThan(first.y + first.height);
+    expect(first.y).toBeLessThan(rule.y + rule.height);
   });
 });
