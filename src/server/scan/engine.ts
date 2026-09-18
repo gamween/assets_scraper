@@ -20,7 +20,7 @@ import { extractPalette } from "./palette";
 import { assembleAssets } from "./post/assemble";
 import { cutText, MAX_SITE_NAME_CHARS, preflight, type PreflightResult } from "./preflight";
 import { NO_ORIGINAL_PROBES } from "./types";
-import type { AssetsOutput, CapturedNetwork, CollectorOptions, FontsOutput, PageContext, PostInput, RawCollectorOutput, SafeFetch, ScanBackend, Signer } from "./types";
+import type { AssetsOutput, CapturedNetwork, CollectorOptions, FontsOutput, PageContext, PostInput, RawCandidate, RawCollectorOutput, RawSvg, SafeFetch, ScanBackend, Signer } from "./types";
 
 export interface ScanEngineDeps {
   fetch: SafeFetch;
@@ -169,7 +169,34 @@ function emptyCollectorOutput(nav: NavigationResult, network: CapturedNetwork): 
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
-/** The top-level shape of collector output. A main-world page can overwrite the collector, and a bug can return nothing. */
+const isCandidate = (value: unknown): value is RawCandidate =>
+  isRecord(value) &&
+  typeof value.url === "string" &&
+  typeof value.foundIn === "string" &&
+  typeof value.visible === "boolean" &&
+  typeof value.declaredOnly === "boolean" &&
+  Number.isFinite(value.group) &&
+  Number.isFinite(value.order) &&
+  isRecord(value.context);
+
+const isSvg = (value: unknown): value is RawSvg =>
+  isRecord(value) &&
+  typeof value.markup === "string" &&
+  typeof value.hash === "string" &&
+  typeof value.visible === "boolean" &&
+  typeof value.referenced === "boolean" &&
+  typeof value.hasLiveText === "boolean" &&
+  Number.isFinite(value.order) &&
+  Number.isFinite(value.usedCount) &&
+  Number.isFinite(value.elementCount) &&
+  isRecord(value.context);
+
+/**
+ * The shape of collector output. A main-world page can overwrite the collector, and a bug can return nothing, so the
+ * items of `candidates` and `svgs` are checked too: post-processing walks both and dereferences their fields, and a
+ * TypeError there would end a recoverable scan as an `internal` error instead of the network-only partial result every
+ * other collector failure degrades to. The other five lists are checked by post-processing itself.
+ */
 function isCollectorOutput(value: unknown): value is RawCollectorOutput {
   if (!isRecord(value) || !isRecord(value.page) || !isRecord(value.noise) || !isRecord(value.stats)) return false;
   const { page, stats } = value;
@@ -178,7 +205,9 @@ function isCollectorOutput(value: unknown): value is RawCollectorOutput {
     typeof page.baseUrl === "string" &&
     typeof page.elementCount === "number" &&
     typeof stats.truncated === "boolean" &&
-    COLLECTOR_LISTS.every((key) => Array.isArray(value[key]))
+    COLLECTOR_LISTS.every((key) => Array.isArray(value[key])) &&
+    (value.candidates as unknown[]).every(isCandidate) &&
+    (value.svgs as unknown[]).every(isSvg)
   );
 }
 

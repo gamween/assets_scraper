@@ -890,6 +890,32 @@ describe("scan engine", () => {
     }
   });
 
+  it("keeps the network results when a collector returns items of the wrong shape", async () => {
+    // A page that owns globalThis.__assetsScraper through an accessor can answer with anything (spec 7.3). Items that
+    // post-processing would dereference have to be refused here, or the scan ends as an internal error instead of the
+    // network-only partial result every other collector failure degrades to.
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const hostile = `globalThis.__assetsScraper = { collect: async () => ({
+      page: { title: "Hostile", baseUrl: location.href, elementCount: 1 },
+      candidates: [{ url: "https://cdn.example/x.png", group: "x", foundIn: null, order: NaN, visible: 1, declaredOnly: 0 }],
+      svgs: [{ markup: null, hash: 7 }],
+      fontFaces: [], fontStatuses: [], fontUsage: [], unreadableSheets: [], blobs: [], brandLinks: [],
+      noise: {}, stats: { elements: 1, ms: 1, truncated: false },
+    }) };`;
+    try {
+      // The real post-processing, since the point is that it dereferences what the collector returned.
+      const events = await scan(testDeps({ collectorSource: hostile, assembleAssets }).deps, `${fixture.origin}/`);
+      const done = events.at(-1);
+      if (done?.type !== "done") throw new Error(`expected done, got ${done && describeEvent(done)}`);
+      expect(done.partial).toBe(true);
+      const assets = events.find((event) => event.type === "assets");
+      expect(assets?.type === "assets" && assets.items.length).toBeGreaterThan(0);
+      expect(log).toHaveBeenCalledWith(expect.stringMatching(/^Scan [0-9a-f-]{36} collector failed in the \w+ world$/), expect.anything());
+    } finally {
+      log.mockRestore();
+    }
+  });
+
   it("stops page work when memory runs low, kills Chrome and returns partial results", async () => {
     vi.stubEnv("COLLECT_MS", "60000");
     let collecting = false;
