@@ -126,8 +126,8 @@ export const FontRow = memo(function FontRow({ font }: { font: FontFamily }) {
         </div>
 
         <div className="min-w-0 lg:border-l lg:border-border lg:pl-6">
-          <div className="flex items-start justify-between gap-3">
-            <h3 className="truncate text-title font-semibold text-text">{font.name}</h3>
+          {/* The checkbox sits against the family name it selects, not 325 px away at the far edge of the column. */}
+          <div className="flex items-start gap-2.5">
             <button
               type="button"
               role="checkbox"
@@ -135,13 +135,14 @@ export const FontRow = memo(function FontRow({ font }: { font: FontFamily }) {
               aria-label={`Select ${font.name}`}
               onClick={(event) => (event.shiftKey ? appStore.getState().selectRange(key) : appStore.getState().toggle(key))}
               className={cn(
-                "mt-0.5 grid size-5 shrink-0 place-items-center rounded-sm border-[1.5px] transition-[opacity,background-color,border-color] duration-100 focus-visible:opacity-100 focus-ring-tight",
+                "mt-[3px] grid size-5 shrink-0 place-items-center rounded-sm border-[1.5px] transition-[opacity,background-color,border-color] duration-100 focus-visible:opacity-100 focus-ring-tight",
                 selected ? "border-accent bg-accent text-accent-fg" : "border-border-strong bg-surface text-transparent hover:border-text-3",
                 selected || selecting ? "opacity-100" : "opacity-0 group-hover/font:opacity-100 pointer-coarse:opacity-100",
               )}
             >
               <CheckIcon className="size-3" strokeWidth={3} aria-hidden="true" />
             </button>
+            <h3 className="min-w-0 truncate text-title font-semibold text-text">{font.name}</h3>
           </div>
           <p data-testid="font-weights" className="mt-0.5 text-small text-text-2">
             {weightsSummary(font)}
