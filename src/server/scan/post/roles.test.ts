@@ -30,9 +30,12 @@ describe("assignRole", () => {
     const score = logoScore(context({ header: true, homeLink: true }), true, { x: 0, y: 0, width: 3008, height: 692 });
     expect(score).toBe(6);
     expect(role({ logoScore: score, label: "iPhone 18 Pro", rendered: { width: 3008, height: 692 } })).toBe("image");
-    // The wordmark beside it, and a large logo that says it is one, still are the site logo.
+    // The wordmark beside it still is the site logo.
     expect(role({ kind: "svg", foundIn: ["inline-svg"], logoScore: score, label: "Apple", rendered: { width: 14, height: 44 } })).toBe("site-logo");
-    expect(role({ logoScore: score, logoWord: true, rendered: { width: 3008, height: 692 } })).toBe("site-logo");
+    // Logo evidence does not lift the limit: on apple.com the hero group carries it and is still a hero.
+    expect(role({ logoScore: score, logoWord: true, rendered: { width: 3008, height: 692 } })).toBe("logo");
+    // A JSON-LD logo is a declaration, not a guess, so it is the site logo at any size.
+    expect(role({ foundIn: ["json-ld"], rendered: { width: 3008, height: 692 } })).toBe("site-logo");
     // The limit is generous: a banner sized wordmark on position alone is still the site logo.
     expect(role({ logoScore: score, rendered: { width: 600, height: 200 } })).toBe("site-logo");
   });
