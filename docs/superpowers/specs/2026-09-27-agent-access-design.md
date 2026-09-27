@@ -129,7 +129,7 @@ Install: `claude plugin marketplace add ~/Development/tools/assets_scraper` then
 ## 10. Security
 
 - Local mode inherits every v1 guard: the scan engine runs Chromium behind the egress proxy, and every fetch goes through `safeFetch`.
-- The CLI and MCP write only inside the resolved destination directory: the path is resolved, symlinks are refused, and anything outside the project root or the fallback directory is an error.
+- The CLI and MCP write only inside the resolved destination directory: the path is resolved, symlinks are refused, and anything outside the project root or the fallback directory is an error. A destination that came from an agent is held to the narrower rule: it must be inside `<project root>/scrap` (the fallback directory when there is no project), so an agent-supplied path cannot drop scraped files into the source tree.
 - Font installs write only into the user font directory, only files this tool created, and are reversible through the manifest.
 - Agent tokens are compared in constant time, are never logged, and live only in env.
 - The ZIP endpoint applies the v1 asset caps, the proxy byte budget and the content-type allowlist.

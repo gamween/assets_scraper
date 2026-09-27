@@ -7,7 +7,8 @@ import path from "node:path";
  *
  * The rule, strongest first: an explicit `dest`, then `ASSETS_SCRAPER_OUT`, then `<project root>/scrap/<host>` where
  * the project root is the git root of the working directory or the nearest directory holding `package.json`,
- * `pyproject.toml` or `.claude`, and finally `~/Downloads/assets-scraper/<host>` when there is no project.
+ * `pyproject.toml` or `.claude`, and finally `~/Downloads/assets-scraper/<host>` when there is no project. A `dest` that
+ * came from an agent goes through `restrictToProject`, which confines it to the scrap directory.
  */
 
 /** The directory name a download writes into inside a project. */
@@ -37,10 +38,11 @@ export interface DestinationOptions {
   /** An explicit destination directory. Used as is, with no host segment appended. */
   dest?: string;
   /**
-   * Refuses an explicit `dest` that is not inside the directory the project rule would have used: the project root,
-   * or the fallback directory when there is no project. Spec 10 makes anything outside those an error, so every caller
-   * that takes a `dest` from an agent (the MCP `download_assets` tool, the ZIP endpoint) sets this. The CLI leaves it
-   * off, because a `--out` the user typed is the user's own choice of where their files go.
+   * Refuses an explicit `dest` that is not inside `<project root>/scrap`, or inside the fallback directory when there is
+   * no project. Every caller that takes a `dest` from an agent (the MCP `download_assets` tool, the ZIP endpoint) sets
+   * this. The project root itself is not enough: it would let an agent-supplied path drop scraped files into `src/`, and
+   * the destination this tool offers is the scrap folder. The CLI leaves it off, because a `--out` the user typed is the
+   * user's own choice of where their files go.
    */
   restrictToProject?: boolean;
 }
@@ -85,16 +87,19 @@ function* ancestors(from: string): Generator<string> {
   }
 }
 
+/** The one directory an agent-supplied `dest` may write inside: the project's scrap folder, or the fallback directory. */
+function scrapRoot(cwd: string): string {
+  const projectRoot = findProjectRoot(cwd);
+  return projectRoot ? path.join(projectRoot, SCRAP_DIR_NAME) : path.join(os.homedir(), ...FALLBACK_SEGMENTS);
+}
+
 export function resolveDestination(options: DestinationOptions = {}): Destination {
   const cwd = path.resolve(options.cwd ?? process.cwd());
   const host = sanitizeHost(options.host ?? "");
 
   if (options.dest !== undefined && options.dest !== "") {
     const dir = path.resolve(cwd, options.dest);
-    if (options.restrictToProject === true) {
-      const allowed = findProjectRoot(cwd) ?? path.join(os.homedir(), ...FALLBACK_SEGMENTS);
-      assertInside(allowed, dir);
-    }
+    if (options.restrictToProject === true) assertInside(scrapRoot(cwd), dir);
     return { dir, projectRoot: dir, host, fallback: false };
   }
 

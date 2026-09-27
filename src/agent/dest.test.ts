@@ -114,15 +114,35 @@ describe("resolveDestination", () => {
       expect(path.basename(path.dirname(dir))).toBe("scrap");
     }
   });
-  it("refuses an explicit dest outside the project when the caller asks it to", () => {
-    const root = makeTree(".git", "scrap");
+  it("refuses an explicit dest outside the scrap folder when the caller asks it to", () => {
+    // Regression: the guard only checked the project root, so an agent-supplied dest of "<project>/src" was accepted and
+    // scraped files could land in the source tree.
+    const root = makeTree(".git", "scrap", "src");
     const outside = makeTree();
+    expect(() => resolveDestination({ host: "stripe.com", cwd: root, dest: path.join(root, "src"), restrictToProject: true })).toThrow(/outside/i);
+    expect(() => resolveDestination({ host: "stripe.com", cwd: root, dest: path.join(outside, "anywhere"), restrictToProject: true })).toThrow(/outside/i);
     expect(resolveDestination({ host: "stripe.com", cwd: root, dest: path.join(root, "scrap", "stripe.com"), restrictToProject: true }).dir).toBe(
       path.join(root, "scrap", "stripe.com"),
     );
-    expect(() => resolveDestination({ host: "stripe.com", cwd: root, dest: path.join(outside, "anywhere"), restrictToProject: true })).toThrow(/outside/i);
+    // Without the flag, a dest the user typed is the user's own choice.
     expect(resolveDestination({ host: "stripe.com", cwd: root, dest: path.join(outside, "anywhere") }).dir).toBe(path.join(outside, "anywhere"));
+    expect(() => resolveDestination({ host: "stripe.com", cwd: root, dest: root, restrictToProject: true })).toThrow(/outside/i);
+    expect(resolveDestination({ host: "stripe.com", cwd: root, dest: path.join(root, "scrap"), restrictToProject: true }).dir).toBe(
+      path.join(root, "scrap"),
+    );
+    expect(resolveDestination({ host: "stripe.com", cwd: root, dest: path.join(root, "scrap", "deep", "nested"), restrictToProject: true }).dir).toBe(
+      path.join(root, "scrap", "deep", "nested"),
+    );
+    // No project, so the fallback directory is the one place an agent-supplied dest may write.
+    const home = makeTree();
+    vi.stubEnv("HOME", home);
+    const bare = makeTree();
+    expect(() => resolveDestination({ host: "stripe.com", cwd: bare, dest: path.join(bare, "anywhere"), restrictToProject: true })).toThrow(/outside/i);
+    expect(
+      resolveDestination({ host: "stripe.com", cwd: bare, dest: path.join(home, "Downloads", "assets-scraper", "x"), restrictToProject: true }).dir,
+    ).toBe(path.join(home, "Downloads", "assets-scraper", "x"));
   });
+
 });
 
 describe("assertInside", () => {
