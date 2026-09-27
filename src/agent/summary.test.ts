@@ -53,6 +53,17 @@ describe("summarize", () => {
     expect(summary.page.title.length).toBeLessThanOrEqual(120);
     expect(Buffer.byteLength(JSON.stringify(summary))).toBeLessThan(4_096);
   });
+
+  it("cuts a long URL and a long final URL", () => {
+    // Regression: every other string was cut but these two were not, so a 2048 character URL (the most ScanRequest
+    // allows) plus a redirect to one as long blew the budget on its own, at 5218 bytes.
+    const url = `https://example.com/?q=${"a".repeat(2_000)}`;
+    const summary = summarize(testScan({ page: { url, finalUrl: `${url}&redirected=1`, host: "example.com", title: "Example" } }));
+    expect(summary.page.url.length).toBeLessThanOrEqual(200);
+    expect(summary.page.finalUrl.length).toBeLessThanOrEqual(200);
+    expect(summary.page.url.startsWith("https://example.com/?q=aaa")).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(summary))).toBeLessThan(4_096);
+  });
 });
 
 describe("isInstallableFamily", () => {

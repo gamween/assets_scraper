@@ -12,6 +12,11 @@ export const MAX_SUMMARY_LOGOS = 8;
 export const MAX_SUMMARY_PALETTE = 12;
 export const MAX_SUMMARY_FONTS = 12;
 export const MAX_SUMMARY_WARNINGS = 5;
+/**
+ * URLs are cut like every other string here: `ScanRequest` allows 2048 characters and a redirect chain can make the
+ * final URL as long again, which on its own blew the budget the rest of the document is cut to keep.
+ */
+const MAX_URL_CHARS = 200;
 const MAX_TITLE_CHARS = 120;
 const MAX_SITE_NAME_CHARS = 60;
 const MAX_NAME_CHARS = 60;
@@ -58,8 +63,8 @@ export function summarize(scan: AgentScan): ScanSummary {
   return {
     scanId: scan.scanId,
     page: {
-      url: scan.page.url,
-      finalUrl: scan.page.finalUrl,
+      url: cut(scan.page.url, MAX_URL_CHARS),
+      finalUrl: cut(scan.page.finalUrl, MAX_URL_CHARS),
       host: scan.page.host,
       title: cut(scan.page.title, MAX_TITLE_CHARS),
       ...(scan.page.siteName === undefined ? {} : { siteName: cut(scan.page.siteName, MAX_SITE_NAME_CHARS) }),
