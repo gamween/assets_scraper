@@ -185,6 +185,15 @@ describe("createFileInside", () => {
     expect(fs.readFileSync(handle.path, "utf8")).toBe("bytes");
   });
 
+  it("creates a destination that does not exist yet", () => {
+    // The first download into a project: nothing below the project root has been made yet.
+    const root = path.join(makeTree(), "scrap", "stripe.com");
+    const handle = createFileInside(root, "svg/logo.svg");
+    fs.closeSync(handle.fd);
+    expect(handle.path).toBe(path.join(root, "svg", "logo.svg"));
+    expect(fs.existsSync(handle.path)).toBe(true);
+  });
+
   it("refuses a name that already exists", () => {
     const root = path.join(makeTree("scrap"), "scrap");
     fs.writeFileSync(path.join(root, "logo.png"), "first");
