@@ -167,7 +167,9 @@ const FILE_MODE = 0o644;
 /**
  * Creates `target` inside `root` for writing and returns the open descriptor, which the caller closes. The parent
  * directories are created as needed. `O_EXCL` refuses a name that already exists, so nothing is ever overwritten, and
- * `O_NOFOLLOW` refuses a symlink at the final component, so the race `assertInside` cannot close is closed here.
+ * `O_NOFOLLOW` refuses a symlink at the final component, whether or not it resolves, so a link planted after
+ * `assertInside` checked cannot redirect the file. A parent directory swapped for a link in that same window is not
+ * covered: the destination is a directory this tool made, so that is a race with whoever can already write there.
  */
 export function createFileInside(root: string, target: string): { path: string; fd: number } {
   const resolved = assertInside(root, target);
