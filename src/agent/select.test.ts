@@ -174,7 +174,7 @@ describe("selectAssets, deck profile", () => {
     // selection kept 4 of 6 and reported the two it deleted as near duplicates. The seventh asset is a real resize of
     // the first card, so the pass is still doing its job rather than switched off.
     const cards = await Promise.all([0, 1, 2, 3, 4, 5].map((index) => templateCardImage(index)));
-    const bytes = new Map(cards.map((card, index) => [`card-${index}.png`, card] as const));
+    const bytes = new Map<string, Buffer>(cards.map((card, index) => [`card-${index}.png`, card]));
     bytes.set("card-0-small.png", await sharp(cards[0]).resize(400, 300).png().toBuffer());
     const assets = [...bytes.keys()].map((file, index) =>
       make({ file, width: TEMPLATE_CARD_WIDTH, height: TEMPLATE_CARD_HEIGHT, score: 90 - index }),

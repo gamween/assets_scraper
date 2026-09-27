@@ -1,6 +1,8 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import * as z from "zod";
+import { Asset, Diagnostics, FontFamily, Palette, ScanStats } from "@/lib/contract";
 import { agentLimits } from "./limits";
 import type { AgentScan } from "./types";
 
@@ -75,17 +77,37 @@ export async function loadScan(scanId: string): Promise<AgentScan | null> {
 }
 
 /**
- * Whether a parsed file is a scan. Every field a caller reads straight after a load is checked, `page` included: a file
- * that passes part of the shape and is then cast turns one bad file in the directory into a failure for every URL.
+ * The whole `AgentScan` shape, from the `src/lib/contract.ts` schemas the scan itself is built from. A file is only a
+ * scan when every field is there: checking a few of them and casting the rest turns one bad file in the directory into a
+ * failure for every caller, because `summarize` reads `stats`, `fonts` and `palette` the moment a load returns and
+ * `findRecentScan` prefers the newest file it accepted, so a shaped but incomplete file shadows a good older scan of the
+ * same URL until it ages out a day later.
+ */
+const AgentScanFile = z.object({
+  scanId: z.string(),
+  scannedAt: z.string(),
+  source: z.enum(["local", "remote"]),
+  page: z.object({
+    url: z.string(),
+    finalUrl: z.string(),
+    host: z.string(),
+    title: z.string(),
+    siteName: z.string().optional(),
+  }),
+  assets: z.array(Asset),
+  fonts: z.array(FontFamily),
+  palette: Palette.nullable(),
+  stats: ScanStats,
+  warnings: z.array(z.string()),
+  diagnostics: Diagnostics.optional(),
+});
+
+/**
+ * Whether a parsed file is a scan. The parsed value is thrown away and the original object returned, so a field the
+ * schema does not know about survives the round trip instead of being stripped.
  */
 function isAgentScan(value: unknown): value is AgentScan {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const scan = value as Partial<AgentScan>;
-  if (typeof scan.scanId !== "string" || typeof scan.scannedAt !== "string" || !Array.isArray(scan.assets)) return false;
-  const page: unknown = scan.page;
-  if (!page || typeof page !== "object") return false;
-  const { url, finalUrl, host, title } = page as Partial<AgentScan["page"]>;
-  return typeof url === "string" && typeof finalUrl === "string" && typeof host === "string" && typeof title === "string";
+  return AgentScanFile.safeParse(value).success;
 }
 
 async function readScan(file: string): Promise<AgentScan | null> {
@@ -114,7 +136,9 @@ const normalizeUrl = (url: string): string =>
  *
  * A scan file is written once and never touched again, so its mtime is when the scan ran. Files older than the TTL are
  * therefore skipped on the stat, without parsing them: this runs on the hot path of every scan, the cache holds a day
- * of files, and a scan of a page with inline assets carries its base64 bytes and can be megabytes.
+ * of files, and a scan of a page with inline assets carries its base64 bytes and can be megabytes. A file whose mtime
+ * was moved backwards by something other than this tool (a restored backup, a `touch`) is therefore invisible here even
+ * when its `scannedAt` is inside the TTL, which costs a rescan and never a wrong answer.
  */
 export async function findRecentScan(url: string, ttlMs: number = agentLimits.scanCacheTtlMs): Promise<AgentScan | null> {
   const dir = cacheDir();
