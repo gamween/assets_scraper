@@ -6,12 +6,14 @@ import {
   DHASH_CHARS,
   type ImageFingerprint,
   MIN_HASH_BITS,
+  THUMB_SIDE,
   fingerprint,
   hammingDistance,
   sameVisual,
   sha1,
   thumbnailRmse,
 } from "./hash";
+import { templateCardImage } from "./testing";
 
 /** A smooth deterministic pattern: it survives a resize and changes when it is mirrored. */
 const pattern = (width: number, height: number, phase = 0): Promise<Buffer> => {
@@ -61,7 +63,7 @@ describe("fingerprint", () => {
     const print = await printOf(await pattern(256, 192));
     expect(print.hash).toMatch(new RegExp(`^[0-9a-f]{${DHASH_CHARS}}$`));
     expect(print.aspect).toBeCloseTo(256 / 192);
-    expect(print.thumbnail).toHaveLength(256);
+    expect(print.thumbnail).toHaveLength(THUMB_SIDE * THUMB_SIDE);
   });
 
   it("survives a resize to half the size", async () => {
@@ -111,6 +113,26 @@ describe("sameVisual", () => {
       for (let j = i + 1; j < marks.length; j += 1) {
         expect(sameVisual(marks[i], marks[j], agentLimits.nearDuplicateDistance)).toBe(false);
       }
+    }
+  });
+
+  it("refuses sibling assets cut from one template", async () => {
+    // Regression: the confirmation check compared 16x16 thumbnails, where the only thing that separates these cards has
+    // washed out, so six distinct cards came back as four files and two "near duplicates". The hash gate does not save
+    // them either: these pairs are closer in Hamming distance than a genuine resize of one card, which is asserted here
+    // so the test keeps exercising the pixel comparison rather than passing on the prefilter.
+    const distance = agentLimits.nearDuplicateDistance;
+    const cards = await Promise.all([0, 1, 2, 3, 4, 5].map((index) => templateCardImage(index).then(printOf)));
+    for (let i = 0; i < cards.length; i += 1) {
+      for (let j = i + 1; j < cards.length; j += 1) {
+        expect(hammingDistance(cards[i].hash, cards[j].hash)).toBeLessThanOrEqual(distance);
+        expect(sameVisual(cards[i], cards[j], distance)).toBe(false);
+      }
+    }
+    // The same fixture still reads a real copy of one card as one picture.
+    const card = await templateCardImage(0);
+    for (const copy of [await sharp(card).resize(400, 300).png().toBuffer(), await sharp(card).resize(200, 150).png().toBuffer()]) {
+      expect(sameVisual(cards[0], await printOf(copy), distance)).toBe(true);
     }
   });
 

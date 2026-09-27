@@ -2,6 +2,7 @@ import sharp from "sharp";
 import { beforeAll, describe, expect, it } from "vitest";
 import type { Asset, AssetFormat, AssetKind, AssetRole } from "@/lib/contract";
 import { normalizeAssetName, selectAssets } from "./select";
+import { TEMPLATE_CARD_HEIGHT, TEMPLATE_CARD_WIDTH, templateCardImage } from "./testing";
 
 interface Make {
   file: string;
@@ -166,6 +167,22 @@ describe("selectAssets, deck profile", () => {
     const selection = await selectAssets(assets, {}, bytes);
     expect(selection.keep.map((asset) => asset.id)).toEqual(["logo-0.png", "logo-1.png", "logo-2.png"]);
     expect(selection.dropped).toEqual({});
+  });
+
+  it("keeps six cards cut from one template, and still drops a copy of one of them", async () => {
+    // Regression: sibling assets that share a layout only differ in detail a 16x16 comparison averages away, so this
+    // selection kept 4 of 6 and reported the two it deleted as near duplicates. The seventh asset is a real resize of
+    // the first card, so the pass is still doing its job rather than switched off.
+    const cards = await Promise.all([0, 1, 2, 3, 4, 5].map((index) => templateCardImage(index)));
+    const bytes = new Map(cards.map((card, index) => [`card-${index}.png`, card] as const));
+    bytes.set("card-0-small.png", await sharp(cards[0]).resize(400, 300).png().toBuffer());
+    const assets = [...bytes.keys()].map((file, index) =>
+      make({ file, width: TEMPLATE_CARD_WIDTH, height: TEMPLATE_CARD_HEIGHT, score: 90 - index }),
+    );
+    const selection = await selectAssets(assets, { profile: "deck" }, bytes);
+    expect(selection.keep.map((asset) => asset.id)).toEqual(cards.map((_, index) => `card-${index}.png`));
+    expect(selection.dropped).toEqual({ "near-duplicate": 1 });
+    expect(selection.duplicates).toEqual([{ keptId: "card-0.png", droppedIds: ["card-0-small.png"] }]);
   });
 
   it("keeps two flat pages whose only contrast is horizontal bands", async () => {

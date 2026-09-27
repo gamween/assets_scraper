@@ -1,3 +1,4 @@
+import sharp from "sharp";
 import type { Asset, AssetRole, FontFamily, FontFile, Palette } from "@/lib/contract";
 import type { AgentScan } from "./types";
 
@@ -80,4 +81,35 @@ export function testScan(patch: Partial<AgentScan> = {}): AgentScan {
     warnings: [],
     ...patch,
   };
+}
+
+/** The card fixture's pixel size, so a test can declare the asset dimensions that go with the bytes. */
+export const TEMPLATE_CARD_WIDTH = 800;
+export const TEMPLATE_CARD_HEIGHT = 600;
+
+/**
+ * One card of a set cut from a single template: identical chrome (a white ground, a title bar, two lines of body and a
+ * button) and a hero photo whose fine detail is the only thing that changes. This is the case a 16x16 greyscale
+ * comparison could not tell from a resize of one card, because the detail washes out at that size: the cards measure a
+ * root mean square difference under 0.5 at 16x16 and a Hamming distance of 1 to 5 of 256, closer than a genuine resize,
+ * while at 64x64 they measure 14 and up.
+ */
+export function templateCardImage(index: number): Promise<Buffer> {
+  const pixels = Buffer.alloc(TEMPLATE_CARD_WIDTH * TEMPLATE_CARD_HEIGHT, 255);
+  const bar = (left: number, top: number, right: number, bottom: number, value: number): void => {
+    for (let y = top; y < bottom; y += 1) pixels.fill(value, y * TEMPLATE_CARD_WIDTH + left, y * TEMPLATE_CARD_WIDTH + right);
+  };
+  const wave = (2 * Math.PI) / 40;
+  for (let y = 40; y < 340; y += 1) {
+    for (let x = 40; x < 760; x += 1) {
+      const gradient = 80 + ((x - 40) / 720) * 120;
+      const detail = 45 * Math.sin((x - 40) * wave + index * 1.1) * Math.cos((y - 40) * wave * 0.8 + index * 2.1);
+      pixels[y * TEMPLATE_CARD_WIDTH + x] = Math.max(0, Math.min(255, Math.round(gradient + detail)));
+    }
+  }
+  bar(40, 380, 688, 406, 26);
+  bar(40, 430, 540, 448, 74);
+  bar(40, 470, 470, 488, 74);
+  bar(40, 530, 180, 564, 26);
+  return sharp(pixels, { raw: { width: TEMPLATE_CARD_WIDTH, height: TEMPLATE_CARD_HEIGHT, channels: 1 } }).png().toBuffer();
 }

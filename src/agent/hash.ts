@@ -9,12 +9,21 @@ import sharp from "sharp";
  * to 6 of its 64 bits, so unrelated marks landed inside any useful distance. The fingerprint here answers that in
  * three ways: alpha is flattened onto white before the greyscale, so a mark on a transparent canvas is not read as an
  * empty field; the hash is 256 bits, so a distinct visual is tens of bits away rather than a handful; and a candidate
- * pair is only a duplicate once the aspect ratios agree and a downscaled greyscale comparison says the pixels do too.
+ * pair is only a duplicate once the aspect ratios agree and a greyscale comparison says the pixels do too.
+ *
+ * The hash decides which pairs are worth comparing, never which pairs are the same picture. Sibling assets cut from one
+ * template (six blog cards, four headshots on one backdrop) sit 2 to 5 bits apart, closer than a genuine resize of one
+ * of them, so the pixel comparison is the whole answer and it needs enough pixels to carry the difference: measured on
+ * such a set, a 16x16 comparison puts duplicates at up to 4.60 and distinct siblings from 3.33, and 32x32 at 6.70
+ * against 4.24, both overlapping, while 64x64 puts duplicates at up to 1.52 and distinct siblings from 5.38.
  */
 
-/** Greyscale field the hash and the thumbnail are read from: one extra column, so each row yields 16 comparisons. */
+/** Greyscale field the hash is read from: one extra column, so each row yields 16 comparisons. */
 export const FIELD_WIDTH = 17;
 export const FIELD_HEIGHT = 16;
+
+/** Side of the greyscale thumbnail the confirmation check compares, in pixels. */
+export const THUMB_SIDE = 64;
 
 /** Bits a fingerprint hash has, and so the distance of two hashes that have nothing in common. */
 export const DHASH_BITS = (FIELD_WIDTH - 1) * FIELD_HEIGHT;
@@ -34,10 +43,13 @@ export const MAX_HASH_BITS = DHASH_BITS - MIN_HASH_BITS;
 export const MAX_ASPECT_DRIFT = 0.15;
 
 /**
- * Root mean square difference of two 16x16 greyscale thumbnails, on the 0 to 255 scale, that still reads as the same
- * picture. A resize or a lossy re-encode of one image measures under 2; two different wordmarks measure 19 and up.
+ * Root mean square difference of two `THUMB_SIDE` greyscale thumbnails, on the 0 to 255 scale, that still reads as the
+ * same picture. A resize or a lossy re-encode of one image measures under 2 at this size; sibling assets from one
+ * template measure 5 and up, and two different wordmarks tens. The gate sits below the distinct band rather than in the
+ * middle of it: a duplicate a harsh re-encode pushes past it is one extra file on disk, while a distinct asset merged
+ * away is a file the caller asked for and never gets.
  */
-export const MAX_THUMB_RMSE = 10;
+export const MAX_THUMB_RMSE = 3;
 
 /** Alpha is composited onto white, the background a logo is drawn for, instead of being dropped. */
 const FLATTEN_BACKGROUND = { r: 255, g: 255, b: 255 } as const;
@@ -47,7 +59,7 @@ export interface ImageFingerprint {
   hash: string;
   /** Width divided by height of the decoded raster. */
   aspect: number;
-  /** A 16x16 greyscale thumbnail, one byte per pixel, the confirmation check compares. */
+  /** A `THUMB_SIDE` square greyscale thumbnail, one byte per pixel, the confirmation check compares. */
   thumbnail: Buffer;
 }
 
@@ -55,29 +67,34 @@ export const sha1 = (buffer: Buffer): string => createHash("sha1").update(buffer
 
 /**
  * The perceptual fingerprint of a raster, or null when there is nothing to compare: bytes sharp cannot decode, a size
- * it cannot report, or a hash with too little signal to group on.
+ * it cannot report, or a hash with too little signal to group on. Both greyscale fields come from one decode.
  */
 export async function fingerprint(buffer: Buffer): Promise<ImageFingerprint | null> {
   let field: Buffer;
+  let thumbnail: Buffer;
   let width: number | undefined;
   let height: number | undefined;
   try {
     const image = sharp(buffer, { failOn: "none", animated: false });
     ({ width, height } = await image.metadata());
-    field = await image
-      .flatten({ background: FLATTEN_BACKGROUND })
-      .greyscale()
-      .resize(FIELD_WIDTH, FIELD_HEIGHT, { fit: "fill", kernel: "cubic" })
-      .raw({ depth: "uchar" })
-      .toBuffer();
+    const greyscale = (columns: number, rows: number): Promise<Buffer> =>
+      image
+        .clone()
+        .flatten({ background: FLATTEN_BACKGROUND })
+        .greyscale()
+        .resize(columns, rows, { fit: "fill", kernel: "cubic" })
+        .raw({ depth: "uchar" })
+        .toBuffer();
+    [field, thumbnail] = await Promise.all([greyscale(FIELD_WIDTH, FIELD_HEIGHT), greyscale(THUMB_SIDE, THUMB_SIDE)]);
   } catch {
     return null;
   }
   // One byte per pixel and nothing else: a field of any other shape would be read at the wrong offsets, and a hash
   // nobody can trust is worse than no hash, which only costs one file kept.
-  if (!width || !height || field.length !== FIELD_WIDTH * FIELD_HEIGHT) return null;
+  if (!width || !height) return null;
+  if (field.length !== FIELD_WIDTH * FIELD_HEIGHT || thumbnail.length !== THUMB_SIDE * THUMB_SIDE) return null;
   const hash = differenceHash(field);
-  return hash === null ? null : { hash, aspect: width / height, thumbnail: thumbnailOf(field) };
+  return hash === null ? null : { hash, aspect: width / height, thumbnail };
 }
 
 /** One bit per pair of neighbouring pixels, read row by row. Null when the field carries too little contrast. */
@@ -93,16 +110,6 @@ function differenceHash(field: Buffer): string | null {
     }
   }
   return set < MIN_HASH_BITS || set > MAX_HASH_BITS ? null : bytes.toString("hex");
-}
-
-/** The leftmost 16 columns of the field: a square greyscale thumbnail, no second decode. */
-function thumbnailOf(field: Buffer): Buffer {
-  const side = FIELD_WIDTH - 1;
-  const thumbnail = Buffer.alloc(side * FIELD_HEIGHT);
-  for (let y = 0; y < FIELD_HEIGHT; y += 1) {
-    field.copy(thumbnail, y * side, y * FIELD_WIDTH, y * FIELD_WIDTH + side);
-  }
-  return thumbnail;
 }
 
 const POPCOUNT = Uint8Array.from({ length: 256 }, (_, byte) => byte.toString(2).replace(/0/g, "").length);
@@ -137,7 +144,7 @@ export function thumbnailRmse(a: Buffer, b: Buffer): number {
 /**
  * Whether two fingerprints are the same picture: the hashes are within `maxDistance` bits, the aspect ratios agree,
  * and the thumbnails agree. The hash alone answers "worth comparing"; the last two answer "the same visual", which is
- * what keeps two different marks that happen to hash alike as two files.
+ * what keeps sibling assets cut from one template, and two different marks that happen to hash alike, as two files.
  */
 export function sameVisual(a: ImageFingerprint, b: ImageFingerprint, maxDistance: number): boolean {
   if (hammingDistance(a.hash, b.hash) > maxDistance) return false;
