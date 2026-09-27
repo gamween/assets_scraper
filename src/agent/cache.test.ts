@@ -87,6 +87,35 @@ describe("findRecentScan", () => {
     expect((await findRecentScan("stripe.com", 3_600_000))?.scanId).toBe("good");
   });
 
+  it("ignores a file that is valid JSON but not a scan", async () => {
+    // Regression: readScan checked scanId, scannedAt and assets and then cast, so a file without `page` made the whole
+    // lookup reject with "Cannot read properties of undefined (reading 'url')" and broke the cache for every URL.
+    const xdg = makeTree();
+    vi.stubEnv("XDG_CACHE_HOME", xdg);
+    await saveScan(testScan({ scanId: "good", scannedAt: new Date().toISOString() }));
+    const dir = path.join(xdg, "assets-scraper");
+    fs.writeFileSync(path.join(dir, "half.json"), JSON.stringify({ scanId: "half", scannedAt: new Date().toISOString(), assets: [] }));
+    fs.writeFileSync(path.join(dir, "untitled.json"), JSON.stringify({ ...testScan(), page: { url: "https://stripe.com" } }));
+    fs.writeFileSync(path.join(dir, "list.json"), JSON.stringify([1, 2, 3]));
+    fs.writeFileSync(path.join(dir, "empty.json"), "null");
+    expect((await findRecentScan("stripe.com", 3_600_000))?.scanId).toBe("good");
+    expect(await loadScan("half")).toBeNull();
+    expect(await loadScan("untitled")).toBeNull();
+    expect(await loadScan("list")).toBeNull();
+    expect(await loadScan("empty")).toBeNull();
+  });
+
+  it("skips a file older than the TTL without reading it", async () => {
+    const xdg = makeTree();
+    vi.stubEnv("XDG_CACHE_HOME", xdg);
+    await saveScan(testScan({ scanId: "stale", scannedAt: new Date().toISOString() }));
+    const stale = path.join(xdg, "assets-scraper", "stale.json");
+    const long = new Date(Date.now() - 7_200_000);
+    fs.utimesSync(stale, long, long);
+    expect(await findRecentScan("stripe.com", 3_600_000)).toBeNull();
+    expect((await loadScan("stale"))?.scanId).toBe("stale");
+  });
+
   it("returns null when nothing has been cached yet", async () => {
     vi.stubEnv("XDG_CACHE_HOME", path.join(makeTree(), "not-created"));
     expect(await findRecentScan("stripe.com", 3_600_000)).toBeNull();

@@ -74,13 +74,24 @@ export async function loadScan(scanId: string): Promise<AgentScan | null> {
   return readScan(file);
 }
 
+/**
+ * Whether a parsed file is a scan. Every field a caller reads straight after a load is checked, `page` included: a file
+ * that passes part of the shape and is then cast turns one bad file in the directory into a failure for every URL.
+ */
+function isAgentScan(value: unknown): value is AgentScan {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const scan = value as Partial<AgentScan>;
+  if (typeof scan.scanId !== "string" || typeof scan.scannedAt !== "string" || !Array.isArray(scan.assets)) return false;
+  const page: unknown = scan.page;
+  if (!page || typeof page !== "object") return false;
+  const { url, finalUrl, host, title } = page as Partial<AgentScan["page"]>;
+  return typeof url === "string" && typeof finalUrl === "string" && typeof host === "string" && typeof title === "string";
+}
+
 async function readScan(file: string): Promise<AgentScan | null> {
   try {
-    const scan = JSON.parse(await fs.readFile(file, "utf8")) as unknown;
-    if (!scan || typeof scan !== "object") return null;
-    const candidate = scan as AgentScan;
-    if (typeof candidate.scanId !== "string" || typeof candidate.scannedAt !== "string" || !Array.isArray(candidate.assets)) return null;
-    return candidate;
+    const scan: unknown = JSON.parse(await fs.readFile(file, "utf8"));
+    return isAgentScan(scan) ? scan : null;
   } catch {
     return null;
   }
@@ -97,11 +108,19 @@ const normalizeUrl = (url: string): string =>
     .replace(/^www\./, "")
     .replace(/\/+$/, "");
 
-/** The newest cached scan of `url` that is younger than `ttlMs`, or null. Unreadable files are skipped. */
+/**
+ * The newest cached scan of `url` that is younger than `ttlMs`, or null. Every failure is a cache miss: a file that is
+ * missing, unparseable or not a scan is skipped rather than failing the lookup.
+ *
+ * A scan file is written once and never touched again, so its mtime is when the scan ran. Files older than the TTL are
+ * therefore skipped on the stat, without parsing them: this runs on the hot path of every scan, the cache holds a day
+ * of files, and a scan of a page with inline assets carries its base64 bytes and can be megabytes.
+ */
 export async function findRecentScan(url: string, ttlMs: number = agentLimits.scanCacheTtlMs): Promise<AgentScan | null> {
+  const dir = cacheDir();
   let names: string[];
   try {
-    names = await fs.readdir(cacheDir());
+    names = await fs.readdir(dir);
   } catch {
     return null;
   }
@@ -110,13 +129,18 @@ export async function findRecentScan(url: string, ttlMs: number = agentLimits.sc
   let bestAt = -Infinity;
   for (const name of names) {
     if (!name.endsWith(".json")) continue;
-    const scan = await readScan(path.join(cacheDir(), name));
-    if (!scan) continue;
-    const at = Date.parse(scan.scannedAt);
-    if (!Number.isFinite(at) || at < oldest || at <= bestAt) continue;
-    if (!sameUrl(scan.page.url, url) && !sameUrl(scan.page.finalUrl, url)) continue;
-    best = scan;
-    bestAt = at;
+    try {
+      if ((await fs.stat(path.join(dir, name))).mtimeMs < oldest) continue;
+      const scan = await readScan(path.join(dir, name));
+      if (!scan) continue;
+      const at = Date.parse(scan.scannedAt);
+      if (!Number.isFinite(at) || at < oldest || at <= bestAt) continue;
+      if (!sameUrl(scan.page.url, url) && !sameUrl(scan.page.finalUrl, url)) continue;
+      best = scan;
+      bestAt = at;
+    } catch {
+      continue;
+    }
   }
   return best;
 }
