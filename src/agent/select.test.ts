@@ -248,6 +248,17 @@ describe("selectAssets, explicit options", () => {
     expect(selection.dropped).toEqual({ filter: 1 });
   });
 
+  it("still caps a list of ids", async () => {
+    // Regression: the ids path returned before the cap, so max was ignored and maxFiles guarded nothing on the MCP
+    // download_assets surface, where the ids come straight from an agent.
+    const assets = Array.from({ length: 500 }, (_, index) => make({ file: `asset-${index}.svg`, score: 500 - index }));
+    const ids = assets.map((asset) => asset.id);
+    const capped = await selectAssets(assets, { ids, max: 3 });
+    expect(capped.keep.map((asset) => asset.id)).toEqual(["asset-0.svg", "asset-1.svg", "asset-2.svg"]);
+    expect(capped.dropped).toEqual({ cap: 497 });
+    expect((await selectAssets(assets, { ids })).keep).toHaveLength(60);
+  });
+
   it("filters by kind, role, name and size, counting every drop as a filter", async () => {
     const assets = [
       make({ file: "logo.svg", role: "logo" }),

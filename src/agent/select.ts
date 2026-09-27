@@ -82,12 +82,25 @@ export async function selectAssets(
 
   let pool = assets.filter((asset) => isAvailable(asset) || drop("unavailable"));
 
-  // Explicit ids win over every filter and every profile rule.
+  /** The tail both paths end on: sort by relevance, cap, and report only the duplicate groups whose winner survived. */
+  const finish = (selected: Asset[]): Selection => {
+    const sorted = selected.sort(byRelevance);
+    const max = options.max ?? agentLimits.maxFiles;
+    const keep = sorted.slice(0, Math.max(0, max));
+    drop("cap", sorted.length - keep.length);
+    const kept = new Set(keep.map((asset) => asset.id));
+    return { keep, dropped, duplicates: duplicates.filter((group) => kept.has(group.keptId)) };
+  };
+
+  // Explicit ids win over every filter and every profile rule (spec 4). The cap is not one of those: it is the only
+  // guard on how many files one download writes, and on the MCP `download_assets` surface the ids come straight from an
+  // agent, so a request naming four thousand of them is capped and reported under `cap` like any other. A caller that
+  // means to take more says so with `max`.
   if (options.ids) {
     const wanted = new Set(options.ids);
     const named = pool.filter((asset) => wanted.has(asset.id));
     drop("filter", pool.length - named.length);
-    return { keep: named.sort(byRelevance), dropped, duplicates };
+    return finish(named);
   }
 
   const needle = options.nameContains?.toLowerCase();
@@ -149,13 +162,7 @@ export async function selectAssets(
     }
   }
 
-  const sorted = pool.sort(byRelevance);
-  const max = options.max ?? agentLimits.maxFiles;
-  const keep = sorted.slice(0, Math.max(0, max));
-  drop("cap", sorted.length - keep.length);
-
-  const kept = new Set(keep.map((asset) => asset.id));
-  return { keep, dropped, duplicates: duplicates.filter((group) => kept.has(group.keptId)) };
+  return finish(pool);
 }
 
 /** Keeps one asset per group key (null means "no key, always kept"), recording the rest under `reason`. */
