@@ -140,7 +140,7 @@ export interface ScanSummary {
   - `max: 2` keeps the two highest scoring assets and counts the rest as `cap`;
   - `ids` bypasses the profile entirely (an icon named in `ids` is kept);
   - `profile: "all"` keeps everything the filters allow, with no size gate and no perceptual de-duplication;
-  - `nameContains`, `kinds`, `roles` and `minLongSide` each filter and count as `filter`;
+  - `nameContains`, `kinds` and `roles` each filter and count as `filter`; an explicit `minLongSide` is the size gate of spec 4.2, not a plain filter, so it keeps the `site-logo`, `logo` and `favicon` exemption, counts as `small`, and applies in `profile: "all"` only when the caller names it;
   - the same input always gives the same output order (sorted by `score` then `order`).
 - [ ] **Step 3: Run, see failures** **Step 4: Implement** in the order of spec section 4. Perceptual hashing only runs on rasters whose bytes are in the map, so `selectAssets` works before download (name and size rules only) and again after download (byte rules), which is how `downloadAssets` uses it.
 - [ ] **Step 5: Run** (PASS) **Step 6: Commit** `feat(agent): select usable assets and drop duplicates`

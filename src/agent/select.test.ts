@@ -241,8 +241,31 @@ describe("selectAssets, explicit options", () => {
     expect((await selectAssets(assets, { kinds: ["svg"] })).dropped).toEqual({ filter: 2 });
     expect(await kept(assets, { roles: ["image"] })).toEqual(["hero-shot.png"]);
     expect(await kept(assets, { nameContains: "SHOT" })).toEqual(["hero-shot.png"]);
-    expect(await kept(assets, { minLongSide: 600 })).toEqual(["logo.svg", "hero-shot.png"]);
-    expect((await selectAssets(assets, { minLongSide: 600 })).dropped).toEqual({ filter: 1 });
+  });
+
+  it("keeps the role exemption when the caller names minLongSide itself", async () => {
+    // Regression: an explicit minLongSide filtered before the size gate and with no check on role, so the same 400x120
+    // logo was kept with the default 600 and dropped when a caller passed 600, which is spec 4.2's gate either way.
+    const assets = [
+      make({ file: "logo.svg", role: "logo" }),
+      make({ file: "hero-shot.png", role: "image", width: 1200, height: 800 }),
+      make({ file: "small-logo.png", role: "logo", width: 400, height: 120 }),
+      make({ file: "thumb.png", role: "image", width: 320, height: 200 }),
+    ];
+    expect(await kept(assets, { minLongSide: 600 })).toEqual(["logo.svg", "hero-shot.png", "small-logo.png"]);
+    expect((await selectAssets(assets, { minLongSide: 600 })).dropped).toEqual({ small: 1 });
+    expect(await kept(assets)).toEqual(["logo.svg", "hero-shot.png", "small-logo.png"]);
+    expect(await kept(assets, { minLongSide: 2000 })).toEqual(["logo.svg", "small-logo.png"]);
+  });
+
+  it("applies an explicit minLongSide in the all profile too", async () => {
+    const assets = [
+      make({ file: "logo.png", role: "logo", width: 400, height: 120 }),
+      make({ file: "thumb.png", role: "image", width: 320, height: 200 }),
+    ];
+    expect(await kept(assets, { profile: "all" })).toEqual(["logo.png", "thumb.png"]);
+    expect(await kept(assets, { profile: "all", minLongSide: 600 })).toEqual(["logo.png"]);
+    expect((await selectAssets(assets, { profile: "all", minLongSide: 600 })).dropped).toEqual({ small: 1 });
   });
 });
 

@@ -95,10 +95,6 @@ export async function selectAssets(
     if (options.kinds && !options.kinds.includes(asset.kind)) return drop("filter");
     if (options.roles && !options.roles.includes(asset.role)) return drop("filter");
     if (needle && !`${asset.name} ${asset.filename}`.toLowerCase().includes(needle)) return drop("filter");
-    if (options.minLongSide !== undefined && asset.kind !== "svg") {
-      const side = longSide(asset);
-      if (side !== undefined && side < options.minLongSide) return drop("filter");
-    }
     return true;
   });
 
@@ -115,14 +111,22 @@ export async function selectAssets(
       const extra = new Set(favicons.slice(1).map((asset) => asset.id));
       pool = pool.filter((asset) => !extra.has(asset.id) || drop("extra-favicon"));
     }
+  }
 
-    const gate = options.minLongSide ?? agentLimits.minLongSide;
+  // The size gate (spec 4.2), in one place whatever the number came from: `deck` applies its default, and `all` applies
+  // only a `minLongSide` the caller asked for. A logo is useful at any size, so the exempt roles pass either way, and a
+  // vector has no size to gate on. An explicit number used to filter ahead of this pass, with no role exemption, so a
+  // 400x120 logo was kept with the default 600 and dropped when a caller passed 600 itself.
+  const gate = options.minLongSide ?? (profile === "deck" ? agentLimits.minLongSide : undefined);
+  if (gate !== undefined) {
     pool = pool.filter((asset) => {
       if (asset.kind === "svg" || SIZE_EXEMPT_ROLES.has(asset.role)) return true;
       const side = longSide(asset);
       return side === undefined || side >= gate || drop("small");
     });
+  }
 
+  if (profile === "deck") {
     // The same name served as a vector and as a raster: the vector is the one to keep. A name that normalizes to
     // nothing matches nothing, so an unnamed SVG never takes a raster with it.
     const vectorNames = new Set(
