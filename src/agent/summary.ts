@@ -7,6 +7,13 @@ import type { AgentScan, ScanSummary } from "./types";
  * so every string it carries is cut and every list is capped.
  */
 
+/**
+ * Bytes the whole document stays under, so an agent can read it and still have its context (spec 2). The caps below are
+ * what normally keeps it there, and `fit` is the guarantee: with every string at its cap, 8 logos carrying a 40
+ * character sha1 id, 12 font families and 12 swatches measure 4701 bytes together, so the caps alone are not a bound.
+ */
+export const MAX_SUMMARY_BYTES = 4_096;
+
 /** Logo rows a summary shows. Past that, an agent lists assets with the filters it wants. */
 export const MAX_SUMMARY_LOGOS = 8;
 export const MAX_SUMMARY_PALETTE = 12;
@@ -62,7 +69,7 @@ export function summarize(scan: AgentScan): ScanSummary {
 
   const hidden = Object.values(scan.stats.hidden).reduce((total, count) => total + count, 0);
 
-  return {
+  return fit({
     scanId: scan.scanId,
     page: {
       url: cut(scan.page.url, MAX_URL_CHARS),
@@ -89,5 +96,23 @@ export function summarize(scan: AgentScan): ScanSummary {
     otherAssets: Math.max(0, scan.assets.length - logos.length),
     warnings: scan.warnings.slice(0, MAX_SUMMARY_WARNINGS).map((warning) => cut(warning, MAX_WARNING_CHARS)),
     durationMs: scan.stats.durationMs,
-  };
+  }, scan.assets.length);
+}
+
+/** Rows a summary gives up, in the order it gives them up, when the caps alone leave the document too wide. */
+const TRIMMABLE = ["warnings", "fonts", "logos", "palette"] as const;
+
+/**
+ * Drops rows until the document fits `MAX_SUMMARY_BYTES`, least useful first, and keeps `otherAssets` honest about the
+ * logos it gave up. The counts, the page and the scan id are never dropped: an agent needs them to ask for anything
+ * else. Only a page at every cap at once ever reaches this, and the lists are documented as capped either way.
+ */
+function fit(summary: ScanSummary, assetCount: number): ScanSummary {
+  for (const list of TRIMMABLE) {
+    while (summary[list].length > 0 && Buffer.byteLength(JSON.stringify(summary)) > MAX_SUMMARY_BYTES) {
+      summary[list].pop();
+      summary.otherAssets = Math.max(0, assetCount - summary.logos.length);
+    }
+  }
+  return summary;
 }

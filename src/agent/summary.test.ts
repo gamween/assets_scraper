@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { isInstallableFamily, summarize } from "./summary";
-import { testFontFamily, testScan } from "./testing";
+import { MAX_SUMMARY_BYTES, isInstallableFamily, summarize } from "./summary";
+import { testAsset, testFontFamily, testScan } from "./testing";
 
 describe("summarize", () => {
   it("stays small on a page with 236 assets", () => {
@@ -77,6 +77,33 @@ describe("summarize", () => {
     expect(summary.page.finalUrl.length).toBeLessThanOrEqual(200);
     expect(summary.page.url.startsWith("https://example.com/?q=aaa")).toBe(true);
     expect(Buffer.byteLength(JSON.stringify(summary))).toBeLessThan(4_096);
+  });
+
+  it("fits the budget with every string and every list at its cap", () => {
+    // The caps alone are not a bound: 8 logos carrying a 40 character id, 12 font families and 12 swatches, every name
+    // at its cap, measured 4701 bytes, so the document gives up rows rather than the budget.
+    const long = (count: number): string => "w".repeat(count);
+    const scan = testScan({
+      page: { url: `https://${long(300)}.com/${long(2_000)}`, finalUrl: `https://${long(300)}.com/${long(2_000)}`, host: `${long(240)}.com`, title: long(3_000), siteName: long(500) },
+      assets: [
+        ...Array.from({ length: 8 }, (_, index) => testAsset({ id: `${"a1b2c3d4".repeat(5)}${index}`, role: "logo", name: long(200), width: 123_456, height: 123_456, score: 100 })),
+        ...Array.from({ length: 300 }, (_, index) => testAsset({ id: `asset-${index}` })),
+      ],
+      fonts: Array.from({ length: 20 }, (_, index) => testFontFamily({ name: `${long(200)}-${index}`, license: { kind: "commercial" } })),
+      palette: {
+        brand: Array.from({ length: 8 }, () => ({ hex: "#635bff", role: "background" as const })),
+        neutrals: Array.from({ length: 8 }, () => ({ hex: "#f6f9fc", role: "background" as const })),
+      },
+      stats: { assets: 308, svg: 8, images: 300, fonts: 20, hidden: { tracker: 3 }, durationMs: 12_345 },
+      warnings: Array.from({ length: 40 }, () => long(400)),
+    });
+    const summary = summarize(scan);
+    expect(Buffer.byteLength(JSON.stringify(summary))).toBeLessThanOrEqual(MAX_SUMMARY_BYTES);
+    // What an agent needs to ask for anything else survives, and the logos it gave up are counted with the rest.
+    expect(summary.scanId).toBe("scan-1");
+    expect(summary.counts.assets).toBe(308);
+    expect(summary.page.host).toHaveLength(100);
+    expect(summary.otherAssets).toBe(308 - summary.logos.length);
   });
 });
 

@@ -93,6 +93,8 @@ Tools, all returning compact JSON:
 | `list_installed_fonts` | | What this tool installed, with dates and sources |
 | `uninstall_fonts` | `families` | What was removed |
 
+The `scan_page` summary is held to 4 KB: every string it carries is cut and every list capped, and when a page at all those caps at once would still be wider than that (8 logos, 12 font families and 12 swatches with every name at its cap measure 4701 bytes together) it gives up rows, warnings first then fonts, logos and swatches, rather than the budget. The scan id, the counts and the page always survive, so an agent can still ask for everything else.
+
 A scan is cached in `~/.cache/assets-scraper/<scanId>.json` for one hour, so `download_assets` never rescans. `scan_page` on the same URL inside the hour reuses the cache unless `refresh` is true.
 
 ## 7. CLI
