@@ -23,13 +23,45 @@ export function scanCachePath(scanId: string): string {
   return path.join(cacheDir(), `${scanId}.json`);
 }
 
+/** How long a scan file is kept on disk. Well past the reuse TTL, so nothing an agent may still ask for is deleted. */
+export const SCAN_CACHE_KEEP_MS = 24 * 3_600_000;
+
 export async function saveScan(scan: AgentScan): Promise<string> {
   const file = scanCachePath(scan.scanId);
   await fs.mkdir(path.dirname(file), { recursive: true });
   const temporary = `${file}.${process.pid}.tmp`;
   await fs.writeFile(temporary, JSON.stringify(scan), { mode: 0o600 });
   await fs.rename(temporary, file);
+  await pruneScans();
   return file;
+}
+
+/**
+ * Deletes the scan files older than `maxAgeMs`, so a page with hundreds of inline assets does not leave the cache
+ * growing for ever. Every failure is ignored: pruning is housekeeping, never the reason a scan fails.
+ */
+export async function pruneScans(maxAgeMs: number = SCAN_CACHE_KEEP_MS): Promise<number> {
+  const dir = cacheDir();
+  let names: string[];
+  try {
+    names = await fs.readdir(dir);
+  } catch {
+    return 0;
+  }
+  const oldest = Date.now() - maxAgeMs;
+  let deleted = 0;
+  for (const name of names) {
+    if (!name.endsWith(".json") && !name.endsWith(".tmp")) continue;
+    const file = path.join(dir, name);
+    try {
+      if ((await fs.stat(file)).mtimeMs >= oldest) continue;
+      await fs.rm(file, { force: true });
+      deleted += 1;
+    } catch {
+      continue;
+    }
+  }
+  return deleted;
 }
 
 export async function loadScan(scanId: string): Promise<AgentScan | null> {

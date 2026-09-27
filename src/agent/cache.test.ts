@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cacheDir, findRecentScan, loadScan, saveScan, scanCachePath } from "./cache";
+import { cacheDir, findRecentScan, loadScan, pruneScans, saveScan, scanCachePath } from "./cache";
 import { testScan } from "./testing";
 
 const trees: string[] = [];
@@ -90,5 +90,28 @@ describe("findRecentScan", () => {
   it("returns null when nothing has been cached yet", async () => {
     vi.stubEnv("XDG_CACHE_HOME", path.join(makeTree(), "not-created"));
     expect(await findRecentScan("stripe.com", 3_600_000)).toBeNull();
+  });
+});
+
+describe("pruneScans", () => {
+  it("deletes the files older than the age it keeps, and nothing else", async () => {
+    const xdg = makeTree();
+    vi.stubEnv("XDG_CACHE_HOME", xdg);
+    await saveScan(testScan({ scanId: "fresh" }));
+    const dir = path.join(xdg, "assets-scraper");
+    const old = path.join(dir, "old.json");
+    fs.writeFileSync(old, "{}");
+    fs.utimesSync(old, new Date(Date.now() - 200_000), new Date(Date.now() - 200_000));
+    fs.writeFileSync(path.join(dir, "notes.txt"), "kept");
+
+    expect(await pruneScans(100_000)).toBe(1);
+    expect(fs.existsSync(old)).toBe(false);
+    expect(fs.existsSync(path.join(dir, "fresh.json"))).toBe(true);
+    expect(fs.existsSync(path.join(dir, "notes.txt"))).toBe(true);
+  });
+
+  it("does nothing when there is no cache", async () => {
+    vi.stubEnv("XDG_CACHE_HOME", path.join(makeTree(), "not-created"));
+    expect(await pruneScans()).toBe(0);
   });
 });
