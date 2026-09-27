@@ -1,6 +1,7 @@
 # Assets Scraper
 
 - Spec: docs/superpowers/specs/2026-09-16-assets-scraper-design.md. Plan: docs/superpowers/plans/2026-09-16-assets-scraper-v1.md.
+- Agent access (CLI, MCP server, `/api/v1`): spec docs/superpowers/specs/2026-09-27-agent-access-design.md, plan docs/superpowers/plans/2026-09-27-agent-access.md. The shared core is `src/agent/*`, and `pnpm build:agent` bundles `src/agent/cli.ts` and `src/agent/mcp.ts` into `dist/`.
 - Commands: `pnpm dev`, `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm test:integration` (needs Google Chrome), `pnpm test:e2e`.
 - `src/lib/contract.ts` is the single source of truth for everything that crosses the network. Change it only together with server and client.
 - `src/server/scan` must not import from `next`. The route handlers are thin adapters.
