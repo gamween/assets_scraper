@@ -46,6 +46,28 @@ const kept = async (...args: Parameters<typeof selectAssets>): Promise<string[]>
 
 const ROLES: AssetRole[] = ["site-logo", "logo", "social", "illustration", "image"];
 
+/** A wordmark on a transparent canvas: the asset a deck download exists to fetch, and the one dHash merged. */
+const wordmark = (text: string): Promise<Buffer> =>
+  sharp(
+    Buffer.from(
+      `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="200"><rect width="800" height="200" fill="none"/>` +
+        `<text x="40" y="140" font-family="sans-serif" font-size="110" fill="#000">${text}</text></svg>`,
+    ),
+  )
+    .png()
+    .toBuffer();
+
+/** A page with one horizontal band: contrast, but none of it horizontal, so there is nothing to hash. */
+const band = (top: boolean): Promise<Buffer> =>
+  sharp(
+    Buffer.from(
+      `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="900"><rect width="1200" height="900" fill="#ffffff"/>` +
+        `<rect y="${top ? 0 : 860}" width="1200" height="40" fill="#111111"/></svg>`,
+    ),
+  )
+    .png()
+    .toBuffer();
+
 /** A smooth pattern, big enough to pass the size gate, plus the same picture at a smaller size. */
 let big: Buffer;
 let resized: Buffer;
@@ -133,6 +155,32 @@ describe("selectAssets, deck profile", () => {
     expect(selection.keep.map((asset) => asset.id)).toEqual(["hero-b.png", "hero-c.png"]);
     expect(selection.dropped).toEqual({ "near-duplicate": 1 });
     expect(selection.duplicates).toEqual([{ keptId: "hero-b.png", droppedIds: ["hero-a.png"] }]);
+  });
+
+  it("keeps distinct logos that a 64 bit hash grouped together", async () => {
+    // Regression: transparent wordmarks all hashed to 0000000000000000, so a deck download of three brand marks
+    // returned one file and counted the other two as near duplicates.
+    const marks = ["ACME", "GLOBEX", "INITECH"];
+    const bytes = new Map(await Promise.all(marks.map(async (text, index) => [`logo-${index}.png`, await wordmark(text)] as const)));
+    const assets = marks.map((_, index) => make({ file: `logo-${index}.png`, role: "logo", width: 800, height: 200, score: 90 - index }));
+    const selection = await selectAssets(assets, {}, bytes);
+    expect(selection.keep.map((asset) => asset.id)).toEqual(["logo-0.png", "logo-1.png", "logo-2.png"]);
+    expect(selection.dropped).toEqual({});
+  });
+
+  it("keeps two flat pages whose only contrast is horizontal bands", async () => {
+    // Regression: both hashed to all zero bits, which made every such page a duplicate of every other.
+    const bytes = new Map([
+      ["page-top.png", await band(true)],
+      ["page-bottom.png", await band(false)],
+    ]);
+    const assets = [
+      make({ file: "page-top.png", width: 1200, height: 900, score: 60 }),
+      make({ file: "page-bottom.png", width: 1200, height: 900, score: 55 }),
+    ];
+    const selection = await selectAssets(assets, {}, bytes);
+    expect(selection.keep.map((asset) => asset.id)).toEqual(["page-top.png", "page-bottom.png"]);
+    expect(selection.dropped).toEqual({});
   });
 
   it("keeps only the largest favicon", async () => {

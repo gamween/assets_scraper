@@ -1,6 +1,6 @@
 import type { Asset, AssetFormat } from "@/lib/contract";
 import { agentLimits } from "./limits";
-import { dHash, hammingDistance, sha1 } from "./hash";
+import { type ImageFingerprint, fingerprint, sameVisual, sha1 } from "./hash";
 import type { DropReason, Selection, SelectionOptions } from "./types";
 
 /**
@@ -139,9 +139,9 @@ export async function selectAssets(
 
     if (profile === "deck") {
       const rasters = pool.filter((asset) => asset.kind === "image" && bytes.has(asset.id));
-      const hashed = await Promise.all(rasters.map(async (asset) => [asset.id, await dHash(bytes.get(asset.id) as Buffer)] as const));
-      const hashes = new Map(hashed.filter((entry): entry is readonly [string, string] => entry[1] !== null));
-      pool = nearDuplicates(pool, hashes, drop, duplicates);
+      const printed = await Promise.all(rasters.map(async (asset) => [asset.id, await fingerprint(bytes.get(asset.id) as Buffer)] as const));
+      const prints = new Map(printed.filter((entry): entry is readonly [string, ImageFingerprint] => entry[1] !== null));
+      pool = nearDuplicates(pool, prints, drop, duplicates);
     }
   }
 
@@ -181,22 +181,26 @@ function groupOut(
   return pool.filter((asset) => !losers.has(asset.id));
 }
 
-/** Groups rasters whose dHashes are within `nearDuplicateDistance` bits, keeping the preferred one of each group. */
+/**
+ * Groups rasters whose fingerprints read as the same picture, keeping the preferred one of each group. A raster with no
+ * fingerprint (bytes that do not decode, or a field with too little contrast to group on) leads no group and joins
+ * none: it is kept, because refusing to download a distinct asset costs more than one duplicate on disk.
+ */
 function nearDuplicates(
   pool: Asset[],
-  hashes: Map<string, string>,
+  prints: Map<string, ImageFingerprint>,
   drop: (reason: DropReason, count?: number) => false,
   duplicates: { keptId: string; droppedIds: string[] }[],
 ): Asset[] {
   const distance = agentLimits.nearDuplicateDistance;
-  const leaders: { asset: Asset; hash: string; followers: Asset[] }[] = [];
+  const leaders: { asset: Asset; print: ImageFingerprint; followers: Asset[] }[] = [];
   const losers = new Set<string>();
   for (const asset of [...pool].sort(byPreference)) {
-    const hash = hashes.get(asset.id);
-    if (!hash) continue;
-    const leader = leaders.find((candidate) => hammingDistance(candidate.hash, hash) <= distance);
+    const print = prints.get(asset.id);
+    if (!print) continue;
+    const leader = leaders.find((candidate) => sameVisual(candidate.print, print, distance));
     if (!leader) {
-      leaders.push({ asset, hash, followers: [] });
+      leaders.push({ asset, print, followers: [] });
       continue;
     }
     leader.followers.push(asset);

@@ -11,8 +11,8 @@ const defaults = {
   minLongSide: 600,
   /** Files one download keeps after sorting by relevance (spec 4.6). */
   maxFiles: 60,
-  /** Hamming distance of two 64 bit dHashes that counts as the same visual (spec 4.5). */
-  nearDuplicateDistance: 5,
+  /** Hamming distance of two 256 bit fingerprint hashes that makes a pair worth confirming (spec 4.5). */
+  nearDuplicateDistance: 20,
   /** How long a cached scan answers `download_assets` without rescanning (spec 6). */
   scanCacheTtlMs: 3_600_000,
   /** Parallel asset fetches of one download. */
