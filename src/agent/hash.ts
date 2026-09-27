@@ -68,12 +68,14 @@ export async function fingerprint(buffer: Buffer): Promise<ImageFingerprint | nu
       .flatten({ background: FLATTEN_BACKGROUND })
       .greyscale()
       .resize(FIELD_WIDTH, FIELD_HEIGHT, { fit: "fill", kernel: "cubic" })
-      .raw()
+      .raw({ depth: "uchar" })
       .toBuffer();
   } catch {
     return null;
   }
-  if (!width || !height || field.length < FIELD_WIDTH * FIELD_HEIGHT) return null;
+  // One byte per pixel and nothing else: a field of any other shape would be read at the wrong offsets, and a hash
+  // nobody can trust is worse than no hash, which only costs one file kept.
+  if (!width || !height || field.length !== FIELD_WIDTH * FIELD_HEIGHT) return null;
   const hash = differenceHash(field);
   return hash === null ? null : { hash, aspect: width / height, thumbnail: thumbnailOf(field) };
 }
