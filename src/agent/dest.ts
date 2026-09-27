@@ -36,6 +36,13 @@ export interface DestinationOptions {
   cwd?: string;
   /** An explicit destination directory. Used as is, with no host segment appended. */
   dest?: string;
+  /**
+   * Refuses an explicit `dest` that is not inside the directory the project rule would have used: the project root,
+   * or the fallback directory when there is no project. Spec 10 makes anything outside those an error, so every caller
+   * that takes a `dest` from an agent (the MCP `download_assets` tool, the ZIP endpoint) sets this. The CLI leaves it
+   * off, because a `--out` the user typed is the user's own choice of where their files go.
+   */
+  restrictToProject?: boolean;
 }
 
 /** Characters a sanitized host keeps, so it fits a directory name and a cached scan id whatever a page declares. */
@@ -84,6 +91,10 @@ export function resolveDestination(options: DestinationOptions = {}): Destinatio
 
   if (options.dest !== undefined && options.dest !== "") {
     const dir = path.resolve(cwd, options.dest);
+    if (options.restrictToProject === true) {
+      const allowed = findProjectRoot(cwd) ?? path.join(os.homedir(), ...FALLBACK_SEGMENTS);
+      assertInside(allowed, dir);
+    }
     return { dir, projectRoot: dir, host, fallback: false };
   }
 
@@ -100,9 +111,22 @@ export function resolveDestination(options: DestinationOptions = {}): Destinatio
   return { dir: path.join(fallbackRoot, host), projectRoot: fallbackRoot, host, fallback: true };
 }
 
+/** True when `target` itself is a symbolic link, whatever it points at. */
+const isSymbolicLink = (target: string): boolean => {
+  try {
+    return fs.lstatSync(target).isSymbolicLink();
+  } catch {
+    return false;
+  }
+};
+
 /**
  * The real path of `target`: the deepest ancestor that exists resolved through its symlinks, with the missing tail
  * appended. A path that does not exist yet is still checked against the links that lead to it.
+ *
+ * A component `realpathSync` cannot resolve but that does exist as a link is a dangling symlink, and it is refused:
+ * treating it as a plain missing name would rejoin it under the resolved parent and hand back a path that reads as
+ * inside the root while a write through it lands wherever the link points.
  */
 function realExisting(target: string): string {
   const tail: string[] = [];
@@ -111,6 +135,7 @@ function realExisting(target: string): string {
     try {
       return path.join(fs.realpathSync(dir), ...tail.reverse());
     } catch {
+      if (isSymbolicLink(dir)) throw new Error(`refusing to follow the symlink ${dir}`);
       const parent = path.dirname(dir);
       if (parent === dir) return path.resolve(target);
       tail.push(path.basename(dir));
@@ -121,8 +146,11 @@ function realExisting(target: string): string {
 
 /**
  * The absolute real path of `target` inside `root`, or an error. A relative `target` is taken as relative to `root`.
- * `..` segments, an absolute path elsewhere and a symlink pointing out of `root` are all refused, so callers can write
- * to the returned path with nothing left to check.
+ * `..` segments, an absolute path elsewhere and a symlink anywhere on the way, resolvable or dangling, are all refused.
+ *
+ * What it does not give a caller: the check is a check at one instant, so a link planted between this call and the
+ * write would still be followed. Anything that creates a file uses `createFileInside`, which opens the path with
+ * `O_EXCL | O_NOFOLLOW`, rather than trusting the string this returns.
  */
 export function assertInside(root: string, target: string): string {
   const resolvedRoot = realExisting(root);
@@ -131,4 +159,19 @@ export function assertInside(root: string, target: string): string {
     throw new Error(`refusing to write outside ${resolvedRoot}: ${target}`);
   }
   return resolved;
+}
+
+/** Mode a downloaded file is created with: readable, and writable only by its owner. */
+const FILE_MODE = 0o644;
+
+/**
+ * Creates `target` inside `root` for writing and returns the open descriptor, which the caller closes. The parent
+ * directories are created as needed. `O_EXCL` refuses a name that already exists, so nothing is ever overwritten, and
+ * `O_NOFOLLOW` refuses a symlink at the final component, so the race `assertInside` cannot close is closed here.
+ */
+export function createFileInside(root: string, target: string): { path: string; fd: number } {
+  const resolved = assertInside(root, target);
+  fs.mkdirSync(path.dirname(resolved), { recursive: true });
+  const flags = fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW;
+  return { path: resolved, fd: fs.openSync(resolved, flags, FILE_MODE) };
 }

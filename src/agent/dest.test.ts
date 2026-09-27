@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { assertInside, resolveDestination, sanitizeHost } from "./dest";
+import { assertInside, createFileInside, resolveDestination, sanitizeHost } from "./dest";
 
 const trees: string[] = [];
 
@@ -114,6 +114,15 @@ describe("resolveDestination", () => {
       expect(path.basename(path.dirname(dir))).toBe("scrap");
     }
   });
+  it("refuses an explicit dest outside the project when the caller asks it to", () => {
+    const root = makeTree(".git", "scrap");
+    const outside = makeTree();
+    expect(resolveDestination({ host: "stripe.com", cwd: root, dest: path.join(root, "scrap", "stripe.com"), restrictToProject: true }).dir).toBe(
+      path.join(root, "scrap", "stripe.com"),
+    );
+    expect(() => resolveDestination({ host: "stripe.com", cwd: root, dest: path.join(outside, "anywhere"), restrictToProject: true })).toThrow(/outside/i);
+    expect(resolveDestination({ host: "stripe.com", cwd: root, dest: path.join(outside, "anywhere") }).dir).toBe(path.join(outside, "anywhere"));
+  });
 });
 
 describe("assertInside", () => {
@@ -143,5 +152,61 @@ describe("assertInside", () => {
     fs.symlinkSync(path.join(outside, "target"), path.join(root, "scrap", "link"));
     expect(() => assertInside(path.join(root, "scrap"), path.join(root, "scrap", "link", "evil.svg"))).toThrow(/outside/i);
     expect(() => assertInside(path.join(root, "scrap"), path.join(root, "scrap", "link"))).toThrow(/outside/i);
+  });
+
+  it("throws for a symlink whose target does not exist yet", () => {
+    const root = makeTree("scrap/images");
+    const outside = makeTree();
+    const evil = path.join(outside, "does-not-exist-yet", "evil.png");
+    fs.symlinkSync(evil, path.join(root, "scrap", "images", "logo.png"));
+    expect(() => assertInside(path.join(root, "scrap"), "images/logo.png")).toThrow(/symlink/i);
+    expect(() => assertInside(path.join(root, "scrap"), "images/logo.png")).not.toThrow(/outside/i);
+    fs.mkdirSync(path.dirname(evil), { recursive: true });
+    expect(fs.existsSync(evil)).toBe(false);
+  });
+
+  it("throws for a dangling symlink above the target", () => {
+    const root = makeTree("scrap");
+    fs.symlinkSync(path.join(makeTree(), "gone"), path.join(root, "scrap", "images"));
+    expect(() => assertInside(path.join(root, "scrap"), "images/logo.png")).toThrow(/symlink/i);
+  });
+});
+
+describe("createFileInside", () => {
+  it("creates the file and its parent directories inside the root", () => {
+    const root = path.join(makeTree("scrap"), "scrap");
+    const handle = createFileInside(root, "images/logo.png");
+    try {
+      fs.writeFileSync(handle.fd, "bytes");
+    } finally {
+      fs.closeSync(handle.fd);
+    }
+    expect(handle.path).toBe(path.join(root, "images", "logo.png"));
+    expect(fs.readFileSync(handle.path, "utf8")).toBe("bytes");
+  });
+
+  it("refuses a name that already exists", () => {
+    const root = path.join(makeTree("scrap"), "scrap");
+    fs.writeFileSync(path.join(root, "logo.png"), "first");
+    expect(() => createFileInside(root, "logo.png")).toThrow(/EEXIST/);
+  });
+
+  it("refuses to write through a symlink, dangling or not", () => {
+    const root = path.join(makeTree("scrap"), "scrap");
+    const outside = makeTree();
+    const dangling = path.join(outside, "gone", "evil.png");
+    fs.symlinkSync(dangling, path.join(root, "dangling.png"));
+    fs.mkdirSync(path.dirname(dangling), { recursive: true });
+    fs.writeFileSync(path.join(outside, "there.png"), "there");
+    fs.symlinkSync(path.join(outside, "there.png"), path.join(root, "there.png"));
+    expect(() => createFileInside(root, "dangling.png")).toThrow();
+    expect(() => createFileInside(root, "there.png")).toThrow();
+    expect(fs.existsSync(dangling)).toBe(false);
+    expect(fs.readFileSync(path.join(outside, "there.png"), "utf8")).toBe("there");
+  });
+
+  it("refuses a path outside the root", () => {
+    const root = path.join(makeTree("scrap"), "scrap");
+    expect(() => createFileInside(root, "../evil.png")).toThrow(/outside/i);
   });
 });
