@@ -227,3 +227,20 @@ describe("selectAssets, all profile", () => {
     expect((await selectAssets(assets, { profile: "all", max: 1 })).dropped).toEqual({ cap: 1 });
   });
 });
+
+describe("selectAssets, edge cases", () => {
+  it("does not let an unnamed SVG drop the rasters", async () => {
+    const assets = [
+      { ...make({ file: "..", format: "svg", kind: "svg" }), name: "", filename: "" },
+      make({ file: "photo.png", width: 1200, height: 800 }),
+    ];
+    expect((await selectAssets(assets)).keep).toHaveLength(2);
+  });
+
+  it("takes no bytes rule when the map holds nothing for an asset", async () => {
+    const assets = [make({ file: "a.png", width: 900, height: 900 }), make({ file: "b.png", width: 900, height: 900 })];
+    const selection = await selectAssets(assets, {}, new Map([["a.png", big]]));
+    expect(selection.keep).toHaveLength(2);
+    expect(selection.dropped).toEqual({});
+  });
+});

@@ -51,6 +51,9 @@ export function normalizeAssetName(name: string): string {
   return base.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
 }
 
+/** The name two files are compared by: the file name when there is one, the asset name otherwise. */
+const nameKey = (asset: Asset): string => normalizeAssetName(asset.filename || asset.name);
+
 /** Best first: a vector, then the larger picture, then the better format, then the score the scan gave it. */
 const byPreference = (a: Asset, b: Asset): number =>
   Number(b.kind === "svg") - Number(a.kind === "svg") ||
@@ -120,11 +123,12 @@ export async function selectAssets(
       return side === undefined || side >= gate || drop("small");
     });
 
-    // The same name served as a vector and as a raster: the vector is the one to keep.
-    const vectorNames = new Set(pool.filter((asset) => asset.kind === "svg").map((asset) => normalizeAssetName(asset.filename || asset.name)));
-    pool = pool.filter(
-      (asset) => asset.kind === "svg" || !vectorNames.has(normalizeAssetName(asset.filename || asset.name)) || drop("vector-preferred"),
+    // The same name served as a vector and as a raster: the vector is the one to keep. A name that normalizes to
+    // nothing matches nothing, so an unnamed SVG never takes a raster with it.
+    const vectorNames = new Set(
+      pool.filter((asset) => asset.kind === "svg").map(nameKey).filter((name) => name !== ""),
     );
+    pool = pool.filter((asset) => asset.kind === "svg" || !vectorNames.has(nameKey(asset)) || drop("vector-preferred"));
   }
 
   if (bytes && bytes.size > 0) {
@@ -134,14 +138,9 @@ export async function selectAssets(
     }, "duplicate", drop, duplicates);
 
     if (profile === "deck") {
-      const hashes = new Map<string, string>();
-      for (const asset of pool) {
-        if (asset.kind !== "image") continue;
-        const buffer = bytes.get(asset.id);
-        if (!buffer) continue;
-        const hash = await dHash(buffer);
-        if (hash) hashes.set(asset.id, hash);
-      }
+      const rasters = pool.filter((asset) => asset.kind === "image" && bytes.has(asset.id));
+      const hashed = await Promise.all(rasters.map(async (asset) => [asset.id, await dHash(bytes.get(asset.id) as Buffer)] as const));
+      const hashes = new Map(hashed.filter((entry): entry is readonly [string, string] => entry[1] !== null));
       pool = nearDuplicates(pool, hashes, drop, duplicates);
     }
   }
