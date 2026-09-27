@@ -54,6 +54,20 @@ describe("summarize", () => {
     expect(Buffer.byteLength(JSON.stringify(summary))).toBeLessThan(4_096);
   });
 
+  it("cuts a long host", () => {
+    // Regression: the host was the one string copied raw, so a 247 character host (inside the DNS limit, so reachable)
+    // took the worst case summary to 4381 bytes, over the budget every other string here is cut to keep.
+    const host = `${"label".repeat(9)}.${"sub".repeat(60)}.example.com`;
+    expect(host.length).toBeGreaterThan(200);
+    const summary = summarize(testScan({
+      page: { url: `https://${host}/`, finalUrl: `https://${host}/`, host, title: "t".repeat(3_000), siteName: "s".repeat(500) },
+      warnings: Array.from({ length: 40 }, (_, index) => `warning ${index} ${"x".repeat(200)}`),
+    }));
+    expect(summary.page.host.length).toBeLessThanOrEqual(100);
+    expect(summary.page.host.startsWith("labellabel")).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(summary))).toBeLessThan(4_096);
+  });
+
   it("cuts a long URL and a long final URL", () => {
     // Regression: every other string was cut but these two were not, so a 2048 character URL (the most ScanRequest
     // allows) plus a redirect to one as long blew the budget on its own, at 5218 bytes.

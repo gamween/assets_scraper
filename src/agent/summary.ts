@@ -17,6 +17,8 @@ export const MAX_SUMMARY_WARNINGS = 5;
  * final URL as long again, which on its own blew the budget the rest of the document is cut to keep.
  */
 const MAX_URL_CHARS = 200;
+/** DNS allows a host of 253 characters, and a summary has no use for more than the front of one that long. */
+const MAX_HOST_CHARS = 100;
 const MAX_TITLE_CHARS = 120;
 const MAX_SITE_NAME_CHARS = 60;
 const MAX_NAME_CHARS = 60;
@@ -65,7 +67,7 @@ export function summarize(scan: AgentScan): ScanSummary {
     page: {
       url: cut(scan.page.url, MAX_URL_CHARS),
       finalUrl: cut(scan.page.finalUrl, MAX_URL_CHARS),
-      host: scan.page.host,
+      host: cut(scan.page.host, MAX_HOST_CHARS),
       title: cut(scan.page.title, MAX_TITLE_CHARS),
       ...(scan.page.siteName === undefined ? {} : { siteName: cut(scan.page.siteName, MAX_SITE_NAME_CHARS) }),
     },
