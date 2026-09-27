@@ -38,9 +38,12 @@ export interface DestinationOptions {
   dest?: string;
 }
 
+/** Characters a sanitized host keeps, so it fits a directory name and a cached scan id whatever a page declares. */
+export const MAX_HOST_CHARS = 100;
+
 /**
- * A host as a directory name: `www.` off, lower case, punycode kept as it is, and nothing that could leave the
- * directory (path separators, colons, `..`). Empty after that, it becomes `site`.
+ * A host as a directory name: `www.` off, lower case, punycode kept as it is, nothing that could leave the directory
+ * (path separators, colons, `..`), and short enough to be a file name. Empty after that, it becomes `site`.
  */
 export function sanitizeHost(host: string): string {
   const safe = host
@@ -49,7 +52,9 @@ export function sanitizeHost(host: string): string {
     .replace(/^www\./, "")
     .replace(/[^a-z0-9.-]+/g, "-")
     .replace(/\.{2,}/g, ".")
-    .replace(/^[.-]+|[.-]+$/g, "");
+    .replace(/^[.-]+|[.-]+$/g, "")
+    .slice(0, MAX_HOST_CHARS)
+    .replace(/[.-]+$/, "");
   return safe || "site";
 }
 

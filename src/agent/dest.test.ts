@@ -107,6 +107,7 @@ describe("resolveDestination", () => {
     expect(sanitizeHost("..")).toBe("site");
     expect(sanitizeHost("a/b\\c")).toBe("a-b-c");
     expect(sanitizeHost("")).toBe("site");
+    expect(sanitizeHost(`${"a".repeat(400)}.com`)).toBe("a".repeat(100));
     expect(resolveDestination({ host: "www.stripe.com", cwd: makeTree(".git") })).toMatchObject({ host: "stripe.com" });
     for (const host of ["../../etc", "a/b", "..", ""]) {
       const dir = resolveDestination({ host, cwd: makeTree(".git") }).dir;
