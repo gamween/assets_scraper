@@ -1,0 +1,86 @@
+import type { FontFamily, FontFormat } from "@/lib/contract";
+import type { AgentScan, ScanSummary } from "./types";
+
+/**
+ * What an agent reads after a scan (spec 2, context cost): counts, the palette, one row per font family and the logos.
+ * Never the whole asset list, never bytes. The whole document stays a few hundred bytes wide whatever the page holds,
+ * so every string it carries is cut and every list is capped.
+ */
+
+/** Logo rows a summary shows. Past that, an agent lists assets with the filters it wants. */
+export const MAX_SUMMARY_LOGOS = 8;
+export const MAX_SUMMARY_PALETTE = 12;
+export const MAX_SUMMARY_FONTS = 12;
+export const MAX_SUMMARY_WARNINGS = 5;
+const MAX_TITLE_CHARS = 120;
+const MAX_SITE_NAME_CHARS = 60;
+const MAX_NAME_CHARS = 60;
+const MAX_WARNING_CHARS = 120;
+
+const cut = (text: string, max: number): string => (text.length <= max ? text : `${text.slice(0, max - 1)}…`);
+
+/** Formats the installer can turn into a TTF (spec 5.2). EOT and the rest are not worth installing. */
+const INSTALLABLE_FORMATS = new Set<FontFormat>(["woff2", "woff", "ttf", "otf"]);
+
+/**
+ * Whether `installFonts` could install this family: its bytes are reachable (Adobe Fonts kits never are) and at least
+ * one file is in a format that converts. The licence does not decide it: a commercial family installs too, with its
+ * licence reported (spec 5.5).
+ */
+export function isInstallableFamily(family: FontFamily): boolean {
+  if (!family.downloadable) return false;
+  return family.faces.some((face) =>
+    face.files.some((file) => INSTALLABLE_FORMATS.has(file.format) && (file.inline !== undefined || file.url !== "")),
+  );
+}
+
+const LOGO_ROLES = new Set(["site-logo", "logo"]);
+
+export function summarize(scan: AgentScan): ScanSummary {
+  const logos = scan.assets
+    .filter((asset) => LOGO_ROLES.has(asset.role))
+    .sort((a, b) => b.score - a.score || a.order - b.order)
+    .slice(0, MAX_SUMMARY_LOGOS)
+    .map((asset) => ({
+      id: asset.id,
+      name: cut(asset.name, MAX_NAME_CHARS),
+      kind: asset.kind,
+      ...(asset.width === undefined ? {} : { width: asset.width }),
+      ...(asset.height === undefined ? {} : { height: asset.height }),
+    }));
+
+  const swatches = [...(scan.palette?.brand ?? []), ...(scan.palette?.neutrals ?? [])]
+    .slice(0, MAX_SUMMARY_PALETTE)
+    .map((swatch) => (swatch.role === undefined ? { hex: swatch.hex } : { hex: swatch.hex, role: swatch.role }));
+
+  const hidden = Object.values(scan.stats.hidden).reduce((total, count) => total + count, 0);
+
+  return {
+    scanId: scan.scanId,
+    page: {
+      url: scan.page.url,
+      finalUrl: scan.page.finalUrl,
+      host: scan.page.host,
+      title: cut(scan.page.title, MAX_TITLE_CHARS),
+      ...(scan.page.siteName === undefined ? {} : { siteName: cut(scan.page.siteName, MAX_SITE_NAME_CHARS) }),
+    },
+    counts: {
+      assets: scan.stats.assets,
+      svg: scan.stats.svg,
+      images: scan.stats.images,
+      fonts: scan.stats.fonts,
+      hidden,
+    },
+    palette: swatches,
+    fonts: scan.fonts.slice(0, MAX_SUMMARY_FONTS).map((family) => ({
+      family: cut(family.name, MAX_NAME_CHARS),
+      license: family.license.kind,
+      usedOnPage: family.usedOnPage,
+      installable: isInstallableFamily(family),
+    })),
+    logos,
+    otherAssets: Math.max(0, scan.assets.length - logos.length),
+    warnings: scan.warnings.slice(0, MAX_SUMMARY_WARNINGS).map((warning) => cut(warning, MAX_WARNING_CHARS)),
+    durationMs: scan.stats.durationMs,
+  };
+}
