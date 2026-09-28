@@ -166,7 +166,8 @@ if (isEntryPoint()) {
     await import(pathToFileURL(bundle).href);
   } catch (error) {
     const message = error instanceof LauncherError ? error.message : `assets-scraper: the MCP server could not start: ${error?.message ?? error}`;
+    // `process.exitCode`, not `process.exit`: stderr can be a pipe, and exiting on the spot truncates the reason.
     process.stderr.write(`${message}\n`);
-    process.exit(1);
+    process.exitCode = 1;
   }
 }
