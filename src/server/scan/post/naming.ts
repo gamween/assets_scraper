@@ -59,9 +59,9 @@ export function cleanBasename(url: string): string | undefined {
 const GENERIC_SEGMENT = /^(?:[a-z]{2}(?:[-_][a-z]{2,4})?|index|home|default|page|pages|assets?|images?|img|media|static|www|v?\d+)$/i;
 
 /**
- * The part of an ancestor link that names the asset: the last path segment that is not a locale, a page number or a
- * plain container. stripe.com puts its customer logos inside `/customers/hertz`, so the link names the logo the
- * element itself leaves unnamed.
+ * The part of an ancestor link that names the asset: the last meaningful path segment, and only when the link points
+ * inside a section rather than at the section itself. stripe.com puts a customer logo in `/customers/hertz`, so the
+ * link names it, while linear.app sends its whole logo wall to `/customers`, which names none of them.
  */
 export function hrefName(href: string | undefined): string | undefined {
   if (!href || !/^https?:/i.test(href)) return undefined;
@@ -71,12 +71,11 @@ export function hrefName(href: string | undefined): string | undefined {
   } catch {
     return undefined;
   }
-  for (let i = segments.length - 1; i >= 0; i--) {
-    const segment = segments[i].replace(/\.[a-z0-9]{1,5}$/i, "");
-    if (!segment || GENERIC_SEGMENT.test(segment)) continue;
-    return usable(segment.replace(/[-_]+/g, " "));
-  }
-  return undefined;
+  const meaningful = segments
+    .map((segment) => segment.replace(/\.[a-z0-9]{1,5}$/i, ""))
+    .filter((segment) => segment && !GENERIC_SEGMENT.test(segment));
+  if (meaningful.length < 2) return undefined;
+  return usable(meaningful[meaningful.length - 1].replace(/[-_]+/g, " "));
 }
 
 /** React and bundler suffixes stuck on an otherwise readable id: `-:R4nrnmr6l6:`, `__abc123`. */

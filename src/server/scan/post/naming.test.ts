@@ -45,8 +45,10 @@ describe("displayName last-resort hints", () => {
   it("names a logo after the customer page its link points at", () => {
     expect(name({ kind: "svg", hints: { linkHref: "https://stripe.com/customers/hertz" } })).toBe("hertz");
     expect(name({ kind: "svg", hints: { linkHref: "https://stripe.com/fr-fr/customers/le-monde/" } })).toBe("le monde");
-    // A locale, a container or a page number names nothing, so the chain keeps looking up the path.
-    expect(name({ kind: "svg", hints: { linkHref: "https://stripe.com/customers/en-gb" } })).toBe("customers");
+    // A locale or a container names nothing, and a link to the section itself names every logo on the wall the same
+    // way, so linear.app's whole customer wall pointing at /customers keeps the generic name instead.
+    expect(name({ kind: "svg", hints: { linkHref: "https://stripe.com/customers/en-gb" } })).toBe("svg 12");
+    expect(name({ kind: "svg", hints: { linkHref: "https://linear.app/customers" } })).toBe("svg 12");
     expect(name({ kind: "svg", hints: { linkHref: "https://stripe.com/" } })).toBe("svg 12");
     expect(hrefName("mailto:sales@stripe.com")).toBeUndefined();
     expect(hrefName(undefined)).toBeUndefined();
