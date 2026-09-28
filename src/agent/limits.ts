@@ -11,6 +11,13 @@ const defaults = {
   minLongSide: 600,
   /** Files one download keeps after sorting by relevance (spec 4.6). */
   maxFiles: 60,
+  /**
+   * Bytes a selection keeps in total, the budget the file count cap never was: 60 files of a page that serves 4 MB
+   * photographs is a quarter of a gigabyte. The best scoring files inside the budget are the ones kept.
+   */
+  maxTotalBytes: 25 * MB,
+  /** Bytes one file of the `deck` profile may take: past this it is a photograph, not an asset a deck can use. */
+  maxFileBytes: 8 * MB,
   /** Hamming distance of two 256 bit fingerprint hashes that makes a pair worth confirming (spec 4.5). */
   nearDuplicateDistance: 20,
   /** How long a cached scan answers `download_assets` without rescanning (spec 6). */

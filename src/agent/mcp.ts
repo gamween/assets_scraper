@@ -301,6 +301,19 @@ export function createAgentMcpServer(options: AgentMcpOptions = {}): McpServer {
         kinds: z.array(AssetKind).optional().describe("several kinds at once, when kind is not enough"),
         roles: z.array(AssetRole).optional().describe("several roles at once, when role is not enough"),
         max: z.number().int().positive().optional().describe(`files to write, ${agentLimits.maxFiles} by default`),
+        // The byte budget, in the same words the CLI uses: 0 lifts it, and ids are never dropped for it.
+        maxTotalBytes: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe(`bytes to write in total, best scoring files first. ${agentLimits.maxTotalBytes} by default, 0 takes the whole selection`),
+        maxFileBytes: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe(`bytes one file may take under the deck profile. ${agentLimits.maxFileBytes} by default, 0 lifts the ceiling`),
         dest: z.string().max(1024).optional().describe("a directory inside the project scrap folder. Left out, it is scrap/<host>"),
       },
     },

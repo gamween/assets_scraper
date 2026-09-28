@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { buildIdentity } from "./build-id";
 import { cacheDir, findRecentScan, loadScan, pruneScans, saveScan, scanCachePath } from "./cache";
 import { testScan } from "./testing";
 
@@ -167,7 +168,7 @@ describe("findRecentScan", () => {
     vi.stubEnv("XDG_CACHE_HOME", xdg);
     const scan = { ...testScan({ scanId: "extra" }), somethingNewer: { kept: true } };
     fs.mkdirSync(path.join(xdg, "assets-scraper"), { recursive: true });
-    fs.writeFileSync(path.join(xdg, "assets-scraper", "extra.json"), JSON.stringify(scan));
+    fs.writeFileSync(path.join(xdg, "assets-scraper", "extra.json"), JSON.stringify({ ...scan, build: buildIdentity() }));
     expect(await loadScan("extra")).toEqual(scan);
   });
 

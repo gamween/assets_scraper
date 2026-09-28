@@ -60,6 +60,16 @@ export interface SelectionOptions {
   nameContains?: string;
   includeIcons?: boolean;
   max?: number; // default from limits
+  /**
+   * Bytes the selection keeps in total, `agentLimits.maxTotalBytes` by default. Raise it to take more, pass 0 to take
+   * the whole selection whatever it weighs. Assets named by `ids` are never dropped for it.
+   */
+  maxTotalBytes?: number;
+  /**
+   * Bytes one file may take, `agentLimits.maxFileBytes` under the `deck` profile and no ceiling under `all`. Pass 0 to
+   * lift it, a number to set your own under either profile.
+   */
+  maxFileBytes?: number;
 }
 
 export type DropReason =
@@ -72,12 +82,25 @@ export type DropReason =
   | "extra-favicon"
   | "filter"
   | "cap"
+  | "too-large"
+  | "over-budget"
   | "unavailable";
+
+/** What the byte rules allowed and what they ended up keeping, so a caller can say why a download stopped where it did. */
+export interface SelectionBudget {
+  /** Bytes the whole selection could take, 0 when the caller lifted the budget. */
+  maxTotalBytes: number;
+  /** Bytes one file could take, 0 when there is no ceiling. */
+  maxFileBytes: number;
+  /** Bytes of the kept assets, as far as the selection could measure them: exact once the bytes are in hand. */
+  keptBytes: number;
+}
 
 export interface Selection {
   keep: Asset[];
   dropped: Partial<Record<DropReason, number>>;
   duplicates: { keptId: string; droppedIds: string[] }[];
+  budget: SelectionBudget;
 }
 
 export interface DownloadedFile {
@@ -99,6 +122,8 @@ export interface DownloadResult {
   dropped: Partial<Record<DropReason, number>>;
   failed: { id: string; name: string; reason: string }[];
   manifestPath: string;
+  /** The byte rules this download ran under, and what the kept files weigh against them. */
+  budget: SelectionBudget;
 }
 
 export interface FontInstall {

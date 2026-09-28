@@ -2,13 +2,18 @@ import type { Asset, AssetFormat } from "@/lib/contract";
 import { sniffContentType } from "@/server/security/sniff";
 import { agentLimits } from "./limits";
 import { type ImageFingerprint, canonicalizeSvg, fingerprint, sameVisual, sha1 } from "./hash";
-import type { DropReason, Selection, SelectionOptions } from "./types";
+import type { DropReason, Selection, SelectionBudget, SelectionOptions } from "./types";
 
 /**
  * What a download actually takes (spec 4). The `deck` profile drops what is not usable, in this order: role filter,
- * size gate, prefer vector, exact duplicates, near duplicates, cap. `all` keeps everything the explicit filters allow,
- * minus byte-identical copies and the cap. Every drop is counted under its reason, so a caller can say why it did not
- * take something.
+ * size gate, per-file ceiling, prefer vector, exact duplicates, near duplicates, cap, byte budget. `all` keeps
+ * everything the explicit filters allow, minus byte-identical copies, the cap and the byte budget. Every drop is
+ * counted under its reason, so a caller can say why it did not take something.
+ *
+ * The file count cap used to be the only bound on a download, which says nothing about what lands on a disk: the cap is
+ * the same 60 files whether they are 60 wordmarks or 60 photographs, so `get` with no filters was an unbounded number
+ * of megabytes. The byte budget is the bound that was missing, and the per-file ceiling is what keeps one hero
+ * photograph from spending it alone.
  */
 
 /** Which file wins inside a group of duplicates, best first (spec 4.4). */
@@ -37,6 +42,26 @@ const longSide = (asset: Asset): number | undefined => {
 
 /** Whether the bytes can be had at all: inline markup, a display URL or an original URL. */
 const isAvailable = (asset: Asset): boolean => Boolean(asset.inline ?? asset.display?.url ?? asset.original?.url);
+
+/**
+ * What one asset weighs, best answer first: the bytes in hand, then what the scan measured, then what the source it
+ * would be fetched from declared, then the markup it carries itself. 0 means "not known", and nothing is ever dropped
+ * for a size nobody measured: the second pass runs with the bytes in hand, so a file that turns out to be too big is
+ * dropped then rather than guessed at now.
+ */
+export function assetBytes(asset: Asset, bytes?: ReadonlyMap<string, Buffer>): number {
+  const fetched = bytes?.get(asset.id);
+  if (fetched) return fetched.length;
+  const inline = asset.inline;
+  if (inline) return "text" in inline ? Buffer.byteLength(inline.text, "utf8") : Math.floor((inline.base64.length * 3) / 4);
+  return asset.bytes ?? (asset.original ?? asset.display)?.bytes ?? 0;
+}
+
+/** A limit the caller may raise or lift: an explicit number wins, 0 means no limit, and nothing named takes `fallback`. */
+const limitOf = (asked: number | undefined, fallback: number): number =>
+  asked === undefined ? fallback
+  : Number.isSafeInteger(asked) && asked > 0 ? asked
+  : 0;
 
 /**
  * The name two variants of the same picture share: no extension, no `@2x`, no `-1024x512`, no `_large`, lower case.
@@ -80,17 +105,32 @@ export async function selectAssets(
   };
   const duplicates: { keptId: string; droppedIds: string[] }[] = [];
   const profile = options.profile ?? "deck";
+  // The `all` profile has no ceiling of its own, because it is the profile that means "give me what is there", but a
+  // caller naming a number gets it under either profile. The total budget applies to both: it is the bound on what a
+  // download writes, not a taste rule about what a deck can use.
+  const maxFileBytes = limitOf(options.maxFileBytes, profile === "deck" ? agentLimits.maxFileBytes : 0);
+  const maxTotalBytes = limitOf(options.maxTotalBytes, agentLimits.maxTotalBytes);
 
   let pool = assets.filter((asset) => isAvailable(asset) || drop("unavailable"));
 
-  /** The tail both paths end on: sort by relevance, cap, and report only the duplicate groups whose winner survived. */
-  const finish = (selected: Asset[]): Selection => {
+  /**
+   * The tail both paths end on: sort by relevance, cap, spend the byte budget on the best of what is left, and report
+   * only the duplicate groups whose winner survived. `budgeted` is 0 for a call naming ids, because an asset the caller
+   * asked for by id is never dropped for its size (spec 4: explicit ids win over every filter and every profile rule).
+   */
+  const finish = (selected: Asset[], budgeted: number): Selection => {
     const sorted = selected.sort(byRelevance);
     const max = options.max ?? agentLimits.maxFiles;
-    const keep = capByKind(sorted, Math.max(0, max));
-    drop("cap", sorted.length - keep.length);
+    const capped = capByKind(sorted, Math.max(0, max));
+    drop("cap", sorted.length - capped.length);
+    const keep = withinBudget(capped, budgeted, bytes, drop);
     const kept = new Set(keep.map((asset) => asset.id));
-    return { keep, dropped, duplicates: duplicates.filter((group) => kept.has(group.keptId)) };
+    const budget: SelectionBudget = {
+      maxTotalBytes: budgeted,
+      maxFileBytes,
+      keptBytes: keep.reduce((total, asset) => total + assetBytes(asset, bytes), 0),
+    };
+    return { keep, dropped, duplicates: duplicates.filter((group) => kept.has(group.keptId)), budget };
   };
 
   // Explicit ids win over every filter and every profile rule (spec 4). The cap is not one of those: it is the only
@@ -101,7 +141,7 @@ export async function selectAssets(
     const wanted = new Set(options.ids);
     const named = pool.filter((asset) => wanted.has(asset.id));
     drop("filter", pool.length - named.length);
-    return finish(named);
+    return finish(named, 0);
   }
 
   const needle = options.nameContains?.toLowerCase();
@@ -140,6 +180,17 @@ export async function selectAssets(
     });
   }
 
+  // The per-file ceiling, the size gate's opposite end. A 12 MB PNG of a photograph is not an asset a deck can use, and
+  // left in it spends the whole byte budget on one file. It runs on whatever size is known at this point: the scan's own
+  // measure on the first pass, so the bytes are never spent, and the real length on the second, so a URL that answered
+  // with more than it declared is still dropped before it is written.
+  if (maxFileBytes > 0) {
+    pool = pool.filter((asset) => {
+      const size = assetBytes(asset, bytes);
+      return size === 0 || size <= maxFileBytes || drop("too-large");
+    });
+  }
+
   if (profile === "deck") {
     // The same name served as a vector and as a raster: the vector is the one to keep. A name that normalizes to
     // nothing matches nothing, so an unnamed SVG never takes a raster with it.
@@ -166,7 +217,36 @@ export async function selectAssets(
     }
   }
 
-  return finish(pool);
+  return finish(pool, maxTotalBytes);
+}
+
+/**
+ * The byte budget of a selection: the best scoring files that fit, in relevance order. A file too big for what is left
+ * is passed over rather than ending the list, so one 6 MB illustration in the middle of the order does not cost a
+ * caller the twenty wordmarks under it, and the cheapest useful files are the ones a truncated budget keeps.
+ *
+ * A size nobody measured counts as 0 here, which is the same direction the rest of the selection takes: an unmeasured
+ * asset is kept and the second pass, which has the bytes, is where it meets the budget for real.
+ */
+function withinBudget(
+  sorted: Asset[],
+  maxTotalBytes: number,
+  bytes: ReadonlyMap<string, Buffer> | undefined,
+  drop: (reason: DropReason, count?: number) => false,
+): Asset[] {
+  if (maxTotalBytes <= 0) return sorted;
+  const keep: Asset[] = [];
+  let spent = 0;
+  for (const asset of sorted) {
+    const size = assetBytes(asset, bytes);
+    if (spent + size > maxTotalBytes) {
+      drop("over-budget");
+      continue;
+    }
+    spent += size;
+    keep.push(asset);
+  }
+  return keep;
 }
 
 /**

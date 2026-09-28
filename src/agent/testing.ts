@@ -1,8 +1,11 @@
 import sharp from "sharp";
 import type { Asset, AssetRole, FontFamily, FontFile, Palette } from "@/lib/contract";
-import type { AgentScan } from "./types";
+import type { AgentScan, SelectionBudget } from "./types";
 
 /** Factories the agent tests build scans with. Not bundled into the CLI or the MCP server. */
+
+/** What a stubbed download reports when the test is not about the byte rules: no budget, nothing measured. */
+export const noBudget: SelectionBudget = { maxTotalBytes: 0, maxFileBytes: 0, keptBytes: 0 };
 
 export function testAsset(patch: Partial<Asset> & { id: string }): Asset {
   const format = patch.format ?? (patch.kind === "svg" ? "svg" : "png");

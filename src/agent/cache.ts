@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import * as z from "zod";
 import { Asset, Diagnostics, FontFamily, Palette, ScanStats } from "@/lib/contract";
+import { buildIdentity } from "./build-id";
 import { agentLimits } from "./limits";
 import type { AgentScan, ScanSource } from "./types";
 
@@ -32,7 +33,8 @@ export async function saveScan(scan: AgentScan): Promise<string> {
   const file = scanCachePath(scan.scanId);
   await fs.mkdir(path.dirname(file), { recursive: true });
   const temporary = `${file}.${process.pid}.tmp`;
-  await fs.writeFile(temporary, JSON.stringify(scan), { mode: 0o600 });
+  // Stamped with the build that produced it, and read back only by that build: see `readScan`.
+  await fs.writeFile(temporary, JSON.stringify({ ...scan, build: buildIdentity() }), { mode: 0o600 });
   await fs.rename(temporary, file);
   await pruneScans();
   return file;
@@ -84,6 +86,8 @@ export async function loadScan(scanId: string): Promise<AgentScan | null> {
  * same URL until it ages out a day later.
  */
 const AgentScanFile = z.object({
+  /** The build that wrote the file (`src/agent/build-id.ts`). Absent in a file written before this field existed. */
+  build: z.string().optional(),
   scanId: z.string(),
   scannedAt: z.string(),
   source: z.enum(["local", "remote"]),
@@ -104,17 +108,29 @@ const AgentScanFile = z.object({
 });
 
 /**
- * Whether a parsed file is a scan. The parsed value is thrown away and the original object returned, so a field the
- * schema does not know about survives the round trip instead of being stripped.
+ * Whether a parsed file is a scan this build may answer with. The parsed value is thrown away and the original object
+ * returned, so a field the schema does not know about survives the round trip instead of being stripped.
+ *
+ * The build stamp is part of being readable, not a detail of the answer. A scan is what this code found on a page, so a
+ * file another build wrote is another program's answer: an upgrade that fixes what a scan collects, or what the
+ * selection keeps, would otherwise go unnoticed while the cache serves the old results for an hour, and the first thing
+ * anyone does with a fix is run it on the page that showed the bug. A file with no stamp, or one from another build, is
+ * a cache miss like any other: it costs a rescan and never a wrong answer.
  */
 function isAgentScan(value: unknown): value is AgentScan {
-  return AgentScanFile.safeParse(value).success;
+  const parsed = AgentScanFile.safeParse(value);
+  return parsed.success && parsed.data.build === buildIdentity();
 }
 
 async function readScan(file: string): Promise<AgentScan | null> {
   try {
-    const scan: unknown = JSON.parse(await fs.readFile(file, "utf8"));
-    return isAgentScan(scan) ? scan : null;
+    const value: unknown = JSON.parse(await fs.readFile(file, "utf8"));
+    if (!isAgentScan(value)) return null;
+    // The stamp belongs to the file, not to the scan: a caller gets back what `saveScan` was given, and re-saving the
+    // scan stamps it with the build doing the saving rather than carrying a stale one forward.
+    const scan = { ...value } as AgentScan & { build?: string };
+    delete scan.build;
+    return scan;
   } catch {
     return null;
   }

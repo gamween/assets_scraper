@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { saveScan } from "./cache";
 import { DEFAULT_REMOTE, USAGE, UsageError, formatDownload, formatDropped, formatSummary, openSource, scanPage, scanUrl, selectionFrom } from "./cli";
 import { summarize } from "./summary";
-import { testScan } from "./testing";
+import { noBudget, testScan } from "./testing";
 import type { AgentScan, DownloadResult, ScanSource } from "./types";
 
 /**
@@ -229,6 +229,7 @@ describe("the report", () => {
       files: [{ id: "a", name: "Logo", path: "/work/scrap/stripe.com/svg/logo.svg", bytes: 2_048, kind: "svg", role: "logo", url: "https://stripe.com/logo.svg" }],
       totalBytes: 2_048,
       dropped: { icon: 3 },
+      budget: noBudget,
       failed: [{ id: "b", name: "Hero", reason: "HTTP 403" }],
       manifestPath: "/work/scrap/stripe.com/manifest.json",
     };
