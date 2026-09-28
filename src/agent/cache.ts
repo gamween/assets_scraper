@@ -126,8 +126,20 @@ async function readScan(file: string): Promise<AgentScan | null> {
  */
 export type ScanOrigin = Pick<ScanSource, "kind" | "remote">;
 
-/** A trailing slash is not a different hosted app, and neither is a different spelling of the host. */
-const normalizeRemote = (remote: string | undefined): string => (remote ?? "").trim().replace(/\/+$/, "").toLowerCase();
+/**
+ * Two spellings of one hosted app: a trailing slash and the case of the scheme and the host do not make it another
+ * one. The path keeps its case, because a path can be case sensitive. Anything that is not a URL is compared as it is.
+ */
+function normalizeRemote(remote: string | undefined): string {
+  const trimmed = (remote ?? "").trim().replace(/\/+$/, "");
+  if (trimmed === "") return "";
+  try {
+    const url = new URL(trimmed);
+    return `${url.protocol.toLowerCase()}//${url.host.toLowerCase()}${url.pathname.replace(/\/+$/, "")}`;
+  } catch {
+    return trimmed;
+  }
+}
 
 /** Whether a cached scan came from the same place a lookup is asking about: the same kind, and the same hosted app. */
 const sameOrigin = (scan: AgentScan, origin: ScanOrigin): boolean =>

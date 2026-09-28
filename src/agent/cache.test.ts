@@ -94,6 +94,10 @@ describe("findRecentScan", () => {
     expect((await found("https://assets-scraper.vercel.app"))?.scanId).toBe("from-production");
     // A trailing slash and a different spelling of the same origin are the same hosted app
     expect((await found("https://Assets-Scraper.vercel.app/"))?.scanId).toBe("from-production");
+    // A path is part of which app it is, and keeps its case: a self-hosted app can live under one
+    await saveScan(testScan({ scanId: "under-a-path", source: "remote", remote: "https://internal.example/Tools/scraper", scannedAt: now }));
+    expect((await found("https://internal.example/Tools/scraper/"))?.scanId).toBe("under-a-path");
+    expect(await found("https://internal.example/tools/scraper")).toBeNull();
     expect(await found("https://staging.internal.example")).toBeNull();
     // A remote scan saved before this field existed carries no origin, so it answers no configured remote
     await saveScan(testScan({ scanId: "originless", source: "remote", scannedAt: now }));
