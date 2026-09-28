@@ -339,14 +339,14 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
    * handles are never prose, so they are always read.
    */
   const PROSE_LABEL_CHARS = 60;
-  const name = (value: string | null) => (value && value.length <= PROSE_LABEL_CHARS ? value : "");
+  const notProse = (value: string | null) => (value && value.length <= PROSE_LABEL_CHARS ? value : "");
   const attributeHaystack = (el: Element) =>
     [
       typeof (el as HTMLElement).className === "string" ? (el as HTMLElement).className : (el.getAttribute("class") ?? ""),
       el.id,
-      name(el.getAttribute("aria-label")),
-      name(el.getAttribute("title")),
-      name(el.getAttribute("alt")),
+      notProse(el.getAttribute("aria-label")),
+      notProse(el.getAttribute("title")),
+      notProse(el.getAttribute("alt")),
       el.getAttribute("data-framer-name"),
       el.getAttribute("data-testid"),
       el.getAttribute("data-name"),
@@ -417,7 +417,7 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
     let node = composedParent(el);
     for (let depth = 0; node && depth < HINT_DEPTH; depth++, node = composedParent(node)) {
       for (const value of [node.getAttribute("aria-label"), node.getAttribute("title")]) {
-        const text = collapse(name(value));
+        const text = collapse(notProse(value));
         if (text && text !== own) return text;
       }
     }

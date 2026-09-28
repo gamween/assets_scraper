@@ -47,6 +47,11 @@ beforeAll(async () => {
         <svg width="32" height="32" alt="Alt three" title="Attribute three"><rect width="32" height="32"/></svg>
         <div data-framer-name="Framer four"><img src="/assets/og.png" title="Attribute four"></div>
         <img src="/assets/touch.png" title="Attribute five">
+        <svg width="33" height="33" alt="Aerial view of a street intersection where the crosswalks form a slanted parallelogram, imitating the Fixture logo."><rect width="33" height="33"/></svg>
+        <div aria-label="Show the Substack testimonial"><a href="/customers/hertz"><svg width="34" height="34"><g><title>Deep title</title><rect width="34" height="34"/></g></svg></a></div>
+        <div><svg width="35" height="35"><rect width="35" height="35"/></svg><span>Jackson Hot Yoga</span></div>
+        <div class="wall"><svg width="36" height="36"><rect width="36" height="36"/></svg><svg width="37" height="37"><rect width="37" height="37"/></svg><span>Shared caption</span></div>
+        <svg width="38" height="38" aria-label="Fixture logo"><rect width="38" height="38"/></svg>
       </body></html>`);
     },
   });
@@ -312,6 +317,33 @@ describe("collector labels", () => {
     expect(svgLabel(32)).toBe("Alt three");
     expect(labels.candidates.find((c) => c.url === asset("og.png"))?.label).toBe("Framer four");
     expect(labels.candidates.find((c) => c.url === asset("touch.png"))?.label).toBe("Attribute five");
+    // A <title> the drawing wraps in a <g> is still the name of the vector.
+    expect(svgLabel(34)).toBe("Deep title");
+  });
+
+  it("reads the word logo out of a name but not out of a sentence", async () => {
+    const { context, page } = await openPage(browser, `${server.origin}/labels.html`);
+    const labels = await runCollector(page, collectorOptions(server.host, "Fixture"));
+    await context.close();
+    const svgAt = (width: number) => labels.svgs.find((s) => s.rect?.width === width);
+    // stripe.com captions its photographs this way, and the logo and site words in there are about the scene.
+    expect(svgAt(33)!.context).toMatchObject({ logoWord: false, siteWord: false });
+    // A vector that names itself in two words still counts.
+    expect(svgAt(38)!.context).toMatchObject({ logoWord: true, siteWord: true });
+  });
+
+  it("records where a name can still come from when the element carries none", async () => {
+    const { context, page } = await openPage(browser, `${server.origin}/labels.html`);
+    const labels = await runCollector(page, collectorOptions(server.host, "Fixture"));
+    await context.close();
+    const hintsAt = (width: number) => labels.svgs.find((s) => s.rect?.width === width)?.hints;
+    expect(hintsAt(34)).toMatchObject({ ancestorLabel: "Show the Substack testimonial", linkHref: `${server.origin}/customers/hertz` });
+    expect(hintsAt(35)).toMatchObject({ nearbyText: "Jackson Hot Yoga" });
+    // Two vectors share the caption, so it names neither of them.
+    expect(hintsAt(36)?.nearbyText).toBeUndefined();
+    expect(hintsAt(37)?.nearbyText).toBeUndefined();
+    // Prose on an ancestor is a description, not a name.
+    expect(hintsAt(33)?.ancestorLabel).toBeUndefined();
   });
 });
 
