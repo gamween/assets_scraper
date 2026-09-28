@@ -234,6 +234,7 @@ describe("createRemoteScanSource().fetchBytes", () => {
 
   it("reads inline bytes without any request", async () => {
     const fetch = fakeFetch(null);
+    const woff2 = Buffer.concat([Buffer.from("wOF2", "latin1"), Buffer.from("compressed")]);
     calls.length = 0;
 
     const bytes = await createRemoteScanSource({ remote: origin, token: "agent-token" }, { fetch }).fetchBytes({
@@ -241,10 +242,10 @@ describe("createRemoteScanSource().fetchBytes", () => {
       proxy: "",
       format: "woff2",
       coversLatin: true,
-      inline: { mime: "font/woff2", base64: Buffer.from("font-bytes").toString("base64") },
+      inline: { mime: "font/woff2", base64: woff2.toString("base64") },
     });
 
-    expect(bytes.toString("utf8")).toBe("font-bytes");
+    expect(bytes).toEqual(woff2);
     expect(fetch.urls).toEqual([]);
     expect(calls).toHaveLength(0);
   });

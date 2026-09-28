@@ -170,7 +170,11 @@ export function createRemoteScanSource(options: ScanSourceOptions = {}, deps: Re
 
     async fetchBytes(target, fetchOptions) {
       const inline = "inline" in target ? target.inline : undefined;
-      if (inline) return Buffer.from(inline.base64, "base64");
+      if (inline) {
+        const decoded = Buffer.from(inline.base64, "base64");
+        assertSupportedBytes(decoded, target.format, "this inline file");
+        return decoded;
+      }
 
       // An `http:` URL has no direct path worth trying: the hosted proxy is how the app itself reads those.
       if (target.url.startsWith("https:")) {

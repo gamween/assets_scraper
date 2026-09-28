@@ -102,7 +102,13 @@ export function createLocalScanSource(deps: LocalScanSourceDeps = {}): ScanSourc
 
     async fetchBytes(target, options) {
       const inline = "inline" in target ? target.inline : undefined;
-      if (inline) return Buffer.from(inline.base64, "base64");
+      if (inline) {
+        // Only a font file travels inline here (`FontFile.inline`), and it is checked like every other byte this returns:
+        // a caller of `fetchBytes` should never have to ask where the bytes came from to know what they are.
+        const decoded = Buffer.from(inline.base64, "base64");
+        assertSupportedBytes(decoded, target.format, "this inline file");
+        return decoded;
+      }
       const url = target.url;
       if (!url) throw new Error("this file has no URL to fetch");
       if (url.startsWith("data:")) {
