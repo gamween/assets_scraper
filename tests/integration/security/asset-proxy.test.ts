@@ -190,7 +190,7 @@ describe("handleAssetRequest", () => {
     expect(response.headers.get("content-security-policy")).toBe(CSP);
     expect(response.headers.get("vercel-cdn-cache-control")).toBe("public, s-maxage=86400");
     expect(response.headers.get("cache-control")).toBe("private, max-age=3600");
-    expect(response.headers.get("vary")).toBe("Sec-Fetch-Site");
+    expect(response.headers.get("vary")).toBe("Sec-Fetch-Site, Authorization");
     expect(response.headers.get("content-disposition")).toBe("inline");
     expect(Buffer.from(await response.arrayBuffer())).toEqual(readFileSync(path.join(SITE, "assets/logo.svg")));
 
@@ -228,10 +228,32 @@ describe("handleAssetRequest", () => {
     expect(await errorOf(await handleAssetRequest(proxied("/assets/logo.svg", "", "cross-site")))).toMatchObject({ status: 403 });
     const sameSite = await handleAssetRequest(proxied("/assets/logo.svg", "", "same-site"));
     expect(sameSite.status).toBe(403);
-    expect(sameSite.headers.get("vary")).toBe("Sec-Fetch-Site");
+    expect(sameSite.headers.get("vary")).toBe("Sec-Fetch-Site, Authorization");
     // spec 11.2: same-origin or none only, so scripts and old clients without Fetch Metadata are refused too
     expect(await errorOf(await handleAssetRequest(proxied("/assets/logo.svg", "", null)))).toMatchObject({ status: 403, code: "cross-site" });
     expect(await errorOf(await handleAssetRequest(proxied("/assets/logo.svg", "", "")))).toMatchObject({ status: 403 });
+  });
+
+  /**
+   * The remote mode of the agent tools reads this proxy with a plain `fetch`, which sends no Fetch Metadata at all, so
+   * without the token arm the documented fallback answered 403 for every asset (review issues 4 and 16).
+   */
+  it("takes an agent bearer token instead of the same-origin header", async () => {
+    const token = "asset-proxy-agent-token-long-enough";
+    vi.stubEnv("AGENT_TOKENS", token);
+    const signed = proxied("/assets/logo.svg", "", null);
+
+    const response = await handleAssetRequest(new Request(signed.url, { headers: { authorization: `Bearer ${token}` } }));
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("image/svg+xml");
+    expect(Buffer.from(await response.arrayBuffer())).toEqual(readFileSync(path.join(SITE, "assets/logo.svg")));
+
+    // A wrong token is no better than no token, and the signature still decides the rest.
+    const wrong = await handleAssetRequest(new Request(signed.url, { headers: { authorization: "Bearer not-the-configured-token" } }));
+    expect(await errorOf(wrong)).toMatchObject({ status: 403, code: "cross-site" });
+    const unsigned = proxied("/assets/logo.svg", "", null).url.replace(/s=[^&]+/, `s=${"A".repeat(32)}`);
+    const forged = await handleAssetRequest(new Request(unsigned, { headers: { authorization: `Bearer ${token}` } }));
+    expect(await errorOf(forged)).toMatchObject({ status: 403, code: "bad-signature" });
   });
 
   it("checks the signature and params", async () => {

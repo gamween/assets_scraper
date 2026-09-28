@@ -40,9 +40,8 @@ export class RemoteScanError extends Error {
   }
 }
 
-/** What `view: "full"` returns: the `AgentScan` shape, whose `scanId` and `source` this process can fill in itself. */
-const RemoteScan = z.object({
-  scanId: z.string().optional(),
+/** The scan itself, nested under `scan` in the answer: the `AgentScan` shape minus `scanId` and `source`. */
+const RemoteScanBody = z.object({
   scannedAt: z.string().optional(),
   page: z.object({
     url: z.string(),
@@ -57,6 +56,16 @@ const RemoteScan = z.object({
   stats: ScanStats,
   warnings: z.array(z.string()).optional(),
   diagnostics: Diagnostics.optional(),
+});
+
+/**
+ * The whole document `POST /api/v1/scan` answers `view: "full"` with: `{ view, scanId, summary, scan }`, the scan fields
+ * nested under `scan` (`src/app/api/v1/scan/route.ts`). The envelope is parsed rather than the scan alone, so the two
+ * sides stay one shape; `tests/integration/agent/remote-source.test.ts` points this source at the real route.
+ */
+const RemoteAnswer = z.object({
+  scanId: z.string().optional(),
+  scan: RemoteScanBody,
 });
 
 /**
@@ -137,22 +146,24 @@ export function createRemoteScanSource(options: ScanSourceOptions = {}, deps: Re
       } catch {
         throw new RemoteScanError("response", response.status, `${remote} answered with something that is not JSON`);
       }
-      const scan = RemoteScan.safeParse(parsed);
-      if (!scan.success) {
-        throw new RemoteScanError("response", response.status, `${remote} answered with something that is not a scan: ${scan.error.issues[0]?.message ?? "unknown field"}`);
+      const answer = RemoteAnswer.safeParse(parsed);
+      if (!answer.success) {
+        const issue = answer.error.issues[0];
+        const where = issue?.path.length ? `${issue.path.join(".")}: ` : "";
+        throw new RemoteScanError("response", response.status, `${remote} answered with something that is not a scan: ${where}${issue?.message ?? "unknown field"}`);
       }
-      const { page, assets, fonts, stats } = scan.data;
+      const { page, assets, fonts, stats } = answer.data.scan;
       return {
-        scanId: scan.data.scanId && SCAN_ID.test(scan.data.scanId) ? scan.data.scanId : scanIdFor(page.host),
-        scannedAt: scan.data.scannedAt ?? new Date().toISOString(),
+        scanId: answer.data.scanId && SCAN_ID.test(answer.data.scanId) ? answer.data.scanId : scanIdFor(page.host),
+        scannedAt: answer.data.scan.scannedAt ?? new Date().toISOString(),
         source: "remote",
         page,
         assets,
         fonts,
-        palette: scan.data.palette ?? null,
+        palette: answer.data.scan.palette ?? null,
         stats,
-        warnings: scan.data.warnings ?? [],
-        ...(scan.data.diagnostics === undefined ? {} : { diagnostics: scan.data.diagnostics }),
+        warnings: answer.data.scan.warnings ?? [],
+        ...(answer.data.scan.diagnostics === undefined ? {} : { diagnostics: answer.data.scan.diagnostics }),
       };
     },
 

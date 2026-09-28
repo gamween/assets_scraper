@@ -24,7 +24,11 @@ let answer: { status: number; body: string; type?: string } = { status: 200, bod
 let origin: string;
 let server: http.Server;
 
-/** The document `view: "full"` answers with: the scan without the `source` field, which the reader fills in itself. */
+/**
+ * The document `view: "full"` answers with, in the exact shape of `src/app/api/v1/scan/route.ts`: the scan fields nested
+ * under `scan`, next to `view`, `scanId` and the summary. `tests/integration/agent/remote-source.test.ts` runs the same
+ * source against the real route, so this stub cannot drift from it unnoticed.
+ */
 const remoteScan = (patch: Partial<AgentScan> = {}): Record<string, unknown> => {
   const scan = testScan({
     assets: [testAsset({ id: "logo", kind: "svg", format: "svg", role: "site-logo", filename: "logo.svg" })],
@@ -32,7 +36,7 @@ const remoteScan = (patch: Partial<AgentScan> = {}): Record<string, unknown> => 
     ...patch,
   });
   const { scanId, scannedAt, page, assets, fonts, palette, stats, warnings } = scan;
-  return { scanId, scannedAt, page, assets, fonts, palette, stats, warnings };
+  return { view: "full", scanId, scan: { scannedAt, page, assets, fonts, palette, stats, warnings } };
 };
 
 beforeAll(async () => {
