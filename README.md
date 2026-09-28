@@ -15,6 +15,18 @@ A scan opens the page in a headless Chromium behind an egress proxy, walks the D
 
 Selected assets are zipped in the browser. Remote files load through a signed, rate-limited proxy, never straight from the page's origin.
 
+## Use it from an agent
+
+Claude Code and other agents can scan a page, download only the assets that are usable into `scrap/<host>/` inside the current project, and install the page fonts. Three ways in, all on the same core: the MCP server shipped as a Claude Code plugin, the `assets-scraper` CLI, and the hosted `/api/v1` endpoints.
+
+```bash
+pnpm install && pnpm build:agent
+claude plugin marketplace add "$PWD"
+claude plugin install assets-scraper
+```
+
+`docs/agents.md` covers all three, the selection rules, the font install and the limits.
+
 ## Running it locally
 
 Requirements: Node 22+ (production and CI run Node 24), pnpm 10.33, Google Chrome.
@@ -63,3 +75,5 @@ Every limit in `src/server/config/limits.ts` can be overridden the same way, by 
 - `src/server/security` the gate, the signed asset proxy and the budgets.
 - `src/lib/contract.ts` the single source of truth for everything that crosses the network.
 - `docs/superpowers/specs` the design spec, `docs/superpowers/plans` the build plan.
+- `src/agent` the agent core: scan sources, selection, download, fonts, the CLI and the MCP server.
+- `plugins/assets-scraper` the Claude Code plugin, `.claude-plugin/marketplace.json` the marketplace that lists it.

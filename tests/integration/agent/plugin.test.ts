@@ -103,7 +103,11 @@ describe("the Claude Code plugin manifests", () => {
   });
 
   it("writes its copy in the house style", () => {
-    const files = [path.join(PLUGIN_DIR, "skills", "assets-scraper", "SKILL.md")];
+    const files = [
+      path.join(PLUGIN_DIR, "skills", "assets-scraper", "SKILL.md"),
+      path.join(ROOT, "docs", "agents.md"),
+      path.join(ROOT, "README.md"),
+    ];
     for (const file of files) {
       const text = read(file);
       expect(text, `${file} uses an em dash or an en dash`).not.toMatch(/[–—]/);
