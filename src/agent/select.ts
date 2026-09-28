@@ -156,13 +156,34 @@ export async function selectAssets(
 
     if (profile === "deck") {
       const rasters = pool.filter((asset) => asset.kind === "image" && bytes.has(asset.id));
-      const printed = await Promise.all(rasters.map(async (asset) => [asset.id, await fingerprint(bytes.get(asset.id) as Buffer)] as const));
-      const prints = new Map(printed.filter((entry): entry is readonly [string, ImageFingerprint] => entry[1] !== null));
-      pool = nearDuplicates(pool, prints, drop, duplicates);
+      pool = nearDuplicates(pool, await fingerprintAll(rasters, bytes), drop, duplicates);
     }
   }
 
   return finish(pool);
+}
+
+/**
+ * Fingerprints the rasters, `downloadConcurrency` at a time. `fingerprint` waits for the process-wide render slot as
+ * well, so this bound is about how many buffers are queued rather than how many decodes run at once: one unbounded
+ * `Promise.all` over `maxFiles` rasters spent 25 s of CPU and 576 MB of peak RSS in a single burst, on the same function
+ * that drives Chromium and whose thread pool `dns.lookup` shares (review issue 3).
+ */
+async function fingerprintAll(rasters: Asset[], bytes: ReadonlyMap<string, Buffer>): Promise<Map<string, ImageFingerprint>> {
+  const prints = new Map<string, ImageFingerprint>();
+  let cursor = 0;
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const asset = rasters[cursor++];
+      if (asset === undefined) return;
+      const buffer = bytes.get(asset.id);
+      if (buffer === undefined) continue;
+      const print = await fingerprint(buffer);
+      if (print !== null) prints.set(asset.id, print);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(agentLimits.downloadConcurrency, rasters.length)) }, worker));
+  return prints;
 }
 
 /** Keeps one asset per group key (null means "no key, always kept"), recording the rest under `reason`. */

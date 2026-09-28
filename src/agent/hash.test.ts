@@ -1,5 +1,6 @@
 import sharp from "sharp";
 import { describe, expect, it } from "vitest";
+import { MAX_INPUT_PIXELS, renderStats } from "@/server/scan/post/render-slot";
 import { agentLimits } from "./limits";
 import {
   DHASH_BITS,
@@ -95,6 +96,44 @@ describe("fingerprint", () => {
     expect(await fingerprint(Buffer.from("<html>not an image</html>"))).toBeNull();
     expect(await fingerprint(Buffer.alloc(0))).toBeNull();
   });
+
+  /**
+   * The two guards v1 documents as necessary, which this call used to drop: `limitInputPixels` was sharp's 268 MP default
+   * instead of `MAX_INPUT_PIXELS`, and `failOn: "none"` decoded bytes v1 refuses (review issue 3). A solid image just
+   * over the cap is 211 KB on the wire and 268 MB decoded, so the wire caps guard nothing here.
+   */
+  it("refuses an image over the pixel cap the scan engine applies", async () => {
+    const side = 8_193; // 8193 * 8193 is just over MAX_INPUT_PIXELS (8192 * 8192)
+    const huge = await sharp(Buffer.alloc(side * side, 200), { raw: { width: side, height: side, channels: 1 } }).png().toBuffer();
+    expect(huge.byteLength).toBeLessThan(agentLimits.maxDownloadBytes);
+    expect(await sharp(huge, { limitInputPixels: false }).metadata()).toMatchObject({ width: side, height: side });
+    expect(MAX_INPUT_PIXELS).toBe(8_192 * 8_192);
+
+    expect(await fingerprint(huge)).toBeNull();
+  }, 30_000);
+
+  it("refuses bytes a lenient decoder would accept, the way the scan engine does", async () => {
+    const png = await pattern(256, 192);
+    // A PNG cut in half: `failOn: "none"` decodes what it has, `failOn: "error"` refuses it.
+    const truncated = png.subarray(0, Math.floor(png.length / 2));
+    expect(await sharp(truncated, { failOn: "none" }).greyscale().resize(8, 8, { fit: "fill" }).raw().toBuffer()).toBeInstanceOf(Buffer);
+
+    expect(await fingerprint(truncated)).toBeNull();
+  });
+
+  it("never runs more sharp calls at once than the process-wide gate allows", async () => {
+    const images = await Promise.all(Array.from({ length: 12 }, (_, index) => pattern(512, 384, index)));
+    let most = 0;
+    const sampler = setInterval(() => (most = Math.max(most, renderStats().active)), 1);
+    try {
+      await Promise.all(images.map((image) => fingerprint(image)));
+    } finally {
+      clearInterval(sampler);
+    }
+    expect(most).toBeGreaterThan(0);
+    expect(most).toBeLessThanOrEqual(2);
+    expect(renderStats().active).toBe(0);
+  }, 30_000);
 });
 
 describe("sameVisual", () => {

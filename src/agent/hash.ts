@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import sharp from "sharp";
+import { MAX_INPUT_PIXELS, withRenderSlot } from "@/server/scan/post/render-slot";
 
 /**
  * Hashes used to drop the same image twice (spec 4.4, 4.5): SHA-1 of the bytes for an exact duplicate, and a
@@ -67,15 +68,26 @@ export const sha1 = (buffer: Buffer): string => createHash("sha1").update(buffer
 
 /**
  * The perceptual fingerprint of a raster, or null when there is nothing to compare: bytes sharp cannot decode, a size
- * it cannot report, or a hash with too little signal to group on. Both greyscale fields come from one decode.
+ * it cannot report, or a hash with too little signal to group on. Both greyscale fields come from one input.
+ *
+ * The decode is opened with the two guards v1 documents as necessary (`render-slot.ts`, `post/tone.ts`): `limitInputPixels`
+ * at `MAX_INPUT_PIXELS` rather than sharp's 268 MP default, and `failOn: "error"` rather than decoding bytes v1 refuses.
+ * A 783 KB solid 16383x16383 PNG decodes to 268 MP and cost 736 ms and most of a gigabyte of peak RSS per file, on the
+ * same function that drives Chromium; it is now refused, and the caller reads that as "no fingerprint", which keeps the
+ * file rather than losing it. The call also waits for a render slot, so 60 of them cannot saturate the thread pool that
+ * `dns.lookup` shares (review issue 3).
  */
-export async function fingerprint(buffer: Buffer): Promise<ImageFingerprint | null> {
+export function fingerprint(buffer: Buffer, signal?: AbortSignal): Promise<ImageFingerprint | null> {
+  return withRenderSlot(() => fingerprintInSlot(buffer), null, signal);
+}
+
+async function fingerprintInSlot(buffer: Buffer): Promise<ImageFingerprint | null> {
   let field: Buffer;
   let thumbnail: Buffer;
   let width: number | undefined;
   let height: number | undefined;
   try {
-    const image = sharp(buffer, { failOn: "none", animated: false });
+    const image = sharp(buffer, { failOn: "error", animated: false, limitInputPixels: MAX_INPUT_PIXELS });
     ({ width, height } = await image.metadata());
     const greyscale = (columns: number, rows: number): Promise<Buffer> =>
       image
@@ -85,7 +97,9 @@ export async function fingerprint(buffer: Buffer): Promise<ImageFingerprint | nu
         .resize(columns, rows, { fit: "fill", kernel: "cubic" })
         .raw({ depth: "uchar" })
         .toBuffer();
-    [field, thumbnail] = await Promise.all([greyscale(FIELD_WIDTH, FIELD_HEIGHT), greyscale(THUMB_SIDE, THUMB_SIDE)]);
+    // One pipeline at a time: they are two decodes of the same input, and the slot this runs in is for one sharp call.
+    field = await greyscale(FIELD_WIDTH, FIELD_HEIGHT);
+    thumbnail = await greyscale(THUMB_SIDE, THUMB_SIDE);
   } catch {
     return null;
   }
