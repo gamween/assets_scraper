@@ -79,13 +79,16 @@ describe("the Claude Code plugin manifests", () => {
     });
   });
 
-  it("points the MCP server at the bundle the build writes", () => {
+  it("points the MCP server at the committed launcher, which is what keeps the bundle current", () => {
     const plugin = Plugin.parse(readJson(path.join(PLUGIN_DIR, ".claude-plugin", "plugin.json")));
     const [entry] = plugin.mcpServers["assets-scraper"].args ?? [];
     expect(entry).toContain("${CLAUDE_PLUGIN_ROOT}");
     // Claude Code sets CLAUDE_PLUGIN_ROOT to the installed plugin directory, which is this one for a local marketplace.
     const resolved = path.resolve(entry.replace("${CLAUDE_PLUGIN_ROOT}", PLUGIN_DIR));
-    expect(resolved).toBe(path.join(ROOT, "dist", "mcp.mjs"));
+    // The bundle itself is gitignored, so a clone can have none or an old one: the launcher rebuilds it before
+    // serving, which the manifest could not do by naming dist/mcp.mjs directly (ship review, stale bundle).
+    expect(resolved).toBe(path.join(ROOT, "scripts", "mcp-launcher.mjs"));
+    expect(fs.existsSync(resolved)).toBe(true);
   });
 
   it("keeps the skill where the loader looks for it", () => {

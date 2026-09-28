@@ -12,7 +12,8 @@
     "typecheck": "pnpm build:inpage && next typegen && tsc --noEmit",
     "test": "pnpm build:inpage && vitest run --project unit",
     "test:integration": "pnpm build:inpage && vitest run --project integration",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "bench": "pnpm build:inpage && FONTS_BENCH=1 vitest run --project unit src/server/scan/fonts"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",

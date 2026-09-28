@@ -242,6 +242,75 @@ describe("scan_page", () => {
     await wired.close();
   });
 
+  /**
+   * Regression: the cache was read before the source was opened, so a server configured against the hosted app could
+   * answer `scan_page` from a scan that ran on this machine and never contact it (review issue: misleading remote).
+   */
+  it("never answers from a scan the other source produced", async () => {
+    const host = "sourced.example";
+    const fresh = { ...otherPage(host), scannedAt: new Date().toISOString() };
+    const warmed = await connect({ source: { kind: "local", scan: async () => fresh, fetchBytes: async () => Buffer.alloc(0) } });
+    const local = JSON.parse(text(await call(warmed, "scan_page", { url: `https://${host}/` }))) as { scanId: string };
+    await warmed.close();
+
+    const asked: string[] = [];
+    const remote = await connect({
+      source: {
+        kind: "remote",
+        scan: async (url) => {
+          asked.push(url);
+          return { ...otherPage(host), scanId: `remote-${host}`, source: "remote", scannedAt: new Date().toISOString() };
+        },
+        fetchBytes: async () => Buffer.alloc(0),
+      },
+    });
+
+    const first = JSON.parse(text(await call(remote, "scan_page", { url: `https://${host}/` }))) as { scanId: string };
+    const second = JSON.parse(text(await call(remote, "scan_page", { url: `https://${host}/` }))) as { scanId: string };
+
+    expect(local.scanId).toBe(`scan-${host}`);
+    expect(first.scanId).toBe(`remote-${host}`);
+    // The remote answer is cached for the remote source, so the hosted app is asked once, not twice.
+    expect(second.scanId).toBe(`remote-${host}`);
+    expect(asked).toEqual([`https://${host}/`]);
+    await remote.close();
+  });
+
+  /**
+   * Regression: every hosted app shared one cache bucket, so repointing `ASSETS_SCRAPER_REMOTE` between sessions made
+   * the new server answer `scan_page` from a scan of the old one without sending it a request.
+   */
+  it("never answers one hosted app from a scan of another", async () => {
+    const host = "repointed.example";
+    const url = `https://${host}/`;
+    const remoteServer = async (base: string, asked: string[]) =>
+      connect({
+        source: {
+          kind: "remote",
+          remote: base,
+          scan: async (target: string) => {
+            asked.push(target);
+            return { ...otherPage(host), scanId: `scan-from-${new URL(base).hostname}`, source: "remote" as const, remote: base, scannedAt: new Date().toISOString() };
+          },
+          fetchBytes: async () => Buffer.alloc(0),
+        },
+      });
+
+    const askedProduction: string[] = [];
+    const production = await remoteServer("https://assets-scraper.vercel.app", askedProduction);
+    const first = JSON.parse(text(await call(production, "scan_page", { url }))) as { scanId: string };
+    await production.close();
+
+    const askedStaging: string[] = [];
+    const staging = await remoteServer("https://staging.internal.example", askedStaging);
+    const second = JSON.parse(text(await call(staging, "scan_page", { url }))) as { scanId: string };
+    await staging.close();
+
+    expect(first.scanId).toBe("scan-from-assets-scraper.vercel.app");
+    expect(second.scanId).toBe("scan-from-staging.internal.example");
+    expect(askedStaging).toEqual([url]);
+  });
+
   it("refuses something that is not a web address, with the code the API uses", async () => {
     const result = await call(client, "scan_page", { url: "not a web address at all" });
 
@@ -370,6 +439,47 @@ describe("the scan source", () => {
     expect(result.isError).toBe(true);
     expect(text(result)).toContain("ASSETS_SCRAPER_TOKEN");
     await remoteClient.close();
+    delete process.env.ASSETS_SCRAPER_REMOTE;
+  });
+
+  /**
+   * Regression: `scan_page` opened the source before reading the cache, so a server started against a hosted app with
+   * no token refused a URL it had a fresh scan of. The lookup only ever needed the kind and the hosted app, so it asks
+   * for those: the token is what running a scan needs, not what reading one back does.
+   */
+  it("answers from a fresh scan of its hosted app although no token is set", async () => {
+    const remote = "https://example.test";
+    const host = "tokenless.example";
+    const url = `https://${host}/`;
+    const cached: AgentScan = {
+      ...testScan({
+        scanId: `scan-${host}`,
+        assets: [testAsset({ id: "one", kind: "svg", format: "svg", role: "site-logo" })],
+        page: { url, finalUrl: url, host, title: host },
+      }),
+      source: "remote",
+      remote,
+      scannedAt: new Date().toISOString(),
+    };
+    const warmed = await connect({ source: { kind: "remote", remote, scan: async () => cached, fetchBytes: async () => Buffer.alloc(0) } });
+    await call(warmed, "scan_page", { url });
+    await warmed.close();
+
+    previousEnv.set("ASSETS_SCRAPER_REMOTE", process.env.ASSETS_SCRAPER_REMOTE);
+    previousEnv.set("ASSETS_SCRAPER_TOKEN", process.env.ASSETS_SCRAPER_TOKEN);
+    process.env.ASSETS_SCRAPER_REMOTE = remote;
+    delete process.env.ASSETS_SCRAPER_TOKEN;
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const tokenless = new Client({ name: "test", version: "0" });
+    await Promise.all([tokenless.connect(clientTransport), createAgentMcpServer({ cwd: home }).connect(serverTransport)]);
+
+    const result = await call(tokenless, "scan_page", { url });
+
+    expect(result.isError).toBeFalsy();
+    expect((JSON.parse(text(result)) as { scanId: string }).scanId).toBe(`scan-${host}`);
+    // `refresh` has to run a scan, so that one still says what is missing
+    expect(text(await call(tokenless, "scan_page", { url, refresh: true }))).toContain("ASSETS_SCRAPER_TOKEN");
+    await tokenless.close();
     delete process.env.ASSETS_SCRAPER_REMOTE;
   });
 });

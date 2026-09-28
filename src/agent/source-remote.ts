@@ -128,6 +128,8 @@ export function createRemoteScanSource(options: ScanSourceOptions = {}, deps: Re
 
   return {
     kind: "remote",
+    // Which hosted app this is, so the scan cache can tell two of them apart (`cache.ts`).
+    remote,
 
     async scan(url, scanOptions) {
       scanOptions?.onStep?.("queue");
@@ -158,6 +160,7 @@ export function createRemoteScanSource(options: ScanSourceOptions = {}, deps: Re
         scanId: answer.data.scanId && SCAN_ID.test(answer.data.scanId) ? answer.data.scanId : scanIdFor(page.host),
         scannedAt: answer.data.scan.scannedAt ?? new Date().toISOString(),
         source: "remote",
+        remote,
         page,
         assets,
         fonts,

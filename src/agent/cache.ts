@@ -4,7 +4,7 @@ import path from "node:path";
 import * as z from "zod";
 import { Asset, Diagnostics, FontFamily, Palette, ScanStats } from "@/lib/contract";
 import { agentLimits } from "./limits";
-import type { AgentScan } from "./types";
+import type { AgentScan, ScanSource } from "./types";
 
 /**
  * Scans on disk, so `download_assets` and `install_fonts` never rescan the page (spec 6). One JSON file per scan under
@@ -87,6 +87,7 @@ const AgentScanFile = z.object({
   scanId: z.string(),
   scannedAt: z.string(),
   source: z.enum(["local", "remote"]),
+  remote: z.string().optional(),
   page: z.object({
     url: z.string(),
     finalUrl: z.string(),
@@ -119,6 +120,31 @@ async function readScan(file: string): Promise<AgentScan | null> {
   }
 }
 
+/**
+ * Where a scan ran: the kind of source, and for a remote one which hosted app. Every `ScanSource` is one, which is how
+ * a caller passes its source rather than restating what it is and forgetting half of it.
+ */
+export type ScanOrigin = Pick<ScanSource, "kind" | "remote">;
+
+/**
+ * Two spellings of one hosted app: a trailing slash and the case of the scheme and the host do not make it another
+ * one. The path keeps its case, because a path can be case sensitive. Anything that is not a URL is compared as it is.
+ */
+function normalizeRemote(remote: string | undefined): string {
+  const trimmed = (remote ?? "").trim().replace(/\/+$/, "");
+  if (trimmed === "") return "";
+  try {
+    const url = new URL(trimmed);
+    return `${url.protocol.toLowerCase()}//${url.host.toLowerCase()}${url.pathname.replace(/\/+$/, "")}`;
+  } catch {
+    return trimmed;
+  }
+}
+
+/** Whether a cached scan came from the same place a lookup is asking about: the same kind, and the same hosted app. */
+const sameOrigin = (scan: AgentScan, origin: ScanOrigin): boolean =>
+  scan.source === origin.kind && normalizeRemote(scan.remote) === normalizeRemote(origin.remote);
+
 /** `https://www.stripe.com/` and `stripe.com` are the same page to `findRecentScan`. */
 const sameUrl = (a: string, b: string): boolean => normalizeUrl(a) === normalizeUrl(b);
 
@@ -131,8 +157,17 @@ const normalizeUrl = (url: string): string =>
     .replace(/\/+$/, "");
 
 /**
- * The newest cached scan of `url` that is younger than `ttlMs`, or null. Every failure is a cache miss: a file that is
- * missing, unparseable or not a scan is skipped rather than failing the lookup.
+ * The newest cached scan of `url` that `source` produced and that is younger than `ttlMs`, or null. Every failure is a
+ * cache miss: a file that is missing, unparseable or not a scan is skipped rather than failing the lookup.
+ *
+ * The source is part of the lookup, not a detail of the answer: a local scan and a remote one answer the same URL from
+ * different engines, so serving one for the other makes `--remote` a claim the answer does not back. A remote run
+ * therefore never reads a locally produced scan, and a local run never reads a remote one (review issue: misleading
+ * `--remote`).
+ *
+ * "Remote" is not one bucket either. `--remote-url` and `ASSETS_SCRAPER_REMOTE` name which hosted app runs the scan,
+ * and two of them are two engines with two deployments: a scan of production must not answer a run pointed at staging.
+ * The base URL the scan ran against is therefore compared too, so a source only ever reads its own scans.
  *
  * A scan file is written once and never touched again, so its mtime is when the scan ran. Files older than the TTL are
  * therefore skipped on the stat, without parsing them: this runs on the hot path of every scan, the cache holds a day
@@ -140,7 +175,7 @@ const normalizeUrl = (url: string): string =>
  * was moved backwards by something other than this tool (a restored backup, a `touch`) is therefore invisible here even
  * when its `scannedAt` is inside the TTL, which costs a rescan and never a wrong answer.
  */
-export async function findRecentScan(url: string, ttlMs: number = agentLimits.scanCacheTtlMs): Promise<AgentScan | null> {
+export async function findRecentScan(url: string, source: ScanOrigin, ttlMs: number = agentLimits.scanCacheTtlMs): Promise<AgentScan | null> {
   const dir = cacheDir();
   let names: string[];
   try {
@@ -156,7 +191,7 @@ export async function findRecentScan(url: string, ttlMs: number = agentLimits.sc
     try {
       if ((await fs.stat(path.join(dir, name))).mtimeMs < oldest) continue;
       const scan = await readScan(path.join(dir, name));
-      if (!scan) continue;
+      if (!scan || !sameOrigin(scan, source)) continue;
       const at = Date.parse(scan.scannedAt);
       if (!Number.isFinite(at) || at < oldest || at <= bestAt) continue;
       if (!sameUrl(scan.page.url, url) && !sameUrl(scan.page.finalUrl, url)) continue;

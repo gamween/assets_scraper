@@ -22,6 +22,11 @@ export interface AgentScan {
   scanId: string;
   scannedAt: string; // ISO 8601
   source: "local" | "remote";
+  /**
+   * The hosted app a remote scan ran against, with no trailing slash, and absent for a local scan. Part of what the
+   * scan is an answer to, not a detail of it: two hosted apps are two engines, so the cache tells them apart.
+   */
+  remote?: string;
   page: { url: string; finalUrl: string; host: string; title: string; siteName?: string };
   assets: Asset[];
   fonts: FontFamily[];
@@ -38,6 +43,8 @@ export interface ScanSourceOptions {
 
 export interface ScanSource {
   readonly kind: "local" | "remote";
+  /** The hosted app this source reads, with no trailing slash, and undefined when `kind` is "local". */
+  readonly remote?: string;
   scan(url: string, options?: { signal?: AbortSignal; onStep?: (step: string) => void }): Promise<AgentScan>;
   fetchBytes(target: AssetSource | FontFile, options?: { signal?: AbortSignal }): Promise<Buffer>;
 }

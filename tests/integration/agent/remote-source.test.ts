@@ -1,7 +1,13 @@
+import fs from "node:fs";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
+import os from "node:os";
+import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createRemoteScanSource } from "@/agent/source-remote";
+import { saveScan } from "@/agent/cache";
+import { scanPage } from "@/agent/cli";
+import { RemoteScanError, createRemoteScanSource } from "@/agent/source-remote";
+import { testScan } from "@/agent/testing";
 import { POST } from "@/app/api/v1/scan/route";
 import type { SafeFetch } from "@/server/scan/types";
 import { handleAssetRequest } from "@/server/security/asset-proxy";
@@ -20,6 +26,12 @@ const TOKEN = "integration-remote-agent-token-xyz";
 let fixture: FixtureServer;
 let app: http.Server;
 let appOrigin: string;
+let appPosts: string[];
+/** A second hosted app, which records what it is asked and answers no scan: enough to show a request was really sent. */
+let other: http.Server;
+let otherOrigin: string;
+let otherPosts: string[];
+let cacheRoot: string;
 let env: typeof process.env;
 
 /** The node request as a `Request`, so the route handlers run exactly as they do on the hosted app. */
@@ -47,7 +59,9 @@ beforeAll(async () => {
   env = { ...process.env };
   fixture = await serveAssetsFixture();
   process.env.AGENT_TOKENS = TOKEN;
+  appPosts = [];
   app = http.createServer((incoming, response) => {
+    if (incoming.method === "POST") appPosts.push((incoming.url ?? "").split("?")[0]);
     const chunks: Buffer[] = [];
     incoming.on("data", (chunk: Buffer) => chunks.push(chunk));
     incoming.on("end", () => {
@@ -63,12 +77,28 @@ beforeAll(async () => {
   });
   await new Promise<void>((resolve) => app.listen(0, "127.0.0.1", resolve));
   appOrigin = `http://127.0.0.1:${(app.address() as AddressInfo).port}`;
+
+  otherPosts = [];
+  other = http.createServer((incoming, response) => {
+    incoming.resume();
+    otherPosts.push(`${incoming.method} ${(incoming.url ?? "").split("?")[0]}`);
+    response.writeHead(503, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: "unavailable", message: "this app is down" } }));
+  });
+  await new Promise<void>((resolve) => other.listen(0, "127.0.0.1", resolve));
+  otherOrigin = `http://127.0.0.1:${(other.address() as AddressInfo).port}`;
+
+  // The scan cache is on disk and shared by every caller, so these tests get one of their own.
+  cacheRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "remote-source-")));
+  process.env.XDG_CACHE_HOME = cacheRoot;
 }, 60_000);
 
 afterAll(async () => {
-  app?.closeAllConnections();
-  await new Promise<void>((resolve) => (app ? app.close(() => resolve()) : resolve()));
+  for (const server of [app, other]) {
+    server?.closeAllConnections();
+    await new Promise<void>((resolve) => (server ? server.close(() => resolve()) : resolve()));
+  }
   await fixture?.close();
+  if (cacheRoot) fs.rmSync(cacheRoot, { recursive: true, force: true });
   process.env = env;
 });
 
@@ -84,6 +114,36 @@ describe("the remote source against the hosted app", () => {
     expect(scan.fonts.map((family) => family.name)).toContain("Inter");
     expect(scan.stats.assets).toBe(scan.assets.length);
     expect(scan.scanId).toMatch(/^[A-Za-z0-9._-]{1,120}$/);
+  }, 150_000);
+
+  /**
+   * The cache scoping against a real server rather than an in-memory fake: a warm local scan of the same page must not
+   * answer a remote run, and a scan of this hosted app must not answer a run pointed at another one. The fakes in
+   * `src/agent/cli.test.ts` assert a constant `kind`; only a server can show that the request was really sent.
+   */
+  it("asks the hosted app even when a local scan of the same page is warm, and never answers another app from it", async () => {
+    const url = `${fixture.origin}/`;
+    const page = { url, finalUrl: url, host: "127.0.0.1", title: "Fixture" };
+    await saveScan(testScan({ scanId: "warm-local-scan", source: "local", scannedAt: new Date().toISOString(), page }));
+    const before = appPosts.length;
+
+    const first = await scanPage(url, source(), {});
+
+    expect(first.reused).toBe(false);
+    expect(first.scan.source).toBe("remote");
+    expect(first.scan.remote).toBe(appOrigin);
+    expect(first.scan.scanId).not.toBe("warm-local-scan");
+    expect(appPosts.slice(before)).toEqual(["/api/v1/scan"]);
+
+    // The remote answer is cached for this hosted app, so a second run of the same URL sends nothing
+    const second = await scanPage(url, source(), {});
+    expect(second).toMatchObject({ reused: true, scan: { scanId: first.scan.scanId } });
+    expect(appPosts).toHaveLength(before + 1);
+
+    // A run pointed at a different hosted app reaches that app, and fails on its answer rather than reusing this one
+    const elsewhere = createRemoteScanSource({ remote: otherOrigin, token: TOKEN });
+    await expect(scanPage(url, elsewhere, {})).rejects.toBeInstanceOf(RemoteScanError);
+    expect(otherPosts).toEqual(["POST /api/v1/scan"]);
   }, 150_000);
 
   it("gets the bytes of an http asset through the hosted proxy, which the agent token opens", async () => {

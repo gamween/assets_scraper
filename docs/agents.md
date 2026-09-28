@@ -25,9 +25,9 @@ claude plugin marketplace add "$PWD"
 claude plugin install assets-scraper
 ```
 
-Google Chrome has to be installed for a local scan. Set `CHROME_EXECUTABLE_PATH` if it is not in the default location. The MCP entry point is `dist/mcp.mjs`, written by `pnpm build:agent`, and it fails with a clear message when the build or the dependencies are missing.
+Google Chrome has to be installed for a local scan. Set `CHROME_EXECUTABLE_PATH` if it is not in the default location. The plugin starts the server through `scripts/mcp-launcher.mjs`, which runs `dist/mcp.mjs` and fails with a clear message when the build or the dependencies are missing.
 
-The marketplace stays pointed at the clone, and the plugin runs `dist/mcp.mjs` from it, which is not committed. Run `pnpm build:agent` again after every `git pull`, or the MCP server keeps serving the bundle of an older commit. Restart Claude Code to pick up a rebuilt bundle. `claude mcp list` shows the server as `plugin:assets-scraper:assets-scraper` with the path it runs.
+The marketplace stays pointed at the clone, and the bundle the launcher runs, `dist/mcp.mjs`, is not committed. The launcher rebuilds it whenever it is missing or older than any source file under `src/agent`, `src/server` or `src/lib`, so a `git pull` no longer leaves the MCP server serving the bundle of an older commit. The generated in-page bundles under `src/server/scan/inpage/generated` are build output, not sources, so a `pnpm test` that rewrote them is not a reason to rebuild. Restart Claude Code to pick up a rebuilt bundle. A rebuild it cannot do, node_modules not installed for instance, is reported on stderr and the server does not start. `claude mcp list` shows the server as `plugin:assets-scraper:assets-scraper` with the path it runs.
 
 Tools, all returning compact JSON, never bytes:
 
@@ -42,7 +42,7 @@ Tools, all returning compact JSON, never bytes:
 | `list_installed_fonts` | | What this tool installed, with dates and sources |
 | `uninstall_fonts` | `families` | What was removed |
 
-A scan is cached in `~/.cache/assets-scraper/<scanId>.json` for one hour, so `download_assets` and `install_fonts` never rescan. `scan_page` on the same URL inside the hour reuses the cache unless `refresh` is true.
+A scan is cached in `~/.cache/assets-scraper/<scanId>.json` for one hour, so `download_assets` and `install_fonts` never rescan. `scan_page` on the same URL inside the hour reuses the cache unless `refresh` is true. Reuse is scoped to where the scan ran: a run only reuses a scan of the same source, which for a remote run means the same hosted app (`--remote-url`, `ASSETS_SCRAPER_REMOTE`). A local run never reads a remote scan, a remote run never reads a local one, and a run against staging never reads a scan of production. A second remote run of the same URL inside the hour is still answered from the cache rather than by the hosted app, so use `refresh` when the answer has to be a new scan. Reading a scan back needs no token: an MCP server started with `ASSETS_SCRAPER_REMOTE` set and `ASSETS_SCRAPER_TOKEN` unset still answers `scan_page` from a fresh scan of that same app, and asks for the token on the call that has to run a scan.
 
 The plugin also ships the `assets-scraper` skill, which tells the agent the workflow and the context rules: scan, read the summary, filter, download, install fonts, and never list every asset or paste bytes.
 

@@ -1,3 +1,4 @@
+import type { ScanOrigin } from "./cache";
 import { createLocalScanSource } from "./source-local";
 import { createRemoteScanSource } from "./source-remote";
 import type { ScanSource, ScanSourceOptions } from "./types";
@@ -11,6 +12,17 @@ import type { ScanSource, ScanSourceOptions } from "./types";
 export function remoteBaseUrl(options: ScanSourceOptions = {}): string | undefined {
   const remote = (options.remote ?? process.env.ASSETS_SCRAPER_REMOTE ?? "").trim();
   return remote === "" ? undefined : remote.replace(/\/+$/, "");
+}
+
+/**
+ * Where a scan would run, without opening the source. `createScanSource` refuses to build a remote source that has no
+ * token, which is the right answer for a scan and the wrong one for a cache lookup: a scan of that same hosted app,
+ * taken while a token was set and still fresh, is an answer the cache can give. The lookup only ever needed the kind
+ * and the hosted app, so it asks for those and leaves the source closed (`mcp.ts`, `scan_page`).
+ */
+export function scanOrigin(options: ScanSourceOptions = {}): ScanOrigin {
+  const remote = remoteBaseUrl(options);
+  return remote === undefined ? { kind: "local" } : { kind: "remote", remote };
 }
 
 export function createScanSource(options: ScanSourceOptions = {}): ScanSource {

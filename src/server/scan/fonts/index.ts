@@ -2,7 +2,7 @@ import type { FontFaceInfo, FontFamily, FontFile, FontFormat } from "@/lib/contr
 import { limits } from "@/server/config/limits";
 import { SignLimitError } from "@/server/security/sign";
 import type { CapturedFont, FontBinaryMeta, FontsOutput, PostInput, RawFontFaceRule, RawFontStatus, RawFontUsage, SafeFetch, Signer } from "../types";
-import { decodeIdent, MAX_FAMILY_CHARS, MAX_SRC_ENTRIES, normalizeStretch, normalizeStyle, normalizeWeight, parseFontFaceCss, withinDescriptorLimits } from "./css";
+import { decodeIdent, faceKey, MAX_FAMILY_CHARS, MAX_SRC_ENTRIES, normalizeStretch, normalizeStyle, normalizeWeight, parseFontFaceCss, withinDescriptorLimits } from "./css";
 import { createFileLookup, fontDataUri, isDataUri, remoteUrl, type FileRecord } from "./files";
 import { matchGoogleFamilies } from "./google";
 import { classifyLicense } from "./license";
@@ -93,9 +93,6 @@ interface FamilyRecord {
 const FORMAT_RANK: Record<FontFormat, number> = { woff2: 0, woff: 1, ttf: 2, otf: 2, other: 3, eot: 4 };
 
 const isOk = (status: number) => status >= 200 && status < 300;
-const faceKey = (cssFamily: string, face: { weight: string; style: string; stretch?: string }) =>
-  JSON.stringify([cssFamily, face.weight, face.style, face.stretch ?? ""]);
-
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
 const isOptionalString = (value: unknown) => value === undefined || typeof value === "string";
 
@@ -241,21 +238,24 @@ function groupFiles(
   binaryName: (meta: FontBinaryMeta | null) => string | null,
 ) {
   const files = createFileLookup(captured, pageHostOf(input.page));
-  const statuses = input.collector.fontStatuses
-    .filter((status) => isRawStatus(status) && status.family.length <= MAX_FAMILY_CHARS && withinDescriptorLimits(status))
-    .map((status) => {
-      const name = statusFamily(status.family);
-      return {
-        name,
-        family: name.toLowerCase(),
-        weight: normalizeWeight(status.weight),
-        style: normalizeStyle(status.style),
-        stretch: normalizeStretch(status.stretch),
-        loaded: status.status === "loaded",
-      };
-    });
-  const loaded = statuses.filter((status) => status.loaded);
-  const loadedFaces = new Set(loaded.map((status) => faceKey(status.family, status)));
+  /** Every loaded `document.fonts` family, by display name and lowercase name. Their descriptors are not kept: see below. */
+  const loaded: { name: string; family: string }[] = [];
+  /**
+   * The identity of every loaded face, as a key. The descriptors of a status are read here and nowhere else, which is
+   * the point: `loaded` above carries no weight, style or stretch, so the only way left to ask whether a rule's face
+   * loaded is a lookup in this Set. The regression at 6482d28 was a scan comparing every rule's descriptors against
+   * every status of its family, and that shape can no longer be written over `loaded` at all. Written over
+   * `input.collector.fontStatuses` instead, the one place the descriptors still are, it is counted by the `opGrowth`
+   * gate in `index.test.ts`, which reads those statuses through a counting proxy.
+   */
+  const loadedFaces = new Set<string>();
+  for (const status of input.collector.fontStatuses) {
+    if (!isRawStatus(status) || status.status !== "loaded" || status.family.length > MAX_FAMILY_CHARS || !withinDescriptorLimits(status)) continue;
+    const name = statusFamily(status.family);
+    const family = name.toLowerCase();
+    loaded.push({ name, family });
+    loadedFaces.add(faceKey(family, { weight: normalizeWeight(status.weight), style: normalizeStyle(status.style), stretch: normalizeStretch(status.stretch) }));
+  }
   const loadedFamilies = new Set(loaded.map((status) => status.family));
   const groups = new Map<string, Group>();
   // Remote URLs of rules, to find the captures without one

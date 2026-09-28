@@ -51,8 +51,8 @@ export async function fastestMs(task: () => unknown, runs = 3): Promise<number> 
   return fastest;
 }
 
-/** How many times `growthFactor` grows the input. */
-const GROWTH = 8;
+/** How many times `growthFactor` and `opGrowth` grow the input. */
+export const GROWTH = 8;
 
 /**
  * The bound tests set on `growthFactor`: linear work gives about 8, quadratic work about 64, so a GC pause or a busy
@@ -91,4 +91,35 @@ export async function growthFactor(task: (size: number) => unknown, size: number
   const small = await msPerRun(() => task(size));
   const large = await msPerRun(() => task(size * GROWTH));
   return large / small;
+}
+
+/** A counter a test raises from its module mocks, one per call to the code it wants to measure. */
+export interface OpCounter {
+  count: number;
+}
+
+/**
+ * The bound tests set on `opGrowth`: linear work gives at most `GROWTH`, quadratic work `GROWTH` squared. The margin
+ * is only there for the fixed work a run does whatever its size, which makes the small run relatively more expensive
+ * and the ratio smaller, never larger.
+ */
+export const LINEAR_OP_GROWTH_BOUND = 12;
+
+/**
+ * How many times more work `task` does when its input grows from `size` to `GROWTH` times `size`, counted in calls
+ * rather than in milliseconds: about `GROWTH` for linear work and `GROWTH` squared for quadratic work, on every
+ * machine and on every run.
+ *
+ * `growthFactor` measures the same thing in wall time, which compares two runs on the same machine at the same moment
+ * and still flakes when one of them meets a GC pause or a loaded CI runner. A count is the same number every time, so
+ * a suite can gate on it.
+ */
+export async function opGrowth(task: (size: number) => unknown, size: number, ops: OpCounter): Promise<{ small: number; large: number; factor: number }> {
+  ops.count = 0;
+  await task(size);
+  const small = ops.count;
+  ops.count = 0;
+  await task(size * GROWTH);
+  const large = ops.count;
+  return { small, large, factor: small === 0 ? Infinity : large / small };
 }
