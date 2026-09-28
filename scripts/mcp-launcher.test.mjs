@@ -103,6 +103,29 @@ describe("staleness", () => {
     await utimes(src, 2_000, 2_000);
     expect(await staleness(root)).toBe("dist/mcp.mjs is older than src/server/scan/inpage/collector.src.ts");
   });
+
+  /**
+   * Regression: test files counted as bundle sources, so editing or running one rebuilt the bundle and the launcher
+   * said `dist/mcp.mjs is older than src/agent/cache.test.ts`, naming a file the bundle does not contain. The rebuild
+   * cost little; the line saying something untrue cost the next reader an investigation.
+   */
+  it("does not count test files as sources, so the staleness line names a file the bundle holds", async () => {
+    const root = await fakeRepo({ bundleAt: 1_500_000, sourceAt: 1_000_000 });
+    for (const name of ["cache.test.ts", "mcp.test.tsx", "helpers.test.mjs"]) {
+      const file = path.join(root, "src/agent", name);
+      await writeFile(file, "// a test\n");
+      await utimes(file, 2_000, 2_000);
+    }
+
+    expect(await staleness(root)).toBeNull();
+    expect((await newestSource(root))?.file).toBe(path.join(root, "src/agent/mcp.ts"));
+
+    // Only `*.test.*` is dropped, so a file whose name merely mentions tests is still a source
+    const testing = path.join(root, "src/agent/testing.ts");
+    await writeFile(testing, "export const x = 1;\n");
+    await utimes(testing, 2_000, 2_000);
+    expect(await staleness(root)).toBe("dist/mcp.mjs is older than src/agent/testing.ts");
+  });
 });
 
 describe("ensureBundle", () => {

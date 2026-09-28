@@ -35,6 +35,13 @@ export const SOURCE_DIRS = ["src/agent", "src/server", "src/lib"];
  */
 export const GENERATED_DIRS = ["src/server/scan/inpage/generated"];
 
+/**
+ * Files under `SOURCE_DIRS` that no bundle imports. Nothing reaches a `*.test.ts` file from an entry point, so
+ * counting one cost a rebuild after every test run and, worse, printed `dist/mcp.mjs is older than
+ * src/agent/cache.test.ts`, a line naming a file the bundle does not contain, which reads as a bug to whoever sees it.
+ */
+export const isBundleSource = (name) => !/\.test\.[cm]?[jt]sx?$/.test(name);
+
 /** What `pnpm build:agent` runs, as plain node scripts: pnpm is not on the PATH of every agent that starts a plugin. */
 export const BUILD_STEPS = ["scripts/build-inpage.mjs", "scripts/build-agent.mjs"];
 
@@ -65,7 +72,7 @@ async function newestUnder(dir, skip) {
     const full = path.join(dir, entry.name);
     let found = null;
     if (entry.isDirectory()) found = skip.has(full) ? null : await newestUnder(full, skip);
-    else if (entry.isFile()) {
+    else if (entry.isFile() && isBundleSource(entry.name)) {
       try {
         found = { file: full, mtimeMs: (await stat(full)).mtimeMs };
       } catch {
