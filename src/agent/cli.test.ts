@@ -50,6 +50,14 @@ describe("selectionFrom", () => {
     expect(selectionFrom({})).toEqual({});
   });
 
+  /** 0 is the one number a byte limit takes and a count option refuses: it is how a caller says "no limit" out loud. */
+  it("reads the byte limits, and takes 0 as lifting one", () => {
+    expect(selectionFrom({ "max-bytes": "5000", "max-file-bytes": "1000" })).toEqual({ maxTotalBytes: 5_000, maxFileBytes: 1_000 });
+    expect(selectionFrom({ "max-bytes": "0", "max-file-bytes": "0" })).toEqual({ maxTotalBytes: 0, maxFileBytes: 0 });
+    expect(fails(() => selectionFrom({ "max-bytes": "25MB" })).message).toContain("--max-bytes takes a whole number of bytes");
+    expect(fails(() => selectionFrom({ "max-file-bytes": "-1" })).message).toContain("--max-file-bytes takes a whole number of bytes");
+  });
+
   it("refuses a value that would silently select nothing", () => {
     expect(fails(() => selectionFrom({ profile: "quick" })).message).toContain("--profile takes deck or all");
     expect(fails(() => selectionFrom({ kind: "vector" })).message).toContain("--kind does not know");

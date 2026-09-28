@@ -155,6 +155,22 @@ describe("download_assets", () => {
     await wired.close();
   });
 
+  /** The byte budget is a download option like any other, so an agent can raise it or lift it from the tool call. */
+  it("passes the byte limits to the downloader", async () => {
+    const seen: SelectionOptions[] = [];
+    const wired = await connect({
+      downloadAssets: async (_scan, options) => {
+        seen.push(options.selection ?? {});
+        return { dir: options.dir, files: [], totalBytes: 0, dropped: {}, budget: noBudget, failed: [], manifestPath: "" };
+      },
+    });
+
+    await call(wired, "download_assets", { scanId, maxTotalBytes: 50_000_000, maxFileBytes: 0 });
+    expect(seen[0]).toMatchObject({ maxTotalBytes: 50_000_000, maxFileBytes: 0 });
+    expect((await call(wired, "download_assets", { scanId, maxTotalBytes: -1 })).isError).toBe(true);
+    await wired.close();
+  });
+
   /**
    * Regression: ids from an expired scan answered `{ files: [], dropped: { filter: 233 } }` with isError false, and left
    * an empty directory and manifest behind (review issue 10).

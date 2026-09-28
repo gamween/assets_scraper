@@ -288,3 +288,82 @@ describe("downloadAssets, the destination", () => {
     expect(fs.existsSync(path.join(dir, "real", "svg/logo.svg"))).toBe(true);
   });
 });
+
+/** A distinct fill per id, so two files are never byte-identical and the duplicate rules leave them alone. */
+const fillOf = (id: string): number => id.charCodeAt(0);
+
+/**
+ * The byte rules on the download path: the same `selectAssets` the MCP tool and the hosted ZIP run, so what lands in
+ * `scrap/<host>` is bounded by bytes and says so in the manifest.
+ */
+describe("downloadAssets, byte rules", () => {
+  const MB = 1024 * 1024;
+
+  /** Three 4 MB photographs and a 9 MB budget: the two best score, and the manifest says why the third is missing. */
+  it("writes the best scoring files inside the budget and reports it in the manifest", async () => {
+    const photos = ["a", "b", "c"].map((id, index) =>
+      testAsset({ id, filename: `${id}.png`, width: 2400, height: 1600, score: 90 - index * 10, order: index }),
+    );
+    const bodies = Object.fromEntries(photos.map((asset) => [urlOf(asset), Buffer.alloc(4 * MB, fillOf(asset.id))]));
+    const source = fakeSource(bodies);
+
+    const result = await downloadAssets(scanOf(photos), source, { dest: dir, maxTotalBytes: 9 * MB });
+
+    expect(result.files.map((file) => file.id)).toEqual(["a", "b"]);
+    expect(result.totalBytes).toBe(8 * MB);
+    expect(result.dropped["over-budget"]).toBe(1);
+    expect(fs.readdirSync(path.join(dir, "images")).sort()).toEqual(["a.png", "b.png"]);
+
+    const manifest = readManifest(result);
+    expect(manifest.budget).toEqual({ maxTotalBytes: 9 * MB, maxFileBytes: 8 * MB, keptBytes: 8 * MB });
+    expect(manifest.dropped["over-budget"]).toBe(1);
+  });
+
+  it("drops a file over the per-file ceiling even when the scan measured nothing", async () => {
+    const small = testAsset({ id: "small", filename: "small.png", width: 1200, height: 900, score: 60 });
+    const huge = testAsset({ id: "huge", filename: "huge.png", width: 4000, height: 3000, score: 90 });
+    const source = fakeSource({ [urlOf(small)]: Buffer.alloc(1_000), [urlOf(huge)]: Buffer.alloc(9 * MB) });
+
+    const result = await downloadAssets(scanOf([small, huge]), source, { dest: dir });
+
+    expect(result.files.map((file) => file.id)).toEqual(["small"]);
+    expect(result.dropped["too-large"]).toBe(1);
+    expect(fs.existsSync(path.join(dir, "images/huge.png"))).toBe(false);
+  });
+
+  /** A scan that measured the file is a scan that never spends a byte on it. */
+  it("does not fetch a file the scan already measured over the ceiling", async () => {
+    const huge = testAsset({ id: "huge", filename: "huge.png", width: 4000, height: 3000, bytes: 30 * MB });
+    const source = fakeSource({ [urlOf(huge)]: Buffer.alloc(1_000) });
+
+    const result = await downloadAssets(scanOf([huge]), source, { dest: dir });
+
+    expect(source.requests).toEqual([]);
+    expect(result.files).toEqual([]);
+    expect(result.dropped["too-large"]).toBe(1);
+  });
+
+  it("writes an asset named by id whatever it weighs", async () => {
+    const huge = testAsset({ id: "huge", filename: "huge.png", width: 4000, height: 3000, bytes: 30 * MB });
+    const source = fakeSource({ [urlOf(huge)]: Buffer.alloc(30 * MB) });
+
+    const result = await downloadAssets(scanOf([huge]), source, { dest: dir, ids: ["huge"] });
+
+    expect(result.files.map((file) => file.id)).toEqual(["huge"]);
+    expect(result.dropped).toEqual({});
+    expect(readManifest(result).budget.maxTotalBytes).toBe(0);
+  });
+
+  it("reads the limits from the environment like every other agent limit", async () => {
+    setLimit("maxTotalBytes", 3_000);
+    const assets = ["a", "b"].map((id, index) =>
+      testAsset({ id, filename: `${id}.png`, width: 1200, height: 900, score: 90 - index * 10, order: index }),
+    );
+    const source = fakeSource(Object.fromEntries(assets.map((asset) => [urlOf(asset), Buffer.alloc(2_000, fillOf(asset.id))])));
+
+    const result = await downloadAssets(scanOf(assets), source, { dest: dir });
+
+    expect(result.files.map((file) => file.id)).toEqual(["a"]);
+    expect(result.dropped["over-budget"]).toBe(1);
+  });
+});

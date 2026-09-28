@@ -93,6 +93,31 @@ describe("buildAssetsZip", () => {
     expect(settle).toHaveBeenCalledTimes(1);
   });
 
+  /**
+   * The hosted archive runs the selection the CLI and the MCP tool run, so the same budget bounds it: the request cap
+   * and the daily meter bound what is fetched, `selectAssets` bounds what is archived.
+   */
+  it("holds the archive to the byte budget and says so in the manifest", async () => {
+    const source = sourceOf();
+
+    const built = await buildAssetsZip(scan, source, { maxTotalBytes: 2_048 }, { meter: meterOf(Infinity) });
+
+    expect(built.manifest.files.map((file) => file.id)).toEqual(["a", "b"]);
+    expect(built.manifest.totalBytes).toBe(2_048);
+    expect(built.manifest.truncated).toBe(false);
+    expect(built.manifest.dropped["over-budget"]).toBe(2);
+    expect(built.manifest.budget).toEqual({ maxTotalBytes: 2_048, maxFileBytes: 8 * 1024 * 1024, keptBytes: 2_048 });
+  });
+
+  it("drops a file over the per-file ceiling from the archive", async () => {
+    const source = sourceOf();
+
+    const built = await buildAssetsZip(scan, source, { maxFileBytes: 512 }, { meter: meterOf(Infinity) });
+
+    expect(built.manifest.files).toEqual([]);
+    expect(built.manifest.dropped["too-large"]).toBe(4);
+  });
+
   it("reads AGENT_ZIP_MAX_BYTES for the per request cap", () => {
     vi.stubEnv("AGENT_ZIP_MAX_BYTES", "4096");
     expect(zipMaxBytes()).toBe(4_096);

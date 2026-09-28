@@ -211,3 +211,50 @@ describe("pruneScans", () => {
     expect(await pruneScans()).toBe(0);
   });
 });
+
+/**
+ * The cache is an answer this build produced (spec 6). An upgrade that changes what a scan finds, or what a download
+ * keeps, is invisible for an hour if the cache keeps serving the old build's scans, and that hour is exactly when
+ * someone runs the fix on the page that showed the bug.
+ */
+describe("the build stamp", () => {
+  it("does not reuse an entry another build wrote", async () => {
+    const xdg = makeTree();
+    vi.stubEnv("XDG_CACHE_HOME", xdg);
+    vi.stubEnv("ASSETS_SCRAPER_BUILD_ID", "build-a");
+    const scannedAt = new Date().toISOString();
+    await saveScan(testScan({ scanId: "stamped", scannedAt }));
+
+    vi.stubEnv("ASSETS_SCRAPER_BUILD_ID", "build-b");
+    expect(await loadScan("stamped")).toBeNull();
+    expect(await findRecentScan("stripe.com", { kind: "local" })).toBeNull();
+
+    vi.stubEnv("ASSETS_SCRAPER_BUILD_ID", "build-a");
+    expect((await loadScan("stamped"))?.scanId).toBe("stamped");
+    expect((await findRecentScan("stripe.com", { kind: "local" }))?.scanId).toBe("stamped");
+  });
+
+  it("does not reuse a file written before the stamp existed", async () => {
+    const xdg = makeTree();
+    vi.stubEnv("XDG_CACHE_HOME", xdg);
+    fs.mkdirSync(path.join(xdg, "assets-scraper"), { recursive: true });
+    const scan = testScan({ scanId: "unstamped", scannedAt: new Date().toISOString() });
+    fs.writeFileSync(path.join(xdg, "assets-scraper", "unstamped.json"), JSON.stringify(scan));
+    expect(await loadScan("unstamped")).toBeNull();
+  });
+
+  it("stamps what it writes and hands back the scan without the stamp", async () => {
+    const xdg = makeTree();
+    vi.stubEnv("XDG_CACHE_HOME", xdg);
+    const scan = testScan({ scanId: "clean", scannedAt: new Date().toISOString() });
+    const file = await saveScan(scan);
+    expect(JSON.parse(fs.readFileSync(file, "utf8")).build).toBe(buildIdentity());
+    expect(await loadScan("clean")).toEqual(scan);
+  });
+
+  it("is the same identity for every command of one build", async () => {
+    vi.stubEnv("ASSETS_SCRAPER_BUILD_ID", undefined);
+    expect(buildIdentity()).toBe(buildIdentity());
+    expect(buildIdentity()).toMatch(/^\d+\.\d+\.\d+\+(?:[0-9a-f]{16}|source)$/);
+  });
+});

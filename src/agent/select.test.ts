@@ -14,6 +14,7 @@ interface Make {
   order?: number;
   width?: number;
   height?: number;
+  bytes?: number;
 }
 
 let order = 0;
@@ -37,6 +38,7 @@ const make = ({ file, ...rest }: Make): Asset => {
     usedCount: 1,
     width: rest.width,
     height: rest.height,
+    bytes: rest.bytes,
     tone: "unknown",
     display: { url: `https://cdn.example.com/${file}`, proxy: "", format, width: rest.width, height: rest.height },
     original: null,
@@ -396,5 +398,100 @@ describe("selectAssets, edge cases", () => {
     const selection = await selectAssets(assets, {}, new Map([["a.png", big]]));
     expect(selection.keep).toHaveLength(2);
     expect(selection.dropped).toEqual({});
+  });
+});
+
+/**
+ * The byte rules. A file count cap says nothing about what a download weighs: the same 60 files are 300 KB of wordmarks
+ * or a quarter of a gigabyte of photographs, so these are the rules that bound `assets-scraper get` with no filters.
+ */
+describe("selectAssets, byte rules", () => {
+  const MB = 1024 * 1024;
+
+  it("drops a file over the deck ceiling and counts it under too-large", async () => {
+    const assets = [
+      make({ file: "wordmark.svg", score: 90, bytes: 3_000 }),
+      make({ file: "hero.png", score: 80, width: 4000, height: 3000, bytes: 12 * MB }),
+    ];
+    const selection = await selectAssets(assets);
+    expect(selection.keep.map((asset) => asset.id)).toEqual(["wordmark.svg"]);
+    expect(selection.dropped).toEqual({ "too-large": 1 });
+    expect(selection.budget.maxFileBytes).toBe(8 * MB);
+  });
+
+  it("lifts the ceiling for maxFileBytes 0, and the all profile has none of its own", async () => {
+    const assets = [make({ file: "hero.png", width: 4000, height: 3000, bytes: 12 * MB })];
+    expect(await kept(assets, { maxFileBytes: 0 })).toEqual(["hero.png"]);
+    expect(await kept(assets, { profile: "all" })).toEqual(["hero.png"]);
+    expect(await kept(assets, { profile: "all", maxFileBytes: 4 * MB })).toEqual([]);
+  });
+
+  it("spends the budget on the best scoring files and counts the rest under over-budget", async () => {
+    const assets = [
+      make({ file: "a.png", score: 90, width: 1200, height: 900, bytes: 4 * MB }),
+      make({ file: "b.png", score: 80, width: 1200, height: 900, bytes: 4 * MB }),
+      make({ file: "c.png", score: 70, width: 1200, height: 900, bytes: 4 * MB }),
+    ];
+    const selection = await selectAssets(assets, { maxTotalBytes: 9 * MB });
+    expect(selection.keep.map((asset) => asset.id)).toEqual(["a.png", "b.png"]);
+    expect(selection.dropped).toEqual({ "over-budget": 1 });
+    expect(selection.budget).toEqual({ maxTotalBytes: 9 * MB, maxFileBytes: 8 * MB, keptBytes: 8 * MB });
+  });
+
+  it("passes over a file too big for what is left instead of ending the selection there", async () => {
+    const assets = [
+      make({ file: "big.png", score: 90, width: 1200, height: 900, bytes: 7 * MB }),
+      make({ file: "small-a.svg", score: 80, bytes: 20_000 }),
+      make({ file: "small-b.svg", score: 70, bytes: 20_000 }),
+    ];
+    const selection = await selectAssets(assets, { maxTotalBytes: 1 * MB });
+    expect(selection.keep.map((asset) => asset.id)).toEqual(["small-a.svg", "small-b.svg"]);
+    expect(selection.dropped).toEqual({ "over-budget": 1 });
+  });
+
+  it("takes the whole selection when the caller lifts the budget", async () => {
+    const assets = [
+      make({ file: "a.png", score: 90, width: 1200, height: 900, bytes: 20 * MB }),
+      make({ file: "b.png", score: 80, width: 1200, height: 900, bytes: 20 * MB }),
+    ];
+    expect(await kept(assets, { maxTotalBytes: 0, maxFileBytes: 0 })).toEqual(["a.png", "b.png"]);
+    expect(await kept(assets, { maxTotalBytes: 64 * MB, maxFileBytes: 0 })).toEqual(["a.png", "b.png"]);
+  });
+
+  /** Spec 4: explicit ids win over every filter and every profile rule, and the byte rules are no exception. */
+  it("never drops an asset the caller asked for by id", async () => {
+    const assets = [
+      make({ file: "hero.png", id: "hero", score: 90, width: 4000, height: 3000, bytes: 30 * MB }),
+      make({ file: "second.png", id: "second", score: 80, width: 4000, height: 3000, bytes: 30 * MB }),
+    ];
+    const selection = await selectAssets(assets, { ids: ["hero", "second"] });
+    expect(selection.keep.map((asset) => asset.id)).toEqual(["hero", "second"]);
+    expect(selection.dropped).toEqual({});
+    expect(selection.budget.maxTotalBytes).toBe(0);
+  });
+
+  /** The second pass is the one that decides: a URL that answers with more than the scan measured is caught there. */
+  it("reads the bytes in hand over what the scan declared", async () => {
+    const assets = [make({ file: "a.png", width: 1200, height: 900, bytes: 1_000 })];
+    const bytes = new Map([["a.png", Buffer.alloc(10 * MB)]]);
+    const selection = await selectAssets(assets, {}, bytes);
+    expect(selection.keep).toEqual([]);
+    expect(selection.dropped).toEqual({ "too-large": 1 });
+  });
+
+  it("keeps an asset nobody measured, for the pass that has its bytes to drop", async () => {
+    const assets = [make({ file: "a.png", width: 1200, height: 900 }), make({ file: "b.svg" })];
+    const selection = await selectAssets(assets, { maxTotalBytes: 1_000, maxFileBytes: 1_000 });
+    expect(selection.keep).toHaveLength(2);
+    expect(selection.dropped).toEqual({});
+    expect(selection.budget.keptBytes).toBe(0);
+  });
+
+  it("counts the markup an asset carries itself", async () => {
+    const markup = `<svg xmlns="http://www.w3.org/2000/svg">${"<path d='M0 0h1v1z'/>".repeat(400)}</svg>`;
+    const assets = [{ ...make({ file: "inline.svg" }), inline: { mime: "image/svg+xml" as const, text: markup } }];
+    const selection = await selectAssets(assets, { maxTotalBytes: 1_000 });
+    expect(selection.keep).toEqual([]);
+    expect(selection.dropped).toEqual({ "over-budget": 1 });
   });
 });
