@@ -677,7 +677,14 @@ describe("buildFontFamilies", () => {
     // family names that give the same id
     ids: (size) => ({ fontFaces: Array.from({ length: size }, (_, index) => rule(String.fromCharCode(0x4e00 + index), [`${PAGE}${index}.woff2`])) }),
   };
-  /** 600 grows to 4,800, under the cap of 5,000 CSSOM rules; binary names and registered families are capped at 128. */
+  /**
+   * 600 grows to 4,800, under the cap of 5,000 CSSOM rules. `undeclared` is the one case where both runs sit above
+   * their own caps on purpose: binary names and registered families are matched pairwise by design, 128 against 128 at
+   * most, so what 300 and 2,400 gate is that those caps hold. Counted, that gates it well: 62 with the caps lifted
+   * against 8 with them in place. What grows between the two runs is the per-file work around the matching, which is
+   * also why this is the one input whose wall-clock factor in the benchmark below sits near 1.7 where the other three
+   * read about 8. Read that line as the caps holding, not as the matching being linear, which it is not.
+   */
   const hostileSize = (name: string) => (name === "undeclared" ? 300 : 600);
 
   /**
