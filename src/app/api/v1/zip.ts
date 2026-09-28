@@ -1,0 +1,239 @@
+import { makeZip } from "client-zip";
+import { agentLimits } from "@/agent/limits";
+import { selectAssets } from "@/agent/select";
+import type { AgentScan, DropReason, ScanSource, SelectionOptions } from "@/agent/types";
+import type { Asset } from "@/lib/contract";
+import { meterProxyBytes, type ProxyBytesMeter } from "@/server/security/budget";
+
+/**
+ * The ZIP of a selection, built on the server (spec section 8). It is the same selection the CLI writes into `scrap/`,
+ * run with `selectAssets` twice like a download does: the name and size rules before any fetch, the byte rules (exact
+ * and perceptual duplicates) once the bytes are in, so a duplicate discovered from bytes never reaches the archive.
+ *
+ * The bytes are held in memory before the archive streams, because the byte rules decide which entries exist: the
+ * per request cap and the daily proxy budget are what bound that, and reaching either ends the archive cleanly with a
+ * note in the manifest rather than an error.
+ */
+
+/** Bytes one ZIP request serves, whatever the daily budget still allows: it is also what one function holds in memory. */
+const DEFAULT_MAX_BYTES = 64 * 1024 * 1024;
+
+export const zipMaxBytes = (): number => {
+  const value = Number(process.env.AGENT_ZIP_MAX_BYTES);
+  return Number.isSafeInteger(value) && value > 0 ? value : DEFAULT_MAX_BYTES;
+};
+
+/** Why the selection kept a file, so an agent can explain the archive without rerunning the rules. */
+export type KeptFor = "named" | "vector" | "logo" | "large";
+
+export interface ZipFileRow {
+  path: string;
+  id: string;
+  name: string;
+  url: string;
+  kind: Asset["kind"];
+  role: Asset["role"];
+  format: Asset["format"];
+  width?: number;
+  height?: number;
+  bytes: number;
+  keptFor: KeptFor;
+}
+
+export interface ZipManifest {
+  tool: "assets-scraper";
+  scanId: string;
+  scannedAt: string;
+  page: AgentScan["page"];
+  selection: SelectionOptions;
+  files: ZipFileRow[];
+  dropped: Partial<Record<DropReason, number>>;
+  duplicates: { keptId: string; droppedIds: string[] }[];
+  failed: { id: string; name: string; reason: string }[];
+  totalBytes: number;
+  truncated: boolean;
+  note?: string;
+}
+
+export interface BuiltZip {
+  stream: ReadableStream<Uint8Array>;
+  manifest: ZipManifest;
+  filename: string;
+}
+
+export interface BuildZipOptions {
+  signal?: AbortSignal;
+  meter?: ProxyBytesMeter;
+  maxBytes?: number;
+  concurrency?: number;
+}
+
+const LOGO_ROLES = new Set<Asset["role"]>(["site-logo", "logo", "favicon"]);
+
+const keptFor = (asset: Asset, named: boolean): KeptFor =>
+  named ? "named" : asset.kind === "svg" ? "vector" : LOGO_ROLES.has(asset.role) ? "logo" : "large";
+
+/** The URL the file came from, or "" for markup the scan already held (inline SVG has no URL of its own). */
+const sourceUrl = (asset: Asset): string => asset.original?.url ?? asset.display?.url ?? "";
+
+const UNSAFE = /[\u0000-\u001f\u007f/\\:*?"<>|]+/g;
+
+/** One path segment, with nothing that could climb out of the folder it is written into. */
+export function zipSegment(value: string, fallback: string): string {
+  const cleaned = value.replace(UNSAFE, "-").replace(/^[\s.]+|[\s.]+$/g, "").slice(0, 120);
+  return cleaned === "" ? fallback : cleaned;
+}
+
+const uniqueName = (name: string, used: Set<string>): string => {
+  const dot = name.lastIndexOf(".");
+  const stem = dot > 0 ? name.slice(0, dot) : name;
+  const extension = dot > 0 ? name.slice(dot) : "";
+  let candidate = name;
+  for (let n = 2; used.has(candidate.toLowerCase()); n++) candidate = `${stem}-${n}${extension}`;
+  used.add(candidate.toLowerCase());
+  return candidate;
+};
+
+/** Bytes of one asset: its own markup when the scan carries it, the original file otherwise, then what was displayed. */
+async function assetBytes(asset: Asset, source: ScanSource, signal?: AbortSignal): Promise<Buffer> {
+  const inline = asset.inline;
+  if (inline) return "text" in inline ? Buffer.from(inline.text, "utf8") : Buffer.from(inline.base64, "base64");
+  const target = asset.original ?? asset.display;
+  if (!target) throw new Error("no bytes to fetch");
+  return source.fetchBytes(target, signal ? { signal } : {});
+}
+
+const reasonOf = (error: unknown): string => (error instanceof Error ? error.message : "could not be fetched").slice(0, 200);
+
+/**
+ * Fetches the selection in relevance order, `concurrency` at a time, counting every byte against the daily proxy budget
+ * before it is served. It stops at the first refusal of the budget or of the per request cap, so an archive is either
+ * whole or the front of the selection with `truncated` set.
+ */
+async function fetchSelection(
+  keep: Asset[],
+  source: ScanSource,
+  options: { maxBytes: number; concurrency: number; meter: ProxyBytesMeter; signal?: AbortSignal },
+): Promise<{ bytes: Map<string, Buffer>; failed: ZipManifest["failed"]; truncated: boolean; unavailable: number }> {
+  const bytes = new Map<string, Buffer>();
+  const failed: ZipManifest["failed"] = [];
+  let total = 0;
+  let truncated = false;
+  let cursor = 0;
+
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      if (truncated || options.signal?.aborted) return;
+      const asset = keep[cursor++];
+      if (asset === undefined) return;
+      let buffer: Buffer;
+      try {
+        buffer = await assetBytes(asset, source, options.signal);
+      } catch (error) {
+        failed.push({ id: asset.id, name: asset.name, reason: reasonOf(error) });
+        continue;
+      }
+      // `total` is read between awaits, so the request cap can be passed by what the other workers hold in flight, by
+      // at most `concurrency` files. The budget is the exact one: `take` is atomic and counts nothing when it refuses.
+      if (total + buffer.byteLength > options.maxBytes || !(await options.meter.take(buffer.byteLength))) {
+        truncated = true;
+        return;
+      }
+      total += buffer.byteLength;
+      bytes.set(asset.id, buffer);
+    }
+  };
+
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(options.concurrency, keep.length)) }, worker));
+  const fetched = bytes.size + failed.length;
+  return { bytes, failed, truncated, unavailable: truncated ? Math.max(0, keep.length - fetched) : 0 };
+}
+
+const sum = (into: Partial<Record<DropReason, number>>, from: Partial<Record<DropReason, number>>): Partial<Record<DropReason, number>> => {
+  for (const [reason, count] of Object.entries(from) as [DropReason, number][]) {
+    if (count > 0) into[reason] = (into[reason] ?? 0) + count;
+  }
+  return into;
+};
+
+const TRUNCATED_NOTE =
+  "This archive holds the front of the selection only: the request limit or the daily byte budget was reached. Ask for fewer files with max, kinds or roles.";
+
+/** Builds the archive for `scan` and returns its stream, its manifest and the file name to offer it under. */
+export async function buildAssetsZip(
+  scan: AgentScan,
+  source: ScanSource,
+  selection: SelectionOptions,
+  options: BuildZipOptions = {},
+): Promise<BuiltZip> {
+  const meter = options.meter ?? meterProxyBytes();
+  const byName = await selectAssets(scan.assets, selection);
+  let fetched: Awaited<ReturnType<typeof fetchSelection>>;
+  try {
+    fetched = await fetchSelection(byName.keep, source, {
+      maxBytes: options.maxBytes ?? zipMaxBytes(),
+      concurrency: options.concurrency ?? agentLimits.downloadConcurrency,
+      meter,
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
+  } finally {
+    await meter.settle();
+  }
+
+  const byBytes = await selectAssets(
+    byName.keep.filter((asset) => fetched.bytes.has(asset.id)),
+    selection,
+    fetched.bytes,
+  );
+
+  const used = new Set<string>();
+  const named = new Set(selection.ids ?? []);
+  const files: ZipFileRow[] = [];
+  const entries: { name: string; input: Uint8Array; lastModified: Date }[] = [];
+  for (const asset of byBytes.keep) {
+    const buffer = fetched.bytes.get(asset.id);
+    if (!buffer) continue;
+    const folder = asset.kind === "svg" ? "svg" : "images";
+    const path = `${folder}/${uniqueName(zipSegment(asset.filename || `${asset.id}.${asset.format}`, `${asset.id}.${asset.format}`), used)}`;
+    files.push({
+      path,
+      id: asset.id,
+      name: asset.name,
+      url: sourceUrl(asset),
+      kind: asset.kind,
+      role: asset.role,
+      format: asset.format,
+      ...(asset.width === undefined ? {} : { width: asset.width }),
+      ...(asset.height === undefined ? {} : { height: asset.height }),
+      bytes: buffer.byteLength,
+      keptFor: keptFor(asset, named.has(asset.id)),
+    });
+    entries.push({ name: path, input: buffer, lastModified: new Date(scan.scannedAt) });
+  }
+
+  const dropped = sum(sum({}, byName.dropped), byBytes.dropped);
+  if (fetched.unavailable > 0) sum(dropped, { unavailable: fetched.unavailable });
+  const manifest: ZipManifest = {
+    tool: "assets-scraper",
+    scanId: scan.scanId,
+    scannedAt: scan.scannedAt,
+    page: scan.page,
+    selection,
+    files,
+    dropped,
+    duplicates: byBytes.duplicates,
+    failed: fetched.failed,
+    totalBytes: files.reduce((total, file) => total + file.bytes, 0),
+    truncated: fetched.truncated,
+    ...(fetched.truncated ? { note: TRUNCATED_NOTE } : {}),
+  };
+
+  return {
+    stream: makeZip([
+      ...entries,
+      { name: "manifest.json", input: `${JSON.stringify(manifest, null, 2)}\n`, lastModified: new Date(scan.scannedAt) },
+    ]),
+    manifest,
+    filename: `${zipSegment(scan.page.host, "site")}-assets.zip`,
+  };
+}
