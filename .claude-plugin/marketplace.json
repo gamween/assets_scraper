@@ -1,0 +1,22 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "assets-scraper",
+  "description": "Assets Scraper for Claude Code: scan a page, download the assets that are usable and install its fonts.",
+  "owner": {
+    "name": "gamween",
+    "url": "https://github.com/gamween"
+  },
+  "plugins": [
+    {
+      "name": "assets-scraper",
+      "description": "Scan any web page for its SVGs, images, fonts and brand palette, download a selected set into scrap/ inside the current project, and install the page fonts locally.",
+      "source": "./plugins/assets-scraper",
+      "author": {
+        "name": "gamween",
+        "url": "https://github.com/gamween"
+      },
+      "category": "design",
+      "keywords": ["assets", "svg", "fonts", "palette", "branding", "scraping"]
+    }
+  ]
+}
