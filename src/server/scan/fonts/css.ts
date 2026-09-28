@@ -273,6 +273,17 @@ export function normalizeStretch(value: string | undefined): string | undefined 
   return !stretch || stretch === "normal" || stretch === "100%" ? undefined : stretch;
 }
 
+/**
+ * The identity of one face: its family and its three descriptors, as a string that can key a Map or a Set. It lives
+ * here, beside the descriptors it reads, rather than inside `index.ts`, because the grouping there matches every rule
+ * against the `document.fonts` statuses of its family and every face against the faces already kept, which are the two
+ * places a quadratic has been written before. A call into this module is counted by the `opGrowth` gate in
+ * `index.test.ts`, so a lookup that scans a list instead of hashing a key now shows up as work that grows with the
+ * square of the input rather than passing in silence.
+ */
+export const faceKey = (cssFamily: string, face: { weight: string; style: string; stretch?: string }): string =>
+  JSON.stringify([cssFamily, face.weight, face.style, face.stretch ?? ""]);
+
 /** Conditional group rules, whose blocks can hold `@font-face` rules. */
 const GROUP_RULES = new Set(["media", "supports", "layer", "container", "document", "-moz-document", "scope", "starting-style"]);
 

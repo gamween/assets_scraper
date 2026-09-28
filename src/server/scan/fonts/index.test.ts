@@ -19,6 +19,8 @@ import { coversBasicLatin } from "./unicode";
  * tests that read `mock.calls` are unaffected.
  */
 const ops = vi.hoisted(() => ({ count: 0 }));
+/** Calls to `faceKey` alone, for the test that asserts the grouping hashes its keys instead of scanning a list. */
+const faceKeys = vi.hoisted(() => ({ count: 0 }));
 const counted = vi.hoisted(
   () =>
     <T extends (...args: never[]) => unknown>(fn: T): T =>
@@ -42,6 +44,13 @@ vi.mock("./css", async (importOriginal) => {
     normalizeStretch: vi.fn(counted(actual.normalizeStretch)),
     decodeIdent: counted(actual.decodeIdent),
     withinDescriptorLimits: counted(actual.withinDescriptorLimits),
+    // The face identity the grouping keys its lookups on, counted so a lookup that scans a list shows up in `opGrowth`.
+    // Counted by hand rather than through `vi.fn`: a quadratic run makes tens of millions of calls, and recording the
+    // arguments of each of them runs the worker out of memory before the gate can fail.
+    faceKey: counted((cssFamily: string, face: { weight: string; style: string; stretch?: string }) => {
+      faceKeys.count += 1;
+      return actual.faceKey(cssFamily, face);
+    }),
   };
 });
 vi.mock("./unicode", async (importOriginal) => {
@@ -670,10 +679,28 @@ describe("buildFontFamilies", () => {
   }, 60_000);
 
   /**
+   * Regression (6482d28): every rule was matched against every `document.fonts` status of its family, which is why
+   * `statuses` is one of the hostile inputs above. The fix is the Set those keys are looked up in, and the counted gate
+   * could not see it undone, because `faceKey` was local to this module: replacing the Set with an array scanned by
+   * `faceKey` kept the counted factor under its bound and only the opt-in benchmark failed. The key is counted now,
+   * and this asserts its shape directly: one key per rule and one per status, never one per pair.
+   */
+  it("matches a rule to its document.fonts status by key, not by scanning the statuses", async () => {
+    const size = 200;
+    faceKeys.count = 0;
+
+    await buildFontFamilies(inputOf(hostile.statuses(size)));
+
+    // One key per status, one per rule and one per face kept: 600 here, against 40,000 for a scan of every pair
+    expect(faceKeys.count).toBeLessThan(size * 4);
+  }, 30_000);
+
+  /**
    * The wall-clock companion of the test above, kept out of the gating suite: it measures the same four inputs in
    * milliseconds, which reads every regression the counted version reads and the ones it cannot, a quadratic scan
    * written inline over a derived array for instance, but a ratio of two timings on a loaded runner is not a thing a
-   * suite can gate on (it failed CI once at `LINEAR_GROWTH_BOUND`). Run it with `pnpm bench`.
+   * suite can gate on (it failed CI once at `LINEAR_GROWTH_BOUND`). Run it with `pnpm bench`. CI runs it too, in a job
+   * that reports and does not block (`.github/workflows/ci.yml`), so a regression only this form can read is seen.
    */
   it.runIf(process.env.FONTS_BENCH === "1")("benchmark: stays linear on hostile collector output, in wall time", async () => {
     for (const [name, parts] of Object.entries(hostile)) {

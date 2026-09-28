@@ -30,6 +30,22 @@ jobs:
       - run: pnpm build:agent
       - run: pnpm test
 
+  # The wall-clock font benchmarks (`pnpm bench`). They read regressions the counted gate cannot, a quadratic written
+  # inline over a derived array for instance, but a ratio of two timings on a shared runner flakes, so this job reports
+  # and never blocks: read it when it goes red, never merge on it alone being green.
+  bench:
+    runs-on: ubuntu-latest
+    needs: checks
+    timeout-minutes: 15
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "${{ env.NODE_VERSION }}", cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm bench
+
   integration:
     runs-on: ubuntu-latest
     needs: checks

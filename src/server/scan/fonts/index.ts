@@ -2,7 +2,7 @@ import type { FontFaceInfo, FontFamily, FontFile, FontFormat } from "@/lib/contr
 import { limits } from "@/server/config/limits";
 import { SignLimitError } from "@/server/security/sign";
 import type { CapturedFont, FontBinaryMeta, FontsOutput, PostInput, RawFontFaceRule, RawFontStatus, RawFontUsage, SafeFetch, Signer } from "../types";
-import { decodeIdent, MAX_FAMILY_CHARS, MAX_SRC_ENTRIES, normalizeStretch, normalizeStyle, normalizeWeight, parseFontFaceCss, withinDescriptorLimits } from "./css";
+import { decodeIdent, faceKey, MAX_FAMILY_CHARS, MAX_SRC_ENTRIES, normalizeStretch, normalizeStyle, normalizeWeight, parseFontFaceCss, withinDescriptorLimits } from "./css";
 import { createFileLookup, fontDataUri, isDataUri, remoteUrl, type FileRecord } from "./files";
 import { matchGoogleFamilies } from "./google";
 import { classifyLicense } from "./license";
@@ -93,9 +93,6 @@ interface FamilyRecord {
 const FORMAT_RANK: Record<FontFormat, number> = { woff2: 0, woff: 1, ttf: 2, otf: 2, other: 3, eot: 4 };
 
 const isOk = (status: number) => status >= 200 && status < 300;
-const faceKey = (cssFamily: string, face: { weight: string; style: string; stretch?: string }) =>
-  JSON.stringify([cssFamily, face.weight, face.style, face.stretch ?? ""]);
-
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
 const isOptionalString = (value: unknown) => value === undefined || typeof value === "string";
 
