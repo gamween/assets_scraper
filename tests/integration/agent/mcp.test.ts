@@ -32,6 +32,16 @@ const setEnv = (name: string, value: string): void => {
   process.env[name] = value;
 };
 
+/** What the `download_assets` tool answers: paths relative to `dir`, counts, and where the manifest is. */
+interface McpDownload {
+  dir: string;
+  manifest: string;
+  count: number;
+  totalBytes: number;
+  files: { id: string; file: string; kind: string; role: string; bytes: number }[];
+  dropped: Record<string, number>;
+}
+
 /**
  * Stands in for `downloadAssets`, which track G2 owns (`src/agent/download.ts`): it runs the same selection, writes one
  * file per kept asset into the directory the tool resolved, and reports what it dropped. Enough to check the tool's
@@ -174,15 +184,16 @@ describe("the assets-scraper MCP server", () => {
   });
 
   it("downloads a selection into the project scrap directory", async () => {
-    const result = json<DownloadResult>(await call("download_assets", { scanId, roles: ["site-logo"] }));
+    const result = json<McpDownload>(await call("download_assets", { scanId, role: "site-logo" }));
 
     expect(result.dir).toBe(path.join(project, "scrap", "127.0.0.1"));
     expect(result.files.length).toBeGreaterThan(0);
-    for (const file of result.files) expect(fs.existsSync(file.path)).toBe(true);
-    expect(fs.existsSync(result.manifestPath)).toBe(true);
+    // Paths relative to `dir`, which is given once: the tool answer has a context budget (spec 2, context cost).
+    for (const file of result.files) expect(fs.existsSync(path.join(result.dir, file.file))).toBe(true);
+    expect(fs.existsSync(result.manifest)).toBe(true);
     expect(downloads.at(-1)?.ids).toEqual(result.files.map((file) => file.id));
 
-    const filtered = json<DownloadResult>(await call("download_assets", { scanId, max: 1, profile: "all" }));
+    const filtered = json<McpDownload>(await call("download_assets", { scanId, max: 1, profile: "all" }));
     expect(filtered.files).toHaveLength(1);
     expect(filtered.dropped.cap).toBeGreaterThan(0);
   });
