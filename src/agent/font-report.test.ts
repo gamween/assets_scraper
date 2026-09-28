@@ -54,7 +54,7 @@ describe("formatFontList", () => {
   it("prints what was installed, from where and when", () => {
     const listed = formatFontList([inter]);
     expect(listed).toContain("Inter: open licence");
-    expect(listed).toContain("from cdn.example.com, 2026-09-28");
+    expect(listed).toContain("from cdn.example.com, installed 2026-09-28");
     expect(listed).toContain("/tmp/fonts/Inter-Regular.ttf");
   });
 

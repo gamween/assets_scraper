@@ -49,7 +49,8 @@ export function formatFontList(fonts: FontInstall[]): string {
   if (fonts.length === 0) return "this tool has installed no font yet";
   const rows: string[] = [];
   for (const font of fonts) {
-    rows.push(`${licenceLine(font)}, from ${font.sourceHost}, ${font.installedAt.slice(0, 10)}`);
+    rows.push(licenceLine(font));
+    rows.push(`  from ${font.sourceHost}, installed ${font.installedAt.slice(0, 10)}`);
     for (const file of font.files) rows.push(`  ${file}`);
   }
   return rows.join("\n");
