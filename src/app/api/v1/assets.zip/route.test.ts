@@ -83,16 +83,22 @@ describe("GET /api/v1/assets.zip", () => {
     expect(manifest.scanId).toBe("scan-1");
     expect(manifest.page.host).toBe("stripe.com");
     expect(manifest.files).toHaveLength(4);
+    // The row shape `src/agent/download.ts` writes: `file` and `keptBecause`, not `path` and a `keptFor` enum, because
+    // llms.txt tells an agent to unzip this into the same folder a local download writes (review issue 18).
+    expect(manifest.manifestVersion).toBe(1);
+    expect(manifest.profile).toBe("deck");
+    expect(new Date(manifest.downloadedAt).toISOString()).toBe(manifest.downloadedAt);
     expect(manifest.files.find((file: { id: string }) => file.id === "hero")).toMatchObject({
-      path: "images/hero.png",
+      file: "images/hero.png",
       url: "https://cdn.example.com/hero.png",
       width: 1600,
       height: 900,
       bytes: 1024,
       role: "image",
-      keptFor: "large",
+      keptBecause: "deck profile (role image)",
     });
-    expect(manifest.files.find((file: { id: string }) => file.id === "site-logo")).toMatchObject({ keptFor: "vector", url: "" });
+    expect(manifest.files.find((file: { id: string }) => file.id === "site-logo")).toMatchObject({ keptBecause: "deck profile (role site-logo)", url: "" });
+    expect(manifest.files.find((file: { id: string }) => file.id === "copy-a")).toMatchObject({ duplicatesDropped: ["copy-b"] });
     expect(manifest.dropped).toMatchObject({ icon: 1, small: 1, "vector-preferred": 1 });
     expect(manifest.dropped.duplicate ?? 0).toBe(1);
     expect(manifest.duplicates).toEqual([{ keptId: "copy-a", droppedIds: ["copy-b"] }]);
@@ -100,6 +106,27 @@ describe("GET /api/v1/assets.zip", () => {
     expect(manifest.truncated).toBe(false);
     expect(manifest.note).toBeUndefined();
     expect(manifest.totalBytes).toBe(manifest.files.reduce((total: number, file: { bytes: number }) => total + file.bytes, 0));
+  });
+
+  it("says so in the header and the manifest when the archive is only the front of the selection", async () => {
+    // AGENT_ZIP_MAX_BYTES stands in for a near-exhausted daily budget: both end the archive the same way (plan G4.3).
+    // One fetch at a time, because `total` is read between awaits: with several in flight the cap can be passed by up to
+    // `concurrency` files, which is what zip.ts documents and what this test would otherwise measure instead.
+    vi.stubEnv("AGENT_ZIP_MAX_BYTES", "1500");
+    vi.stubEnv("AGENT_DOWNLOAD_CONCURRENCY", "1");
+
+    const response = await GET(request());
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-assets-truncated")).toBe("true");
+    const manifest = manifestOf(await entriesOf(response));
+    expect(manifest.truncated).toBe(true);
+    expect(manifest.note).toMatch(/front of the selection/);
+    expect(manifest.files.map((file: { id: string }) => file.id)).toEqual(["site-logo", "logo-svg"]);
+    expect(manifest.totalBytes).toBeLessThanOrEqual(1_500);
+    expect(manifest.dropped.unavailable).toBe(4);
+    expect(Number(response.headers.get("x-assets-count"))).toBe(2);
+    vi.unstubAllEnvs();
   });
 
   it("writes the inline markup of an asset the scan already holds, without a request", async () => {
@@ -146,6 +173,7 @@ describe("GET /api/v1/assets.zip", () => {
     expect(response.headers.get("x-assets-truncated")).toBe("true");
     const entries = await entriesOf(response);
     const manifest = manifestOf(entries);
+    expect(response.headers.get("x-assets-truncated")).toBe("true");
     expect(manifest.truncated).toBe(true);
     expect(manifest.note).toMatch(/front of the selection/);
     expect(manifest.note).not.toMatch(/[\u2013\u2014]/);

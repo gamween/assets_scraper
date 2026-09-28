@@ -1,11 +1,13 @@
 import sharp from "sharp";
 import { describe, expect, it } from "vitest";
+import { MAX_INPUT_PIXELS, renderStats } from "@/server/scan/post/render-slot";
 import { agentLimits } from "./limits";
 import {
   DHASH_BITS,
   DHASH_CHARS,
   type ImageFingerprint,
   MIN_HASH_BITS,
+  canonicalizeSvg,
   THUMB_SIDE,
   fingerprint,
   hammingDistance,
@@ -94,6 +96,71 @@ describe("fingerprint", () => {
   it("returns null for bytes that are not an image", async () => {
     expect(await fingerprint(Buffer.from("<html>not an image</html>"))).toBeNull();
     expect(await fingerprint(Buffer.alloc(0))).toBeNull();
+  });
+
+  /**
+   * The two guards v1 documents as necessary, which this call used to drop: `limitInputPixels` was sharp's 268 MP default
+   * instead of `MAX_INPUT_PIXELS`, and `failOn: "none"` decoded bytes v1 refuses (review issue 3). A solid image just
+   * over the cap is 211 KB on the wire and 268 MB decoded, so the wire caps guard nothing here.
+   */
+  it("refuses an image over the pixel cap the scan engine applies", async () => {
+    const side = 8_193; // 8193 * 8193 is just over MAX_INPUT_PIXELS (8192 * 8192)
+    const huge = await sharp(Buffer.alloc(side * side, 200), { raw: { width: side, height: side, channels: 1 } }).png().toBuffer();
+    expect(huge.byteLength).toBeLessThan(agentLimits.maxDownloadBytes);
+    expect(await sharp(huge, { limitInputPixels: false }).metadata()).toMatchObject({ width: side, height: side });
+    expect(MAX_INPUT_PIXELS).toBe(8_192 * 8_192);
+
+    expect(await fingerprint(huge)).toBeNull();
+  }, 30_000);
+
+  it("refuses bytes a lenient decoder would accept, the way the scan engine does", async () => {
+    const png = await pattern(256, 192);
+    // A PNG cut in half: `failOn: "none"` decodes what it has, `failOn: "error"` refuses it.
+    const truncated = png.subarray(0, Math.floor(png.length / 2));
+    expect(await sharp(truncated, { failOn: "none" }).greyscale().resize(8, 8, { fit: "fill" }).raw().toBuffer()).toBeInstanceOf(Buffer);
+
+    expect(await fingerprint(truncated)).toBeNull();
+  });
+
+  it("never runs more sharp calls at once than the process-wide gate allows", async () => {
+    const images = await Promise.all(Array.from({ length: 12 }, (_, index) => pattern(512, 384, index)));
+    let most = 0;
+    const sampler = setInterval(() => (most = Math.max(most, renderStats().active)), 1);
+    try {
+      await Promise.all(images.map((image) => fingerprint(image)));
+    } finally {
+      clearInterval(sampler);
+    }
+    expect(most).toBeGreaterThan(0);
+    expect(most).toBeLessThanOrEqual(2);
+    expect(renderStats().active).toBe(0);
+  }, 30_000);
+});
+
+describe("canonicalizeSvg", () => {
+  /** The verified case: one React component rendered twice, `useId` the only difference (review issue 8). */
+  const accor = (id: string): string =>
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 40">` +
+      `<defs><linearGradient id="${id}"><stop offset="0" stop-color="#0a2540"/></linearGradient>` +
+      `<clipPath id="${id}H1"><rect width="120" height="40"/></clipPath></defs>` +
+      `<g clip-path="url(#${id}H1)"><path d="M0 0h120v40H0z" fill="url(#${id})"/><use xlink:href="#${id}H1"/></g></svg>`;
+
+  it("folds two renders of one component onto the same bytes", () => {
+    expect(canonicalizeSvg(accor(":Rij1mr6l6:"))).toBe(canonicalizeSvg(accor(":Ril1mr6l6:")));
+    expect(sha1(Buffer.from(canonicalizeSvg(accor(":Rij1mr6l6:"))))).toBe(sha1(Buffer.from(canonicalizeSvg(accor(":Ril1mr6l6:")))));
+    expect(accor(":Rij1mr6l6:")).not.toBe(accor(":Ril1mr6l6:"));
+  });
+
+  it("leaves colours alone, so two marks that differ only in colour stay two files", () => {
+    const mark = (hex: string) => `<svg xmlns="http://www.w3.org/2000/svg"><rect width="118" height="32" rx="4" fill="${hex}"/></svg>`;
+    expect(canonicalizeSvg(mark("#101D51"))).not.toBe(canonicalizeSvg(mark("#635bff")));
+    expect(canonicalizeSvg(mark("#101D51"))).toBe(mark("#101D51"));
+  });
+
+  it("keeps two genuinely different drawings apart", () => {
+    const one = '<svg xmlns="http://www.w3.org/2000/svg"><path id="a" d="M0 0h10v10H0z"/></svg>';
+    const two = '<svg xmlns="http://www.w3.org/2000/svg"><path id="a" d="M0 0h20v10H0z"/></svg>';
+    expect(canonicalizeSvg(one)).not.toBe(canonicalizeSvg(two));
   });
 });
 

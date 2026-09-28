@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import sharp from "sharp";
+import { MAX_INPUT_PIXELS, withRenderSlot } from "@/server/scan/post/render-slot";
 
 /**
  * Hashes used to drop the same image twice (spec 4.4, 4.5): SHA-1 of the bytes for an exact duplicate, and a
@@ -66,16 +67,61 @@ export interface ImageFingerprint {
 export const sha1 = (buffer: Buffer): string => createHash("sha1").update(buffer).digest("hex");
 
 /**
- * The perceptual fingerprint of a raster, or null when there is nothing to compare: bytes sharp cannot decode, a size
- * it cannot report, or a hash with too little signal to group on. Both greyscale fields come from one decode.
+ * Every place an SVG names or references an id: the `id` attribute, `url(#...)` (fills, masks, clip paths, filters) and
+ * `href`/`xlink:href` on a `use`. Colors are deliberately out of reach of the fragment arms, so `fill="#635bff"` is left
+ * exactly as it is and two marks that differ only in colour stay two files.
  */
-export async function fingerprint(buffer: Buffer): Promise<ImageFingerprint | null> {
+const SVG_ID = /\bid\s*=\s*(["'])([^"']*)\1|\burl\(\s*#([^)\s"']+)\s*\)|\b(?:xlink:)?href\s*=\s*(["'])#([^"']*)\4/g;
+
+/**
+ * SVG markup with its ids renumbered in document order, which is the form two copies of one logo are compared in
+ * (spec 4.4). React's `useId` mints a value per render instance (`:Rij1mr6l6:`), so a React or Next.js marketing page
+ * writes each inline logo once per instance and the raw byte hash read them as different files: verified on stripe.com,
+ * where `stripe-accor.svg` and `stripe-accor-2.svg` are both 4,319 bytes and become byte-identical once `:Rij1mr6l6:`
+ * and `:Ril1mr6l6:` are folded, and the same for `stripe-tf1.svg` and its copy (review issue 8).
+ *
+ * Every id-shaped token is renumbered rather than only the generated-looking ones: a declaration and its references fold
+ * to the same placeholder because they carry the same text, and a document whose ids are already stable renumbers to an
+ * equivalent of itself.
+ */
+export function canonicalizeSvg(markup: string): string {
+  const ids = new Map<string, string>();
+  const placeholder = (raw: string): string => {
+    const seen = ids.get(raw);
+    if (seen !== undefined) return seen;
+    const name = `i${ids.size}`;
+    ids.set(raw, name);
+    return name;
+  };
+  return markup.replace(SVG_ID, (_match, _q: string, declared: string | undefined, inUrl: string | undefined, _q2: string, inHref: string | undefined) => {
+    if (declared !== undefined) return `id="${placeholder(declared)}"`;
+    if (inUrl !== undefined) return `url(#${placeholder(inUrl)})`;
+    return `href="#${placeholder(inHref ?? "")}"`;
+  });
+}
+
+/**
+ * The perceptual fingerprint of a raster, or null when there is nothing to compare: bytes sharp cannot decode, a size
+ * it cannot report, or a hash with too little signal to group on. Both greyscale fields come from one input.
+ *
+ * The decode is opened with the two guards v1 documents as necessary (`render-slot.ts`, `post/tone.ts`): `limitInputPixels`
+ * at `MAX_INPUT_PIXELS` rather than sharp's 268 MP default, and `failOn: "error"` rather than decoding bytes v1 refuses.
+ * A 783 KB solid 16383x16383 PNG decodes to 268 MP and cost 736 ms and most of a gigabyte of peak RSS per file, on the
+ * same function that drives Chromium; it is now refused, and the caller reads that as "no fingerprint", which keeps the
+ * file rather than losing it. The call also waits for a render slot, so 60 of them cannot saturate the thread pool that
+ * `dns.lookup` shares (review issue 3).
+ */
+export function fingerprint(buffer: Buffer): Promise<ImageFingerprint | null> {
+  return withRenderSlot(() => fingerprintInSlot(buffer), null);
+}
+
+async function fingerprintInSlot(buffer: Buffer): Promise<ImageFingerprint | null> {
   let field: Buffer;
   let thumbnail: Buffer;
   let width: number | undefined;
   let height: number | undefined;
   try {
-    const image = sharp(buffer, { failOn: "none", animated: false });
+    const image = sharp(buffer, { failOn: "error", animated: false, limitInputPixels: MAX_INPUT_PIXELS });
     ({ width, height } = await image.metadata());
     const greyscale = (columns: number, rows: number): Promise<Buffer> =>
       image
@@ -85,7 +131,9 @@ export async function fingerprint(buffer: Buffer): Promise<ImageFingerprint | nu
         .resize(columns, rows, { fit: "fill", kernel: "cubic" })
         .raw({ depth: "uchar" })
         .toBuffer();
-    [field, thumbnail] = await Promise.all([greyscale(FIELD_WIDTH, FIELD_HEIGHT), greyscale(THUMB_SIDE, THUMB_SIDE)]);
+    // One pipeline at a time: they are two decodes of the same input, and the slot this runs in is for one sharp call.
+    field = await greyscale(FIELD_WIDTH, FIELD_HEIGHT);
+    thumbnail = await greyscale(THUMB_SIDE, THUMB_SIDE);
   } catch {
     return null;
   }

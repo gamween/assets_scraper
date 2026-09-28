@@ -3,6 +3,7 @@ import { Asset, Diagnostics, FontFamily, Palette, ScanStats } from "@/lib/contra
 import { limits } from "@/server/config/limits";
 import { safeFetch } from "@/server/net/safe-fetch";
 import type { SafeFetch } from "@/server/scan/types";
+import { assertDeclaredType, assertSupportedBytes, declaredType } from "./bytes";
 import { scanIdFor } from "./source-local";
 import type { ScanSource, ScanSourceOptions } from "./types";
 
@@ -40,9 +41,8 @@ export class RemoteScanError extends Error {
   }
 }
 
-/** What `view: "full"` returns: the `AgentScan` shape, whose `scanId` and `source` this process can fill in itself. */
-const RemoteScan = z.object({
-  scanId: z.string().optional(),
+/** The scan itself, nested under `scan` in the answer: the `AgentScan` shape minus `scanId` and `source`. */
+const RemoteScanBody = z.object({
   scannedAt: z.string().optional(),
   page: z.object({
     url: z.string(),
@@ -57,6 +57,16 @@ const RemoteScan = z.object({
   stats: ScanStats,
   warnings: z.array(z.string()).optional(),
   diagnostics: Diagnostics.optional(),
+});
+
+/**
+ * The whole document `POST /api/v1/scan` answers `view: "full"` with: `{ view, scanId, summary, scan }`, the scan fields
+ * nested under `scan` (`src/app/api/v1/scan/route.ts`). The envelope is parsed rather than the scan alone, so the two
+ * sides stay one shape; `tests/integration/agent/remote-source.test.ts` points this source at the real route.
+ */
+const RemoteAnswer = z.object({
+  scanId: z.string().optional(),
+  scan: RemoteScanBody,
 });
 
 /**
@@ -137,28 +147,34 @@ export function createRemoteScanSource(options: ScanSourceOptions = {}, deps: Re
       } catch {
         throw new RemoteScanError("response", response.status, `${remote} answered with something that is not JSON`);
       }
-      const scan = RemoteScan.safeParse(parsed);
-      if (!scan.success) {
-        throw new RemoteScanError("response", response.status, `${remote} answered with something that is not a scan: ${scan.error.issues[0]?.message ?? "unknown field"}`);
+      const answer = RemoteAnswer.safeParse(parsed);
+      if (!answer.success) {
+        const issue = answer.error.issues[0];
+        const where = issue?.path.length ? `${issue.path.join(".")}: ` : "";
+        throw new RemoteScanError("response", response.status, `${remote} answered with something that is not a scan: ${where}${issue?.message ?? "unknown field"}`);
       }
-      const { page, assets, fonts, stats } = scan.data;
+      const { page, assets, fonts, stats } = answer.data.scan;
       return {
-        scanId: scan.data.scanId && SCAN_ID.test(scan.data.scanId) ? scan.data.scanId : scanIdFor(page.host),
-        scannedAt: scan.data.scannedAt ?? new Date().toISOString(),
+        scanId: answer.data.scanId && SCAN_ID.test(answer.data.scanId) ? answer.data.scanId : scanIdFor(page.host),
+        scannedAt: answer.data.scan.scannedAt ?? new Date().toISOString(),
         source: "remote",
         page,
         assets,
         fonts,
-        palette: scan.data.palette ?? null,
+        palette: answer.data.scan.palette ?? null,
         stats,
-        warnings: scan.data.warnings ?? [],
-        ...(scan.data.diagnostics === undefined ? {} : { diagnostics: scan.data.diagnostics }),
+        warnings: answer.data.scan.warnings ?? [],
+        ...(answer.data.scan.diagnostics === undefined ? {} : { diagnostics: answer.data.scan.diagnostics }),
       };
     },
 
     async fetchBytes(target, fetchOptions) {
       const inline = "inline" in target ? target.inline : undefined;
-      if (inline) return Buffer.from(inline.base64, "base64");
+      if (inline) {
+        const decoded = Buffer.from(inline.base64, "base64");
+        assertSupportedBytes(decoded, target.format, "this inline file");
+        return decoded;
+      }
 
       // An `http:` URL has no direct path worth trying: the hosted proxy is how the app itself reads those.
       if (target.url.startsWith("https:")) {
@@ -169,7 +185,19 @@ export function createRemoteScanSource(options: ScanSourceOptions = {}, deps: Re
             maxRedirects: limits.proxyMaxRedirects,
             ...(fetchOptions?.signal ? { signal: fetchOptions.signal } : {}),
           });
-          if (direct.status < 400) return await direct.buffer();
+          if (direct.status < 400) {
+            // Same allowlist as the local source and the browser proxy (`bytes.ts`). A refusal here falls through to the
+            // hosted proxy, which applies it again on its own answer, rather than ending the download.
+            try {
+              assertDeclaredType(declaredType(direct.headers.get("content-type")), target.url);
+            } catch (declaredFailure) {
+              await direct.cancel();
+              throw declaredFailure;
+            }
+            const bytes = await direct.buffer();
+            assertSupportedBytes(bytes, target.format, target.url);
+            return bytes;
+          }
           await direct.cancel();
         } catch (error) {
           if (fetchOptions?.signal?.aborted) throw error;
@@ -183,6 +211,7 @@ export function createRemoteScanSource(options: ScanSourceOptions = {}, deps: Re
       if (!response.ok) throw new Error(`HTTP ${response.status} from the hosted proxy for ${target.url || target.proxy}`);
       const bytes = Buffer.from(await response.arrayBuffer());
       if (bytes.length > limits.proxyMaxBytes) throw new Error(`the hosted proxy answered with more than ${limits.proxyMaxBytes} bytes`);
+      assertSupportedBytes(bytes, target.format, target.url || target.proxy);
       return bytes;
     },
   };

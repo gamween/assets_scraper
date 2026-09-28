@@ -5,6 +5,7 @@ import { ScanFailure } from "@/server/errors";
 import { safeFetch } from "@/server/net/safe-fetch";
 import { scanEngine } from "@/server/scan/engine";
 import type { SafeFetch, ScanBackend } from "@/server/scan/types";
+import { assertDeclaredType, assertSupportedBytes, declaredType } from "./bytes";
 import { sanitizeHost } from "./dest";
 import type { AgentScan, ScanSource } from "./types";
 
@@ -101,10 +102,20 @@ export function createLocalScanSource(deps: LocalScanSourceDeps = {}): ScanSourc
 
     async fetchBytes(target, options) {
       const inline = "inline" in target ? target.inline : undefined;
-      if (inline) return Buffer.from(inline.base64, "base64");
+      if (inline) {
+        // Only a font file travels inline here (`FontFile.inline`), and it is checked like every other byte this returns:
+        // a caller of `fetchBytes` should never have to ask where the bytes came from to know what they are.
+        const decoded = Buffer.from(inline.base64, "base64");
+        assertSupportedBytes(decoded, target.format, "this inline file");
+        return decoded;
+      }
       const url = target.url;
       if (!url) throw new Error("this file has no URL to fetch");
-      if (url.startsWith("data:")) return decodeDataUri(url);
+      if (url.startsWith("data:")) {
+        const decoded = decodeDataUri(url);
+        assertSupportedBytes(decoded, target.format, "this data URI");
+        return decoded;
+      }
       const response = await fetch(url, {
         maxBytes: limits.proxyMaxBytes,
         timeoutMs: limits.proxyTimeoutMs,
@@ -115,7 +126,17 @@ export function createLocalScanSource(deps: LocalScanSourceDeps = {}): ScanSourc
         await response.cancel();
         throw new Error(`HTTP ${response.status} for ${url}`);
       }
-      return response.buffer();
+      // The type allowlist of the browser proxy, in the one place the agent core reads bytes off the network (`bytes.ts`):
+      // the scan is a cache entry up to an hour old, so what this URL answered then does not bind what it answers now.
+      try {
+        assertDeclaredType(declaredType(response.headers.get("content-type")), url);
+      } catch (error) {
+        await response.cancel();
+        throw error;
+      }
+      const bytes = await response.buffer();
+      assertSupportedBytes(bytes, target.format, url);
+      return bytes;
     },
   };
 }

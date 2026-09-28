@@ -155,6 +155,15 @@ describe("assets-scraper failures", () => {
     expect(result.stderr).toMatch(/invalid-url/);
   }, 30_000);
 
+  /** Regression: selection flags were only read by `get`, so a typo on `scan` was accepted in silence and exited 0. */
+  it("exits 1 for a selection flag typo on scan, before it scans anything", async () => {
+    const result = await run(["scan", "stripe.com", "--profile", "fast"]);
+
+    expect(result.code).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("--profile takes deck or all");
+  }, 30_000);
+
   it("exits 1 explaining what a remote scan is missing", async () => {
     const result = await run(["scan", "stripe.com", "--remote"], { ASSETS_SCRAPER_TOKEN: undefined, ASSETS_SCRAPER_REMOTE: undefined });
 

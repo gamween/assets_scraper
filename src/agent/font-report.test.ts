@@ -65,9 +65,17 @@ describe("formatFontList", () => {
 
 describe("formatFontUninstall", () => {
   it("names what it removed and what it never installed", () => {
-    const report = formatFontUninstall({ removed: [inter], missing: ["Nope"] });
+    const report = formatFontUninstall({ removed: [inter], missing: ["Nope"], stillInstalled: [] });
     expect(report).toContain("removed Inter");
     expect(report).toContain("/tmp/fonts/Inter-Regular.ttf");
     expect(report).toContain("Nope: this tool did not install it, nothing removed");
+  });
+
+  /** Regression: a family none of whose files could be removed printed as `removed`, with no file lines and no warning. */
+  it("says a family is still installed rather than claiming it was removed", () => {
+    const report = formatFontUninstall({ removed: [], missing: [], stillInstalled: [{ family: "Inter", files: ["/elsewhere/Inter-Regular.ttf"] }] });
+    expect(report).toContain("Inter: still installed, none of its files could be removed");
+    expect(report).toContain("/elsewhere/Inter-Regular.ttf");
+    expect(report).not.toContain("removed Inter");
   });
 });

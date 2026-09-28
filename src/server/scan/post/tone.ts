@@ -3,6 +3,7 @@ import type { Tone } from "@/lib/contract";
 import { untilAborted } from "@/server/async";
 import { limits } from "@/server/config/limits";
 import { formatFromContentType, sniffFormat } from "./format";
+import { MAX_INPUT_PIXELS, withRenderSlot } from "./render-slot";
 
 /**
  * Preview tone (spec 8.8): decides the background of a tile. Rasters are reduced to 32 px, SVGs rendered at 64 px.
@@ -13,59 +14,23 @@ import { formatFromContentType, sniffFormat } from "./format";
 
 const RASTER_SIZE = 32;
 const SVG_SIZE = 64;
-const MAX_INPUT_PIXELS = 8192 * 8192;
-/**
- * sharp calls in flight at once across the process, capture and post-processing and every scan together. sharp runs
- * them on the libuv thread pool (4 threads by default), which DNS lookups (`dns.lookup` in `safeFetch` and the egress
- * proxy) and fs calls share. Neither sharp nor a timeout can stop a librsvg render, and a page chooses how slow its SVGs
- * are, so a render keeps its slot until it really ends, even once its budget gave up on it: the other threads stay free.
- */
-const RENDER_CONCURRENCY = 2;
 
-let renders = 0;
-let rendersStarted = 0;
-const waiting: (() => void)[] = [];
+/** sharp calls in flight, and started since the process began. For tests; the gate itself is in `render-slot.ts`. */
+export { renderStats as toneRenderStats } from "./render-slot";
 
-/** sharp calls in flight, and started since the process began. For tests. */
-export const toneRenderStats = () => ({ active: renders, started: rendersStarted });
-
-/** Waits for a render slot. Resolves false, without a slot, when `signal` aborts first. */
-function acquireRender(signal?: AbortSignal): Promise<boolean> {
-  if (signal?.aborted) return Promise.resolve(false);
-  if (renders < RENDER_CONCURRENCY) {
-    renders++;
-    return Promise.resolve(true);
-  }
-  return new Promise((resolve) => {
-    const onAbort = () => {
-      const index = waiting.indexOf(start);
-      if (index >= 0) waiting.splice(index, 1);
-      resolve(false);
-    };
-    const start = () => {
-      signal?.removeEventListener("abort", onAbort);
-      renders++;
-      resolve(true);
-    };
-    waiting.push(start);
-    signal?.addEventListener("abort", onAbort, { once: true });
-  });
-}
-
-/** Runs `work` in a render slot, or gives `unknown` without running it when `signal` aborts first. */
-async function rendered(work: () => Promise<Tone>, signal?: AbortSignal): Promise<Tone> {
-  if (!(await acquireRender(signal))) return "unknown";
-  try {
-    if (signal?.aborted) return "unknown";
-    rendersStarted++;
-    return await work();
-  } catch {
-    return "unknown";
-  } finally {
-    renders--;
-    waiting.shift()?.();
-  }
-}
+/** Runs `work` in a render slot, or gives `unknown` without running it when `signal` aborts first or it throws. */
+const rendered = (work: () => Promise<Tone>, signal?: AbortSignal): Promise<Tone> =>
+  withRenderSlot(
+    async () => {
+      try {
+        return await work();
+      } catch {
+        return "unknown";
+      }
+    },
+    "unknown",
+    signal,
+  );
 
 async function toneOf(image: ReturnType<typeof sharp>, size: number): Promise<Tone> {
   const { data, info } = await image

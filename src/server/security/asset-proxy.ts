@@ -3,6 +3,7 @@ import { limits } from "@/server/config/limits";
 import { HttpError } from "@/server/errors";
 import { safeFetch, SafeFetchError, type SafeFetchErrorCode } from "@/server/net/safe-fetch";
 import type { SafeResponse } from "@/server/scan/types";
+import { authenticateAgent } from "./agent-auth";
 import { meterProxyBytes, PROXY_BYTES_BLOCK, takeProxyBytes } from "./budget";
 import { contentDisposition } from "./download-name";
 import { convertWoff2, takeConversionSlot, WOFF2_MAX_OUTPUT_BYTES, WOFF2_MAX_SOURCE_BYTES } from "./font-convert";
@@ -18,7 +19,9 @@ const SAFETY_HEADERS = {
   "content-security-policy": "default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; sandbox",
   "x-content-type-options": "nosniff",
   "cross-origin-resource-policy": "same-origin",
-  vary: "Sec-Fetch-Site",
+  // Authorization is in here because an agent token is a second way past the Fetch Metadata check below: the CDN must
+  // never answer an unauthenticated caller from a response a token earned, or the other way round.
+  vary: "Sec-Fetch-Site, Authorization",
 } as const;
 
 const RESPONSE_HEADERS = {
@@ -201,8 +204,15 @@ export async function handleAssetRequest(request: Request, options: AssetProxyOp
     // too, so every browser with Fetch Metadata is covered. A script can forge the header, and nothing in the function
     // bounds invocations: the byte budget below bounds bytes served, and charges nothing on an error path. Only an
     // edge rule can bound invocations (spec 17).
+    //
+    // An agent token is the other way in (agent spec 3, "direct, then signed proxy in remote mode"): the CLI and the MCP
+    // server read this proxy with a plain `fetch`, which sends no `sec-fetch-site` at all, so without this the remote
+    // fallback could never succeed. A configured token is stronger evidence than the header it stands in for, and it
+    // buys nothing else: the signature, the type allowlist, the caps and the byte budget all still apply.
     const site = request.headers.get("sec-fetch-site");
-    if (site !== "same-origin" && site !== "none") return errorResponse(403, "cross-site", "Only this app can load proxied assets.");
+    if (site !== "same-origin" && site !== "none" && !authenticateAgent(request).ok) {
+      return errorResponse(403, "cross-site", "Only this app can load proxied assets.");
+    }
 
     const { url, dl, fmt } = verifyAssetParams(new URL(request.url).searchParams);
     if (!(await takeProxyBytes(0))) return budgetExhausted();

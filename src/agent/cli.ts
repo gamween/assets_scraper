@@ -4,13 +4,13 @@ import { parseArgs } from "node:util";
 import pkg from "../../package.json";
 import { AssetKind, AssetRole } from "@/lib/contract";
 import { formatBytes, formatCount, formatDimensions, formatDuration } from "@/lib/format";
-import { normalizeInputUrl } from "@/lib/url";
 import { ScanFailure } from "@/server/errors";
 import { findRecentScan, saveScan } from "./cache";
 import { downloadAssets } from "./download";
 import { listInstalledFonts } from "./font-manifest";
 import { formatFontInstall, formatFontList, formatFontUninstall } from "./font-report";
 import { installFonts, uninstallFonts } from "./fonts";
+import { normalizeScanUrl } from "./scan-url";
 import { createLocalScanSource } from "./source-local";
 import { createRemoteScanSource } from "./source-remote";
 import { summarize } from "./summary";
@@ -155,25 +155,13 @@ export function selectionFrom(values: Values): SelectionOptions {
 }
 
 /**
- * The URL to scan, read the way the app reads what a user pastes, so `stripe.com` works like the spec's examples and the
- * cache sees one form of each page.
- *
- * A port outside 80 and 443 is not refused here: that policy belongs to the scan, which also knows the test allowlist,
- * so such a URL is passed through for the engine to answer with its own `unsupported-port`. The error this does throw
- * carries the v1 code, so an agent reading stderr gets the vocabulary the API uses.
+ * The URL to scan (`normalizeScanUrl`), as a usage error when it is not one. The error carries the v1 code, so an agent
+ * reading stderr gets the vocabulary the API uses.
  */
 export function scanUrl(raw: string): string {
-  const parsed = normalizeInputUrl(raw);
-  if (parsed.ok) return parsed.url;
-  const trimmed = raw.trim();
-  if (parsed.code === "unsupported-port") {
-    try {
-      return new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`).toString();
-    } catch {
-      // Not a URL after all, so it fails as one below.
-    }
-  }
-  throw new UsageError(`invalid-url: ${JSON.stringify(raw)} is not a web address`);
+  const url = normalizeScanUrl(raw);
+  if (url === null) throw new UsageError(`invalid-url: ${JSON.stringify(raw)} is not a web address`);
+  return url;
 }
 
 /** Where the scan runs (spec 2): the hosted app when `--remote`, `--remote-url` or `ASSETS_SCRAPER_REMOTE` names one. */
@@ -233,7 +221,9 @@ export function formatSummary(summary: ScanSummary, reused: boolean): string {
   if (summary.logos.length > 0) {
     rows.push("  logos:");
     for (const logo of summary.logos) {
-      rows.push(`    ${logo.id}  ${logo.name}  ${logo.kind}  ${formatDimensions(logo.width, logo.height) || "size unknown"}`);
+      // The format and the size, not just the kind: v1 gives role `logo` to a hero photo as well as to a wordmark.
+      const size = [formatDimensions(logo.width, logo.height) || "size unknown", logo.bytes === undefined ? "" : formatBytes(logo.bytes)];
+      rows.push(`    ${logo.id}  ${logo.name}  ${logo.format}  ${size.filter(Boolean).join(", ")}`);
     }
   }
   if (summary.otherAssets > 0) rows.push(`  and ${formatCount(summary.otherAssets, "other asset")}`);
@@ -302,6 +292,9 @@ async function runFonts(positionals: string[], values: Values): Promise<number> 
 
 async function runScan(url: string | undefined, values: Values): Promise<number> {
   if (!url) throw new UsageError("scan needs a URL: assets-scraper scan stripe.com");
+  // A scan takes no selection, but the flags are still checked here: `scan --profile fast` used to exit 0 in silence, so
+  // the typo first said something on the next command that did read it (review issue 14).
+  selectionFrom(values);
   const { scan, reused } = await scanPage(scanUrl(url), openSource(values), values);
   const summary = summarize(scan);
   line(values.json === true ? JSON.stringify(summary) : formatSummary(summary, reused));

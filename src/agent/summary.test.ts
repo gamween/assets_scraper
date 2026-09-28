@@ -41,7 +41,7 @@ describe("summarize", () => {
 
   it("keeps the logos the scan ranked first, with their dimensions", () => {
     const summary = summarize(testScan());
-    expect(summary.logos[0]).toEqual({ id: "asset-0", name: "asset-0", kind: "image", width: 1200, height: 800 });
+    expect(summary.logos[0]).toEqual({ id: "asset-0", name: "asset-0", kind: "image", format: "png", width: 1200, height: 800 });
     expect(summary.logos.every((logo) => logo.id.startsWith("asset-"))).toBe(true);
   });
 
@@ -81,7 +81,7 @@ describe("summarize", () => {
 
   it("fits the budget with every string and every list at its cap", () => {
     // The caps alone are not a bound: 8 logos carrying a 40 character id, 12 font families and 12 swatches, every name
-    // at its cap, measured 4701 bytes, so the document gives up rows rather than the budget.
+    // at its cap, measure well over the budget, so the document gives up rows rather than the budget.
     const long = (count: number): string => "w".repeat(count);
     const scan = testScan({
       page: { url: `https://${long(300)}.com/${long(2_000)}`, finalUrl: `https://${long(300)}.com/${long(2_000)}`, host: `${long(240)}.com`, title: long(3_000), siteName: long(500) },

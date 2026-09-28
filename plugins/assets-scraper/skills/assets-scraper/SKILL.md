@@ -17,13 +17,15 @@ Do not use it to read a page's text or structure: fetch the page for that. Do no
 
 ## Tools
 
-The plugin runs the MCP server, so the tools appear as `mcp__assets-scraper__*`:
+The plugin runs the MCP server. Match the tools by the names below, not by a prefix: the prefix depends on how the
+server was installed (`mcp__assets-scraper__scan_page` for a server added by hand, `mcp__plugin_assets-scraper_assets-scraper__scan_page`
+for the plugin), so looking for one exact prefix and finding nothing does not mean the plugin is missing.
 
 | Tool | Use it for |
 | --- | --- |
 | `scan_page` | One scan. Returns a `scanId`, the counts, the palette, one row per font family and the logos. Never the full asset list |
 | `list_assets` | Paging through the assets with filters (`kind`, `role`, `minLongSide`, `nameContains`, `limit`, `offset`) |
-| `download_assets` | Writing files to disk, from a selection or from explicit `ids` |
+| `download_assets` | Writing files to disk, from a selection or from explicit `ids`. Takes the same `kind` and `role` filters |
 | `read_svg` | The markup of one SVG, when you need to inline or edit it |
 | `get_palette` | The palette hexes with their roles |
 | `install_fonts` | Installing the page fonts locally, with the licence of each family |
@@ -46,9 +48,11 @@ The `deck` profile, in order: icons (48 px and under) and sprite symbols out, on
 
 Every drop is counted by reason (`icon`, `small`, `duplicate`, `near-duplicate`, `vector-preferred`, `extra-favicon`, `filter`, `cap`), so you can say why a file is not there. When the user really wants everything, pass `profile: "all"`, and when they want one specific file, pass its `ids`.
 
+The cap gives each kind its share of the 60 files, so a page whose vectors outrank its photos still yields both. `download_assets` answers the paths relative to `dir` plus the counts, and the full row per file (source URL included) is in `manifest.json` on disk.
+
 ## Where the files go
 
-Files land in `scrap/<host>/` inside the current project: `svg/`, `images/`, and a `manifest.json` recording every file with its source URL, dimensions, bytes, role and why it was kept. The project root is the git root of the working directory, or the nearest directory holding `package.json`, `pyproject.toml` or `.claude`. With no project, files go to `~/Downloads/assets-scraper/<host>/`.
+Files land in `scrap/<host>/` inside the current project: `svg/`, `images/`, and a `manifest.json` recording every file with its source URL, dimensions, bytes, role and why it was kept. The project root is the git root of the working directory, or the nearest directory holding `package.json`, `pyproject.toml` or `.claude`. The home directory itself never counts as a project, so a session started outside one writes to `~/Downloads/assets-scraper/<host>/`.
 
 Leave `dest` unset unless the user names a directory. A `dest` you pass has to stay inside `scrap/`, so scraped files never land in the source tree. Existing files are never overwritten: identical bytes are skipped, different bytes get a `-2` suffix.
 
@@ -71,7 +75,7 @@ It installs commercial families too, and it always reports the licence read from
 
 > Get me the Stripe logo.
 
-`scan_page` with `https://stripe.com`, read the `logos` rows in the summary, then `download_assets` with the id of the SVG site logo. Report the path: `scrap/stripe.com/svg/stripe-logo.svg`.
+`scan_page` with `https://stripe.com`, read the `logos` rows in the summary, then `download_assets` with the id of the SVG site logo. Each row carries its `format` and `bytes`: prefer the `svg` row, and treat a multi-megabyte raster of photographic dimensions as a picture the scan called a logo rather than as the mark. Report the path: `scrap/stripe.com/svg/stripe-logo.svg`.
 
 ### The user is rebuilding a page
 

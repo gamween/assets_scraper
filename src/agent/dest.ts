@@ -7,8 +7,10 @@ import path from "node:path";
  *
  * The rule, strongest first: an explicit `dest`, then `ASSETS_SCRAPER_OUT`, then `<project root>/scrap/<host>` where
  * the project root is the git root of the working directory or the nearest directory holding `package.json`,
- * `pyproject.toml` or `.claude`, and finally `~/Downloads/assets-scraper/<host>` when there is no project. A `dest` that
- * came from an agent goes through `restrictToProject`, which confines it to the scrap directory.
+ * `pyproject.toml` or `.claude`, and finally `~/Downloads/assets-scraper/<host>` when there is no project. The home
+ * directory itself is never a project root, so a session started outside one lands in the fallback rather than writing
+ * into the top of the user's home. A `dest` that came from an agent goes through `restrictToProject`, which confines it
+ * to the scrap directory.
  */
 
 /** The directory name a download writes into inside a project. */
@@ -67,11 +69,20 @@ export function sanitizeHost(host: string): string {
   return safe || "site";
 }
 
+/**
+ * The home directory is never a project, whatever it holds. `~/.claude` exists on every machine Claude Code has run on,
+ * and a dotfiles checkout puts `.git` there too, so without this any working directory under home that is not itself in
+ * a project resolved to home: files landed in `~/scrap/<host>` instead of the documented `~/Downloads` fallback, and the
+ * guard on an agent-supplied `dest` widened from a real project to the whole home directory (review issue 9).
+ */
+const isHome = (dir: string): boolean => dir === path.resolve(os.homedir());
+
 /** The git root of `cwd`, or the nearest directory above it holding a project marker, or null. */
 export function findProjectRoot(cwd: string): string | null {
   const start = path.resolve(cwd);
-  for (const dir of ancestors(start)) if (fs.existsSync(path.join(dir, ".git"))) return dir;
+  for (const dir of ancestors(start)) if (!isHome(dir) && fs.existsSync(path.join(dir, ".git"))) return dir;
   for (const dir of ancestors(start)) {
+    if (isHome(dir)) continue;
     for (const marker of PROJECT_MARKERS) if (fs.existsSync(path.join(dir, marker))) return dir;
   }
   return null;

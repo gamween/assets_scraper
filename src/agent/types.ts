@@ -1,5 +1,6 @@
 import type {
   Asset,
+  AssetFormat,
   AssetKind,
   AssetRole,
   AssetSource,
@@ -109,7 +110,8 @@ export interface ScanSummary {
   counts: { assets: number; svg: number; images: number; fonts: number; hidden: number };
   palette: { hex: string; role?: string }[];
   fonts: { family: string; license: FontLicense["kind"]; usedOnPage: boolean; installable: boolean }[];
-  logos: { id: string; name: string; kind: AssetKind; width?: number; height?: number }[];
+  /** `format` and `bytes` are there so a 4 MB photo the scan called a logo does not read like a wordmark. */
+  logos: { id: string; name: string; kind: AssetKind; format: AssetFormat; width?: number; height?: number; bytes?: number }[];
   otherAssets: number;
   warnings: string[];
   durationMs: number;

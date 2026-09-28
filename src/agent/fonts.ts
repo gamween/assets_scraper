@@ -60,6 +60,9 @@ export interface InstallFontsOptions {
   signal?: AbortSignal;
 }
 
+/** Families an `unknown-family` skip names back, so the detail stays one readable line on a page with dozens. */
+const MAX_NAMED_FAMILIES = 12;
+
 /** Formats the installer can write: a WOFF or WOFF2 is decompressed, a TTF or OTF is installed as it is (spec 5.2). */
 const INSTALLABLE_FORMATS = new Set<FontFormat>(["woff2", "woff", "ttf", "otf"]);
 /** Formats that need no conversion, best first: installing them costs nothing and cannot fail. */
@@ -76,20 +79,34 @@ export function userFontDir(): string {
   return path.join(os.homedir(), ".local", "share", "fonts");
 }
 
+/** What an uninstall says: what went, what was never installed, and what is recorded but still on disk. */
+export interface FontUninstallReport {
+  removed: FontInstall[];
+  /** Families this tool never installed. */
+  missing: string[];
+  /** Families it records but could not remove a single file of, with the files still there. They stay in the manifest. */
+  stillInstalled: { family: string; files: string[] }[];
+}
+
 /**
  * Deletes the files of `families` (matched case insensitively) and forgets them. It never touches a file it did not
  * record, and never one outside the font directory, so a manifest that was edited or restored from elsewhere cannot turn
  * an uninstall into a delete of something else. A file it refuses stays recorded, because it is still installed.
+ *
+ * A family none of whose files could be removed is reported under `stillInstalled` rather than as removed with an empty
+ * file list: with `ASSETS_SCRAPER_FONT_DIR` pointing elsewhere, or a manifest restored from another machine, every path
+ * fails the `isInside` check and the answer used to read `removed` while the font was still installed (review issue 20).
  */
-export function uninstallFonts(families: string[]): Promise<{ removed: FontInstall[]; missing: string[] }> {
+export function uninstallFonts(families: string[]): Promise<FontUninstallReport> {
   return withFontStateLock(() => removeFamilies(families));
 }
 
-async function removeFamilies(families: string[]): Promise<{ removed: FontInstall[]; missing: string[] }> {
+async function removeFamilies(families: string[]): Promise<FontUninstallReport> {
   const fontDir = userFontDir();
   const installs = await listInstalledFonts();
   const wanted = new Map(families.map((family) => [family.trim().toLowerCase(), family]));
   const removed: FontInstall[] = [];
+  const stillInstalled: FontUninstallReport["stillInstalled"] = [];
   const kept: FontInstall[] = [];
 
   for (const install of installs) {
@@ -103,13 +120,14 @@ async function removeFamilies(families: string[]): Promise<{ removed: FontInstal
       if (await removeRecordedFile(file, fontDir)) gone.push(file);
       else left.push(file);
     }
-    removed.push({ ...install, files: gone });
+    if (gone.length > 0) removed.push({ ...install, files: gone });
+    else if (left.length > 0) stillInstalled.push({ family: install.family, files: left });
     if (left.length > 0) kept.push({ ...install, files: left });
     wanted.delete(install.family.toLowerCase());
   }
 
   if (removed.length > 0) await writeManifest(kept);
-  return { removed, missing: [...wanted.values()] };
+  return { removed, missing: [...wanted.values()], stillInstalled };
 }
 
 /**
@@ -396,7 +414,13 @@ async function installFamilies(families: FontFamily[], options: InstallFontsOpti
     else installs[previous] = install;
   }
 
-  for (const name of unknown.values()) skip(name, "unknown-family");
+  // Naming the families the scan does hold, so an agent that slipped on a diacritic can correct itself from the answer
+  // rather than having to call scan_page again (review issue 14).
+  const available = families.map((family) => family.name).slice(0, MAX_NAMED_FAMILIES).join(", ");
+  const detail =
+    families.length === 0 ? "this page declares no font family"
+    : `this page has ${available}${families.length > MAX_NAMED_FAMILIES ? ` and ${families.length - MAX_NAMED_FAMILIES} more` : ""}`;
+  for (const name of unknown.values()) skip(name, "unknown-family", detail);
 
   return { fontDir, manifestPath: installed.length > 0 ? await writeManifest(installs) : fontManifestPath(), installed, skipped };
 }

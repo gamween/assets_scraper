@@ -1,4 +1,5 @@
 import { createRequire } from "node:module";
+import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -6,12 +7,14 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import * as z from "zod";
 import { type Asset, AssetKind, AssetRole } from "@/lib/contract";
 import { ScanFailure } from "@/server/errors";
+import { sniffContentType } from "@/server/security/sniff";
 import { findRecentScan, loadScan, saveScan } from "./cache";
 import { resolveDestination } from "./dest";
 import { downloadAssets } from "./download";
 import { listInstalledFonts } from "./font-manifest";
 import { installFonts, uninstallFonts } from "./fonts";
 import { agentLimits } from "./limits";
+import { normalizeScanUrl } from "./scan-url";
 import { createScanSource } from "./source";
 import { summarize } from "./summary";
 import type { AgentScan, DownloadResult, ScanSource, SelectionOptions } from "./types";
@@ -76,6 +79,31 @@ const failureText = (error: unknown): string => {
   return error instanceof Error ? error.message : String(error);
 };
 
+/**
+ * Bytes one tool answer stays under, the rule `summarize` already followed for `scan_page` (spec 2, context cost). The two
+ * row-returning tools had no budget at all, so they were the ones filling an agent's context: measured on a stripe.com
+ * scan, `scan_page` answered 1,696 bytes while `download_assets` answered 17,662 and `list_assets` at the documented
+ * maximum answered 28,073, every row repeating the destination directory and the full CDN URL (review issue 7).
+ */
+export const MAX_TOOL_RESULT_BYTES = 8_192;
+
+/** Failure rows one answer carries; the rest are counted. The whole list is always in `manifest.json` on disk. */
+const MAX_FAILED_ROWS = 10;
+
+/**
+ * Drops rows from the end until the whole answer fits `MAX_TOOL_RESULT_BYTES`, telling `build` how many it gave up so the
+ * answer can say so. Rows come sorted by relevance, so what goes is the least useful.
+ */
+function okRows<T>(rows: T[], build: (kept: T[], omitted: number) => unknown): CallToolResult {
+  let kept = rows.length;
+  for (;;) {
+    const text = JSON.stringify(build(rows.slice(0, kept), rows.length - kept));
+    if (kept === 0 || Buffer.byteLength(text) <= MAX_TOOL_RESULT_BYTES) return { content: [{ type: "text", text }] };
+    kept -= Math.max(1, Math.ceil(kept / 8));
+    kept = Math.max(0, kept);
+  }
+}
+
 /** What every tool that takes a `scanId` says when the scan has aged out of the cache or never existed. */
 const UNKNOWN_SCAN = (scanId: string): string =>
   `unknown scanId ${JSON.stringify(scanId)}: it is not in the cache any more. Run scan_page on the URL again.`;
@@ -103,6 +131,40 @@ const listFilterShape = {
     .describe("drop rasters whose longest side is under this many pixels. Vectors, and assets the scan could not measure, are kept"),
   nameContains: z.string().max(200).optional().describe("only assets whose name contains this text"),
 };
+
+/**
+ * Ids one `download_assets` call may name. Spec 4.6 makes the cap the only guard on how many files a download writes and
+ * says a caller that means to take more says so with `max`, so this is a shape limit on the request rather than a second
+ * cap: the old `maxFiles` here made 61 ids a validation error whatever `max` was (review issue 10).
+ */
+const MAX_EXPLICIT_IDS = 500;
+
+/**
+ * What `download_assets` answers: where the files are and what happened, never the manifest's contents. Paths are relative
+ * to `dir`, which is given once, and the source URLs stay on disk; SKILL.md tells the agent never to read a manifest into
+ * the conversation, and this is the tool keeping that promise (spec 2, context cost).
+ */
+function downloadAnswer(result: DownloadResult, unknownIds: string[]): CallToolResult {
+  const rows = result.files.map((file) => ({
+    id: file.id,
+    file: path.relative(result.dir, file.path).split(path.sep).join("/"),
+    kind: file.kind,
+    role: file.role,
+    bytes: file.bytes,
+  }));
+  return okRows(rows, (files, omitted) => ({
+    dir: result.dir,
+    manifest: result.manifestPath,
+    count: result.files.length,
+    totalBytes: result.totalBytes,
+    files,
+    ...(omitted > 0 ? { filesOmitted: omitted, hint: `${omitted} more files are on disk and in manifest.json. Read that file if you need every row.` } : {}),
+    dropped: result.dropped,
+    failed: result.failed.slice(0, MAX_FAILED_ROWS),
+    ...(result.failed.length > MAX_FAILED_ROWS ? { failedOmitted: result.failed.length - MAX_FAILED_ROWS } : {}),
+    ...(unknownIds.length > 0 ? { unknownIds: unknownIds.slice(0, 20) } : {}),
+  }));
+}
 
 /**
  * The size gate of spec 4.2: a vector has no size to gate on, and an asset the scan could measure nothing for is kept
@@ -153,9 +215,13 @@ export function createAgentMcpServer(options: AgentMcpOptions = {}): McpServer {
       },
     },
     async ({ url, refresh }) => {
+      // Normalized before the cache lookup as well as before the scan: the cache key strips the scheme, so a bare host
+      // used to succeed while a scan of the `https:` form was warm and fail with `invalid-url` once it aged out.
+      const target = normalizeScanUrl(url);
+      if (target === null) return fail(`invalid-url: ${JSON.stringify(url)} is not a valid web address`);
       try {
-        const cached = refresh === true ? null : await findRecentScan(url);
-        const scan = cached ?? (await openSource().scan(url));
+        const cached = refresh === true ? null : await findRecentScan(target);
+        const scan = cached ?? (await openSource().scan(target));
         if (!cached) await saveScan(scan);
         return ok(summarize(scan));
       } catch (error) {
@@ -201,7 +267,13 @@ export function createAgentMcpServer(options: AgentMcpOptions = {}): McpServer {
             ...(asset.height === undefined ? {} : { height: asset.height }),
             ...(asset.bytes === undefined ? {} : { bytes: asset.bytes }),
           }));
-        return ok({ scanId, total: matching.length, offset: from, assets: rows });
+        return okRows(rows, (assets, omitted) => ({
+          scanId,
+          total: matching.length,
+          offset: from,
+          assets,
+          ...(omitted > 0 ? { omitted, hint: "This answer was cut to stay small. Narrow it with kind, role or nameContains, or page with offset." } : {}),
+        }));
       }),
   );
 
@@ -214,21 +286,38 @@ export function createAgentMcpServer(options: AgentMcpOptions = {}): McpServer {
         "and low quality images are dropped and counted by reason. Returns the paths, not the bytes.",
       inputSchema: {
         scanId: z.string().describe("the id scan_page returned"),
-        ids: z.array(z.string()).max(agentLimits.maxFiles).optional().describe("exact asset ids, which win over the filters"),
+        ids: z.array(z.string()).max(MAX_EXPLICIT_IDS).optional().describe("exact asset ids, which win over the filters"),
         profile: z.enum(["deck", "all"]).optional().describe("deck (default) keeps what is usable, all keeps everything the filters allow"),
-        kinds: z.array(AssetKind).optional(),
-        roles: z.array(AssetRole).optional(),
-        minLongSide: z.number().int().positive().optional(),
-        nameContains: z.string().max(200).optional(),
+        // The same names `list_assets` and the CLI take: an agent that narrowed a listing with `kind` and `role` reuses
+        // them here, and the plural forms silently did nothing because zod strips what the object does not declare.
+        ...listFilterShape,
+        kinds: z.array(AssetKind).optional().describe("several kinds at once, when kind is not enough"),
+        roles: z.array(AssetRole).optional().describe("several roles at once, when role is not enough"),
         max: z.number().int().positive().optional().describe(`files to write, ${agentLimits.maxFiles} by default`),
         dest: z.string().max(1024).optional().describe("a directory inside the project scrap folder. Left out, it is scrap/<host>"),
       },
     },
-    async ({ scanId, dest, ...filters }) =>
+    async ({ scanId, dest, kind, kinds, role, roles, ids, ...rest }) =>
       withScan(scanId, async (scan) => {
+        const known = new Set(scan.assets.map((asset) => asset.id));
+        const unknownIds = ids?.filter((id) => !known.has(id)) ?? [];
+        // Every id unknown means the agent is working from an expired scan (a re-scan mints new ids) or from a typo, and
+        // `dropped: { filter: 233 }` is not something it can act on. Nothing is written, so no empty directory is left.
+        if (ids !== undefined && unknownIds.length === ids.length) {
+          return fail(
+            `none of those ids are in scan ${JSON.stringify(scanId)}: ${unknownIds.slice(0, 5).map((id) => JSON.stringify(id)).join(", ")}` +
+              `${unknownIds.length > 5 ? ` and ${unknownIds.length - 5} more` : ""}. Call list_assets for this scan, or scan_page again: a new scan mints new ids.`,
+          );
+        }
+        const selection: SelectionOptions = {
+          ...rest,
+          ...(ids === undefined ? {} : { ids }),
+          ...(kind === undefined && kinds === undefined ? {} : { kinds: [...new Set([...(kinds ?? []), ...(kind === undefined ? [] : [kind])])] }),
+          ...(role === undefined && roles === undefined ? {} : { roles: [...new Set([...(roles ?? []), ...(role === undefined ? [] : [role])])] }),
+        };
         const destination = resolveDestination({ host: scan.page.host, cwd, restrictToProject: true, ...(dest === undefined ? {} : { dest }) });
-        const result = await download(scan, { dir: destination.dir, source: openSource(), selection: filters });
-        return ok(result);
+        const result = await download(scan, { dir: destination.dir, source: openSource(), selection });
+        return downloadAnswer(result, unknownIds);
       }),
   );
 
@@ -251,10 +340,13 @@ export function createAgentMcpServer(options: AgentMcpOptions = {}): McpServer {
           inline && "text" in inline ? inline.text
           : inline && "base64" in inline ? Buffer.from(inline.base64, "base64").toString("utf8")
           : (await openSource().fetchBytes(asset.display ?? asset.original ?? { url: "", proxy: "", format: asset.format })).toString("utf8");
-        if (Buffer.byteLength(markup) > MAX_SVG_TEXT_BYTES) {
-          return fail(`this SVG is ${Buffer.byteLength(markup)} bytes, too much to read into a context. Use download_assets instead.`);
+        const bytes = Buffer.from(markup, "utf8");
+        if (bytes.byteLength > MAX_SVG_TEXT_BYTES) {
+          return fail(`this SVG is ${bytes.byteLength} bytes, too much to read into a context. Use download_assets instead.`);
         }
-        if (!markup.trimStart().startsWith("<svg") && !markup.trimStart().startsWith("<?xml") && !markup.trimStart().startsWith("<!")) {
+        // The repo's own detector, not a prefix test: a hand-rolled one accepted every `<!DOCTYPE html>` and every bare
+        // comment, so the one guard between a hostile page and this answer never fired for the case it was written for.
+        if (sniffContentType(bytes) !== "image/svg+xml") {
           return fail(`the bytes of asset ${JSON.stringify(id)} are not SVG markup`);
         }
         return ok({ id: asset.id, name: asset.name, filename: asset.filename, markup });

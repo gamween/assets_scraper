@@ -45,6 +45,8 @@ be installed, and the logos with their dimensions. Read it first, then ask for w
 
 "full" answers { view, scanId, summary, scan } where scan adds every asset and every font family, in the shapes of
 src/lib/contract.ts: assets carry id, kind, role, name, filename, format, dimensions, bytes and their source URLs.
+Ask for it from a program that writes the answer to a file, not to read into a context: a page with a few hundred
+assets answers hundreds of kilobytes, and the archive below is the way to get the files themselves.
 
 ## GET /api/v1/assets.zip
 
@@ -61,8 +63,9 @@ Query: url, profile, kinds, roles, max, minLongSide, nameContains
                  A site logo, a logo and a favicon are never dropped for size, and SVG has no size gate.
   nameContains   keeps the files whose name contains this text
 
-The archive holds svg/, images/ and a manifest.json listing, per file, its path, source URL, dimensions, bytes, role
-and why it was kept, plus every drop counted by reason. Unzip it into your project, for example into scrap/<host>/.
+The archive holds svg/, images/ and a manifest.json listing, per file, its path inside the archive, source URL,
+dimensions, bytes, role and why it was kept, plus every drop counted by reason. It is the same document the
+assets-scraper command writes, so unzipping the archive into scrap/<host>/ gives what a local download would.
 The response headers x-assets-count, x-assets-bytes and x-assets-truncated say what came back without unzipping.
 
 ## Limits
