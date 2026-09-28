@@ -160,6 +160,9 @@ const isEntryPoint = () => {
 if (isEntryPoint()) {
   try {
     const { bundle } = await ensureBundle({ log: (line) => process.stderr.write(`${line}\n`) });
+    // The bundle starts its server only when node was started on it, which it reads from `process.argv[1]`. Running it
+    // here has to look exactly like `node dist/mcp.mjs`, so the launcher takes its own name out of the way first.
+    process.argv = [process.argv[0], bundle, ...process.argv.slice(2)];
     await import(pathToFileURL(bundle).href);
   } catch (error) {
     const message = error instanceof LauncherError ? error.message : `assets-scraper: the MCP server could not start: ${error?.message ?? error}`;

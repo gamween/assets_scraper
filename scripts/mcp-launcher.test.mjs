@@ -11,6 +11,12 @@ import { ensureBundle, LauncherError, missingPackage, newestSource, staleness } 
 const run = promisify(execFile);
 const launcher = fileURLToPath(new URL("./mcp-launcher.mjs", import.meta.url));
 
+/** A stand-in for dist/mcp.mjs: it only speaks when node was started on it, which is the guard the real bundle uses. */
+const BUNDLE_SOURCE = [
+  'const { pathToFileURL } = await import("node:url");',
+  'if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) process.stderr.write("server up\\n");',
+].join("\n");
+
 const roots = [];
 afterEach(async () => {
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
@@ -135,7 +141,8 @@ describe("the launcher process", () => {
     const root = await repoWithLauncher({ bundle: false });
     for (const [step, writes] of [
       ["build-inpage", "process.stderr.write('inpage\\n');"],
-      ["build-agent", "await import('node:fs/promises').then((fs) => fs.mkdir('dist', { recursive: true })); await import('node:fs/promises').then((fs) => fs.writeFile('dist/mcp.mjs', \"process.stderr.write('server up\\\\n');\"));"],
+      // The bundle only speaks when node was started on it, the guard dist/mcp.mjs uses
+      ["build-agent", `const fs = await import("node:fs/promises"); await fs.mkdir("dist", { recursive: true }); await fs.writeFile("dist/mcp.mjs", ${JSON.stringify(BUNDLE_SOURCE)});`],
     ]) {
       await writeFile(path.join(root, `scripts/${step}.mjs`), writes);
     }
