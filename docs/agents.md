@@ -27,6 +27,8 @@ claude plugin install assets-scraper
 
 Google Chrome has to be installed for a local scan. Set `CHROME_EXECUTABLE_PATH` if it is not in the default location. The MCP entry point is `dist/mcp.mjs`, written by `pnpm build:agent`, and it fails with a clear message when the build or the dependencies are missing.
 
+The marketplace stays pointed at the clone, and the plugin runs `dist/mcp.mjs` from it, which is not committed. Run `pnpm build:agent` again after every `git pull`, or the MCP server keeps serving the bundle of an older commit. Restart Claude Code to pick up a rebuilt bundle. `claude mcp list` shows the server as `plugin:assets-scraper:assets-scraper` with the path it runs.
+
 Tools, all returning compact JSON, never bytes:
 
 | Tool | Input | Output |
@@ -34,7 +36,7 @@ Tools, all returning compact JSON, never bytes:
 | `scan_page` | `url`, optional `refresh` | `scanId`, the page, counts per kind, the palette, one row per font family, the logos, and how many other assets there are |
 | `list_assets` | `scanId`, optional `kind`, `role`, `minLongSide`, `nameContains`, `limit` (40), `offset` | Compact rows: id, name, kind, role, dimensions, bytes |
 | `download_assets` | `scanId`, optional `ids`, `profile`, filters, `dest` | The written paths, total bytes, the drop reasons, the destination |
-| `read_svg` | `scanId`, `id` | The SVG markup as text |
+| `read_svg` | `scanId`, `id` | `{ id, name, filename, markup }`, the markup as text, refused past 256 KB |
 | `get_palette` | `scanId` | The palette hexes with their roles |
 | `install_fonts` | `scanId`, optional `families` | Installed families with their licence and paths, and what could not be installed and why |
 | `list_installed_fonts` | | What this tool installed, with dates and sources |
@@ -84,6 +86,8 @@ curl -s -o assets.zip \
 - `GET /llms.txt` and `GET /api/openapi.json` describe both endpoints for machines.
 
 A token skips the bot check and nothing else: the rate limit, the scan budget, the SSRF guards and every v1 cap still apply. Tokens live in the `AGENT_TOKENS` environment variable of the deployment, comma separated, and are never logged.
+
+Running the deployment: `AGENT_TOKENS` is set for production and preview in the Vercel project, and adding a client means appending its token to that variable and redeploying. The owner's own token is kept out of the repo, in `~/.config/assets-scraper/agent.env` (mode 600, key `AGENT_TOKEN`), so a shell reads it with `set -a; . ~/.config/assets-scraper/agent.env; set +a` and then uses `$AGENT_TOKEN`. The CLI and the MCP server read a token from `ASSETS_SCRAPER_TOKEN`, not from that file.
 
 ## What a download takes
 
