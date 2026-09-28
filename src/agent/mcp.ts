@@ -4,11 +4,12 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import * as z from "zod";
-import { AssetKind, AssetRole } from "@/lib/contract";
+import { type Asset, AssetKind, AssetRole } from "@/lib/contract";
 import { ScanFailure } from "@/server/errors";
 import { findRecentScan, loadScan, saveScan } from "./cache";
 import { resolveDestination } from "./dest";
-import { installFonts, listInstalledFonts, uninstallFonts } from "./fonts";
+import { listInstalledFonts } from "./font-manifest";
+import { installFonts, uninstallFonts } from "./fonts";
 import { agentLimits } from "./limits";
 import { createScanSource } from "./source";
 import { summarize } from "./summary";
@@ -86,8 +87,27 @@ const downloadUnavailable: DownloadAssetsPort = () => {
 const listFilterShape = {
   kind: AssetKind.optional().describe("only svg, or only image"),
   role: AssetRole.optional().describe("only assets the scan gave this role"),
-  minLongSide: z.number().int().positive().optional().describe("drop rasters whose longest side is under this many pixels"),
+  minLongSide: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe("drop rasters whose longest side is under this many pixels. Vectors, and assets the scan could not measure, are kept"),
   nameContains: z.string().max(200).optional().describe("only assets whose name contains this text"),
+};
+
+/**
+ * The size gate of spec 4.2: a vector has no size to gate on, and an asset the scan could measure nothing for is kept
+ * rather than silently dropped, so an agent listing with `minLongSide` to find usable art does not lose the vector logos
+ * it was looking for. `selectAssets` gates a download the same way, and exempts the logo roles on top of this, which a
+ * plain listing does not: here the number the agent asked for is what it gets for a raster with a known size.
+ */
+const passesSizeGate = (asset: Asset, minLongSide: number): boolean => {
+  if (asset.kind === "svg") return true;
+  const width = asset.width ?? asset.renderedWidth;
+  const height = asset.height ?? asset.renderedHeight;
+  if (width === undefined && height === undefined) return true;
+  return Math.max(width ?? 0, height ?? 0) >= minLongSide;
 };
 
 export function createAgentMcpServer(options: AgentMcpOptions = {}): McpServer {
@@ -151,7 +171,7 @@ export function createAgentMcpServer(options: AgentMcpOptions = {}): McpServer {
           if (kind !== undefined && asset.kind !== kind) return false;
           if (role !== undefined && asset.role !== role) return false;
           if (needle !== undefined && !asset.name.toLowerCase().includes(needle)) return false;
-          if (minLongSide !== undefined && Math.max(asset.width ?? 0, asset.height ?? 0) < minLongSide) return false;
+          if (minLongSide !== undefined && !passesSizeGate(asset, minLongSide)) return false;
           return true;
         });
         const from = offset ?? 0;
