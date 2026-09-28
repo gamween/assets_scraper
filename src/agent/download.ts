@@ -167,7 +167,11 @@ export async function downloadAssets(scan: AgentScan, source: ScanSource, option
     ...(options.dest === undefined ? {} : { dest: options.dest }),
     ...(options.restrictToProject === undefined ? {} : { restrictToProject: options.restrictToProject }),
   });
-  const dir = destination.dir;
+  // The destination is created and resolved once, so `dir` is the same real path the writes come back with: on a
+  // machine where the destination sits behind a link (`/tmp` on macOS is `/private/tmp`) the two spellings differ, and
+  // the manifest's relative paths would climb out of the folder they describe.
+  fs.mkdirSync(destination.dir, { recursive: true });
+  const dir = fs.realpathSync(destination.dir);
   const profile = options.profile ?? "deck";
   const selection: SelectionOptions = { ...options, profile };
 

@@ -272,3 +272,18 @@ describe("downloadAssets, the limits", () => {
     expect(readManifest(result).files[0].keptBecause).toBe("explicit id");
   });
 });
+
+describe("downloadAssets, the destination", () => {
+  it("writes paths in the manifest relative to the folder itself when the destination is a link", async () => {
+    fs.mkdirSync(path.join(dir, "real"));
+    fs.symlinkSync(path.join(dir, "real"), path.join(dir, "link"));
+    const logo = testAsset({ id: "logo", kind: "svg", format: "svg", role: "logo", filename: "logo.svg" });
+    const source = fakeSource({ [urlOf(logo)]: Buffer.from("<svg/>") });
+
+    const result = await downloadAssets(scanOf([logo]), source, { dest: path.join(dir, "link") });
+
+    expect(result.dir).toBe(path.join(dir, "real"));
+    expect(readManifest(result).files[0].file).toBe("svg/logo.svg");
+    expect(fs.existsSync(path.join(dir, "real", "svg/logo.svg"))).toBe(true);
+  });
+});

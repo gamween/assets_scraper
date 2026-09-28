@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_REMOTE, USAGE, UsageError, formatDownload, formatDropped, formatSummary, openSource, selectionFrom } from "./cli";
+import { DEFAULT_REMOTE, USAGE, UsageError, formatDownload, formatDropped, formatSummary, openSource, scanUrl, selectionFrom } from "./cli";
 import { summarize } from "./summary";
 import { testScan } from "./testing";
 import type { DownloadResult } from "./types";
@@ -52,6 +52,23 @@ describe("selectionFrom", () => {
     expect(fails(() => selectionFrom({ role: "hero" })).message).toContain("--role does not know");
     expect(fails(() => selectionFrom({ max: "0" })).message).toContain("--max takes a whole number");
     expect(fails(() => selectionFrom({ "min-long-side": "600px" })).message).toContain("--min-long-side takes a whole number");
+  });
+});
+
+describe("scanUrl", () => {
+  it("reads a URL the way the app reads what a user pastes", () => {
+    expect(scanUrl("stripe.com")).toBe("https://stripe.com/");
+    expect(scanUrl(" <https://stripe.com/pricing>. ")).toBe("https://stripe.com/pricing");
+    expect(scanUrl("http://127.0.0.1:8080/")).toBe("http://127.0.0.1:8080/");
+  });
+
+  it("refuses what is not a web address, with the code the API uses", () => {
+    expect(fails(() => scanUrl("not a url")).message).toContain("invalid-url");
+    expect(fails(() => scanUrl("mailto:someone@example.com")).message).toContain("invalid-url");
+  });
+
+  it("leaves an unusual port to the scan, which knows whether it is allowed", () => {
+    expect(scanUrl("stripe.com:8443")).toBe("https://stripe.com:8443/");
   });
 });
 
