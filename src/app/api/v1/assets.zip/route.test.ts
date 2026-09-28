@@ -148,7 +148,7 @@ describe("GET /api/v1/assets.zip", () => {
     const manifest = manifestOf(entries);
     expect(manifest.truncated).toBe(true);
     expect(manifest.note).toMatch(/front of the selection/);
-    expect(manifest.note).not.toMatch(/[–—]/);
+    expect(manifest.note).not.toMatch(/[\u2013\u2014]/);
     expect(manifest.files.length).toBeGreaterThan(0);
     expect(manifest.files.length).toBeLessThan(4);
     expect(pathsOf(entries)).toHaveLength(manifest.files.length);

@@ -40,7 +40,7 @@ async function expectFailure(response: Response, status: number, code: string): 
   expect(response.headers.get("cache-control")).toBe("no-store");
   const body = ApiError.parse(await response.json());
   expect(body.error.code).toBe(code);
-  expect(body.error.message).not.toMatch(/[–—]/);
+  expect(body.error.message).not.toMatch(/[\u2013\u2014]/);
 }
 
 describe("authorizeAgent", () => {
@@ -163,8 +163,12 @@ describe("parseSelectionParams", () => {
     for (const query of ["profile=everything", "kinds=svg,pdf", "roles=mascot", "max=0", "max=-4", "max=lots", "minLongSide=1.5"]) {
       const result = parseSelectionParams(params(query));
       expect(result.ok).toBe(false);
-      if (!result.ok) expect(result.message).not.toMatch(/[–—]/);
+      if (!result.ok) expect(result.message).not.toMatch(/[\u2013\u2014]/);
     }
+  });
+
+  it("cuts a needle longer than any file name", () => {
+    expect(parseSelectionParams(params(`nameContains=${"x".repeat(500)}`))).toEqual({ ok: true, options: { profile: "deck", nameContains: "x".repeat(200) } });
   });
 
   it("caps max at the number of files one download writes", () => {

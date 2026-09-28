@@ -36,7 +36,7 @@ async function expectRefusal(result: ReturnType<typeof authenticateAgent>): Prom
   expect(result.response.headers.get("www-authenticate")).toBe("Bearer");
   const body = ApiError.parse(await result.response.json());
   expect(body.error.code).toBe("access-code");
-  expect(body.error.message).not.toMatch(/[–—]/);
+  expect(body.error.message).not.toMatch(/[\u2013\u2014]/);
 }
 
 describe("agentTokens", () => {

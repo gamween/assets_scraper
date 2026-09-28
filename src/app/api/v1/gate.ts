@@ -122,6 +122,9 @@ export async function gateAgentTarget(input: string | null | undefined, request:
 
 const PROFILES = new Set<SelectionProfile>(["deck", "all"]);
 
+/** Characters of `nameContains` the endpoint keeps. */
+export const MAX_NAME_CONTAINS = 200;
+
 const list = (value: string): string[] =>
   value
     .split(",")
@@ -174,6 +177,7 @@ export function parseSelectionParams(params: URLSearchParams): SelectionParams {
     options.minLongSide = parsed;
   }
   const nameContains = params.get("nameContains");
-  if (nameContains !== null && nameContains.trim() !== "") options.nameContains = nameContains.trim();
+  // Cut, because it is echoed back in the archive's manifest: a caller has no use for a needle longer than a file name.
+  if (nameContains !== null && nameContains.trim() !== "") options.nameContains = nameContains.trim().slice(0, MAX_NAME_CONTAINS);
   return { ok: true, options };
 }

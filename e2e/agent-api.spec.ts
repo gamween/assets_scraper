@@ -16,7 +16,7 @@ test.describe("agent API", () => {
     expect(text).toContain("GET /api/v1/assets.zip");
     expect(text).toContain("Authorization: Bearer");
     expect(text).toMatch(/curl/);
-    expect(text).not.toMatch(/[–—]/);
+    expect(text).not.toMatch(/[\u2013\u2014]/);
   });
 
   test("openapi.json describes both endpoints", async ({ request }) => {

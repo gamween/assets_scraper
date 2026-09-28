@@ -56,7 +56,7 @@ describe("GET /api/openapi.json", () => {
 
   it("keeps the copy rules: no em dash, no en dash, no emoji", async () => {
     const text = await (await GET(new Request(`${ORIGIN}/api/openapi.json`))).text();
-    expect(text).not.toMatch(/[–—]/);
+    expect(text).not.toMatch(/[\u2013\u2014]/);
     expect(text).not.toMatch(/[\u{1f300}-\u{1faff}\u{2600}-\u{27bf}]/u);
   });
 });
