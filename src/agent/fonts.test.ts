@@ -226,7 +226,8 @@ describe("installFonts", () => {
     const report = await installFonts([interWoff2(), other], { fetchBytes, only: ["inter", "Nope"] });
 
     expect(report.installed.map((install) => install.family)).toEqual(["Inter"]);
-    expect(report.skipped).toEqual([{ family: "Nope", reason: "unknown-family" }]);
+    // The detail names the families the scan does hold, so a slip on a name is correctable from the answer alone.
+    expect(report.skipped).toEqual([{ family: "Nope", reason: "unknown-family", detail: "this page has Inter, Other" }]);
   });
 
   it("refuses a file over the size limit, a fetch that fails and bytes that do not decode", async () => {
@@ -355,7 +356,7 @@ describe("listInstalledFonts and uninstallFonts", () => {
   });
 
   it("reports an unknown family as missing instead of throwing", async () => {
-    expect(await uninstallFonts(["Nope"])).toEqual({ removed: [], missing: ["Nope"] });
+    expect(await uninstallFonts(["Nope"])).toEqual({ removed: [], missing: ["Nope"], stillInstalled: [] });
   });
 
   it("reads an empty list when nothing was ever installed, and ignores a corrupt manifest", async () => {
@@ -379,7 +380,10 @@ describe("listInstalledFonts and uninstallFonts", () => {
 
     const removal = await uninstallFonts(["Inter"]);
 
-    expect(removal.removed).toMatchObject([{ family: "Inter", files: [] }]);
+    // Regression: this answered `removed: [{ family: "Inter", files: [] }]`, so the CLI printed "removed Inter" and the
+    // MCP tool reported success while the font was still installed and still recorded (review issue 20).
+    expect(removal.removed).toEqual([]);
+    expect(removal.stillInstalled).toEqual([{ family: "Inter", files: [outside] }]);
     expect(fs.existsSync(outside)).toBe(true);
     expect(await listInstalledFonts()).toMatchObject([{ family: "Inter", files: [outside] }]);
   });

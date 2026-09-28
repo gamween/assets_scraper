@@ -10,7 +10,7 @@ import type { AgentScan, ScanSummary } from "./types";
 /**
  * Bytes the whole document stays under, so an agent can read it and still have its context (spec 2). The caps below are
  * what normally keeps it there, and `fit` is the guarantee: with every string at its cap, 8 logos carrying a 40
- * character sha1 id, 12 font families and 12 swatches measure 4701 bytes together, so the caps alone are not a bound.
+ * character sha1 id, 12 font families and 12 swatches measure well over it, so the caps alone are not a bound.
  */
 export const MAX_SUMMARY_BYTES = 4_096;
 
@@ -59,8 +59,13 @@ export function summarize(scan: AgentScan): ScanSummary {
       id: asset.id,
       name: cut(asset.name, MAX_NAME_CHARS),
       kind: asset.kind,
+      // The format and the file size are what tell a wordmark from a hero photo: v1 gives role `logo` to both, so on
+      // stripe.com the third of eight logo rows was a 4.27 MB 2460x1060 PNG and SKILL.md sends the agent to these rows to
+      // find the site logo. They are two short fields, and they are the only signal this row had none of (review issue 11).
+      format: asset.format,
       ...(asset.width === undefined ? {} : { width: asset.width }),
       ...(asset.height === undefined ? {} : { height: asset.height }),
+      ...(asset.bytes === undefined ? {} : { bytes: asset.bytes }),
     }));
 
   const swatches = [...(scan.palette?.brand ?? []), ...(scan.palette?.neutrals ?? [])]

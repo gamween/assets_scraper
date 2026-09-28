@@ -1,4 +1,4 @@
-import type { FontInstallReport, FontSkipReason } from "./fonts";
+import type { FontInstallReport, FontSkipReason, FontUninstallReport } from "./fonts";
 import type { FontInstall } from "./types";
 
 /**
@@ -56,13 +56,17 @@ export function formatFontList(fonts: FontInstall[]): string {
   return rows.join("\n");
 }
 
-export function formatFontUninstall(result: { removed: FontInstall[]; missing: string[] }): string {
+export function formatFontUninstall(result: FontUninstallReport): string {
   const rows: string[] = [];
   for (const font of result.removed) {
     rows.push(`removed ${font.family}`);
     for (const file of font.files) rows.push(`  ${file}`);
   }
   for (const family of result.missing) rows.push(`${family}: this tool did not install it, nothing removed`);
+  for (const still of result.stillInstalled) {
+    rows.push(`${still.family}: still installed, none of its files could be removed`);
+    for (const file of still.files) rows.push(`  ${file}`);
+  }
   if (rows.length === 0) rows.push("nothing to remove");
   return rows.join("\n");
 }

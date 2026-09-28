@@ -221,7 +221,9 @@ export function formatSummary(summary: ScanSummary, reused: boolean): string {
   if (summary.logos.length > 0) {
     rows.push("  logos:");
     for (const logo of summary.logos) {
-      rows.push(`    ${logo.id}  ${logo.name}  ${logo.kind}  ${formatDimensions(logo.width, logo.height) || "size unknown"}`);
+      // The format and the size, not just the kind: v1 gives role `logo` to a hero photo as well as to a wordmark.
+      const size = [formatDimensions(logo.width, logo.height) || "size unknown", logo.bytes === undefined ? "" : formatBytes(logo.bytes)];
+      rows.push(`    ${logo.id}  ${logo.name}  ${logo.format}  ${size.filter(Boolean).join(", ")}`);
     }
   }
   if (summary.otherAssets > 0) rows.push(`  and ${formatCount(summary.otherAssets, "other asset")}`);
@@ -290,6 +292,9 @@ async function runFonts(positionals: string[], values: Values): Promise<number> 
 
 async function runScan(url: string | undefined, values: Values): Promise<number> {
   if (!url) throw new UsageError("scan needs a URL: assets-scraper scan stripe.com");
+  // A scan takes no selection, but the flags are still checked here: `scan --profile fast` used to exit 0 in silence, so
+  // the typo first said something on the next command that did read it (review issue 14).
+  selectionFrom(values);
   const { scan, reused } = await scanPage(scanUrl(url), openSource(values), values);
   const summary = summarize(scan);
   line(values.json === true ? JSON.stringify(summary) : formatSummary(summary, reused));
