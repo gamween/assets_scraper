@@ -67,6 +67,40 @@ export interface ImageFingerprint {
 export const sha1 = (buffer: Buffer): string => createHash("sha1").update(buffer).digest("hex");
 
 /**
+ * Every place an SVG names or references an id: the `id` attribute, `url(#...)` (fills, masks, clip paths, filters) and
+ * `href`/`xlink:href` on a `use`. Colors are deliberately out of reach of the fragment arms, so `fill="#635bff"` is left
+ * exactly as it is and two marks that differ only in colour stay two files.
+ */
+const SVG_ID = /\bid\s*=\s*(["'])([^"']*)\1|\burl\(\s*#([^)\s"']+)\s*\)|\b(?:xlink:)?href\s*=\s*(["'])#([^"']*)\4/g;
+
+/**
+ * SVG markup with its ids renumbered in document order, which is the form two copies of one logo are compared in
+ * (spec 4.4). React's `useId` mints a value per render instance (`:Rij1mr6l6:`), so a React or Next.js marketing page
+ * writes each inline logo once per instance and the raw byte hash read them as different files: verified on stripe.com,
+ * where `stripe-accor.svg` and `stripe-accor-2.svg` are both 4,319 bytes and become byte-identical once `:Rij1mr6l6:`
+ * and `:Ril1mr6l6:` are folded, and the same for `stripe-tf1.svg` and its copy (review issue 8).
+ *
+ * Every id-shaped token is renumbered rather than only the generated-looking ones: a declaration and its references fold
+ * to the same placeholder because they carry the same text, and a document whose ids are already stable renumbers to an
+ * equivalent of itself.
+ */
+export function canonicalizeSvg(markup: string): string {
+  const ids = new Map<string, string>();
+  const placeholder = (raw: string): string => {
+    const seen = ids.get(raw);
+    if (seen !== undefined) return seen;
+    const name = `i${ids.size}`;
+    ids.set(raw, name);
+    return name;
+  };
+  return markup.replace(SVG_ID, (_match, _q: string, declared: string | undefined, inUrl: string | undefined, _q2: string, inHref: string | undefined) => {
+    if (declared !== undefined) return `id="${placeholder(declared)}"`;
+    if (inUrl !== undefined) return `url(#${placeholder(inUrl)})`;
+    return `href="#${placeholder(inHref ?? "")}"`;
+  });
+}
+
+/**
  * The perceptual fingerprint of a raster, or null when there is nothing to compare: bytes sharp cannot decode, a size
  * it cannot report, or a hash with too little signal to group on. Both greyscale fields come from one input.
  *

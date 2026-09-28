@@ -1,6 +1,7 @@
 import type { Asset, AssetFormat } from "@/lib/contract";
+import { sniffContentType } from "@/server/security/sniff";
 import { agentLimits } from "./limits";
-import { type ImageFingerprint, fingerprint, sameVisual, sha1 } from "./hash";
+import { type ImageFingerprint, canonicalizeSvg, fingerprint, sameVisual, sha1 } from "./hash";
 import type { DropReason, Selection, SelectionOptions } from "./types";
 
 /**
@@ -86,7 +87,7 @@ export async function selectAssets(
   const finish = (selected: Asset[]): Selection => {
     const sorted = selected.sort(byRelevance);
     const max = options.max ?? agentLimits.maxFiles;
-    const keep = sorted.slice(0, Math.max(0, max));
+    const keep = capByKind(sorted, Math.max(0, max));
     drop("cap", sorted.length - keep.length);
     const kept = new Set(keep.map((asset) => asset.id));
     return { keep, dropped, duplicates: duplicates.filter((group) => kept.has(group.keptId)) };
@@ -151,7 +152,12 @@ export async function selectAssets(
   if (bytes && bytes.size > 0) {
     pool = groupOut(pool, (asset) => {
       const buffer = bytes.get(asset.id);
-      return buffer ? sha1(buffer) : null;
+      if (!buffer) return null;
+      // SVG markup is hashed with its ids renumbered, so the same component rendered twice is one file rather than two:
+      // the near-duplicate pass below only reads rasters, and raw bytes differ for every framework-generated id. The
+      // bytes decide, not `asset.kind`, so a vector and a raster serving the same markup still group together.
+      const svg = sniffContentType(buffer) === "image/svg+xml";
+      return sha1(svg ? Buffer.from(canonicalizeSvg(buffer.toString("utf8")), "utf8") : buffer);
     }, "duplicate", drop, duplicates);
 
     if (profile === "deck") {
@@ -161,6 +167,31 @@ export async function selectAssets(
   }
 
   return finish(pool);
+}
+
+/**
+ * The cap of spec 4.6, with each kind keeping its share of the pool (review issue 5). A plain prefix of the relevance
+ * order emptied the download of pictures: the v1 score ranks every role-logo vector above every photo, so on a real page
+ * (stripe.com, 149 assets surviving the deck filters) the top 60 were 59 SVG and 1 image, and 45 rasters of 600 px and up
+ * were dropped under `cap`, half the kept vectors being unnamed fragments and four of them a single solid rectangle.
+ *
+ * Each kind therefore gets `floor(max * its share)` of the cap, filled in relevance order, and the slots left over by
+ * rounding or by a kind with fewer files than its share go to the most relevant of whatever remains, whatever its kind.
+ * The output keeps the relevance order, so the rule is invisible to a caller reading the list.
+ */
+function capByKind(sorted: Asset[], max: number): Asset[] {
+  if (sorted.length <= max) return sorted;
+  const kept = new Set<string>();
+  for (const kind of ["svg", "image"] as const) {
+    const ofKind = sorted.filter((asset) => asset.kind === kind);
+    const quota = Math.floor((max * ofKind.length) / sorted.length);
+    for (const asset of ofKind.slice(0, quota)) kept.add(asset.id);
+  }
+  for (const asset of sorted) {
+    if (kept.size >= max) break;
+    kept.add(asset.id);
+  }
+  return sorted.filter((asset) => kept.has(asset.id));
 }
 
 /**

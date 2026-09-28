@@ -226,8 +226,9 @@ describe("downloadAssets, the limits", () => {
     const assets = Array.from({ length: 4 }, (_, index) =>
       testAsset({ id: `a${index}`, kind: "svg", format: "svg", role: "logo", filename: `a${index}.svg`, score: 100 - index }),
     );
-    // Distinct bytes per asset: identical ones would be dropped as duplicates before the budget was ever reached.
-    const bodies = Object.fromEntries(assets.map((asset, index) => [urlOf(asset), Buffer.from(`<svg id='${index}'/>`.padEnd(30, " "))]));
+    // Distinct drawings per asset: identical ones would be dropped as duplicates before the budget was ever reached, and
+    // two that differ only in an id are the same drawing as far as the duplicate rule is concerned.
+    const bodies = Object.fromEntries(assets.map((asset, index) => [urlOf(asset), Buffer.from(`<svg><rect width='${index + 1}'/></svg>`.padEnd(30, " "))]));
     const source = fakeSource(bodies);
 
     const result = await downloadAssets(scanOf(assets), source, { dest: dir, concurrency: 1 });
@@ -243,7 +244,7 @@ describe("downloadAssets, the limits", () => {
     const assets = Array.from({ length: 8 }, (_, index) =>
       testAsset({ id: `a${index}`, kind: "svg", format: "svg", role: "logo", filename: `a${index}.svg` }),
     );
-    const source = fakeSource(Object.fromEntries(assets.map((asset, index) => [urlOf(asset), Buffer.from(`<svg id='${index}'/>`)])), 5);
+    const source = fakeSource(Object.fromEntries(assets.map((asset, index) => [urlOf(asset), Buffer.from(`<svg><rect width='${index + 1}'/></svg>`)])), 5);
 
     const result = await downloadAssets(scanOf(assets), source, { dest: dir });
 

@@ -7,6 +7,7 @@ import {
   DHASH_CHARS,
   type ImageFingerprint,
   MIN_HASH_BITS,
+  canonicalizeSvg,
   THUMB_SIDE,
   fingerprint,
   hammingDistance,
@@ -134,6 +135,33 @@ describe("fingerprint", () => {
     expect(most).toBeLessThanOrEqual(2);
     expect(renderStats().active).toBe(0);
   }, 30_000);
+});
+
+describe("canonicalizeSvg", () => {
+  /** The verified case: one React component rendered twice, `useId` the only difference (review issue 8). */
+  const accor = (id: string): string =>
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 40">` +
+      `<defs><linearGradient id="${id}"><stop offset="0" stop-color="#0a2540"/></linearGradient>` +
+      `<clipPath id="${id}H1"><rect width="120" height="40"/></clipPath></defs>` +
+      `<g clip-path="url(#${id}H1)"><path d="M0 0h120v40H0z" fill="url(#${id})"/><use xlink:href="#${id}H1"/></g></svg>`;
+
+  it("folds two renders of one component onto the same bytes", () => {
+    expect(canonicalizeSvg(accor(":Rij1mr6l6:"))).toBe(canonicalizeSvg(accor(":Ril1mr6l6:")));
+    expect(sha1(Buffer.from(canonicalizeSvg(accor(":Rij1mr6l6:"))))).toBe(sha1(Buffer.from(canonicalizeSvg(accor(":Ril1mr6l6:")))));
+    expect(accor(":Rij1mr6l6:")).not.toBe(accor(":Ril1mr6l6:"));
+  });
+
+  it("leaves colours alone, so two marks that differ only in colour stay two files", () => {
+    const mark = (hex: string) => `<svg xmlns="http://www.w3.org/2000/svg"><rect width="118" height="32" rx="4" fill="${hex}"/></svg>`;
+    expect(canonicalizeSvg(mark("#101D51"))).not.toBe(canonicalizeSvg(mark("#635bff")));
+    expect(canonicalizeSvg(mark("#101D51"))).toBe(mark("#101D51"));
+  });
+
+  it("keeps two genuinely different drawings apart", () => {
+    const one = '<svg xmlns="http://www.w3.org/2000/svg"><path id="a" d="M0 0h10v10H0z"/></svg>';
+    const two = '<svg xmlns="http://www.w3.org/2000/svg"><path id="a" d="M0 0h20v10H0z"/></svg>';
+    expect(canonicalizeSvg(one)).not.toBe(canonicalizeSvg(two));
+  });
 });
 
 describe("sameVisual", () => {

@@ -158,6 +158,32 @@ describe("selectAssets, deck profile", () => {
     expect(selection.duplicates).toEqual([{ keptId: "hero-b.png", droppedIds: ["hero-a.png"] }]);
   });
 
+  /**
+   * Regression: the byte hash read raw bytes and the perceptual pass only reads rasters, so a React or Next.js page that
+   * renders one logo component twice wrote each copy to disk and reported no duplicates at all (review issue 8).
+   */
+  it("drops a second copy of one SVG that differs only in framework-generated ids", async () => {
+    const logo = (id: string): string =>
+      `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 40"><defs><clipPath id="${id}"><rect width="120" height="40"/></clipPath></defs>` +
+      `<g clip-path="url(#${id})"><path d="M0 0h120v40H0z" fill="#0a2540"/></g></svg>`;
+    const bytes = new Map([
+      ["accor.svg", Buffer.from(logo(":Rij1mr6l6:"), "utf8")],
+      ["accor-2.svg", Buffer.from(logo(":Ril1mr6l6:"), "utf8")],
+      ["tf1.svg", Buffer.from(logo(":Ri0:").replace("#0a2540", "#e2001a"), "utf8")],
+    ]);
+    const assets = [
+      make({ file: "accor.svg", role: "logo", score: 90 }),
+      make({ file: "accor-2.svg", role: "logo", score: 80 }),
+      make({ file: "tf1.svg", role: "logo", score: 70 }),
+    ];
+
+    const selection = await selectAssets(assets, {}, bytes);
+
+    expect(selection.keep.map((asset) => asset.id)).toEqual(["accor.svg", "tf1.svg"]);
+    expect(selection.dropped).toEqual({ duplicate: 1 });
+    expect(selection.duplicates).toEqual([{ keptId: "accor.svg", droppedIds: ["accor-2.svg"] }]);
+  });
+
   it("keeps distinct logos that a 64 bit hash grouped together", async () => {
     // Regression: transparent wordmarks all hashed to 0000000000000000, so a deck download of three brand marks
     // returned one file and counted the other two as near duplicates.
@@ -220,6 +246,35 @@ describe("selectAssets, deck profile", () => {
     const selection = await selectAssets(assets, { max: 2 });
     expect(selection.keep.map((asset) => asset.id)).toEqual(["b.svg", "c.svg"]);
     expect(selection.dropped).toEqual({ cap: 1 });
+  });
+
+  /**
+   * Regression: the cap was a prefix of the relevance order, and the v1 score ranks every role-logo vector above every
+   * photo, so the boundary fell inside the vector block. Measured on stripe.com: 149 assets survived the deck filters and
+   * the top 60 were 59 SVG and 1 image, with 45 rasters of 600 px and up dropped under `cap` (review issue 5).
+   */
+  it("gives each kind its share of the cap instead of cutting inside one block", async () => {
+    const vectors = Array.from({ length: 104 }, (_, index) => make({ file: `mark-${index}.svg`, role: "logo", score: 550 - index }));
+    const rasters = Array.from({ length: 45 }, (_, index) => make({ file: `photo-${index}.png`, score: 480 - index, width: 2460, height: 1060 }));
+
+    const selection = await selectAssets([...vectors, ...rasters], { max: 60 });
+    const kinds = selection.keep.map((asset) => asset.kind);
+
+    expect(selection.keep).toHaveLength(60);
+    expect(selection.dropped).toEqual({ cap: 89 });
+    // floor(60 * 45 / 149) = 18 rasters, the rest to the vectors, which are the more relevant here.
+    expect(kinds.filter((kind) => kind === "image")).toHaveLength(18);
+    expect(kinds.filter((kind) => kind === "svg")).toHaveLength(42);
+    // Still in relevance order, and still the most relevant of each kind.
+    expect(selection.keep.map((asset) => asset.score)).toEqual([...selection.keep.map((asset) => asset.score)].sort((a, b) => b - a));
+    expect(selection.keep[0].id).toBe("mark-0.svg");
+    expect(selection.keep.filter((asset) => asset.kind === "image")[0].id).toBe("photo-0.png");
+  });
+
+  it("gives the whole cap to one kind when that is all there is", async () => {
+    const vectors = Array.from({ length: 10 }, (_, index) => make({ file: `mark-${index}.svg`, score: 100 - index }));
+    expect(await kept(vectors, { max: 4 })).toEqual(["mark-0.svg", "mark-1.svg", "mark-2.svg", "mark-3.svg"]);
+    expect((await selectAssets(vectors, { max: 0 })).keep).toEqual([]);
   });
 
   it("drops an asset with no way to fetch it", async () => {
