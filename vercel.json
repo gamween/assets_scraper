@@ -5,6 +5,8 @@
   "regions": ["iad1"],
   "functions": {
     "src/app/api/scan/route.ts": { "maxDuration": 120, "supportsCancellation": true },
+    "src/app/api/v1/scan/route.ts": { "maxDuration": 120, "supportsCancellation": true },
+    "src/app/api/v1/assets.zip/route.ts": { "maxDuration": 120, "supportsCancellation": true },
     "src/app/api/asset/route.ts": { "maxDuration": 30, "supportsCancellation": true }
   }
 }
