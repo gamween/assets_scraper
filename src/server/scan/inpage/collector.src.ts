@@ -3,6 +3,7 @@ import { OUTPUT_LISTS } from "./lists";
 import type {
   CandidateContext,
   CollectorOptions,
+  NameHints,
   RawCandidate,
   RawCollectorOutput,
   RawFontFaceRule,
@@ -226,6 +227,7 @@ interface ElementInfo {
   rect?: Rect;
   label?: string;
   linkText?: string;
+  hints?: NameHints;
 }
 
 async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
@@ -330,13 +332,27 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
       return false;
     }
   };
+  /**
+   * A written label long enough to be a sentence describes the picture, it does not name it: stripe.com captions a
+   * 2460x1060 photograph "Aerial view of a street intersection where the crosswalks form a slanted parallelogram,
+   * imitating the Stripe logo.", and the logo and site words in there are about the scene. Class names, ids and test
+   * handles are never prose, so they are always read.
+   */
+  const PROSE_LABEL_CHARS = 60;
+  /**
+   * Looking for a word is more forgiving than reading a name: "Acme Corporation logo, click here to return to the
+   * home page." is a header logo spelled out, too long to be its name and still proof that the author called it a
+   * logo, while the caption of a photograph runs well past this. Two decisions, two limits.
+   */
+  const PROSE_HAYSTACK_CHARS = 100;
+  const notProse = (value: string | null, max = PROSE_LABEL_CHARS) => (value && value.length <= max ? value : "");
   const attributeHaystack = (el: Element) =>
     [
       typeof (el as HTMLElement).className === "string" ? (el as HTMLElement).className : (el.getAttribute("class") ?? ""),
       el.id,
-      el.getAttribute("aria-label"),
-      el.getAttribute("title"),
-      el.getAttribute("alt"),
+      notProse(el.getAttribute("aria-label"), PROSE_HAYSTACK_CHARS),
+      notProse(el.getAttribute("title"), PROSE_HAYSTACK_CHARS),
+      notProse(el.getAttribute("alt"), PROSE_HAYSTACK_CHARS),
       el.getAttribute("data-framer-name"),
       el.getAttribute("data-testid"),
       el.getAttribute("data-name"),
@@ -344,9 +360,27 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
       .join(" ")
       .toLowerCase();
 
+  /** Elements that hold shapes a vector only draws where it references them. */
+  const SVG_DEFINITION = "symbol,defs,mask,clipPath,pattern,marker";
+
+  /**
+   * The `<title>` that names a vector: its own first, then one deeper in the drawing, since an icon set often wraps
+   * the drawing in a `<g>`. A title inside a definition names a shape the vector may never draw, so a sprite that
+   * holds several symbols is not named after the first of them.
+   */
+  const svgTitle = (svg: Element): string | null => {
+    const own = svg.querySelector(":scope > title");
+    if (own) return own.textContent;
+    for (const title of svg.querySelectorAll("title")) {
+      const definition = title.closest(SVG_DEFINITION);
+      if (!definition || !svg.contains(definition)) return title.textContent;
+    }
+    return null;
+  };
+
   const labelOf = (el: Element): string | undefined => {
     const link = composedClosest(el, "a[href]");
-    const title = el.localName === "svg" ? el.querySelector(":scope > title")?.textContent : null;
+    const title = el.localName === "svg" ? svgTitle(el) : null;
     const framer = composedClosest(el, "[data-framer-name]");
     for (const value of [
       el.getAttribute("aria-label"),
@@ -372,6 +406,86 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
     });
     for (let node = walker.nextNode(); node && text.length < 200; node = walker.nextNode()) text += ` ${node.nodeValue ?? ""}`;
     return collapse(text) || undefined;
+  };
+
+  /** Short enough to be a caption rather than a paragraph. A logo sits beside a name, not beside a story. */
+  const NEARBY_TEXT_CHARS = 40;
+  const NEARBY_TEXT_WORDS = 6;
+  const HINT_DEPTH = 5;
+  /** Origin and path of an ancestor link, which is all `hrefName` reads. A path past this names nothing. */
+  const MAX_LINK_HREF_CHARS = 300;
+
+  /**
+   * An ancestor that holds another picture speaks for the group, not for this element: a logo wall, a nav and a
+   * customer strip each share one container, so whatever names it would name every picture under it the same way.
+   */
+  const pictureCache = new Map<Element, boolean>();
+  const holdsAnotherPicture = (node: Element): boolean => {
+    const cached = pictureCache.get(node);
+    if (cached !== undefined) return cached;
+    // Every picture on a wall asks about the same containers, twice each, so the answer is kept.
+    const several = node.querySelectorAll("svg:not(svg svg), img, picture, video, canvas").length > 1;
+    pictureCache.set(node, several);
+    return several;
+  };
+
+  /**
+   * The text of the closest ancestor that holds any, when it reads as a caption. Nothing from a vector or a script,
+   * and nothing from an ancestor that holds another picture: a logo wall shares one container, and the caption of a
+   * neighbour is not this logo's name.
+   */
+  const nearbyTextOf = (el: Element): string | undefined => {
+    let node = composedParent(el);
+    for (let depth = 0; node && depth < HINT_DEPTH; depth++, node = composedParent(node)) {
+      if (holdsAnotherPicture(node)) return undefined;
+      const walker = node.ownerDocument.createTreeWalker(node, NodeFilter.SHOW_TEXT, {
+        acceptNode: (text) =>
+          text.parentElement?.closest("svg,script,style,noscript,template") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT,
+      });
+      let text = "";
+      for (let found = walker.nextNode(); found && text.length < 200; found = walker.nextNode()) text += ` ${found.nodeValue ?? ""}`;
+      const caption = collapse(text, NEARBY_TEXT_CHARS + 1);
+      if (!caption) continue;
+      return caption.length <= NEARBY_TEXT_CHARS && caption.split(" ").length <= NEARBY_TEXT_WORDS ? caption : undefined;
+    }
+    return undefined;
+  };
+
+  /**
+   * A short `aria-label` or `title` on an ancestor: the button or region the element belongs to often names it. It
+   * has to belong to this element alone, under the same rule the caption answers to. This is the highest priority
+   * name an unlabelled vector has, so without it one `aria-label="Trusted by leading companies"` on a section would
+   * give every logo under it the same name, and one `aria-label="Main navigation"` would name every icon in the nav.
+   */
+  const ancestorLabelOf = (el: Element, own: string | undefined): string | undefined => {
+    let node = composedParent(el);
+    for (let depth = 0; node && depth < HINT_DEPTH; depth++, node = composedParent(node)) {
+      if (holdsAnotherPicture(node)) return undefined;
+      for (const value of [node.getAttribute("aria-label"), node.getAttribute("title")]) {
+        const text = collapse(notProse(value));
+        if (text && text !== own) return text;
+      }
+    }
+    return undefined;
+  };
+
+  const hintsOf = (el: Element, link: Element | null, label: string | undefined): NameHints | undefined => {
+    let linkHref: string | undefined;
+    const href = link?.getAttribute("href");
+    if (href) {
+      try {
+        // Only what names the asset. The query string of a tracking link is never read and this field is written on
+        // every candidate, so keeping it whole would spend the output budget of a link heavy page on nothing.
+        const url = new URL(href, el.baseURI);
+        linkHref = /^https?:$/.test(url.protocol) ? collapse(`${url.origin}${url.pathname}`, MAX_LINK_HREF_CHARS) : undefined;
+      } catch {
+        linkHref = undefined;
+      }
+    }
+    const ancestorLabel = ancestorLabelOf(el, label);
+    const nearbyText = nearbyTextOf(el);
+    if (!linkHref && !ancestorLabel && !nearbyText) return undefined;
+    return { linkHref, ancestorLabel, nearbyText };
   };
 
   const infoCache = new Map<Element, ElementInfo>();
@@ -414,6 +528,7 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
         if (similar >= 4) logoWall = true;
       }
     }
+    const label = labelOf(el);
     const info: ElementInfo = {
       context: {
         header: !!composedClosest(el, "header,[role=banner]"),
@@ -428,8 +543,9 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
       },
       visible,
       rect: r.width > 0 && r.height > 0 ? { x, y, width: Math.round(r.width), height: Math.round(r.height) } : undefined,
-      label: labelOf(el),
+      label,
       linkText: link ? linkTextOf(el) : undefined,
+      hints: hintsOf(el, link, label),
     };
     infoCache.set(el, info);
     return info;
@@ -486,6 +602,7 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
       ...(patch.naturalWidth ? { naturalWidth: patch.naturalWidth, naturalHeight: patch.naturalHeight } : {}),
       ...(info.label ? { label: info.label } : {}),
       ...(info.linkText ? { linkText: info.linkText } : {}),
+      ...(info.hints ? { hints: info.hints } : {}),
       context: info.context,
       declaredOnly: false,
     });
@@ -1127,7 +1244,7 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
         }
         const info = elementInfo(svg);
         const seen = rawHashes.get(raw);
-        const base = { source: "inline" as const, referenced: true, order, visible: info.visible, label: info.label, linkText: info.linkText, context: { ...info.context }, usedCount: 1 };
+        const base = { source: "inline" as const, referenced: true, order, visible: info.visible, label: info.label, linkText: info.linkText, hints: info.hints, context: { ...info.context }, usedCount: 1 };
         if (seen && seen.count >= MAX_SAME_MARKUP_NORMALIZATIONS) {
           const existing = svgs.get(seen.hash);
           if (existing) addSvg({ ...existing, ...base, markup: existing.markup, hash: seen.hash, rect: info.rect, hasLiveText: existing.hasLiveText, elementCount: existing.elementCount });

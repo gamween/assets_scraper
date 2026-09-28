@@ -3,7 +3,7 @@ import sharp from "sharp";
 import type { Asset, AssetFormat, AssetKind, AssetSource, FoundIn, HiddenReason, Tone, WarningCode } from "@/lib/contract";
 import { limits } from "@/server/config/limits";
 import { SignLimitError } from "@/server/security/sign";
-import type { AssetsOutput, CapturedImage, CandidateContext, OriginalProbes, PostInput, RawCandidate } from "../types";
+import type { AssetsOutput, CapturedImage, CandidateContext, NameHints, OriginalProbes, PostInput, RawCandidate } from "../types";
 import { originalCandidates, variantKey } from "./cdn";
 import { extensionFor, formatFromContentType, formatFromUrl, sniffFormat } from "./format";
 import { createFilenamer, displayName } from "./naming";
@@ -33,6 +33,7 @@ interface UrlRecord extends VariantMember, SizeHints {
   label?: string;
   labelOrder: number;
   linkText?: string;
+  hints?: NameHints;
   logoScore: number;
   logoWord: boolean;
   logoWall: boolean;
@@ -65,6 +66,8 @@ interface Draft {
   url?: string;               // http(s) URL for the basename
   label?: string;
   linkText?: string;
+  hints?: NameHints;
+  markup?: string;            // inline SVG markup, for the id it carries
   jsonLd: boolean;
   toneJob?: ToneJob;
   inlineRasterBytes: number;  // raster bytes sent to the client as base64
@@ -308,6 +311,7 @@ async function buildRecords(input: PostInput, baseUrl: string, limiter: Limiter,
       record.labelOrder = candidate.order;
     }
     record.linkText ??= candidate.linkText;
+    record.hints ??= candidate.hints;
     record.logoScore = Math.max(record.logoScore, logoScore(candidate.context, candidate.visible, candidate.rect));
     record.logoWord ||= candidate.context.logoWord;
     record.logoWall ||= candidate.context.logoWall;
@@ -523,6 +527,7 @@ function groupFacts(members: UrlRecord[]) {
     rendered: members.map((m) => m.rendered).filter((r) => r !== undefined).sort((a, b) => area(b) - area(a))[0],
     label: withLabel[0]?.label,
     linkText: byOrder.find((m) => m.linkText)?.linkText,
+    hints: byOrder.find((m) => m.hints)?.hints,
     logoScore: members.reduce((max, m) => Math.max(max, m.logoScore), 0),
     logoWord: members.some((m) => m.logoWord),
     logoWall: members.some((m) => m.logoWall),
@@ -621,7 +626,7 @@ function fileAsset(members: UrlRecord[], best: UrlRecord, resolved: Extract<Reso
   const role = assignRole({ kind, ...facts, intrinsic: size, spriteSymbol: !!markup && isSpriteSheet(markup) });
   const score = relevanceScore({ role, visible: facts.visible, renderedWidth: facts.rendered?.width, renderedHeight: facts.rendered?.height, order: facts.order });
   return {
-    asset: { ...asset, role, score, name: "", filename: "" }, url, label: facts.label, linkText: facts.linkText, jsonLd: facts.jsonLd, toneJob,
+    asset: { ...asset, role, score, name: "", filename: "" }, url, label: facts.label, linkText: facts.linkText, hints: facts.hints, jsonLd: facts.jsonLd, toneJob,
     inlineRasterBytes,
   };
 }
@@ -670,7 +675,7 @@ function inlineSvgAssets(input: PostInput, hide: (reason: HiddenReason) => void)
       inline: { mime: "image/svg+xml" as const, text: svg.markup },
       hasLiveText: svg.hasLiveText || undefined,
     });
-    return { asset, label: svg.label, linkText: svg.linkText, jsonLd: false, toneJob: { svg: svg.markup }, inlineRasterBytes: 0 };
+    return { asset, label: svg.label, linkText: svg.linkText, hints: svg.hints, markup: svg.markup, jsonLd: false, toneJob: { svg: svg.markup }, inlineRasterBytes: 0 };
   });
 }
 
@@ -756,6 +761,8 @@ function finish(drafts: Draft[], input: PostInput, warnings: Set<WarningCode>): 
       jsonLdLogo: draft.jsonLd,
       linkText: draft.linkText,
       url: draft.url,
+      hints: draft.hints,
+      markup: draft.markup,
     });
     asset.filename = filename(asset.name, extensionFor(asset.format));
     return asset;

@@ -1,4 +1,5 @@
 import type { AssetKind, AssetRole } from "@/lib/contract";
+import type { NameHints } from "../types";
 import { originalCandidates } from "./cdn";
 
 /** Display names and filenames (spec 8.7). */
@@ -16,6 +17,10 @@ export interface NameInput {
   jsonLdLogo?: boolean;
   linkText?: string;
   url?: string;               // http(s) URL of the file, for the basename
+  /** The collector's last-resort places: the ancestor link, an ancestor label, the caption beside the element. */
+  hints?: NameHints;
+  /** The markup of an inline SVG, for the id a sprite reference or a gradient carries. */
+  markup?: string;
 }
 
 /** Trimmed single-line text without control characters, capped at a word boundary, or undefined when unusable. */
@@ -50,6 +55,71 @@ export function cleanBasename(url: string): string | undefined {
   return usable(base);
 }
 
+/** Path segments that say what the page is about rather than which asset this is. */
+const GENERIC_SEGMENT = /^(?:[a-z]{2}(?:[-_][a-z]{2,4})?|index|home|default|page|pages|assets?|images?|img|media|static|www|v?\d+)$/i;
+
+/**
+ * The part of an ancestor link that names the asset: the last meaningful path segment, and only when the link points
+ * inside a section rather than at the section itself. stripe.com puts a customer logo in `/customers/hertz`, so the
+ * link names it, while linear.app sends its whole logo wall to `/customers`, which names none of them.
+ */
+export function hrefName(href: string | undefined): string | undefined {
+  if (!href || !/^https?:/i.test(href)) return undefined;
+  let segments: string[];
+  try {
+    segments = new URL(href).pathname.split("/").filter(Boolean).map((part) => decodeURIComponent(part));
+  } catch {
+    return undefined;
+  }
+  const meaningful = segments
+    .map((segment) => segment.replace(/\.[a-z0-9]{1,5}$/i, ""))
+    .filter((segment) => segment && !GENERIC_SEGMENT.test(segment));
+  if (meaningful.length < 2) return undefined;
+  return usable(meaningful[meaningful.length - 1].replace(/[-_]+/g, " "));
+}
+
+/** React and bundler suffixes stuck on an otherwise readable id: `-:R4nrnmr6l6:`, `__abc123`. */
+const ID_NOISE = /(?:[-_]{1,2}:[^:]*:|[-_]{1,2}[0-9a-f]{6,})$/i;
+/**
+ * Words a drawing tool or a bundler writes, which say how the vector is built rather than what it shows: an id made of
+ * these alone (`clip0_1_2`, `paint0_linear_23_1`, `__lottie_element_1`) names nothing.
+ */
+const ID_FILLER = new Set([
+  // What a bundler, a renderer or the format itself writes.
+  "clip", "clippath", "mask", "filter", "paint", "pattern", "gradient", "linear", "radial", "stop", "defs", "use",
+  "path", "fill", "stroke", "shape", "vector", "frame", "group", "layer", "element", "lottie", "uuid", "id", "svg",
+  "graphic", "icon", "image", "img", "logo", "logotype", "wordmark", "mark", "brand", "xmlid", "symbol",
+  // The word "layer" in the language the artist worked in. Illustrator and Sketch keep the localized default, so a
+  // vector drawn in Spanish ships `id="Capa_1"`, one drawn in French `id="Calque_1"`, in German `id="Ebene_1"`.
+  "capa", "capas", "calque", "calques", "ebene", "ebenen", "livello", "livelli", "laag", "lager", "camada", "warstwa",
+  // The default name of a shape, a board or a control, which says what was drawn and not what it shows:
+  // `Rectangle`, `Combined-Shape`, `Artboard`, `Page-1`, `Isolation_Mode`.
+  "rect", "rectangle", "oval", "ellipse", "circle", "square", "triangle", "polygon", "polyline", "star", "line",
+  "artboard", "board", "page", "canvas", "slice", "combined", "union", "subtract", "intersect", "difference",
+  "outline", "compound", "isolation", "mode", "component", "instance", "copy", "untitled", "button", "bouton",
+]);
+
+/**
+ * The name an inline SVG carries in its own markup: the id of the sprite symbol it draws, else the first id inside it,
+ * which on a hand built logo is usually the brand (`bsport-linear-gradient-a`, `daybreak-yoga-logo-gradient`).
+ */
+export function markupName(markup: string | undefined): string | undefined {
+  if (!markup) return undefined;
+  const reference = /(?:xlink:)?href="#([^"]+)"/i.exec(markup)?.[1];
+  const ids = reference ? [reference] : [...markup.matchAll(/\bid="([^"]+)"/gi)].map((match) => match[1]);
+  for (const id of ids) {
+    const words = id
+      .replace(ID_NOISE, "")
+      .replace(/([a-z\d])(?=[A-Z])/g, "$1-")
+      .split(/[-_\s]+/)
+      .map((word) => word.replace(/\d+$/, "").toLowerCase())
+      .filter((word) => word.length > 1 && !ID_FILLER.has(word));
+    const name = usable(words.join(" "));
+    if (name) return name;
+  }
+  return undefined;
+}
+
 const ROLE_DEFAULT: Partial<Record<AssetRole, string>> = {
   "site-logo": "logo",
   favicon: "favicon",
@@ -65,6 +135,12 @@ export function displayName(input: NameInput): string {
     roleDefault ??
     usable(input.linkText) ??
     (input.url ? cleanBasename(input.url) : undefined) ??
+    // Nothing on the element itself: look around it, closest and most deliberate first. This is what an inline SVG
+    // falls back on, and it is the difference between "Show the Substack testimonial" and "svg 123".
+    usable(input.hints?.ancestorLabel) ??
+    hrefName(input.hints?.linkHref) ??
+    markupName(input.markup) ??
+    usable(input.hints?.nearbyText) ??
     `${input.kind === "svg" ? "svg" : "image"} ${input.index}`
   );
 }

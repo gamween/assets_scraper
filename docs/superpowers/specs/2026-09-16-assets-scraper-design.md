@@ -375,8 +375,9 @@ Verification: `safeFetch` GET with `Range: bytes=0-262143`, `Accept: image/png,i
 
 - Logo word: `logo`, `wordmark` or `logotype` anywhere in the name, and `brand` only at the end of a token (`navbar-brand`, `.brand`), never as a qualifier inside a compound name (`card-brand-content`).
 - `logoScore` = logo word 3 + link to home 3 + header or nav 2 + site word 2 + top under 160 px and visible 1 + footer 1.
-- `site-logo`: score >= 6 and rendered at most 120,000 px2, or a JSON-LD logo at any size. The score reaches 6 on position alone (link to home, header, top of the page), which is also what a hero picture under a nav looks like, and the logo signals are shared across a group, so past that area only an explicit declaration promotes.
-- `logo`: logo word, logo wall, or `alt` containing "logo".
+- `site-logo`: score >= 6 and at most 120,000 px2, or a JSON-LD logo at any size. The score reaches 6 on position alone (link to home, header, top of the page), which is also what a hero picture under a nav looks like, and the logo signals are shared across a group, so past that area only an explicit declaration promotes.
+- `logo`: logo word, logo wall, or a label of at most 60 characters containing "logo", under the same 120,000 px2 limit. A longer label is a sentence about what the picture shows, not its name: stripe.com captions 2460x1060 photographs with one that mentions its own logo.
+- Logo size, for both roles: what the asset renders at. A vector that never rendered is not measured at all (its viewBox says nothing about the page), and neither is a raster the page itself treats as a logo, by a logo wall or a score at the promotion threshold: a mobile only header logo, a dark theme variant and a 2x raster are hidden in the scanned viewport and still real logos. A raster that never rendered with nothing but a word behind it is measured by its file.
 - `favicon`: icon links, meta icons, manifest icons, `/favicon.ico`.
 - `social`: `og:image`, `twitter:image`.
 - `icon`: longest rendered side <= 48 CSS px, or intrinsic side <= 48 px when not rendered. Logo and favicon roles are exempt. This is the single small-icon rule.
@@ -397,7 +398,10 @@ For every top-level SVG, in the page:
 
 ### 8.7 Naming
 
-- Display name, first usable source: `aria-label`, `<title>`, `alt`, `data-framer-name`, `title` attribute, JSON-LD logo (`<Site> logo`), role default (`<Site> logo`, `<Site> favicon`, `<Site> social image`), link text of the wrapping anchor, decoded file basename without hash suffixes and CDN parameters, then `svg 12` or `image 12` by order.
+- Display name, first usable source: `aria-label`, `<title>`, `alt`, `data-framer-name`, `title` attribute, JSON-LD logo (`<Site> logo`), role default (`<Site> logo`, `<Site> favicon`, `<Site> social image`), link text of the wrapping anchor, decoded file basename without hash suffixes and CDN parameters, then what sits around an element that carries no name of its own: a short `aria-label` or `title` on an ancestor, the last meaningful segment of the ancestor link's path, the id in the markup of an inline SVG, the caption beside the element, and last `svg 12` or `image 12` by order.
+- The `<title>` of a vector is its own, else one deeper in the drawing (an icon set wraps it in a `<g>`), never one inside a `<symbol>` or a `<defs>`, which names a shape the vector may not draw.
+- Those four last places only ever name one asset. An ancestor that holds another picture speaks for the group, so neither its label nor its text is read: one `aria-label` on a logo wall or a nav would name every picture under it the same way. A link needs at least two meaningful path segments, so `/customers/hertz` names a logo and `/customers` names none of them. An id made only of words a drawing tool or a bundler writes (`clip0_1_2`, `paint0_linear_23_1`, `Capa_1`, `Rectangle`) names nothing. A caption is at most 40 characters and 6 words.
+- Prose is never a name: an `aria-label`, `title` or `alt` over 60 characters describes the picture. The collector reads up to 100 characters when it only looks for the logo word, since a written out label is still an author calling the picture a logo.
 - Filename: slug of the display name, prefixed with the site slug unless it already starts with it, at most 80 characters, the real extension, `-2`, `-3` on clashes. No `/`, `..` or control characters.
 
 ### 8.8 Tone
