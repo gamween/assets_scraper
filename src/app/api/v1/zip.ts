@@ -1,4 +1,6 @@
 import { makeZip } from "client-zip";
+import { sanitizeHost } from "@/agent/dest";
+import { safeFileName } from "@/agent/download";
 import { agentLimits } from "@/agent/limits";
 import { selectAssets } from "@/agent/select";
 import type { AgentScan, DropReason, ScanSource, SelectionOptions } from "@/agent/types";
@@ -76,14 +78,11 @@ const keptFor = (asset: Asset, named: boolean): KeptFor =>
 /** The URL the file came from, or "" for markup the scan already held (inline SVG has no URL of its own). */
 const sourceUrl = (asset: Asset): string => asset.original?.url ?? asset.display?.url ?? "";
 
-const UNSAFE = /[\u0000-\u001f\u007f/\\:*?"<>|]+/g;
-
-/** One path segment, with nothing that could climb out of the folder it is written into. */
-export function zipSegment(value: string, fallback: string): string {
-  const cleaned = value.replace(UNSAFE, "-").replace(/^[\s.]+|[\s.]+$/g, "").slice(0, 120);
-  return cleaned === "" ? fallback : cleaned;
-}
-
+/**
+ * The name one file takes, then `-2`, `-3` and so on for a name already used, which is the rule a local download writes
+ * by (`writeUnique` in `src/agent/download.ts`). Unzipping an archive into a project therefore gives the same names
+ * `assets-scraper get` would have written.
+ */
 const uniqueName = (name: string, used: Set<string>): string => {
   const dot = name.lastIndexOf(".");
   const stem = dot > 0 ? name.slice(0, dot) : name;
@@ -194,7 +193,9 @@ export async function buildAssetsZip(
     const buffer = fetched.bytes.get(asset.id);
     if (!buffer) continue;
     const folder = asset.kind === "svg" ? "svg" : "images";
-    const path = `${folder}/${uniqueName(zipSegment(asset.filename || `${asset.id}.${asset.format}`, `${asset.id}.${asset.format}`), used)}`;
+    const fallback = `${asset.id}.${asset.format}`;
+    // The download's own rule, so the two paths never name one asset two ways (plan Task G6.2).
+    const path = `${folder}/${uniqueName(safeFileName(asset.filename || asset.name || fallback, fallback), used)}`;
     files.push({
       path,
       id: asset.id,
@@ -234,6 +235,6 @@ export async function buildAssetsZip(
       { name: "manifest.json", input: `${JSON.stringify(manifest, null, 2)}\n`, lastModified: new Date(scan.scannedAt) },
     ]),
     manifest,
-    filename: `${zipSegment(scan.page.host, "site")}-assets.zip`,
+    filename: `${sanitizeHost(scan.page.host)}-assets.zip`,
   };
 }
