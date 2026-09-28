@@ -6,11 +6,13 @@ import type { CandidateContext, Rect } from "../types";
 const ICON_MAX_SIDE = 48;
 const LOGO_TOP_PX = 160;
 /**
- * Rendered area above which nothing but a JSON-LD declaration makes the site logo. `logoScore` reaches the promotion
+ * Area above which nothing but a JSON-LD declaration makes an asset a logo, site logo or customer logo alike.
+ * `logoScore` reaches the promotion
  * threshold of 6 on a link to home in the header near the top of the page with nothing logo specific about it, which is
  * also what a hero picture under a nav looks like: apple.com ranked a 3008x692 iPhone photo above its own 14x44
  * wordmark. Past this a real logo would fill a third of a laptop viewport. The logo evidence of `hasLogoEvidence` does
- * not lift the limit: it is shared across a group, and on apple.com the hero carries it while still being a hero.
+ * not lift the limit: it is shared across a group, and on apple.com the hero carries it while still being a hero, and
+ * stripe.com captions three 2460x1060 photographs with a sentence that mentions its own logo.
  */
 const LOGO_MAX_AREA = 120_000;
 const DRAWABLE = /<(?:path|circle|rect|ellipse|line|polyline|polygon|text|image|use)\b/i;
