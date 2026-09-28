@@ -78,7 +78,7 @@ const DROP_LABELS: Record<DropReason, string> = {
   "vector-preferred": "raster copies of an svg",
   "extra-favicon": "extra favicons",
   filter: "filtered out",
-  cap: "over the file limit",
+  cap: "past the file count",
   "too-large": "too big for one file",
   "over-budget": "over the byte budget",
   unavailable: "unavailable",
