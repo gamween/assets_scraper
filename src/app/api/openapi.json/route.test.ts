@@ -4,7 +4,8 @@ import { GET } from "./route";
 
 const ORIGIN = "https://assets.example.com";
 
-const document = async (): Promise<Record<string, any>> => (await GET(new Request(`${ORIGIN}/api/openapi.json`))).json();
+/** `Response.json()` is untyped, which is what lets the test read the document by path. */
+const document = async () => (await GET(new Request(`${ORIGIN}/api/openapi.json`))).json();
 
 describe("GET /api/openapi.json", () => {
   it("is a JSON document an agent may cache", async () => {
