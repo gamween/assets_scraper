@@ -441,6 +441,47 @@ describe("the scan source", () => {
     await remoteClient.close();
     delete process.env.ASSETS_SCRAPER_REMOTE;
   });
+
+  /**
+   * Regression: `scan_page` opened the source before reading the cache, so a server started against a hosted app with
+   * no token refused a URL it had a fresh scan of. The lookup only ever needed the kind and the hosted app, so it asks
+   * for those: the token is what running a scan needs, not what reading one back does.
+   */
+  it("answers from a fresh scan of its hosted app although no token is set", async () => {
+    const remote = "https://example.test";
+    const host = "tokenless.example";
+    const url = `https://${host}/`;
+    const cached: AgentScan = {
+      ...testScan({
+        scanId: `scan-${host}`,
+        assets: [testAsset({ id: "one", kind: "svg", format: "svg", role: "site-logo" })],
+        page: { url, finalUrl: url, host, title: host },
+      }),
+      source: "remote",
+      remote,
+      scannedAt: new Date().toISOString(),
+    };
+    const warmed = await connect({ source: { kind: "remote", remote, scan: async () => cached, fetchBytes: async () => Buffer.alloc(0) } });
+    await call(warmed, "scan_page", { url });
+    await warmed.close();
+
+    previousEnv.set("ASSETS_SCRAPER_REMOTE", process.env.ASSETS_SCRAPER_REMOTE);
+    previousEnv.set("ASSETS_SCRAPER_TOKEN", process.env.ASSETS_SCRAPER_TOKEN);
+    process.env.ASSETS_SCRAPER_REMOTE = remote;
+    delete process.env.ASSETS_SCRAPER_TOKEN;
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const tokenless = new Client({ name: "test", version: "0" });
+    await Promise.all([tokenless.connect(clientTransport), createAgentMcpServer({ cwd: home }).connect(serverTransport)]);
+
+    const result = await call(tokenless, "scan_page", { url });
+
+    expect(result.isError).toBeFalsy();
+    expect((JSON.parse(text(result)) as { scanId: string }).scanId).toBe(`scan-${host}`);
+    // `refresh` has to run a scan, so that one still says what is missing
+    expect(text(await call(tokenless, "scan_page", { url, refresh: true }))).toContain("ASSETS_SCRAPER_TOKEN");
+    await tokenless.close();
+    delete process.env.ASSETS_SCRAPER_REMOTE;
+  });
 });
 
 describe("missingRuntimeDependency", () => {

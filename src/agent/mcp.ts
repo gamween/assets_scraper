@@ -8,14 +8,14 @@ import * as z from "zod";
 import { type Asset, AssetKind, AssetRole } from "@/lib/contract";
 import { ScanFailure } from "@/server/errors";
 import { sniffContentType } from "@/server/security/sniff";
-import { findRecentScan, loadScan, saveScan } from "./cache";
+import { findRecentScan, loadScan, type ScanOrigin, saveScan } from "./cache";
 import { resolveDestination } from "./dest";
 import { downloadAssets } from "./download";
 import { listInstalledFonts } from "./font-manifest";
 import { installFonts, uninstallFonts } from "./fonts";
 import { agentLimits } from "./limits";
 import { normalizeScanUrl } from "./scan-url";
-import { createScanSource } from "./source";
+import { createScanSource, scanOrigin } from "./source";
 import { summarize } from "./summary";
 import type { AgentScan, DownloadResult, ScanSource, SelectionOptions } from "./types";
 
@@ -187,6 +187,8 @@ export function createAgentMcpServer(options: AgentMcpOptions = {}): McpServer {
    */
   let opened = options.source;
   const openSource = (): ScanSource => (opened ??= createScanSource());
+  /** Where a scan would run, for the cache lookup: the open source when there is one, else the configuration alone. */
+  const originOf = (): ScanOrigin => opened ?? scanOrigin();
   const cwd = options.cwd ?? process.cwd();
   const download = options.downloadAssets ?? downloadThroughCore;
   const server = new McpServer({ name: "assets-scraper", version: SERVER_VERSION });
@@ -220,12 +222,13 @@ export function createAgentMcpServer(options: AgentMcpOptions = {}): McpServer {
       const target = normalizeScanUrl(url);
       if (target === null) return fail(`invalid-url: ${JSON.stringify(url)} is not a valid web address`);
       try {
-        // The source first, then the cache: only a scan this source produced is reused, so a server configured against
-        // the hosted app never answers from a local scan of the same URL, nor from a scan of another hosted app when
-        // ASSETS_SCRAPER_REMOTE is repointed between sessions.
-        const source = openSource();
-        const cached = refresh === true ? null : await findRecentScan(target, source);
-        const scan = cached ?? (await source.scan(target));
+        // The origin first, then the cache, and the source only when there is a scan to run: only a scan this origin
+        // produced is reused, so a server configured against the hosted app never answers from a local scan of the same
+        // URL, nor from a scan of another hosted app when ASSETS_SCRAPER_REMOTE is repointed between sessions. Asking
+        // for the origin rather than for the source is what keeps a fresh cached scan of that hosted app readable by a
+        // server started with no token, which is what opening the source first took away.
+        const cached = refresh === true ? null : await findRecentScan(target, originOf());
+        const scan = cached ?? (await openSource().scan(target));
         if (!cached) await saveScan(scan);
         return ok(summarize(scan));
       } catch (error) {
