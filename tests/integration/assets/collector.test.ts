@@ -52,6 +52,10 @@ beforeAll(async () => {
         <div><svg width="35" height="35"><rect width="35" height="35"/></svg><span>Jackson Hot Yoga</span></div>
         <div class="wall"><svg width="36" height="36"><rect width="36" height="36"/></svg><svg width="37" height="37"><rect width="37" height="37"/></svg><span>Shared caption</span></div>
         <svg width="38" height="38" aria-label="Fixture logo"><rect width="38" height="38"/></svg>
+        <svg width="39" height="39"><defs><symbol id="arrow-def"><title>Arrow right</title><path d="M0 0h8v8z"/></symbol></defs><use href="#arrow-def"/><path d="M10 10h29v29H10z"/></svg>
+        <section aria-label="Trusted by leading companies"><svg width="40" height="20"><rect width="40" height="20"/></svg><svg width="41" height="20"><rect width="41" height="20"/></svg></section>
+        <div><a href="/customers/hertz?utm_source=nav&amp;ref=abc#logo"><svg width="42" height="42"><rect width="42" height="42"/></svg></a></div>
+        <div class="brandbar"><a href="/"><img src="/assets/photo-small.png" width="40" height="40" alt="Fixture Corporation logo, click here to return to the home page."></a></div>
       </body></html>`);
     },
   });
@@ -319,6 +323,8 @@ describe("collector labels", () => {
     expect(labels.candidates.find((c) => c.url === asset("touch.png"))?.label).toBe("Attribute five");
     // A <title> the drawing wraps in a <g> is still the name of the vector.
     expect(svgLabel(34)).toBe("Deep title");
+    // The <title> of a symbol names that symbol, not the vector that holds the definition and draws something else.
+    expect(svgLabel(39)).toBeUndefined();
   });
 
   it("reads the word logo out of a name but not out of a sentence", async () => {
@@ -330,6 +336,9 @@ describe("collector labels", () => {
     expect(svgAt(33)!.context).toMatchObject({ logoWord: false, siteWord: false });
     // A vector that names itself in two words still counts.
     expect(svgAt(38)!.context).toMatchObject({ logoWord: true, siteWord: true });
+    // A written out label is too long to be a name and still says that the author calls this picture a logo. What
+    // can be read as a name and what counts as a logo signal are two decisions, and this one is not a sentence.
+    expect(labels.candidates.find((c) => c.url === asset("photo-small.png"))?.context).toMatchObject({ logoWord: true, siteWord: true });
   });
 
   it("records where a name can still come from when the element carries none", async () => {
@@ -344,6 +353,21 @@ describe("collector labels", () => {
     expect(hintsAt(37)?.nearbyText).toBeUndefined();
     // Prose on an ancestor is a description, not a name.
     expect(hintsAt(33)?.ancestorLabel).toBeUndefined();
+    // Only what names the asset: the query string and the hash of the link are never read and cost output budget.
+    expect(hintsAt(42)?.linkHref).toBe(`${server.origin}/customers/hertz`);
+  });
+
+  it("does not name every picture under one container after the container", async () => {
+    const { context, page } = await openPage(browser, `${server.origin}/labels.html`);
+    const labels = await runCollector(page, collectorOptions(server.host, "Fixture"));
+    await context.close();
+    const hintsAt = (width: number) => labels.svgs.find((s) => s.rect?.width === width)?.hints;
+    // The ancestor label is the first thing an unlabelled vector is named after, so one aria-label on the section
+    // around a logo wall, or on a nav, would otherwise give every picture under it the same name.
+    expect(hintsAt(40)?.ancestorLabel).toBeUndefined();
+    expect(hintsAt(41)?.ancestorLabel).toBeUndefined();
+    // A label on a container this vector has to itself still names it.
+    expect(hintsAt(34)?.ancestorLabel).toBe("Show the Substack testimonial");
   });
 });
 

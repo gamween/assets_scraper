@@ -339,14 +339,20 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
    * handles are never prose, so they are always read.
    */
   const PROSE_LABEL_CHARS = 60;
-  const notProse = (value: string | null) => (value && value.length <= PROSE_LABEL_CHARS ? value : "");
+  /**
+   * Looking for a word is more forgiving than reading a name: "Acme Corporation logo, click here to return to the
+   * home page." is a header logo spelled out, too long to be its name and still proof that the author called it a
+   * logo, while the caption of a photograph runs well past this. Two decisions, two limits.
+   */
+  const PROSE_HAYSTACK_CHARS = 100;
+  const notProse = (value: string | null, max = PROSE_LABEL_CHARS) => (value && value.length <= max ? value : "");
   const attributeHaystack = (el: Element) =>
     [
       typeof (el as HTMLElement).className === "string" ? (el as HTMLElement).className : (el.getAttribute("class") ?? ""),
       el.id,
-      notProse(el.getAttribute("aria-label")),
-      notProse(el.getAttribute("title")),
-      notProse(el.getAttribute("alt")),
+      notProse(el.getAttribute("aria-label"), PROSE_HAYSTACK_CHARS),
+      notProse(el.getAttribute("title"), PROSE_HAYSTACK_CHARS),
+      notProse(el.getAttribute("alt"), PROSE_HAYSTACK_CHARS),
       el.getAttribute("data-framer-name"),
       el.getAttribute("data-testid"),
       el.getAttribute("data-name"),
@@ -354,10 +360,27 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
       .join(" ")
       .toLowerCase();
 
+  /** Elements that hold shapes a vector only draws where it references them. */
+  const SVG_DEFINITION = "symbol,defs,mask,clipPath,pattern,marker";
+
+  /**
+   * The `<title>` that names a vector: its own first, then one deeper in the drawing, since an icon set often wraps
+   * the drawing in a `<g>`. A title inside a definition names a shape the vector may never draw, so a sprite that
+   * holds several symbols is not named after the first of them.
+   */
+  const svgTitle = (svg: Element): string | null => {
+    const own = svg.querySelector(":scope > title");
+    if (own) return own.textContent;
+    for (const title of svg.querySelectorAll("title")) {
+      const definition = title.closest(SVG_DEFINITION);
+      if (!definition || !svg.contains(definition)) return title.textContent;
+    }
+    return null;
+  };
+
   const labelOf = (el: Element): string | undefined => {
     const link = composedClosest(el, "a[href]");
-    // Anywhere in the vector, not only as its first child: an icon set often wraps the drawing in a <g> first.
-    const title = el.localName === "svg" ? el.querySelector("title")?.textContent : null;
+    const title = el.localName === "svg" ? svgTitle(el) : null;
     const framer = composedClosest(el, "[data-framer-name]");
     for (const value of [
       el.getAttribute("aria-label"),
@@ -389,6 +412,14 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
   const NEARBY_TEXT_CHARS = 40;
   const NEARBY_TEXT_WORDS = 6;
   const HINT_DEPTH = 5;
+  /** Origin and path of an ancestor link, which is all `hrefName` reads. A path past this names nothing. */
+  const MAX_LINK_HREF_CHARS = 300;
+
+  /**
+   * An ancestor that holds another picture speaks for the group, not for this element: a logo wall, a nav and a
+   * customer strip each share one container, so whatever names it would name every picture under it the same way.
+   */
+  const holdsAnotherPicture = (node: Element) => node.querySelectorAll("svg:not(svg svg), img, picture, video, canvas").length > 1;
 
   /**
    * The text of the closest ancestor that holds any, when it reads as a caption. Nothing from a vector or a script,
@@ -398,7 +429,7 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
   const nearbyTextOf = (el: Element): string | undefined => {
     let node = composedParent(el);
     for (let depth = 0; node && depth < HINT_DEPTH; depth++, node = composedParent(node)) {
-      if (node.querySelectorAll("svg:not(svg svg), img, picture, video, canvas").length > 1) return undefined;
+      if (holdsAnotherPicture(node)) return undefined;
       const walker = node.ownerDocument.createTreeWalker(node, NodeFilter.SHOW_TEXT, {
         acceptNode: (text) =>
           text.parentElement?.closest("svg,script,style,noscript,template") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT,
@@ -412,10 +443,16 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
     return undefined;
   };
 
-  /** A short `aria-label` or `title` on an ancestor: the button or region the element belongs to often names it. */
+  /**
+   * A short `aria-label` or `title` on an ancestor: the button or region the element belongs to often names it. It
+   * has to belong to this element alone, under the same rule the caption answers to. This is the highest priority
+   * name an unlabelled vector has, so without it one `aria-label="Trusted by leading companies"` on a section would
+   * give every logo under it the same name, and one `aria-label="Main navigation"` would name every icon in the nav.
+   */
   const ancestorLabelOf = (el: Element, own: string | undefined): string | undefined => {
     let node = composedParent(el);
     for (let depth = 0; node && depth < HINT_DEPTH; depth++, node = composedParent(node)) {
+      if (holdsAnotherPicture(node)) return undefined;
       for (const value of [node.getAttribute("aria-label"), node.getAttribute("title")]) {
         const text = collapse(notProse(value));
         if (text && text !== own) return text;
@@ -429,7 +466,10 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
     const href = link?.getAttribute("href");
     if (href) {
       try {
-        linkHref = collapse(new URL(href, el.baseURI).href, MAX_PAGE_URL_CHARS);
+        // Only what names the asset. The query string of a tracking link is never read and this field is written on
+        // every candidate, so keeping it whole would spend the output budget of a link heavy page on nothing.
+        const url = new URL(href, el.baseURI);
+        linkHref = /^https?:$/.test(url.protocol) ? collapse(`${url.origin}${url.pathname}`, MAX_LINK_HREF_CHARS) : undefined;
       } catch {
         linkHref = undefined;
       }
