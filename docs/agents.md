@@ -25,9 +25,9 @@ claude plugin marketplace add "$PWD"
 claude plugin install assets-scraper
 ```
 
-Google Chrome has to be installed for a local scan. Set `CHROME_EXECUTABLE_PATH` if it is not in the default location. The MCP entry point is `dist/mcp.mjs`, written by `pnpm build:agent`, and it fails with a clear message when the build or the dependencies are missing.
+Google Chrome has to be installed for a local scan. Set `CHROME_EXECUTABLE_PATH` if it is not in the default location. The plugin starts the server through `scripts/mcp-launcher.mjs`, which runs `dist/mcp.mjs` and fails with a clear message when the build or the dependencies are missing.
 
-The marketplace stays pointed at the clone, and the plugin runs `dist/mcp.mjs` from it, which is not committed. Run `pnpm build:agent` again after every `git pull`, or the MCP server keeps serving the bundle of an older commit. Restart Claude Code to pick up a rebuilt bundle. `claude mcp list` shows the server as `plugin:assets-scraper:assets-scraper` with the path it runs.
+The marketplace stays pointed at the clone, and the bundle the launcher runs, `dist/mcp.mjs`, is not committed. The launcher rebuilds it whenever it is missing or older than any file under `src/agent`, `src/server` or `src/lib`, so a `git pull` no longer leaves the MCP server serving the bundle of an older commit. Restart Claude Code to pick up a rebuilt bundle. A rebuild it cannot do, node_modules not installed for instance, is reported on stderr and the server does not start. `claude mcp list` shows the server as `plugin:assets-scraper:assets-scraper` with the path it runs.
 
 Tools, all returning compact JSON, never bytes:
 

@@ -123,7 +123,7 @@ Human output by default, `--json` for agents, exit code 1 on failure, every path
 
 `.claude-plugin/marketplace.json` at the repo root and `plugins/assets-scraper/` holding:
 
-- `.claude-plugin/plugin.json` declaring the MCP server: `node ${CLAUDE_PLUGIN_ROOT}/../../dist/mcp.mjs`, passing `ASSETS_SCRAPER_REMOTE` and `ASSETS_SCRAPER_TOKEN` through when they are set.
+- `.claude-plugin/plugin.json` declaring the MCP server: `node ${CLAUDE_PLUGIN_ROOT}/../../scripts/mcp-launcher.mjs`, passing `ASSETS_SCRAPER_REMOTE` and `ASSETS_SCRAPER_TOKEN` through when they are set. The launcher rebuilds `dist/mcp.mjs` when it is missing or older than the sources it is bundled from, since `dist/` is not committed, and reports on stderr when it cannot.
 - `skills/assets-scraper/SKILL.md`: when to use it, the workflow (scan, look at the summary, download the selection, install fonts), how to keep the context small, and the destination rule.
 
 Install: `claude plugin marketplace add ~/Development/tools/assets_scraper` then `claude plugin install assets-scraper`. The README documents `pnpm install && pnpm build:agent` as the prerequisite, and the MCP entry fails with a clear message when the build or the dependencies are missing.
