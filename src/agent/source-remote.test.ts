@@ -11,6 +11,13 @@ import type { AgentScan } from "./types";
  * makes of the answer, and how it gets the bytes of an asset the hosted scan described.
  */
 
+/**
+ * Enough of a PNG for the type guard `fetchBytes` runs on every answer (`src/agent/bytes.ts`). The stub proxy answers
+ * these, and the direct fetch answers `DIRECT_PNG`, so a test can tell which path served the bytes.
+ */
+const PROXIED_PNG = Buffer.concat([Buffer.from("\x89PNG\r\n\x1a\n", "latin1"), Buffer.from("proxied")]);
+const DIRECT_PNG = Buffer.concat([Buffer.from("\x89PNG\r\n\x1a\n", "latin1"), Buffer.from("direct")]);
+
 interface Call {
   method: string;
   url: string;
@@ -52,8 +59,8 @@ beforeAll(async () => {
         body: Buffer.concat(chunks).toString("utf8"),
       });
       if (url.startsWith("/api/asset")) {
-        response.writeHead(200, { "content-type": "image/svg+xml" });
-        response.end("<svg id='proxied'/>");
+        response.writeHead(200, { "content-type": "image/png" });
+        response.end(PROXIED_PNG);
         return;
       }
       response.writeHead(answer.status, { "content-type": answer.type ?? "application/json" });
@@ -72,7 +79,7 @@ afterAll(async () => {
 const source = (patch: { token?: string } = {}) => createRemoteScanSource({ remote: origin, token: "agent-token", ...patch });
 
 /** A `SafeFetch` that answers every URL with `body`, or fails, and records what it was asked. */
-const fakeFetch = (body: Buffer | null): SafeFetch & { urls: string[] } => {
+const fakeFetch = (body: Buffer | null, contentType = "image/png"): SafeFetch & { urls: string[] } => {
   const urls: string[] = [];
   const fetch = (url: string): Promise<SafeResponse> => {
     urls.push(url);
@@ -80,7 +87,7 @@ const fakeFetch = (body: Buffer | null): SafeFetch & { urls: string[] } => {
     return Promise.resolve({
       url,
       status: 200,
-      headers: new Headers(),
+      headers: new Headers({ "content-type": contentType }),
       redirected: false,
       stream: () => new ReadableStream(),
       buffer: () => Promise.resolve(body),
@@ -163,7 +170,7 @@ describe("createRemoteScanSource().scan", () => {
 
 describe("createRemoteScanSource().fetchBytes", () => {
   it("fetches an https URL directly", async () => {
-    const fetch = fakeFetch(Buffer.from("direct-bytes"));
+    const fetch = fakeFetch(DIRECT_PNG);
     calls.length = 0;
 
     const bytes = await createRemoteScanSource({ remote: origin, token: "agent-token" }, { fetch }).fetchBytes({
@@ -172,7 +179,7 @@ describe("createRemoteScanSource().fetchBytes", () => {
       format: "png",
     });
 
-    expect(bytes.toString("utf8")).toBe("direct-bytes");
+    expect(bytes).toEqual(DIRECT_PNG);
     expect(fetch.urls).toEqual(["https://cdn.example.com/hero.png"]);
     expect(calls).toHaveLength(0);
   });
@@ -187,13 +194,13 @@ describe("createRemoteScanSource().fetchBytes", () => {
       format: "png",
     });
 
-    expect(bytes.toString("utf8")).toBe("<svg id='proxied'/>");
+    expect(bytes).toEqual(PROXIED_PNG);
     expect(calls.map((call) => call.url)).toEqual(["/api/asset?id=hero"]);
     expect(calls[0].authorization).toBe("Bearer agent-token");
   });
 
   it("goes straight to the hosted proxy for an http URL", async () => {
-    const fetch = fakeFetch(Buffer.from("never"));
+    const fetch = fakeFetch(Buffer.from("never a valid image"));
     calls.length = 0;
 
     const bytes = await createRemoteScanSource({ remote: origin, token: "agent-token" }, { fetch }).fetchBytes({
@@ -202,8 +209,27 @@ describe("createRemoteScanSource().fetchBytes", () => {
       format: "png",
     });
 
-    expect(bytes.toString("utf8")).toBe("<svg id='proxied'/>");
+    expect(bytes).toEqual(PROXIED_PNG);
     expect(fetch.urls).toEqual([]);
+  });
+
+  /**
+   * The type guard of `src/agent/bytes.ts` on the direct leg: a CDN answering a page instead of the picture is a refusal
+   * this source can recover from, so it falls through to the hosted proxy rather than ending the download.
+   */
+  it("falls back to the hosted proxy when the direct answer is not the file the scan reported", async () => {
+    const fetch = fakeFetch(Buffer.from("<!doctype html><html></html>"), "text/html");
+    calls.length = 0;
+
+    const bytes = await createRemoteScanSource({ remote: origin, token: "agent-token" }, { fetch }).fetchBytes({
+      url: "https://cdn.example.com/hero.png",
+      proxy: "/api/asset?id=hero",
+      format: "png",
+    });
+
+    expect(bytes).toEqual(PROXIED_PNG);
+    expect(fetch.urls).toEqual(["https://cdn.example.com/hero.png"]);
+    expect(calls.map((call) => call.url)).toEqual(["/api/asset?id=hero"]);
   });
 
   it("reads inline bytes without any request", async () => {

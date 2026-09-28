@@ -6,6 +6,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import * as z from "zod";
 import { type Asset, AssetKind, AssetRole } from "@/lib/contract";
 import { ScanFailure } from "@/server/errors";
+import { sniffContentType } from "@/server/security/sniff";
 import { findRecentScan, loadScan, saveScan } from "./cache";
 import { resolveDestination } from "./dest";
 import { downloadAssets } from "./download";
@@ -251,10 +252,13 @@ export function createAgentMcpServer(options: AgentMcpOptions = {}): McpServer {
           inline && "text" in inline ? inline.text
           : inline && "base64" in inline ? Buffer.from(inline.base64, "base64").toString("utf8")
           : (await openSource().fetchBytes(asset.display ?? asset.original ?? { url: "", proxy: "", format: asset.format })).toString("utf8");
-        if (Buffer.byteLength(markup) > MAX_SVG_TEXT_BYTES) {
-          return fail(`this SVG is ${Buffer.byteLength(markup)} bytes, too much to read into a context. Use download_assets instead.`);
+        const bytes = Buffer.from(markup, "utf8");
+        if (bytes.byteLength > MAX_SVG_TEXT_BYTES) {
+          return fail(`this SVG is ${bytes.byteLength} bytes, too much to read into a context. Use download_assets instead.`);
         }
-        if (!markup.trimStart().startsWith("<svg") && !markup.trimStart().startsWith("<?xml") && !markup.trimStart().startsWith("<!")) {
+        // The repo's own detector, not a prefix test: a hand-rolled one accepted every `<!DOCTYPE html>` and every bare
+        // comment, so the one guard between a hostile page and this answer never fired for the case it was written for.
+        if (sniffContentType(bytes) !== "image/svg+xml") {
           return fail(`the bytes of asset ${JSON.stringify(id)} are not SVG markup`);
         }
         return ok({ id: asset.id, name: asset.name, filename: asset.filename, markup });

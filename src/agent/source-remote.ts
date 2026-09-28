@@ -3,6 +3,7 @@ import { Asset, Diagnostics, FontFamily, Palette, ScanStats } from "@/lib/contra
 import { limits } from "@/server/config/limits";
 import { safeFetch } from "@/server/net/safe-fetch";
 import type { SafeFetch } from "@/server/scan/types";
+import { assertDeclaredType, assertSupportedBytes, declaredType } from "./bytes";
 import { scanIdFor } from "./source-local";
 import type { ScanSource, ScanSourceOptions } from "./types";
 
@@ -180,7 +181,19 @@ export function createRemoteScanSource(options: ScanSourceOptions = {}, deps: Re
             maxRedirects: limits.proxyMaxRedirects,
             ...(fetchOptions?.signal ? { signal: fetchOptions.signal } : {}),
           });
-          if (direct.status < 400) return await direct.buffer();
+          if (direct.status < 400) {
+            // Same allowlist as the local source and the browser proxy (`bytes.ts`). A refusal here falls through to the
+            // hosted proxy, which applies it again on its own answer, rather than ending the download.
+            try {
+              assertDeclaredType(declaredType(direct.headers.get("content-type")), target.url);
+            } catch (declaredFailure) {
+              await direct.cancel();
+              throw declaredFailure;
+            }
+            const bytes = await direct.buffer();
+            assertSupportedBytes(bytes, target.format, target.url);
+            return bytes;
+          }
           await direct.cancel();
         } catch (error) {
           if (fetchOptions?.signal?.aborted) throw error;
@@ -194,6 +207,7 @@ export function createRemoteScanSource(options: ScanSourceOptions = {}, deps: Re
       if (!response.ok) throw new Error(`HTTP ${response.status} from the hosted proxy for ${target.url || target.proxy}`);
       const bytes = Buffer.from(await response.arrayBuffer());
       if (bytes.length > limits.proxyMaxBytes) throw new Error(`the hosted proxy answered with more than ${limits.proxyMaxBytes} bytes`);
+      assertSupportedBytes(bytes, target.format, target.url || target.proxy);
       return bytes;
     },
   };

