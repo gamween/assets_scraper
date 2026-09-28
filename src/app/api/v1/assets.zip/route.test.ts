@@ -154,6 +154,36 @@ describe("GET /api/v1/assets.zip", () => {
     expect(pathsOf(entries)).toHaveLength(manifest.files.length);
   });
 
+  /**
+   * The archive and a local download name one asset one way, which is what makes unzipping it into a project the same
+   * operation as `assets-scraper get` (plan Task G6.2). The rule lives in `safeFileName`, so a name that tries to climb
+   * out of the folder loses its path here exactly as it does on disk.
+   */
+  it("names files the way a local download does", async () => {
+    const { safeFileName } = await import("@/agent/download");
+    scan.mockResolvedValue(
+      testScan({
+        assets: [
+          testAsset({
+            id: "evil",
+            kind: "svg",
+            format: "svg",
+            role: "logo",
+            filename: "../../evil.svg",
+            score: 100,
+            display: null,
+            inline: { mime: "image/svg+xml", text: "<svg xmlns='http://www.w3.org/2000/svg'/>" },
+          }),
+        ],
+      }),
+    );
+
+    const paths = pathsOf(await entriesOf(await GET(request())));
+
+    expect(paths).toEqual([`svg/${safeFileName("../../evil.svg", "evil.svg")}`]);
+    expect(paths).toEqual(["svg/evil.svg"]);
+  });
+
   it("counts the bytes it serves against the daily proxy budget", async () => {
     process.env.PROXY_BYTES_PER_DAY = "1500";
     const manifest = manifestOf(await entriesOf(await GET(request())));

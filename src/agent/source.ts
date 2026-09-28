@@ -1,17 +1,11 @@
 import { createLocalScanSource } from "./source-local";
+import { createRemoteScanSource } from "./source-remote";
 import type { ScanSource, ScanSourceOptions } from "./types";
 
 /**
  * Picks where a scan runs (spec 2): locally through the v1 engine by default, remotely against the hosted app when
  * `remote` or `ASSETS_SCRAPER_REMOTE` names one.
  */
-
-export class NotImplementedError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "NotImplementedError";
-  }
-}
 
 /** The hosted app a remote scan runs against, with no trailing slash, or undefined for a local scan. */
 export function remoteBaseUrl(options: ScanSourceOptions = {}): string | undefined {
@@ -22,6 +16,7 @@ export function remoteBaseUrl(options: ScanSourceOptions = {}): string | undefin
 export function createScanSource(options: ScanSourceOptions = {}): ScanSource {
   const remote = remoteBaseUrl(options);
   if (remote === undefined) return createLocalScanSource();
-  // The remote source is track G2 (plan Task G2.2): it lands in `src/agent/source-remote.ts` and is wired in here.
-  throw new NotImplementedError(`remote scans are not available yet in this build (${remote})`);
+  // A remote with no token throws here, which is what the caller has to report: the MCP server says it on the first tool
+  // call, and the CLI turns it into its one line on stderr.
+  return createRemoteScanSource({ remote, ...(options.token === undefined ? {} : { token: options.token }) });
 }

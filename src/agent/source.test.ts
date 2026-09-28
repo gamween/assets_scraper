@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createScanSource, NotImplementedError, remoteBaseUrl } from "./source";
+import { RemoteScanError } from "./source-remote";
+import { createScanSource, remoteBaseUrl } from "./source";
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -19,7 +20,23 @@ describe("createScanSource", () => {
     expect(remoteBaseUrl({ remote: "  " })).toBeUndefined();
   });
 
-  it("says the remote source is not in this build yet", () => {
-    expect(() => createScanSource({ remote: "https://example.test" })).toThrow(NotImplementedError);
+  it("runs against the hosted app when one is named, with the token it was given", () => {
+    vi.stubEnv("ASSETS_SCRAPER_TOKEN", undefined);
+    expect(createScanSource({ remote: "https://example.test", token: "agent-token" }).kind).toBe("remote");
+  });
+
+  it("refuses a remote scan with no token, in words the caller can print", () => {
+    vi.stubEnv("ASSETS_SCRAPER_TOKEN", undefined);
+    const error = (() => {
+      try {
+        createScanSource({ remote: "https://example.test" });
+      } catch (thrown) {
+        return thrown;
+      }
+      throw new Error("expected a refusal");
+    })();
+    expect(error).toBeInstanceOf(RemoteScanError);
+    expect((error as RemoteScanError).code).toBe("unauthorized");
+    expect((error as RemoteScanError).message).toContain("ASSETS_SCRAPER_TOKEN");
   });
 });
