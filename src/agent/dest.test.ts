@@ -71,6 +71,34 @@ describe("resolveDestination", () => {
     });
   });
 
+  /**
+   * `~/.claude` exists on every machine Claude Code has run on, and a dotfiles checkout puts `.git` in home too, so home
+   * itself answered the project rule for any working directory under it: 60 files plus a manifest landed in `~/scrap`
+   * and the documented Downloads fallback was unreachable (review issue 9).
+   */
+  it("never treats the home directory itself as a project", () => {
+    const home = makeTree(".claude", ".git", "Desktop", "Downloads", "notes/deep");
+    vi.stubEnv("HOME", home);
+
+    for (const cwd of [home, path.join(home, "Desktop"), path.join(home, "notes", "deep")]) {
+      expect(resolveDestination({ host: "stripe.com", cwd }), cwd).toMatchObject({
+        dir: path.join(home, "Downloads", "assets-scraper", "stripe.com"),
+        fallback: true,
+      });
+    }
+
+    // A real project under home still answers, marker or git root alike.
+    const project = path.join(home, "work", "app");
+    fs.mkdirSync(path.join(project, "src"), { recursive: true });
+    fs.writeFileSync(path.join(project, "package.json"), "{}\n");
+    expect(resolveDestination({ host: "stripe.com", cwd: path.join(project, "src") }).projectRoot).toBe(project);
+
+    // And an agent-supplied dest is confined to the fallback directory rather than to the whole home directory.
+    expect(() =>
+      resolveDestination({ host: "stripe.com", cwd: path.join(home, "Desktop"), dest: path.join(home, "scrap", "x"), restrictToProject: true }),
+    ).toThrow(/outside/i);
+  });
+
   it("uses an explicit dest as is, resolving a relative one against the working directory", () => {
     const root = makeTree(".git", "src");
     const cwd = path.join(root, "src");
