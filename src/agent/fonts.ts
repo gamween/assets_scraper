@@ -6,6 +6,7 @@ import type { FontFaceInfo, FontFamily, FontFile, FontFormat, FontLicense } from
 import { sniffFontFormat } from "@/server/scan/fonts/binary";
 import { parseFontBinary } from "@/server/scan/fonts/index";
 import { classifyLicense } from "@/server/scan/fonts/license";
+import { fontManifestPath, listInstalledFonts, removeRecordedFile, withFontStateLock, writeManifest } from "./font-manifest";
 import { agentLimits } from "./limits";
 import type { FontInstall } from "./types";
 
@@ -15,7 +16,7 @@ import type { FontInstall } from "./types";
  * `listInstalledFonts` and `uninstallFonts` can work.
  *
  * Two rules the implementation is built around. A file this tool did not write is never touched: the target is opened
- * with `O_EXCL | O_NOFOLLOW`, and a name that already exists is only replaced when the manifest says it is ours. And the
+ * with `O_EXCL | O_NOFOLLOW`, and a name is only replaced when the manifest says this same family wrote it. And the
  * licence always comes from the bytes that were installed, whatever the scan believed, because that is the notice the
  * user is agreeing to; a commercial font installs too, with its licence reported (spec 5.5).
  */
@@ -29,7 +30,10 @@ export type FontSkipReason =
   | "fetch-failed"
   | "too-large"
   | "conversion-failed"
+  /** The name is taken by something this tool did not write, or by another family that folds to the same name. */
   | "exists"
+  /** The font directory would not take the file: no permission, a name the file system refuses, a full disk. */
+  | "write-failed"
   | "unknown-family";
 
 export interface FontSkipped {
@@ -72,64 +76,17 @@ export function userFontDir(): string {
   return path.join(os.homedir(), ".local", "share", "fonts");
 }
 
-/** Where the manifest lives: `~/.local/state/assets-scraper`, or `ASSETS_SCRAPER_STATE_DIR` or `XDG_STATE_HOME`. */
-export function stateDir(): string {
-  const override = process.env.ASSETS_SCRAPER_STATE_DIR?.trim();
-  if (override) return path.resolve(override);
-  const xdg = process.env.XDG_STATE_HOME?.trim();
-  return xdg ? path.join(xdg, "assets-scraper") : path.join(os.homedir(), ".local", "state", "assets-scraper");
-}
-
-export const fontManifestPath = (): string => path.join(stateDir(), "installed-fonts.json");
-
-/** The manifest on disk. `version` is there so a later shape can be recognized rather than guessed at. */
-interface FontManifest {
-  version: 1;
-  installs: FontInstall[];
-}
-
-const isFontInstall = (value: unknown): value is FontInstall => {
-  if (typeof value !== "object" || value === null) return false;
-  const install = value as Partial<FontInstall>;
-  return (
-    typeof install.family === "string" &&
-    Array.isArray(install.files) &&
-    install.files.every((file) => typeof file === "string") &&
-    typeof install.license === "object" &&
-    install.license !== null &&
-    typeof install.sourceHost === "string" &&
-    typeof install.installedAt === "string" &&
-    typeof install.converted === "boolean"
-  );
-};
-
 /**
- * Every install this tool recorded, newest last. A manifest that is missing, unreadable or not ours reads as empty: it
- * only guards files, so a bad one must never stop an install, and the `O_EXCL` write is what actually protects them.
+ * Deletes the files of `families` (matched case insensitively) and forgets them. It never touches a file it did not
+ * record, and never one outside the font directory, so a manifest that was edited or restored from elsewhere cannot turn
+ * an uninstall into a delete of something else. A file it refuses stays recorded, because it is still installed.
  */
-export async function listInstalledFonts(): Promise<FontInstall[]> {
-  try {
-    const parsed: unknown = JSON.parse(await fsp.readFile(fontManifestPath(), "utf8"));
-    if (typeof parsed !== "object" || parsed === null) return [];
-    const installs = (parsed as Partial<FontManifest>).installs;
-    return Array.isArray(installs) ? installs.filter(isFontInstall) : [];
-  } catch {
-    return [];
-  }
+export function uninstallFonts(families: string[]): Promise<{ removed: FontInstall[]; missing: string[] }> {
+  return withFontStateLock(() => removeFamilies(families));
 }
 
-async function writeManifest(installs: FontInstall[]): Promise<string> {
-  const file = fontManifestPath();
-  await fsp.mkdir(path.dirname(file), { recursive: true });
-  const manifest: FontManifest = { version: 1, installs };
-  const temporary = `${file}.${process.pid}.tmp`;
-  await fsp.writeFile(temporary, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
-  await fsp.rename(temporary, file);
-  return file;
-}
-
-/** Deletes the files of `families` (matched case insensitively) and forgets them. Never touches a file it did not record. */
-export async function uninstallFonts(families: string[]): Promise<{ removed: FontInstall[]; missing: string[] }> {
+async function removeFamilies(families: string[]): Promise<{ removed: FontInstall[]; missing: string[] }> {
+  const fontDir = userFontDir();
   const installs = await listInstalledFonts();
   const wanted = new Map(families.map((family) => [family.trim().toLowerCase(), family]));
   const removed: FontInstall[] = [];
@@ -140,8 +97,14 @@ export async function uninstallFonts(families: string[]): Promise<{ removed: Fon
       kept.push(install);
       continue;
     }
-    for (const file of install.files) await fsp.rm(file, { force: true });
-    removed.push(install);
+    const gone: string[] = [];
+    const left: string[] = [];
+    for (const file of install.files) {
+      if (await removeRecordedFile(file, fontDir)) gone.push(file);
+      else left.push(file);
+    }
+    removed.push({ ...install, files: gone });
+    if (left.length > 0) kept.push({ ...install, files: left });
     wanted.delete(install.family.toLowerCase());
   }
 
@@ -149,10 +112,17 @@ export async function uninstallFonts(families: string[]): Promise<{ removed: Fon
   return { removed, missing: [...wanted.values()] };
 }
 
+/**
+ * The longest a family may be in a file name. A CSS family name is allowed 1024 characters (`MAX_FAMILY_CHARS` in
+ * `src/server/scan/fonts/css.ts`), and `<Family>-<Style>.ttf` has to fit the 255 byte limit of a file name, so it is cut
+ * here rather than at the `open` call, the way `sanitizeHost` cuts a host.
+ */
+export const MAX_FAMILY_FILE_CHARS = 100;
+
 /** `Söhne VF` to `SohneVF`: diacritics folded, everything that is not a letter or a digit dropped (spec 5.3). */
 export function fileSafeFamily(name: string): string {
   const folded = name.normalize("NFKD").replace(/\p{Mn}+/gu, "");
-  return folded.replace(/[^A-Za-z0-9]+/g, "") || "Font";
+  return folded.replace(/[^A-Za-z0-9]+/g, "").slice(0, MAX_FAMILY_FILE_CHARS) || "Font";
 }
 
 const WEIGHT_NAMES = new Map([
@@ -218,22 +188,47 @@ function pickFile(family: FontFamily): { candidate: Candidate } | { reason: Font
   return { candidate: sorted[0] };
 }
 
+/** Settles once the last decompression queued is done, without holding its output; see `toSfnt`. */
+let decompressing: Promise<void> = Promise.resolve();
+
 /**
  * The sfnt bytes a WOFF or WOFF2 file wraps, or null when they cannot be had. wawoff2 answers with a view of its
- * WebAssembly heap that the next decompression overwrites, so the copy happens here, before anything else awaits, and
- * installs run one family at a time. WOFF (version 1) goes through the same call and is simply refused by it, which is
- * the documented behavior: that family is reported as not installable rather than installed wrong.
+ * WebAssembly heap, which the next decompression overwrites (or detaches when the heap grows), and hands it over through
+ * an `await`, so two conversions that reach it in the same turn corrupt each other before either copies: the bytes of one
+ * family would be written under another family's name, with another font's licence read from them. Decompressions
+ * therefore run one at a time, each copied out before the next starts, the same chain as `decompressWoff2` in
+ * `src/server/security/font-convert.ts`. They block the main thread anyway, so this costs no throughput.
+ *
+ * WOFF (version 1) goes through the same call and is simply refused by it, which is the documented behavior: that family
+ * is reported as not installable rather than installed wrong.
+ *
+ * Exported so the chain itself is tested, the way `font-convert.test.ts` tests the one it mirrors: with installs already
+ * serialized, nothing else would notice if it were dropped.
  */
-async function toSfnt(source: Buffer): Promise<Buffer | null> {
-  try {
-    const { decompress } = await import("wawoff2");
-    return Buffer.from(await decompress(source));
-  } catch {
-    return null;
-  }
+export function toSfnt(source: Buffer): Promise<Buffer | null> {
+  const run = decompressing.then(async () => {
+    try {
+      const { decompress } = await import("wawoff2");
+      return Buffer.from(await decompress(source));
+    } catch {
+      return null;
+    }
+  });
+  decompressing = run.then(() => {});
+  return run;
 }
 
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error)).slice(0, 200);
+
+/**
+ * Whether a failed open means the name is already taken, rather than the directory refusing the write. `ELOOP` is what a
+ * symbolic link gives on a system that checks `O_NOFOLLOW` before `O_EXCL`, and `EISDIR` what a directory of that name
+ * gives. Anything else (no permission, a name the file system refuses, a full disk) is a write failure and says so.
+ */
+const isNameTaken = (error: unknown): boolean => {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  return code === "EEXIST" || code === "ELOOP" || code === "EISDIR";
+};
 
 const hostOf = (url: string): string => {
   try {
@@ -246,9 +241,15 @@ const hostOf = (url: string): string => {
 /**
  * Installs one file per family into the user font directory and records it (spec section 5). Nothing throws for a family
  * that cannot be installed: it lands in `skipped` with a reason, so an agent can report every family in one answer.
- * Families are installed one at a time, which is what keeps the WOFF2 decompression safe (see `toSfnt`).
+ *
+ * One call runs at a time (`withFontStateLock`), which is what keeps the manifest whole when an agent installs the fonts
+ * of two pages at once and what keeps the WOFF2 decompression safe (see `toSfnt`).
  */
-export async function installFonts(families: FontFamily[], options: InstallFontsOptions): Promise<FontInstallReport> {
+export function installFonts(families: FontFamily[], options: InstallFontsOptions): Promise<FontInstallReport> {
+  return withFontStateLock(() => installFamilies(families, options));
+}
+
+async function installFamilies(families: FontFamily[], options: InstallFontsOptions): Promise<FontInstallReport> {
   const fontDir = userFontDir();
   const installs = await listInstalledFonts();
   const installed: FontInstall[] = [];
@@ -269,8 +270,15 @@ export async function installFonts(families: FontFamily[], options: InstallFonts
       });
 
   const limit = agentLimits.fontInstallMaxBytes;
-  /** Files this tool wrote, so a name it owns is replaced and a name it does not own is left alone (spec 5.3). */
-  const ours = new Set(installs.flatMap((install) => install.files));
+  /**
+   * The family each recorded file belongs to, lower cased. A name is only replaced for the family that holds it: a name
+   * this tool never wrote is left alone (spec 5.3), and so is one another family folded to (`Sohne` and `Söhne` both
+   * become `Sohne-Regular.ttf`), which would otherwise leave two manifest entries pointing at one file.
+   */
+  const ownerOf = new Map<string, string>();
+  for (const entry of installs) {
+    for (const file of entry.files) if (!ownerOf.has(file)) ownerOf.set(file, entry.family.toLowerCase());
+  }
   /** Files this call wrote, so two families that fold to the same file name do not silently overwrite each other. */
   const written = new Set<string>();
 
@@ -326,8 +334,10 @@ export async function installFonts(families: FontFamily[], options: InstallFonts
       continue;
     }
 
+    const familyKey = family.name.toLowerCase();
     const target = path.join(fontDir, `${fileSafeFamily(family.name)}-${styleName(face)}.${format}`);
-    if (written.has(target) || (!ours.has(target) && fs.existsSync(target))) {
+    const owner = ownerOf.get(target);
+    if (written.has(target) || (owner !== undefined && owner !== familyKey)) {
       skip(family.name, "exists", target);
       continue;
     }
@@ -338,11 +348,13 @@ export async function installFonts(families: FontFamily[], options: InstallFonts
     const fromBinary = meta ? classifyLicense(meta, family.source) : { kind: "unknown" as const };
     const license: FontLicense = fromBinary.kind === "unknown" ? family.license : fromBinary;
 
-    // `O_EXCL | O_NOFOLLOW` is what actually guards the directory: the name is only removed first when the manifest says
-    // this tool wrote it, and anything else already sitting there (a file, a symlink, a dangling one) refuses the open.
+    // The exclusive open is the whole guard on the directory: the name is only removed first when the manifest says this
+    // family wrote it, and anything else sitting there (a file, a directory, a symbolic link, a dangling one) refuses the
+    // open. Nothing checks the name for existence ahead of it on purpose, so a file that appears while the bytes are being
+    // fetched cannot slip through the window between a check and a write.
     try {
       await fsp.mkdir(fontDir, { recursive: true });
-      if (ours.has(target)) await fsp.rm(target, { force: true });
+      if (owner === familyKey) await removeRecordedFile(target, fontDir);
       const flags = fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW;
       const handle = await fsp.open(target, flags, 0o644);
       try {
@@ -351,22 +363,35 @@ export async function installFonts(families: FontFamily[], options: InstallFonts
         await handle.close();
       }
     } catch (error) {
-      skip(family.name, "exists", `${target}: ${message(error)}`);
+      if (isNameTaken(error)) skip(family.name, "exists", target);
+      else skip(family.name, "write-failed", `${target}: ${message(error)}`);
       continue;
     }
-    ours.add(target);
+    ownerOf.set(target, familyKey);
     written.add(target);
+
+    // A family installed before may have written another name (another style, or another extension). That file is this
+    // tool's and it is no longer part of the family's install, so it goes now: left behind it would be a font no uninstall
+    // can reach. One that cannot be removed stays recorded instead, so a later uninstall still knows about it.
+    const previous = installs.findIndex((entry) => entry.family.toLowerCase() === familyKey);
+    const orphans: string[] = [];
+    if (previous !== -1) {
+      for (const file of installs[previous].files) {
+        if (file === target) continue;
+        if (await removeRecordedFile(file, fontDir)) ownerOf.delete(file);
+        else orphans.push(file);
+      }
+    }
 
     const install: FontInstall = {
       family: family.name,
-      files: [target],
+      files: [...new Set([target, ...orphans])],
       license,
       sourceHost: family.sourceHost ?? options.pageHost ?? hostOf(file.url),
       installedAt: new Date().toISOString(),
       converted,
     };
     installed.push(install);
-    const previous = installs.findIndex((entry) => entry.family.toLowerCase() === family.name.toLowerCase());
     if (previous === -1) installs.push(install);
     else installs[previous] = install;
   }

@@ -7,7 +7,8 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { decompress } from "wawoff2";
 import type { FontFamily, FontFile } from "@/lib/contract";
 import { agentLimitEnvName } from "./limits";
-import { fontManifestPath, installFonts, listInstalledFonts, uninstallFonts, userFontDir } from "./fonts";
+import { fontManifestPath, listInstalledFonts } from "./font-manifest";
+import { installFonts, toSfnt, uninstallFonts, userFontDir } from "./fonts";
 import { testFontFamily, testFontFile } from "./testing";
 
 /**
@@ -16,12 +17,17 @@ import { testFontFamily, testFontFile } from "./testing";
  */
 
 const FIXTURE_WOFF2 = fileURLToPath(new URL("../../tests/fixtures/site/assets/__inter.woff2", import.meta.url));
+/** Two more real web fonts, so a test can convert and install two different families at the same time. */
+const FIXTURE_JETBRAINS_WOFF2 = fileURLToPath(new URL("../../tests/fixtures/site/assets/jbm-cyr.woff2", import.meta.url));
+const FIXTURE_SOURCE_WOFF2 = fileURLToPath(new URL("../../tests/fixtures/site/assets/ss3.woff2", import.meta.url));
 
 /** The fixture Inter, as it is served (WOFF2) and as the installer should write it (TTF). */
 let woff2: Buffer;
 let ttf: Buffer;
 /** The same TTF with its name records rewritten to a commercial notice, so a licence read from bytes is commercial. */
 let commercialTtf: Buffer;
+let jetbrainsWoff2: Buffer;
+let sourceWoff2: Buffer;
 let sourceGlyphs: number;
 
 const openFont = (bytes: Buffer): fontkit.Font => {
@@ -54,6 +60,8 @@ beforeAll(async () => {
     "https://openfontlicense.org",
     "Klim Type Foundry, Germany",
   );
+  jetbrainsWoff2 = await fs.promises.readFile(FIXTURE_JETBRAINS_WOFF2);
+  sourceWoff2 = await fs.promises.readFile(FIXTURE_SOURCE_WOFF2);
 });
 
 let home: string;
@@ -233,6 +241,103 @@ describe("installFonts", () => {
     const broken = oneFile("Broken", { url: "https://cdn.example.com/broken.woff2", format: "woff2" });
     expect(await installFonts([broken], { fetchBytes })).toMatchObject({ skipped: [{ family: "Broken", reason: "conversion-failed" }] });
   });
+
+  it("removes the file a family installed before when its style changes", async () => {
+    served.set("https://cdn.example.com/inter.ttf", ttf);
+    const bold = oneFile("Inter", { url: "https://cdn.example.com/inter.ttf", format: "ttf" });
+    bold.faces[0].weight = "700";
+    await installFonts([bold], { fetchBytes });
+
+    const report = await installFonts([oneFile("Inter", { url: "https://cdn.example.com/inter.ttf", format: "ttf" })], { fetchBytes });
+
+    expect(report.installed).toMatchObject([{ family: "Inter", files: [path.join(fontDir, "Inter-Regular.ttf")] }]);
+    expect(fs.existsSync(path.join(fontDir, "Inter-Bold.ttf"))).toBe(false);
+    await uninstallFonts(["Inter"]);
+    expect(fs.readdirSync(fontDir)).toEqual([]);
+    expect(await listInstalledFonts()).toEqual([]);
+  });
+
+  it("records both families when two installs run at once", async () => {
+    served.set("https://cdn.example.com/a.ttf", ttf);
+    const first = oneFile("Alpha", { url: "https://cdn.example.com/a.ttf", format: "ttf" });
+    const second = oneFile("Beta", { url: "https://cdn.example.com/a.ttf", format: "ttf" });
+
+    const reports = await Promise.all([installFonts([first], { fetchBytes }), installFonts([second], { fetchBytes })]);
+
+    expect(reports.flatMap((report) => report.skipped)).toEqual([]);
+    expect((await listInstalledFonts()).map((install) => install.family).sort()).toEqual(["Alpha", "Beta"]);
+    expect(fs.readdirSync(stateDir).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+  });
+
+  it("keeps each family's own bytes and licence when two conversions run at once", async () => {
+    served.set("https://cdn.example.com/inter.woff2", woff2);
+    served.set("https://cdn.example.com/jbm.woff2", jetbrainsWoff2);
+    const inter = oneFile("Inter", { url: "https://cdn.example.com/inter.woff2", format: "woff2" });
+    const mono = oneFile("JetBrains Mono", { url: "https://cdn.example.com/jbm.woff2", format: "woff2" });
+
+    const [first, second] = await Promise.all([installFonts([inter], { fetchBytes }), installFonts([mono], { fetchBytes })]);
+
+    // The licence is read from the bytes about to be written, so a swapped heap view would report the other font's notice.
+    expect(first.installed[0].license.text).toContain("Inter Project Authors");
+    expect(second.installed[0].license.text).toContain("JetBrains Mono Project Authors");
+    const interFile = fs.readFileSync(path.join(fontDir, "Inter-Regular.ttf"));
+    const monoFile = fs.readFileSync(path.join(fontDir, "JetBrainsMono-Regular.ttf"));
+    expect(interFile.equals(ttf)).toBe(true);
+    expect(monoFile.equals(Buffer.from(await decompress(jetbrainsWoff2)))).toBe(true);
+    expect(openFont(interFile).numGlyphs).toBe(sourceGlyphs);
+  });
+
+  it("does not let a later call take a file name another family holds", async () => {
+    served.set("https://cdn.example.com/one.ttf", ttf);
+    await installFonts([oneFile("Sohne", { url: "https://cdn.example.com/one.ttf", format: "ttf" })], { fetchBytes });
+
+    const report = await installFonts([oneFile("S\u00f6hne", { url: "https://cdn.example.com/one.ttf", format: "ttf" })], { fetchBytes });
+
+    expect(report.installed).toEqual([]);
+    expect(report.skipped).toEqual([{ family: "S\u00f6hne", reason: "exists", detail: path.join(fontDir, "Sohne-Regular.ttf") }]);
+    expect((await listInstalledFonts()).map((install) => install.family)).toEqual(["Sohne"]);
+  });
+
+  it("refuses a name that appeared while the bytes were being fetched", async () => {
+    const target = path.join(fontDir, "Inter-Regular.ttf");
+    const family = interWoff2();
+    const plantThenFetch = async (file: FontFile): Promise<Buffer> => {
+      fs.mkdirSync(fontDir, { recursive: true });
+      fs.writeFileSync(target, "not ours");
+      return fetchBytes(file);
+    };
+
+    const report = await installFonts([family], { fetchBytes: plantThenFetch });
+
+    expect(report.installed).toEqual([]);
+    expect(report.skipped).toEqual([{ family: "Inter", reason: "exists", detail: target }]);
+    expect(fs.readFileSync(target, "utf8")).toBe("not ours");
+  });
+
+  it("cuts a family name too long for a file name and installs it anyway", async () => {
+    served.set("https://cdn.example.com/long.ttf", ttf);
+    const family = oneFile("Ligature ".repeat(200).trim(), { url: "https://cdn.example.com/long.ttf", format: "ttf" });
+
+    const report = await installFonts([family], { fetchBytes });
+
+    expect(report.skipped).toEqual([]);
+    const [file] = report.installed[0].files;
+    expect(Buffer.byteLength(path.basename(file))).toBeLessThanOrEqual(255);
+    expect(fs.existsSync(file)).toBe(true);
+  });
+
+  it("reports a font directory it cannot write into as a write failure, not as a name that exists", async () => {
+    const blocked = path.join(home, "blocked");
+    fs.writeFileSync(blocked, "a file where a directory should be");
+    setEnv("ASSETS_SCRAPER_FONT_DIR", path.join(blocked, "Fonts"));
+    served.set("https://cdn.example.com/inter.ttf", ttf);
+
+    const report = await installFonts([oneFile("Inter", { url: "https://cdn.example.com/inter.ttf", format: "ttf" })], { fetchBytes });
+
+    expect(report.installed).toEqual([]);
+    expect(report.skipped).toMatchObject([{ family: "Inter", reason: "write-failed" }]);
+    expect(report.skipped[0].detail).toContain("Inter-Regular.ttf");
+  });
 });
 
 describe("listInstalledFonts and uninstallFonts", () => {
@@ -258,6 +363,58 @@ describe("listInstalledFonts and uninstallFonts", () => {
     fs.mkdirSync(stateDir, { recursive: true });
     fs.writeFileSync(fontManifestPath(), "{ not json");
     expect(await listInstalledFonts()).toEqual([]);
+  });
+
+  /** A manifest written by hand, the way an edit or a restore from another machine could leave one. */
+  const recordInstall = (family: string, files: string[]): void => {
+    fs.mkdirSync(stateDir, { recursive: true });
+    const install = { family, files, license: { kind: "unknown" }, sourceHost: "example.com", installedAt: new Date().toISOString(), converted: false };
+    fs.writeFileSync(fontManifestPath(), JSON.stringify({ version: 1, installs: [install] }));
+  };
+
+  it("never removes a recorded path outside the font directory", async () => {
+    const outside = path.join(home, "keep-me.ttf");
+    fs.writeFileSync(outside, "not ours");
+    recordInstall("Inter", [outside]);
+
+    const removal = await uninstallFonts(["Inter"]);
+
+    expect(removal.removed).toMatchObject([{ family: "Inter", files: [] }]);
+    expect(fs.existsSync(outside)).toBe(true);
+    expect(await listInstalledFonts()).toMatchObject([{ family: "Inter", files: [outside] }]);
+  });
+
+  it("removes the files it can when a recorded path is a directory", async () => {
+    const directory = path.join(fontDir, "Inter-Regular.ttf");
+    const file = path.join(fontDir, "Inter-Bold.ttf");
+    fs.mkdirSync(directory, { recursive: true });
+    fs.writeFileSync(file, "ours");
+    recordInstall("Inter", [directory, file]);
+
+    const removal = await uninstallFonts(["Inter"]);
+
+    expect(removal.removed).toMatchObject([{ family: "Inter", files: [file] }]);
+    expect(fs.existsSync(file)).toBe(false);
+    expect(fs.existsSync(directory)).toBe(true);
+  });
+});
+
+describe("toSfnt", () => {
+  it("copies each conversion out before the next one starts", async () => {
+    // wawoff2 answers with a view of its heap, which the next decompression reuses before an awaiting caller copies it:
+    // without the chain the middle call here comes back holding another font's bytes, and its licence with them.
+    const sequentialInter = await toSfnt(woff2);
+    const sequentialSource = await toSfnt(sourceWoff2);
+    expect(sequentialInter).not.toBeNull();
+    expect(sequentialSource).not.toBeNull();
+
+    const concurrent = await Promise.all([toSfnt(woff2), toSfnt(sourceWoff2), toSfnt(woff2)]);
+
+    expect(concurrent).toEqual([sequentialInter, sequentialSource, sequentialInter]);
+  });
+
+  it("answers null for bytes it cannot decompress", async () => {
+    expect(await toSfnt(Buffer.from("wOF2 not really a font"))).toBeNull();
   });
 });
 
