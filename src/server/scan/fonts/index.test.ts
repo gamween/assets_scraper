@@ -10,21 +10,56 @@ import { MAX_DESCRIPTOR_CHARS, MAX_UNICODE_RANGE_CHARS, normalizeStretch, normal
 import { MAX_INLINE_BYTES, MAX_INLINE_FONTS, MAX_URL_CHARS } from "./files";
 import { clearGoogleFontsCache } from "./google";
 import { buildFontFamilies, isConvertibleFont, signFontFiles } from "./index";
-import { fakeGoogleFetch, fastestMs, growthFactor, LINEAR_GROWTH_BOUND } from "./testing";
+import { fakeGoogleFetch, fastestMs, growthFactor, LINEAR_GROWTH_BOUND, LINEAR_OP_GROWTH_BOUND, opGrowth } from "./testing";
 import { coversBasicLatin } from "./unicode";
+
+/**
+ * Every call the fonts module makes into its own helpers, counted, so `opGrowth` can measure how the work grows with
+ * the input without timing anything. The wrappers keep the real behavior, and the mocks below stay `vi.fn`, so the
+ * tests that read `mock.calls` are unaffected.
+ */
+const ops = vi.hoisted(() => ({ count: 0 }));
+const counted = vi.hoisted(
+  () =>
+    <T extends (...args: never[]) => unknown>(fn: T): T =>
+      ((...args: Parameters<T>) => {
+        ops.count += 1;
+        return fn(...(args as never[]));
+      }) as T,
+);
 
 vi.mock("./binary", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./binary")>();
-  return { ...actual, parseFontBinary: vi.fn(actual.parseFontBinary) };
+  return { ...actual, parseFontBinary: vi.fn(counted(actual.parseFontBinary)) };
 });
 // Records the descriptors this module normalizes and parses, to show which ones it skips first
 vi.mock("./css", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./css")>();
-  return { ...actual, normalizeWeight: vi.fn(actual.normalizeWeight), normalizeStyle: vi.fn(actual.normalizeStyle), normalizeStretch: vi.fn(actual.normalizeStretch) };
+  return {
+    ...actual,
+    normalizeWeight: vi.fn(counted(actual.normalizeWeight)),
+    normalizeStyle: vi.fn(counted(actual.normalizeStyle)),
+    normalizeStretch: vi.fn(counted(actual.normalizeStretch)),
+    decodeIdent: counted(actual.decodeIdent),
+    withinDescriptorLimits: counted(actual.withinDescriptorLimits),
+  };
 });
 vi.mock("./unicode", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./unicode")>();
-  return { ...actual, coversBasicLatin: vi.fn(actual.coversBasicLatin) };
+  return { ...actual, coversBasicLatin: vi.fn(counted(actual.coversBasicLatin)) };
+});
+// The name pipeline: every family a rule, a status or a binary gives is read and matched through these.
+vi.mock("./names", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./names")>();
+  return {
+    ...actual,
+    binaryFamilyName: counted(actual.binaryFamilyName),
+    cleanCssFamily: counted(actual.cleanCssFamily),
+    isMangledCssFamily: counted(actual.isMangledCssFamily),
+    resolveFamilyName: counted(actual.resolveFamilyName),
+    resolveFamilyNameOf: counted(actual.resolveFamilyNameOf),
+    splitFamilies: counted(actual.splitFamilies),
+  };
 });
 
 const signal = new AbortController().signal;
@@ -597,30 +632,55 @@ describe("buildFontFamilies", () => {
     }
   });
 
+  /** Collector output shaped to make every pair of names meet, one input per historical quadratic path. */
+  const hostileLong = "Face".repeat(25);
+  const hostile: Record<string, (size: number) => Parts> = {
+    // every rule against every document.fonts status of its family
+    statuses: (size) => ({
+      fontFaces: Array.from({ length: size }, (_, index) => rule(hostileLong, [`${PAGE}${index}.woff2`], { weight: String(index) })),
+      fontStatuses: Array.from({ length: size }, (_, index) => loaded(hostileLong, `w${index}`)),
+    }),
+    // CSS families that clean to one name: every new one against the ones already kept
+    variants: (size) => ({ fontFaces: Array.from({ length: size }, (_, index) => rule(`__${"Inter".repeat(40)}_${index.toString(16).padStart(6, "0")}`, [`${PAGE}${index}.woff2`])) }),
+    // every binary name of a file without a rule against every registered family
+    undeclared: (size) => ({
+      fonts: Array.from({ length: size }, (_, index) => captured(`${PAGE}u${index}.woff2`, { format: "woff2", nameId1: `Name ${index} Sans` })),
+      fontStatuses: Array.from({ length: size }, (_, index) => loaded(`Registered ${index}`)),
+    }),
+    // family names that give the same id
+    ids: (size) => ({ fontFaces: Array.from({ length: size }, (_, index) => rule(String.fromCharCode(0x4e00 + index), [`${PAGE}${index}.woff2`])) }),
+  };
+  /** 600 grows to 4,800, under the cap of 5,000 CSSOM rules; binary names and registered families are capped at 128. */
+  const hostileSize = (name: string) => (name === "undeclared" ? 300 : 600);
+
+  /**
+   * The work this module does on hostile input, counted rather than timed (`opGrowth`): eight times the input has to
+   * cost about eight times the calls into the name, descriptor and binary helpers, not sixty four. Counting is what
+   * makes it a gate: the wall-clock form of this check failed CI once on a timing ratio, and is kept below as a
+   * benchmark.
+   */
   it("stays linear on hostile collector output", async () => {
-    const long = "Face".repeat(25);
-    const hostile: Record<string, (size: number) => Parts> = {
-      // every rule against every document.fonts status of its family
-      statuses: (size) => ({
-        fontFaces: Array.from({ length: size }, (_, index) => rule(long, [`${PAGE}${index}.woff2`], { weight: String(index) })),
-        fontStatuses: Array.from({ length: size }, (_, index) => loaded(long, `w${index}`)),
-      }),
-      // CSS families that clean to one name: every new one against the ones already kept
-      variants: (size) => ({ fontFaces: Array.from({ length: size }, (_, index) => rule(`__${"Inter".repeat(40)}_${index.toString(16).padStart(6, "0")}`, [`${PAGE}${index}.woff2`])) }),
-      // every binary name of a file without a rule against every registered family
-      undeclared: (size) => ({
-        fonts: Array.from({ length: size }, (_, index) => captured(`${PAGE}u${index}.woff2`, { format: "woff2", nameId1: `Name ${index} Sans` })),
-        fontStatuses: Array.from({ length: size }, (_, index) => loaded(`Registered ${index}`)),
-      }),
-      // family names that give the same id
-      ids: (size) => ({ fontFaces: Array.from({ length: size }, (_, index) => rule(String.fromCharCode(0x4e00 + index), [`${PAGE}${index}.woff2`])) }),
-    };
-    // 600 grows to 4,800, under the cap of 5,000 CSSOM rules; binary names and registered families are capped at 128
     for (const [name, parts] of Object.entries(hostile)) {
-      const factor = await growthFactor((size) => buildFontFamilies(inputOf(parts(size))), name === "undeclared" ? 300 : 600);
-      expect.soft(factor, name).toBeLessThan(LINEAR_GROWTH_BOUND);
+      const { small, large, factor } = await opGrowth((size) => buildFontFamilies(inputOf(parts(size))), hostileSize(name), ops);
+      // The run has to do work that grows with the input at all, or the ratio below would mean nothing
+      expect.soft(small, name).toBeGreaterThan(0);
+      expect.soft(large, name).toBeGreaterThan(small);
+      expect.soft(factor, name).toBeLessThan(LINEAR_OP_GROWTH_BOUND);
     }
   }, 60_000);
+
+  /**
+   * The wall-clock companion of the test above, kept out of the gating suite: it measures the same four inputs in
+   * milliseconds, which reads every regression the counted version reads and the ones it cannot, a quadratic scan
+   * written inline over a derived array for instance, but a ratio of two timings on a loaded runner is not a thing a
+   * suite can gate on (it failed CI once at `LINEAR_GROWTH_BOUND`). Run it with `pnpm bench`.
+   */
+  it.runIf(process.env.FONTS_BENCH === "1")("benchmark: stays linear on hostile collector output, in wall time", async () => {
+    for (const [name, parts] of Object.entries(hostile)) {
+      const factor = await growthFactor((size) => buildFontFamilies(inputOf(parts(size))), hostileSize(name));
+      expect.soft(factor, name).toBeLessThan(LINEAR_GROWTH_BOUND);
+    }
+  }, 120_000);
 
   it("groups and names fonts in time that barely grows with the length of names", async () => {
     // Each pair of a binary name and a registered family read the file's name records again, in time that also grew

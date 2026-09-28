@@ -2,7 +2,8 @@
 
 - Spec: docs/superpowers/specs/2026-09-16-assets-scraper-design.md. Plan: docs/superpowers/plans/2026-09-16-assets-scraper-v1.md.
 - Agent access (CLI, MCP server, `/api/v1`): spec docs/superpowers/specs/2026-09-27-agent-access-design.md, plan docs/superpowers/plans/2026-09-27-agent-access.md. The shared core is `src/agent/*`, and `pnpm build:agent` bundles `src/agent/cli.ts` and `src/agent/mcp.ts` into `dist/`.
-- Commands: `pnpm dev`, `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm test:integration` (needs Google Chrome), `pnpm test:e2e`.
+- Commands: `pnpm dev`, `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm test:integration` (needs Google Chrome), `pnpm test:e2e`, `pnpm bench` (the wall-clock font benchmarks, which the gating suite skips because a timing ratio flakes).
+- A performance guarantee is gated by counting operations, never by comparing wall time: see `opGrowth` in `src/server/scan/fonts/testing.ts`.
 - `src/lib/contract.ts` is the single source of truth for everything that crosses the network. Change it only together with server and client.
 - `src/server/scan` must not import from `next`. The route handlers are thin adapters.
 - Every server-side request to a URL that came from a user or a scraped page goes through `safeFetch`. Chromium always runs behind the egress proxy.
