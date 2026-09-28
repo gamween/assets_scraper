@@ -271,6 +271,8 @@ export async function installFonts(families: FontFamily[], options: InstallFonts
   const limit = agentLimits.fontInstallMaxBytes;
   /** Files this tool wrote, so a name it owns is replaced and a name it does not own is left alone (spec 5.3). */
   const ours = new Set(installs.flatMap((install) => install.files));
+  /** Files this call wrote, so two families that fold to the same file name do not silently overwrite each other. */
+  const written = new Set<string>();
 
   for (const family of chosen) {
     if (options.signal?.aborted === true) break;
@@ -325,7 +327,7 @@ export async function installFonts(families: FontFamily[], options: InstallFonts
     }
 
     const target = path.join(fontDir, `${fileSafeFamily(family.name)}-${styleName(face)}.${format}`);
-    if (!ours.has(target) && fs.existsSync(target)) {
+    if (written.has(target) || (!ours.has(target) && fs.existsSync(target))) {
       skip(family.name, "exists", target);
       continue;
     }
@@ -336,16 +338,24 @@ export async function installFonts(families: FontFamily[], options: InstallFonts
     const fromBinary = meta ? classifyLicense(meta, family.source) : { kind: "unknown" as const };
     const license: FontLicense = fromBinary.kind === "unknown" ? family.license : fromBinary;
 
-    await fsp.mkdir(fontDir, { recursive: true });
-    await fsp.rm(target, { force: true });
-    const flags = fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW;
-    const handle = await fsp.open(target, flags, 0o644);
+    // `O_EXCL | O_NOFOLLOW` is what actually guards the directory: the name is only removed first when the manifest says
+    // this tool wrote it, and anything else already sitting there (a file, a symlink, a dangling one) refuses the open.
     try {
-      await handle.writeFile(bytes);
-    } finally {
-      await handle.close();
+      await fsp.mkdir(fontDir, { recursive: true });
+      if (ours.has(target)) await fsp.rm(target, { force: true });
+      const flags = fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW;
+      const handle = await fsp.open(target, flags, 0o644);
+      try {
+        await handle.writeFile(bytes);
+      } finally {
+        await handle.close();
+      }
+    } catch (error) {
+      skip(family.name, "exists", `${target}: ${message(error)}`);
+      continue;
     }
     ours.add(target);
+    written.add(target);
 
     const install: FontInstall = {
       family: family.name,

@@ -212,10 +212,11 @@ export function createAgentMcpServer(options: AgentMcpOptions = {}): McpServer {
         const asset = scan.assets.find((candidate) => candidate.id === id);
         if (!asset) return fail(`no asset ${JSON.stringify(id)} in this scan. Call list_assets to see what it holds.`);
         if (asset.kind !== "svg") return fail(`asset ${JSON.stringify(id)} is a ${asset.format} image, not an SVG. Use download_assets for it.`);
+        // Inline markup first, then inline bytes (an SVG the collector kept base64 encoded), then the network.
         const inline = asset.inline;
         const markup =
-          inline && "text" in inline ?
-            inline.text
+          inline && "text" in inline ? inline.text
+          : inline && "base64" in inline ? Buffer.from(inline.base64, "base64").toString("utf8")
           : (await source.fetchBytes(asset.display ?? asset.original ?? { url: "", proxy: "", format: asset.format })).toString("utf8");
         if (Buffer.byteLength(markup) > MAX_SVG_TEXT_BYTES) {
           return fail(`this SVG is ${Buffer.byteLength(markup)} bytes, too much to read into a context. Use download_assets instead.`);

@@ -180,6 +180,29 @@ describe("installFonts", () => {
     expect(fs.readFileSync(path.join(fontDir, "Inter-Regular.ttf"), "utf8")).toBe("mine");
   });
 
+  it("refuses a name a symbolic link holds instead of following it", async () => {
+    fs.mkdirSync(fontDir, { recursive: true });
+    fs.symlinkSync(path.join(home, "elsewhere.ttf"), path.join(fontDir, "Inter-Regular.ttf"));
+
+    const report = await installFonts([interWoff2()], { fetchBytes });
+
+    expect(report.installed).toEqual([]);
+    expect(report.skipped).toHaveLength(1);
+    expect(report.skipped[0]).toMatchObject({ family: "Inter", reason: "exists" });
+    expect(fs.existsSync(path.join(home, "elsewhere.ttf"))).toBe(false);
+  });
+
+  it("does not let two families that fold to one file name overwrite each other", async () => {
+    served.set("https://cdn.example.com/second.ttf", ttf);
+    const second = oneFile("Söhne", { url: "https://cdn.example.com/second.ttf", format: "ttf" });
+    const first = oneFile("Sohne", { url: "https://cdn.example.com/second.ttf", format: "ttf" });
+
+    const report = await installFonts([first, second], { fetchBytes });
+
+    expect(report.installed.map((install) => install.family)).toEqual(["Sohne"]);
+    expect(report.skipped).toEqual([{ family: "Söhne", reason: "exists", detail: path.join(fontDir, "Sohne-Regular.ttf") }]);
+  });
+
   it("replaces a file it installed itself and keeps one manifest entry", async () => {
     await installFonts([interWoff2()], { fetchBytes });
     const report = await installFonts([interWoff2()], { fetchBytes });
