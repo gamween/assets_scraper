@@ -47,17 +47,42 @@ export interface RoleInput {
 }
 
 const longestSide = (size?: { width?: number; height?: number }) => Math.max(size?.width ?? 0, size?.height ?? 0);
+const area = (size?: { width?: number; height?: number }) => (size?.width ?? 0) * (size?.height ?? 0);
 
-/** Evidence that the asset is a logo whatever its size or place: the word, a logo wall, or "logo" in its label. */
-const hasLogoEvidence = (input: RoleInput): boolean => input.logoWord || input.logoWall || /logo/i.test(input.label ?? "");
+/**
+ * How big the asset is where the logo limit is concerned: what it renders at, and for a raster that never rendered,
+ * the size of the file. A vector scales, so its intrinsic box says nothing about the page and is not used here: a
+ * customer logo wall often ships 1000 unit wide SVGs that render at 142x34, and a carousel keeps some of them hidden.
+ */
+const logoArea = (input: RoleInput): number => {
+  const rendered = area(input.rendered);
+  if (rendered > 0) return rendered;
+  return input.kind === "svg" ? 0 : area(input.intrinsic);
+};
+
+/**
+ * Prose, not a name: stripe.com describes a 2460x1060 photograph as "Aerial view of a street intersection where the
+ * crosswalks form a slanted parallelogram, imitating the Stripe logo." The word "logo" in a sentence that long is
+ * about what the picture shows, not what the file is.
+ */
+const PROSE_LABEL_CHARS = 60;
+const isProse = (label: string | undefined): boolean => (label ?? "").length > PROSE_LABEL_CHARS;
+
+/**
+ * Evidence that the asset is a logo whatever its place: the word, a logo wall, or "logo" in its label. A label long
+ * enough to be a sentence is a description and proves nothing.
+ */
+const hasLogoEvidence = (input: RoleInput): boolean =>
+  input.logoWord || input.logoWall || (/logo/i.test(input.label ?? "") && !isProse(input.label));
 
 export function assignRole(input: RoleInput): AssetRole {
   const found = new Set(input.foundIn);
-  const oversized = (input.rendered?.width ?? 0) * (input.rendered?.height ?? 0) > LOGO_MAX_AREA;
+  const oversized = logoArea(input) > LOGO_MAX_AREA;
   if (found.has("json-ld") || (input.logoScore >= 6 && !oversized)) return "site-logo";
   if (found.has("icon-link") || found.has("meta-icon") || found.has("manifest")) return "favicon";
   if (found.has("og-image") || found.has("twitter-image")) return "social";
-  if (hasLogoEvidence(input)) return "logo";
+  // A logo is small. Past the same limit the site logo answers to, a picture that carries a logo word is a picture.
+  if (hasLogoEvidence(input) && !oversized) return "logo";
   if (input.spriteSymbol) return "sprite-symbol";
   // The single small-icon rule: the rendered size when the asset is on screen, else its intrinsic size.
   const side = input.rendered && longestSide(input.rendered) > 0 ? longestSide(input.rendered) : longestSide(input.intrinsic);

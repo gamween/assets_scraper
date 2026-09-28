@@ -33,7 +33,7 @@ describe("assignRole", () => {
     // The wordmark beside it still is the site logo.
     expect(role({ kind: "svg", foundIn: ["inline-svg"], logoScore: score, label: "Apple", rendered: { width: 14, height: 44 } })).toBe("site-logo");
     // Logo evidence does not lift the limit: on apple.com the hero group carries it and is still a hero.
-    expect(role({ logoScore: score, logoWord: true, rendered: { width: 3008, height: 692 } })).toBe("logo");
+    expect(role({ logoScore: score, logoWord: true, rendered: { width: 3008, height: 692 } })).toBe("image");
     // A JSON-LD logo is a declaration, not a guess, so it is the site logo at any size.
     expect(role({ foundIn: ["json-ld"], rendered: { width: 3008, height: 692 } })).toBe("site-logo");
     // The limit is generous: a banner sized wordmark on position alone is still the site logo.
@@ -49,6 +49,34 @@ describe("assignRole", () => {
     expect(role({ logoWall: true, rendered: { width: 120, height: 40 } })).toBe("logo");
     expect(role({ logoWord: true, rendered: { width: 20, height: 20 } })).toBe("logo");
     expect(role({ label: "Acme Logo", rendered: { width: 300, height: 100 } })).toBe("logo");
+  });
+
+  // stripe.com, recorded in the collector output of a real scan: the alt sentence of each photograph mentions the
+  // Stripe logo, so the collector flagged logoWord and siteWord on a 1232x531 picture of a street.
+  it("keeps a photograph out of the logos while the customer logo wall stays", () => {
+    const photograph = {
+      logoScore: logoScore(context({ logoWord: true, siteWord: true }), true, { x: 104, y: 5096, width: 1232, height: 531 }),
+      logoWord: true,
+      label: "Aerial view of a street intersection where the crosswalks form a slanted parallelogram, imitating the Stripe logo.",
+      rendered: { width: 1232, height: 531 },
+      intrinsic: { width: 2460, height: 1060 },
+    };
+    expect(role(photograph)).toBe("image");
+    // The same file below the fold never rendered, so only the size of the file says how big it is.
+    expect(role({ ...photograph, rendered: undefined })).toBe("image");
+    // Stripe's customer logos are logos and stay logos.
+    expect(role({ kind: "svg", foundIn: ["inline-svg"], logoWall: true, label: "OpenAI", rendered: { width: 142, height: 34 } })).toBe("logo");
+    expect(role({ kind: "svg", foundIn: ["inline-svg"], logoWall: true, rendered: { width: 150, height: 36 } })).toBe("logo");
+    // A hidden carousel logo has no rendered size, and the viewBox of a vector says nothing about the page.
+    expect(role({ kind: "svg", foundIn: ["inline-svg"], logoWall: true, intrinsic: { width: 1024, height: 246 } })).toBe("logo");
+    // A raster customer logo is small enough either way.
+    expect(role({ logoWall: true, intrinsic: { width: 400, height: 120 } })).toBe("logo");
+  });
+
+  it("does not read the word logo out of a sentence", () => {
+    const prose = "Overhead view of a door stoop with a grocery delivery bag whose handles trace the Stripe logo.";
+    expect(role({ label: prose, rendered: { width: 300, height: 100 } })).toBe("image");
+    expect(role({ label: "Acme logo", rendered: { width: 300, height: 100 } })).toBe("logo");
   });
 
   it("applies one small-icon rule: rendered side, else intrinsic side, at most 48", () => {
