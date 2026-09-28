@@ -33,7 +33,7 @@ function toRequest(incoming: http.IncomingMessage, body: Buffer): Request {
   return new Request(`https://assets.example.com${incoming.url ?? "/"}`, {
     method,
     headers,
-    ...(method === "GET" || method === "HEAD" ? {} : { body }),
+    ...(method === "GET" || method === "HEAD" ? {} : { body: new Uint8Array(body) }),
   });
 }
 

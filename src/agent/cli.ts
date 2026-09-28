@@ -4,13 +4,13 @@ import { parseArgs } from "node:util";
 import pkg from "../../package.json";
 import { AssetKind, AssetRole } from "@/lib/contract";
 import { formatBytes, formatCount, formatDimensions, formatDuration } from "@/lib/format";
-import { normalizeInputUrl } from "@/lib/url";
 import { ScanFailure } from "@/server/errors";
 import { findRecentScan, saveScan } from "./cache";
 import { downloadAssets } from "./download";
 import { listInstalledFonts } from "./font-manifest";
 import { formatFontInstall, formatFontList, formatFontUninstall } from "./font-report";
 import { installFonts, uninstallFonts } from "./fonts";
+import { normalizeScanUrl } from "./scan-url";
 import { createLocalScanSource } from "./source-local";
 import { createRemoteScanSource } from "./source-remote";
 import { summarize } from "./summary";
@@ -155,25 +155,13 @@ export function selectionFrom(values: Values): SelectionOptions {
 }
 
 /**
- * The URL to scan, read the way the app reads what a user pastes, so `stripe.com` works like the spec's examples and the
- * cache sees one form of each page.
- *
- * A port outside 80 and 443 is not refused here: that policy belongs to the scan, which also knows the test allowlist,
- * so such a URL is passed through for the engine to answer with its own `unsupported-port`. The error this does throw
- * carries the v1 code, so an agent reading stderr gets the vocabulary the API uses.
+ * The URL to scan (`normalizeScanUrl`), as a usage error when it is not one. The error carries the v1 code, so an agent
+ * reading stderr gets the vocabulary the API uses.
  */
 export function scanUrl(raw: string): string {
-  const parsed = normalizeInputUrl(raw);
-  if (parsed.ok) return parsed.url;
-  const trimmed = raw.trim();
-  if (parsed.code === "unsupported-port") {
-    try {
-      return new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`).toString();
-    } catch {
-      // Not a URL after all, so it fails as one below.
-    }
-  }
-  throw new UsageError(`invalid-url: ${JSON.stringify(raw)} is not a web address`);
+  const url = normalizeScanUrl(raw);
+  if (url === null) throw new UsageError(`invalid-url: ${JSON.stringify(raw)} is not a web address`);
+  return url;
 }
 
 /** Where the scan runs (spec 2): the hosted app when `--remote`, `--remote-url` or `ASSETS_SCRAPER_REMOTE` names one. */
