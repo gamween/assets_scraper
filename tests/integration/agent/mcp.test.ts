@@ -69,7 +69,7 @@ async function fakeDownload(
   }
   const manifestPath = path.join(options.dir, "manifest.json");
   fs.writeFileSync(manifestPath, JSON.stringify({ files }));
-  return { dir: options.dir, files, totalBytes, dropped: selection.dropped, failed: [], manifestPath };
+  return { dir: options.dir, files, totalBytes, dropped: selection.dropped, budget: selection.budget, failed: [], manifestPath };
 }
 
 beforeAll(async () => {

@@ -171,6 +171,20 @@ describe("parseSelectionParams", () => {
     expect(parseSelectionParams(params(`nameContains=${"x".repeat(500)}`))).toEqual({ ok: true, options: { profile: "deck", nameContains: "x".repeat(200) } });
   });
 
+  /** Every byte the endpoint serves is a fetch and a byte of the shared proxy budget, so "no limit" means the ceiling. */
+  it("reads the byte limits and holds them to what one request may serve", () => {
+    process.env.AGENT_ZIP_MAX_BYTES = "1000000";
+    expect(parseSelectionParams(params("maxBytes=4000&maxFileBytes=2000"))).toMatchObject({
+      ok: true,
+      options: { maxTotalBytes: 4_000, maxFileBytes: 2_000 },
+    });
+    expect(parseSelectionParams(params("maxBytes=0&maxFileBytes=0"))).toMatchObject({ ok: true, options: { maxTotalBytes: 1_000_000, maxFileBytes: 0 } });
+    expect(parseSelectionParams(params("maxBytes=999999999"))).toMatchObject({ ok: true, options: { maxTotalBytes: 1_000_000 } });
+    for (const query of ["maxBytes=-1", "maxBytes=lots", "maxFileBytes=1.5"]) {
+      expect(parseSelectionParams(params(query)).ok, query).toBe(false);
+    }
+  });
+
   it("caps max at the number of files one download writes", () => {
     process.env.AGENT_MAX_FILES = "5";
     expect(parseSelectionParams(params("max=500"))).toMatchObject({ ok: true, options: { max: 5 } });

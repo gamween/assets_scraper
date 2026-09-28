@@ -37,7 +37,7 @@ describe("GET /api/openapi.json", () => {
   it("describes the ZIP endpoint with its filters", async () => {
     const operation = (await document()).paths["/api/v1/assets.zip"].get;
     const names = operation.parameters.map((parameter: { name: string }) => parameter.name);
-    expect(names).toEqual(["url", "profile", "kinds", "roles", "max", "minLongSide", "nameContains"]);
+    expect(names).toEqual(["url", "profile", "kinds", "roles", "max", "minLongSide", "maxBytes", "maxFileBytes", "nameContains"]);
     expect(operation.parameters[0].required).toBe(true);
     expect(operation.parameters[1].schema.enum).toEqual(["deck", "all"]);
     expect(operation.responses["200"].content["application/zip"].schema.format).toBe("binary");

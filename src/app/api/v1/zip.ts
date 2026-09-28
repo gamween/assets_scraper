@@ -206,6 +206,7 @@ export async function buildAssetsZip(
     selection,
     files,
     dropped,
+    budget: byBytes.budget,
     duplicates: byBytes.duplicates,
     failed: fetched.failed,
     totalBytes: files.reduce((total, file) => total + file.bytes, 0),

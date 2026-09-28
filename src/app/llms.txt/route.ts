@@ -52,13 +52,16 @@ assets answers hundreds of kilobytes, and the archive below is the way to get th
 
     ${origin}/api/v1/assets.zip
 
-Query: url, profile, kinds, roles, max, minLongSide, nameContains
+Query: url, profile, kinds, roles, max, maxBytes, maxFileBytes, minLongSide, nameContains
 
   profile        "deck" (default) keeps what is usable and drops icons, sprites, thumbnails and duplicates.
                  "all" keeps everything the explicit filters allow.
   kinds          comma separated: svg, image
   roles          comma separated: site-logo, logo, favicon, social, icon, illustration, image, sprite-symbol
   max            files to keep, at most ${agentLimits.maxFiles} files
+  maxBytes       bytes to keep in total, best scoring files first, default ${mb(agentLimits.maxTotalBytes)} and at most
+                 ${mb(zipMaxBytes())}, which is what 0 asks for. Files that do not fit are counted under over-budget
+  maxFileBytes   bytes one file may take under the deck profile, default ${mb(agentLimits.maxFileBytes)}, 0 lifts it
   minLongSide    a raster under this many pixels on its longest side is dropped, default ${agentLimits.minLongSide} px.
                  A site logo, a logo and a favicon are never dropped for size, and SVG has no size gate.
   nameContains   keeps the files whose name contains this text

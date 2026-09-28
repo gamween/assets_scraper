@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { saveScan } from "./cache";
 import { DEFAULT_REMOTE, USAGE, UsageError, formatDownload, formatDropped, formatSummary, openSource, scanPage, scanUrl, selectionFrom } from "./cli";
 import { summarize } from "./summary";
-import { testScan } from "./testing";
+import { noBudget, testScan } from "./testing";
 import type { AgentScan, DownloadResult, ScanSource } from "./types";
 
 /**
@@ -48,6 +48,14 @@ describe("selectionFrom", () => {
 
   it("leaves out what was not asked for, so the defaults hold", () => {
     expect(selectionFrom({})).toEqual({});
+  });
+
+  /** 0 is the one number a byte limit takes and a count option refuses: it is how a caller says "no limit" out loud. */
+  it("reads the byte limits, and takes 0 as lifting one", () => {
+    expect(selectionFrom({ "max-bytes": "5000", "max-file-bytes": "1000" })).toEqual({ maxTotalBytes: 5_000, maxFileBytes: 1_000 });
+    expect(selectionFrom({ "max-bytes": "0", "max-file-bytes": "0" })).toEqual({ maxTotalBytes: 0, maxFileBytes: 0 });
+    expect(fails(() => selectionFrom({ "max-bytes": "25MB" })).message).toContain("--max-bytes takes a whole number of bytes");
+    expect(fails(() => selectionFrom({ "max-file-bytes": "-1" })).message).toContain("--max-file-bytes takes a whole number of bytes");
   });
 
   it("refuses a value that would silently select nothing", () => {
@@ -229,6 +237,7 @@ describe("the report", () => {
       files: [{ id: "a", name: "Logo", path: "/work/scrap/stripe.com/svg/logo.svg", bytes: 2_048, kind: "svg", role: "logo", url: "https://stripe.com/logo.svg" }],
       totalBytes: 2_048,
       dropped: { icon: 3 },
+      budget: noBudget,
       failed: [{ id: "b", name: "Hero", reason: "HTTP 403" }],
       manifestPath: "/work/scrap/stripe.com/manifest.json",
     };

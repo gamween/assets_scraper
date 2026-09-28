@@ -3,6 +3,7 @@ import { AssetKind, AssetRole, type ErrorCode } from "@/lib/contract";
 import { normalizeInputUrl, type UrlInputResult } from "@/lib/url";
 import { agentLimits } from "@/agent/limits";
 import type { SelectionOptions, SelectionProfile } from "@/agent/types";
+import { zipMaxBytes } from "./zip";
 import { isOwnHost, isTestAllowed, privateHostReason } from "@/server/net/ip";
 import { authenticateAgent, safeEqual } from "@/server/security/agent-auth";
 import { takeScanBudget } from "@/server/security/budget";
@@ -137,6 +138,12 @@ const whole = (value: string): number | null => {
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
 };
 
+/** The same, plus 0, which is how a caller says "no limit" for a byte budget. */
+const wholeOrZero = (value: string): number | null => {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+};
+
 export type SelectionParams = { ok: true; options: SelectionOptions } | { ok: false; message: string };
 
 /**
@@ -169,6 +176,20 @@ export function parseSelectionParams(params: URLSearchParams): SelectionParams {
     const parsed = whole(max);
     if (parsed === null) return { ok: false, message: "max must be a whole number above 0." };
     options.max = Math.min(parsed, agentLimits.maxFiles);
+  }
+  // The byte budget, held to what one request may serve the way `max` is held to AGENT_MAX_FILES: lifting it here means
+  // the hosted ceiling, not an unbounded archive, since every byte is a fetch and a byte of the shared proxy budget.
+  const maxBytes = params.get("maxBytes");
+  if (maxBytes !== null) {
+    const parsed = wholeOrZero(maxBytes);
+    if (parsed === null) return { ok: false, message: "maxBytes must be a whole number of bytes, or 0 for no limit." };
+    options.maxTotalBytes = parsed === 0 ? zipMaxBytes() : Math.min(parsed, zipMaxBytes());
+  }
+  const maxFileBytes = params.get("maxFileBytes");
+  if (maxFileBytes !== null) {
+    const parsed = wholeOrZero(maxFileBytes);
+    if (parsed === null) return { ok: false, message: "maxFileBytes must be a whole number of bytes, or 0 for no ceiling." };
+    options.maxFileBytes = parsed === 0 ? 0 : Math.min(parsed, zipMaxBytes());
   }
   const minLongSide = params.get("minLongSide");
   if (minLongSide !== null) {

@@ -10,6 +10,7 @@ import { downloadAssets } from "./download";
 import { listInstalledFonts } from "./font-manifest";
 import { formatFontInstall, formatFontList, formatFontUninstall } from "./font-report";
 import { installFonts, uninstallFonts } from "./fonts";
+import { agentLimits } from "./limits";
 import { normalizeScanUrl } from "./scan-url";
 import { createLocalScanSource } from "./source-local";
 import { createRemoteScanSource } from "./source-remote";
@@ -47,6 +48,9 @@ Options
   --role logo,site-logo Only these roles
   --min-long-side 600   Drop a raster whose longest side is under this, logos and favicons excepted
   --max 60              Files one download writes, highest scoring first
+  --max-bytes N         Bytes one download writes, best scoring first. 0 takes the selection whatever it weighs.
+                        Default: ${agentLimits.maxTotalBytes}
+  --max-file-bytes N    Bytes one file may take under the deck profile, 0 to lift it. Default: ${agentLimits.maxFileBytes}
   --name-contains TEXT  Only assets whose name holds TEXT
   --include-icons       Keep icons the deck profile would drop
   --families "A,B"      Font families to install or remove, as scan reported them
@@ -75,6 +79,8 @@ const DROP_LABELS: Record<DropReason, string> = {
   "extra-favicon": "extra favicons",
   filter: "filtered out",
   cap: "over the file limit",
+  "too-large": "too big for one file",
+  "over-budget": "over the byte budget",
   unavailable: "unavailable",
 };
 
@@ -85,6 +91,8 @@ const OPTIONS = {
   role: { type: "string" },
   "min-long-side": { type: "string" },
   max: { type: "string" },
+  "max-bytes": { type: "string" },
+  "max-file-bytes": { type: "string" },
   "name-contains": { type: "string" },
   "include-icons": { type: "boolean" },
   families: { type: "string" },
@@ -121,6 +129,21 @@ function wholeNumber(values: Values, name: keyof typeof OPTIONS): number | undef
   return value;
 }
 
+/**
+ * A byte limit: a whole number of bytes, or 0 to lift it. 0 is the one number the count options refuse and this one
+ * takes, because lifting a budget is a thing a caller has to be able to say out loud rather than by naming a number
+ * large enough to be nonsense.
+ */
+function byteLimit(values: Values, name: keyof typeof OPTIONS): number | undefined {
+  const raw = asString(values, name);
+  if (raw === undefined) return undefined;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new UsageError(`--${name} takes a whole number of bytes, or 0 to lift the limit, not ${JSON.stringify(raw)}`);
+  }
+  return value;
+}
+
 /** A comma separated list checked against one of the contract enums, so a typo is an error and not an empty result. */
 function enumList<T extends string>(values: Values, name: keyof typeof OPTIONS, allowed: readonly T[]): T[] | undefined {
   const raw = asString(values, name);
@@ -142,6 +165,8 @@ export function selectionFrom(values: Values): SelectionOptions {
   const roles = enumList(values, "role", AssetRole.options);
   const minLongSide = wholeNumber(values, "min-long-side");
   const max = wholeNumber(values, "max");
+  const maxTotalBytes = byteLimit(values, "max-bytes");
+  const maxFileBytes = byteLimit(values, "max-file-bytes");
   const nameContains = asString(values, "name-contains");
   return {
     ...(profile === undefined ? {} : { profile: profile as SelectionProfile }),
@@ -149,6 +174,8 @@ export function selectionFrom(values: Values): SelectionOptions {
     ...(roles === undefined ? {} : { roles }),
     ...(minLongSide === undefined ? {} : { minLongSide }),
     ...(max === undefined ? {} : { max }),
+    ...(maxTotalBytes === undefined ? {} : { maxTotalBytes }),
+    ...(maxFileBytes === undefined ? {} : { maxFileBytes }),
     ...(nameContains === undefined ? {} : { nameContains }),
     ...(values["include-icons"] === true ? { includeIcons: true } : {}),
   };

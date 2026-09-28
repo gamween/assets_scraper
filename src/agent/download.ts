@@ -10,6 +10,7 @@ import type {
   DownloadedFile,
   DropReason,
   ScanSource,
+  SelectionBudget,
   SelectionOptions,
   SelectionProfile,
 } from "./types";
@@ -69,6 +70,8 @@ export interface DownloadManifest {
   files: ManifestFile[];
   totalBytes: number;
   dropped: Partial<Record<DropReason, number>>;
+  /** The byte rules this download ran under: what it could take in total, what one file could take, what it took. */
+  budget: SelectionBudget;
   failed: DownloadResult["failed"];
 }
 
@@ -289,10 +292,11 @@ export async function downloadAssets(scan: AgentScan, source: ScanSource, option
     files: rows,
     totalBytes,
     dropped,
+    budget: selected.budget,
     failed,
   };
   const manifestPath = path.join(dir, MANIFEST_NAME);
   writeFileNoFollow(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 
-  return { dir, files, totalBytes, dropped, failed, manifestPath };
+  return { dir, files, totalBytes, dropped, budget: selected.budget, failed, manifestPath };
 }

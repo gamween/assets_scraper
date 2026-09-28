@@ -99,6 +99,16 @@ export function openApiDocument(origin: string): Record<string, unknown> {
               minimum: 1,
               default: agentLimits.minLongSide,
             }),
+            filter("maxBytes", `Bytes to keep in total, best scoring files first, held to what one request serves. 0 means that ceiling.`, {
+              type: "integer",
+              minimum: 0,
+              default: agentLimits.maxTotalBytes,
+            }),
+            filter("maxFileBytes", "Bytes one file may take under the deck profile. 0 lifts the ceiling.", {
+              type: "integer",
+              minimum: 0,
+              default: agentLimits.maxFileBytes,
+            }),
             filter("nameContains", "Keeps the files whose name contains this text.", { type: "string" }),
           ],
           responses: {

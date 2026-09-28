@@ -6,7 +6,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createAgentMcpServer, MAX_TOOL_RESULT_BYTES, MCP_TOOL_NAMES, missingRuntimeDependency } from "./mcp";
-import { testAsset, testScan } from "./testing";
+import { noBudget, testAsset, testScan } from "./testing";
 import type { AgentScan, ScanSource, SelectionOptions } from "./types";
 
 /**
@@ -141,7 +141,7 @@ describe("download_assets", () => {
     const wired = await connect({
       downloadAssets: async (_scan, options) => {
         seen.push(options.selection ?? {});
-        return { dir: options.dir, files: [], totalBytes: 0, dropped: {}, failed: [], manifestPath: "" };
+        return { dir: options.dir, files: [], totalBytes: 0, dropped: {}, budget: noBudget, failed: [], manifestPath: "" };
       },
     });
 
@@ -152,6 +152,22 @@ describe("download_assets", () => {
     expect(seen[0]).toMatchObject({ kinds: ["svg"], roles: ["site-logo"] });
     expect(seen[1]).toMatchObject({ kinds: ["svg"], roles: ["logo"] });
     expect(seen[2].kinds?.slice().sort()).toEqual(["image", "svg"]);
+    await wired.close();
+  });
+
+  /** The byte budget is a download option like any other, so an agent can raise it or lift it from the tool call. */
+  it("passes the byte limits to the downloader", async () => {
+    const seen: SelectionOptions[] = [];
+    const wired = await connect({
+      downloadAssets: async (_scan, options) => {
+        seen.push(options.selection ?? {});
+        return { dir: options.dir, files: [], totalBytes: 0, dropped: {}, budget: noBudget, failed: [], manifestPath: "" };
+      },
+    });
+
+    await call(wired, "download_assets", { scanId, maxTotalBytes: 50_000_000, maxFileBytes: 0 });
+    expect(seen[0]).toMatchObject({ maxTotalBytes: 50_000_000, maxFileBytes: 0 });
+    expect((await call(wired, "download_assets", { scanId, maxTotalBytes: -1 })).isError).toBe(true);
     await wired.close();
   });
 
@@ -184,7 +200,7 @@ describe("download_assets", () => {
   /** Spec 4.6 makes `max` the way to take more, so the id list is a request shape limit and not a second cap. */
   it("accepts more ids than one download writes", async () => {
     const wired = await connect({
-      downloadAssets: async (_scan, options) => ({ dir: options.dir, files: [], totalBytes: 0, dropped: {}, failed: [], manifestPath: "" }),
+      downloadAssets: async (_scan, options) => ({ dir: options.dir, files: [], totalBytes: 0, dropped: {}, budget: noBudget, failed: [], manifestPath: "" }),
     });
 
     const ids = ["vector-logo", ...Array.from({ length: 200 }, (_, index) => `made-up-${index}`)];
@@ -197,7 +213,7 @@ describe("download_assets", () => {
     const wired = await connect({
       downloadAssets: async (_scan, options) => {
         seen.push({ dir: options.dir, ...(options.selection?.ids === undefined ? {} : { ids: options.selection.ids }) });
-        return { dir: options.dir, files: [], totalBytes: 0, dropped: {}, failed: [], manifestPath: "" };
+        return { dir: options.dir, files: [], totalBytes: 0, dropped: {}, budget: noBudget, failed: [], manifestPath: "" };
       },
     });
 
@@ -347,6 +363,7 @@ describe("the answer size budget", () => {
         })),
         totalBytes: 60 * 4_300_000,
         dropped: { cap: 89 },
+        budget: noBudget,
         failed: [],
         manifestPath: path.join(options.dir, "manifest.json"),
       }),
