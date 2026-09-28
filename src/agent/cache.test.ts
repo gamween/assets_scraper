@@ -71,11 +71,36 @@ describe("findRecentScan", () => {
     });
     for (const scan of [older, newer, elsewhere]) await saveScan(scan);
 
-    expect((await findRecentScan("https://stripe.com", "local", 3_600_000))?.scanId).toBe("newer");
-    expect((await findRecentScan("stripe.com", "local", 3_600_000))?.scanId).toBe("newer");
-    expect((await findRecentScan("www.stripe.com/", "local", 3_600_000))?.scanId).toBe("newer");
-    expect(await findRecentScan("stripe.com", "local", 30_000)).toBeNull();
-    expect(await findRecentScan("nowhere.example", "local", 3_600_000)).toBeNull();
+    expect((await findRecentScan("https://stripe.com", { kind: "local" }, 3_600_000))?.scanId).toBe("newer");
+    expect((await findRecentScan("stripe.com", { kind: "local" }, 3_600_000))?.scanId).toBe("newer");
+    expect((await findRecentScan("www.stripe.com/", { kind: "local" }, 3_600_000))?.scanId).toBe("newer");
+    expect(await findRecentScan("stripe.com", { kind: "local" }, 30_000)).toBeNull();
+    expect(await findRecentScan("nowhere.example", { kind: "local" }, 3_600_000)).toBeNull();
+  });
+
+  /**
+   * Regression: the lookup only knew "local" against "remote", so every hosted app shared one bucket. A scan of
+   * production then answered a run pointed at staging, which never saw a request, and the answer still said "remote".
+   */
+  it("never answers one hosted app from a scan of another", async () => {
+    vi.stubEnv("XDG_CACHE_HOME", makeTree());
+    const now = new Date().toISOString();
+    const production = testScan({ scanId: "from-production", source: "remote", remote: "https://assets-scraper.vercel.app", scannedAt: now });
+    const local = testScan({ scanId: "from-local", scannedAt: now });
+    for (const scan of [production, local]) await saveScan(scan);
+
+    const found = (remote?: string) => findRecentScan("stripe.com", { kind: "remote", ...(remote === undefined ? {} : { remote }) }, 3_600_000);
+
+    expect((await found("https://assets-scraper.vercel.app"))?.scanId).toBe("from-production");
+    // A trailing slash and a different spelling of the same origin are the same hosted app
+    expect((await found("https://Assets-Scraper.vercel.app/"))?.scanId).toBe("from-production");
+    expect(await found("https://staging.internal.example")).toBeNull();
+    // A remote scan saved before this field existed carries no origin, so it answers no configured remote
+    await saveScan(testScan({ scanId: "originless", source: "remote", scannedAt: now }));
+    expect(await found("https://staging.internal.example")).toBeNull();
+    expect((await found())?.scanId).toBe("originless");
+    // And a local run still reads none of them
+    expect((await findRecentScan("stripe.com", { kind: "local" }, 3_600_000))?.scanId).toBe("from-local");
   });
 
   it("ignores a corrupt file rather than throwing", async () => {
@@ -84,7 +109,7 @@ describe("findRecentScan", () => {
     await saveScan(testScan({ scanId: "good", scannedAt: new Date().toISOString() }));
     fs.writeFileSync(path.join(xdg, "assets-scraper", "broken.json"), "{ not json");
     fs.writeFileSync(path.join(xdg, "assets-scraper", "notes.txt"), "ignored");
-    expect((await findRecentScan("stripe.com", "local", 3_600_000))?.scanId).toBe("good");
+    expect((await findRecentScan("stripe.com", { kind: "local" }, 3_600_000))?.scanId).toBe("good");
   });
 
   it("ignores a file that is valid JSON but not a scan", async () => {
@@ -98,7 +123,7 @@ describe("findRecentScan", () => {
     fs.writeFileSync(path.join(dir, "untitled.json"), JSON.stringify({ ...testScan(), page: { url: "https://stripe.com" } }));
     fs.writeFileSync(path.join(dir, "list.json"), JSON.stringify([1, 2, 3]));
     fs.writeFileSync(path.join(dir, "empty.json"), "null");
-    expect((await findRecentScan("stripe.com", "local", 3_600_000))?.scanId).toBe("good");
+    expect((await findRecentScan("stripe.com", { kind: "local" }, 3_600_000))?.scanId).toBe("good");
     expect(await loadScan("half")).toBeNull();
     expect(await loadScan("untitled")).toBeNull();
     expect(await loadScan("list")).toBeNull();
@@ -130,7 +155,7 @@ describe("findRecentScan", () => {
     for (const name of ["source", "stats", "warnings", "fonts", "palette", "statsless", "fontless", "sourceless", "assetless", "hueless"]) {
       expect(await loadScan(name), name).toBeNull();
     }
-    expect((await findRecentScan("stripe.com", "local", 3_600_000))?.scanId).toBe("good");
+    expect((await findRecentScan("stripe.com", { kind: "local" }, 3_600_000))?.scanId).toBe("good");
   });
 
   it("keeps a field the schema does not know about", async () => {
@@ -149,13 +174,13 @@ describe("findRecentScan", () => {
     const stale = path.join(xdg, "assets-scraper", "stale.json");
     const long = new Date(Date.now() - 7_200_000);
     fs.utimesSync(stale, long, long);
-    expect(await findRecentScan("stripe.com", "local", 3_600_000)).toBeNull();
+    expect(await findRecentScan("stripe.com", { kind: "local" }, 3_600_000)).toBeNull();
     expect((await loadScan("stale"))?.scanId).toBe("stale");
   });
 
   it("returns null when nothing has been cached yet", async () => {
     vi.stubEnv("XDG_CACHE_HOME", path.join(makeTree(), "not-created"));
-    expect(await findRecentScan("stripe.com", "local", 3_600_000)).toBeNull();
+    expect(await findRecentScan("stripe.com", { kind: "local" }, 3_600_000)).toBeNull();
   });
 });
 

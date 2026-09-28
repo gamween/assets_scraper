@@ -276,6 +276,41 @@ describe("scan_page", () => {
     await remote.close();
   });
 
+  /**
+   * Regression: every hosted app shared one cache bucket, so repointing `ASSETS_SCRAPER_REMOTE` between sessions made
+   * the new server answer `scan_page` from a scan of the old one without sending it a request.
+   */
+  it("never answers one hosted app from a scan of another", async () => {
+    const host = "repointed.example";
+    const url = `https://${host}/`;
+    const remoteServer = async (base: string, asked: string[]) =>
+      connect({
+        source: {
+          kind: "remote",
+          remote: base,
+          scan: async (target: string) => {
+            asked.push(target);
+            return { ...otherPage(host), scanId: `scan-from-${new URL(base).hostname}`, source: "remote" as const, remote: base, scannedAt: new Date().toISOString() };
+          },
+          fetchBytes: async () => Buffer.alloc(0),
+        },
+      });
+
+    const askedProduction: string[] = [];
+    const production = await remoteServer("https://assets-scraper.vercel.app", askedProduction);
+    const first = JSON.parse(text(await call(production, "scan_page", { url }))) as { scanId: string };
+    await production.close();
+
+    const askedStaging: string[] = [];
+    const staging = await remoteServer("https://staging.internal.example", askedStaging);
+    const second = JSON.parse(text(await call(staging, "scan_page", { url }))) as { scanId: string };
+    await staging.close();
+
+    expect(first.scanId).toBe("scan-from-assets-scraper.vercel.app");
+    expect(second.scanId).toBe("scan-from-staging.internal.example");
+    expect(askedStaging).toEqual([url]);
+  });
+
   it("refuses something that is not a web address, with the code the API uses", async () => {
     const result = await call(client, "scan_page", { url: "not a web address at all" });
 

@@ -176,11 +176,11 @@ export function openSource(values: Values): ScanSource {
 /**
  * The scan of `url` from the cache when one is fresh (spec 6), otherwise a new one, saved for the next command. Only a
  * scan this source produced counts: `--remote` answering from a local scan would be a claim about the hosted app that
- * the answer does not back.
+ * the answer does not back, and so would a run against one `--remote-url` answering from a scan of another.
  */
 export async function scanPage(url: string, source: ScanSource, values: Values): Promise<{ scan: AgentScan; reused: boolean }> {
   if (values.refresh !== true) {
-    const cached = await findRecentScan(url, source.kind);
+    const cached = await findRecentScan(url, source);
     if (cached) return { scan: cached, reused: true };
   }
   // Progress goes to a terminal only: piped output is read by an agent, which wants the answer and nothing else.

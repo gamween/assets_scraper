@@ -130,10 +130,11 @@ describe("scanPage", () => {
   };
 
   /** A source that answers from memory and records the URLs it was asked for. */
-  const fakeSource = (kind: ScanSource["kind"], scan: AgentScan): ScanSource & { asked: string[] } => {
+  const fakeSource = (kind: ScanSource["kind"], scan: AgentScan, remote?: string): ScanSource & { asked: string[] } => {
     const asked: string[] = [];
     return {
       kind,
+      ...(remote === undefined ? {} : { remote }),
       asked,
       scan: async (url) => {
         asked.push(url);
@@ -174,6 +175,28 @@ describe("scanPage", () => {
     expect(await scanPage("https://stripe.com/", remote, {})).toMatchObject({ reused: true, scan: { scanId: "from-remote" } });
     expect(await scanPage("https://stripe.com/", local, {})).toMatchObject({ reused: true, scan: { scanId: "cached-local" } });
     expect(local.asked).toEqual([]);
+  });
+
+  /**
+   * Regression: the lookup was scoped by the kind of source alone, so every `--remote-url` shared one bucket. A scan of
+   * production answered the next run pointed at staging, which was never asked for one.
+   */
+  it("never answers one --remote-url from a scan of another", async () => {
+    cache();
+    const PRODUCTION = "https://assets-scraper.vercel.app";
+    const STAGING = "https://staging.internal.example";
+    const scanOf = (id: string) => testScan({ scanId: id, source: "remote", scannedAt: new Date().toISOString() });
+    const production = fakeSource("remote", { ...scanOf("from-production"), remote: PRODUCTION }, PRODUCTION);
+    const staging = fakeSource("remote", { ...scanOf("from-staging"), remote: STAGING }, STAGING);
+
+    expect(await scanPage("stripe.com", production, {})).toMatchObject({ reused: false, scan: { scanId: "from-production" } });
+    expect(await scanPage("stripe.com", staging, {})).toMatchObject({ reused: false, scan: { scanId: "from-staging" } });
+
+    // Each hosted app was asked for its own scan, and each now answers from its own
+    expect(production.asked).toEqual(["stripe.com"]);
+    expect(staging.asked).toEqual(["stripe.com"]);
+    expect(await scanPage("stripe.com", production, {})).toMatchObject({ reused: true, scan: { scanId: "from-production" } });
+    expect(await scanPage("stripe.com", staging, {})).toMatchObject({ reused: true, scan: { scanId: "from-staging" } });
   });
 
   it("scans again when --refresh is given, whatever is cached", async () => {
