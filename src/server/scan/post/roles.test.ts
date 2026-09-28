@@ -73,6 +73,23 @@ describe("assignRole", () => {
     expect(role({ logoWall: true, intrinsic: { width: 400, height: 120 } })).toBe("logo");
   });
 
+  // A logo the scanned viewport never showed has no rendered size, so the file is all that is left to measure. A file
+  // is a poor measure of a logo: a 2x or stacked raster passes 120,000 px2 on its own, and the page still treats it
+  // as its logo. Only a picture that has nothing but a word behind it is measured that way.
+  it("keeps a hidden logo in the logos whatever its file measures", () => {
+    const header = logoScore(context({ header: true, homeLink: true, logoWord: true }), false);
+    expect(header).toBeGreaterThanOrEqual(6);
+    // A mobile only header logo, a dark theme variant behind display:none, a 2x raster.
+    expect(role({ logoScore: header, logoWord: true, intrinsic: { width: 1200, height: 300 } })).toBe("site-logo");
+    expect(role({ logoScore: header, logoWord: true, intrinsic: { width: 512, height: 512 } })).toBe("site-logo");
+    // A hidden carousel slide of the customer logo wall.
+    expect(role({ logoWall: true, intrinsic: { width: 800, height: 200 } })).toBe("logo");
+    // Still measured by its file when a word in a class or an alt is the only logo signal.
+    expect(role({ logoScore: 3, logoWord: true, intrinsic: { width: 2460, height: 1060 } })).toBe("image");
+    // Once it renders, the rendered size decides, promotion score or not.
+    expect(role({ logoScore: header, logoWord: true, rendered: { width: 1200, height: 300 }, intrinsic: { width: 1200, height: 300 } })).toBe("image");
+  });
+
   it("does not read the word logo out of a sentence", () => {
     const prose = "Overhead view of a door stoop with a grocery delivery bag whose handles trace the Stripe logo.";
     expect(role({ label: prose, rendered: { width: 300, height: 100 } })).toBe("image");

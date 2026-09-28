@@ -15,6 +15,8 @@ const LOGO_TOP_PX = 160;
  * stripe.com captions three 2460x1060 photographs with a sentence that mentions its own logo.
  */
 const LOGO_MAX_AREA = 120_000;
+/** Score at which position alone makes an asset the site logo. */
+const LOGO_SCORE_PROMOTION = 6;
 const DRAWABLE = /<(?:path|circle|rect|ellipse|line|polyline|polygon|text|image|use)\b/i;
 
 /** An SVG file that only holds `<symbol>` definitions (an external sprite sheet), so it draws nothing by itself. */
@@ -55,11 +57,17 @@ const area = (size?: { width?: number; height?: number }) => (size?.width ?? 0) 
  * How big the asset is where the logo limit is concerned: what it renders at, and for a raster that never rendered,
  * the size of the file. A vector scales, so its intrinsic box says nothing about the page and is not used here: a
  * customer logo wall often ships 1000 unit wide SVGs that render at 142x34, and a carousel keeps some of them hidden.
+ *
+ * The file is only read when nothing but a word says the asset is a logo, which is the case the limit was written for
+ * (a photograph whose alt sentence mentions a logo). A page that treats the asset as a logo, by putting it on a logo
+ * wall or by scoring it at the promotion threshold, is believed even when the asset never rendered: a mobile only
+ * header logo, a dark theme variant behind `display:none` and a 2x raster are all real logos shipped oversized.
  */
 const logoArea = (input: RoleInput): number => {
   const rendered = area(input.rendered);
   if (rendered > 0) return rendered;
-  return input.kind === "svg" ? 0 : area(input.intrinsic);
+  if (input.kind === "svg" || input.logoWall || input.logoScore >= LOGO_SCORE_PROMOTION) return 0;
+  return area(input.intrinsic);
 };
 
 /**
@@ -80,7 +88,7 @@ const hasLogoEvidence = (input: RoleInput): boolean =>
 export function assignRole(input: RoleInput): AssetRole {
   const found = new Set(input.foundIn);
   const oversized = logoArea(input) > LOGO_MAX_AREA;
-  if (found.has("json-ld") || (input.logoScore >= 6 && !oversized)) return "site-logo";
+  if (found.has("json-ld") || (input.logoScore >= LOGO_SCORE_PROMOTION && !oversized)) return "site-logo";
   if (found.has("icon-link") || found.has("meta-icon") || found.has("manifest")) return "favicon";
   if (found.has("og-image") || found.has("twitter-image")) return "social";
   // A logo is small. Past the same limit the site logo answers to, a picture that carries a logo word is a picture.
