@@ -129,6 +129,23 @@ beforeAll(async () => {
       res.writeHead(200, { "content-type": "image/png" });
       res.end(noisePng);
     },
+    // stripe.com in miniature: photographs whose alt sentence names the site logo, next to a real customer logo wall
+    // whose vectors carry no label of their own (spec 8.5, 8.7).
+    "/logos.html": html(`</head><body>
+      <section>
+        <img src="/assets/photo-large.png" width="1232" height="531" alt="Aerial view of a street intersection where the crosswalks form a slanted parallelogram, imitating the Pages logo.">
+        <img src="/assets/hero.jpg" width="1232" height="531" style="display:none" alt="Overhead view of a door stoop with a grocery delivery bag whose handles trace the Pages logo.">
+      </section>
+      <div class="wall" style="display:flex;gap:8px">
+        <svg width="142" height="34" viewBox="0 0 142 34" aria-label="OpenAI"><path d="M0 0h142v34H0z"/></svg>
+        <svg width="142" height="34" viewBox="0 0 142 34"><g><title>Ramp</title><path d="M0 1h142v33H0z"/></g></svg>
+        <a href="/customers/hertz"><svg width="142" height="34" viewBox="0 0 142 34"><path d="M0 2h142v32H0z"/></svg></a>
+        <div aria-label="Show the Substack testimonial"><svg width="142" height="34" viewBox="0 0 142 34"><path d="M0 3h142v31H0z"/></svg></div>
+        <div><svg width="142" height="34" viewBox="0 0 142 34"><defs><linearGradient id="bsport-linear-gradient-a"><stop offset="0" stop-color="#f00"/></linearGradient></defs><path d="M0 4h142v30H0z" fill="url(#bsport-linear-gradient-a)"/></svg></div>
+        <div><svg width="142" height="34" viewBox="0 0 142 34"><path d="M0 5h142v29H0z"/></svg><span>Jackson Hot Yoga</span></div>
+        <div><svg width="142" height="34" viewBox="0 0 142 34"><path d="M0 6h142v28H0z"/></svg></div>
+      </div>
+    </body></html>`),
     "/favicon.ico": (_req, res) => {
       if (faviconMissing) {
         res.writeHead(404, { "content-type": "text/html" });
@@ -166,6 +183,27 @@ describe("assembleAssets on purpose-built pages", () => {
     expect(partner).toMatchObject({ kind: "svg", format: "svg", filename: "pages-partner.svg" });
     expect(partner.original?.url).toBe(`${server.origin}/assets/logo.svg`);
     expect(partner.display?.format).toBe("png");
+  });
+
+  it("keeps photographs out of the logos and names the logo wall from what is around it", async () => {
+    const { assets } = await scan("/logos.html");
+    // Both pictures say "logo" in their alt, both are far too big to be one. The hidden one never rendered, so only
+    // the size of the file says so.
+    const photographs = assets.filter((a) => a.kind === "image" && /view of a/i.test(a.name));
+    expect(photographs).toHaveLength(2);
+    expect(photographs.map((a) => a.role)).toEqual(["image", "image"]);
+
+    const logos = assets.filter((a) => a.role === "logo");
+    expect(logos).toHaveLength(7);
+    const names = logos.map((a) => a.name);
+    expect(names).toContain("OpenAI");                          // aria-label on the element
+    expect(names).toContain("Ramp");                            // <title> nested inside the vector
+    expect(names).toContain("hertz");                           // the customer page its link points at
+    expect(names).toContain("Show the Substack testimonial");   // a short label on an ancestor
+    expect(names).toContain("bsport");                          // the id its own gradient carries
+    expect(names).toContain("Jackson Hot Yoga");                // the caption beside it
+    // Nothing anywhere near the last one, so the generic name stays the last resort.
+    expect(names.filter((n) => /^svg \d+$/.test(n))).toHaveLength(1);
   });
 
   it("adds web manifest icons, drops the ones that fail their probe and still probes /favicon.ico", async () => {

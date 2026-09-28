@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cleanBasename, createFilenamer, displayName, type NameInput } from "./naming";
+import { cleanBasename, createFilenamer, displayName, hrefName, markupName, type NameInput } from "./naming";
 
 const name = (patch: Partial<NameInput>) => displayName({ kind: "image", role: "image", index: 12, siteName: "Linear", ...patch });
 
@@ -27,6 +27,48 @@ describe("displayName", () => {
     const long = name({ label: "word ".repeat(40) });
     expect(long.length).toBeLessThanOrEqual(80);
     expect(long.endsWith(" ")).toBe(false);
+  });
+});
+
+describe("displayName last-resort hints", () => {
+  // stripe.com: the inline logos of the testimonial carousel and of the payment graphics carry no label of their own,
+  // so v1 called them "svg 121" to "svg 124". Each rule below is one place a real name was sitting.
+  it("takes a short ancestor label before anything else", () => {
+    expect(name({ kind: "svg", hints: { ancestorLabel: "Show the Substack testimonial" } })).toBe("Show the Substack testimonial");
+    // The label of the element still wins, and so does the text of its link.
+    expect(name({ kind: "svg", label: "Substack", hints: { ancestorLabel: "Show the Substack testimonial" } })).toBe("Substack");
+    expect(name({ kind: "svg", linkText: "Substack", hints: { ancestorLabel: "Show the Substack testimonial" } })).toBe("Substack");
+    // A file name of its own is more specific than the region around it, so a raster keeps it.
+    expect(name({ url: "https://stripe.com/img/hertz-story.png", hints: { ancestorLabel: "Customers" } })).toBe("hertz-story");
+  });
+
+  it("names a logo after the customer page its link points at", () => {
+    expect(name({ kind: "svg", hints: { linkHref: "https://stripe.com/customers/hertz" } })).toBe("hertz");
+    expect(name({ kind: "svg", hints: { linkHref: "https://stripe.com/fr-fr/customers/le-monde/" } })).toBe("le monde");
+    // A locale, a container or a page number names nothing, so the chain keeps looking up the path.
+    expect(name({ kind: "svg", hints: { linkHref: "https://stripe.com/customers/en-gb" } })).toBe("customers");
+    expect(name({ kind: "svg", hints: { linkHref: "https://stripe.com/" } })).toBe("svg 12");
+    expect(hrefName("mailto:sales@stripe.com")).toBeUndefined();
+    expect(hrefName(undefined)).toBeUndefined();
+  });
+
+  it("reads the id a sprite reference or a hand built vector carries", () => {
+    expect(markupName('<svg><use href="#visa-logo"/></svg>')).toBe("visa");
+    expect(markupName('<svg><linearGradient id="bsport-linear-gradient-a-:R4nrnmr6l6:"/><path/></svg>')).toBe("bsport");
+    expect(markupName('<svg><radialGradient id="connect-payment-card-graphic-daybreak-yoga-logo-gradient"/></svg>')).toBe("connect payment card daybreak yoga");
+    // Ids a drawing tool wrote name nothing.
+    expect(markupName('<svg><path id="a"/><clipPath id="clip0_1_2"/></svg>')).toBeUndefined();
+    expect(markupName('<svg><linearGradient id="paint0_linear_23_1"/></svg>')).toBeUndefined();
+    expect(markupName("<svg><path d=\"M0 0h8v8z\"/></svg>")).toBeUndefined();
+    expect(markupName(undefined)).toBeUndefined();
+    expect(name({ kind: "svg", markup: '<svg><use href="#klarna"/></svg>' })).toBe("klarna");
+  });
+
+  it("falls back to the caption beside the element, then to the generic name", () => {
+    expect(name({ kind: "svg", hints: { nearbyText: "Jackson Hot Yoga" } })).toBe("Jackson Hot Yoga");
+    // Everything closer wins over it.
+    expect(name({ kind: "svg", markup: '<svg><use href="#klarna"/></svg>', hints: { nearbyText: "Jackson Hot Yoga" } })).toBe("klarna");
+    expect(name({ kind: "svg", hints: {} })).toBe("svg 12");
   });
 });
 

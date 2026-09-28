@@ -1,4 +1,5 @@
 import type { AssetKind, AssetRole } from "@/lib/contract";
+import type { NameHints } from "../types";
 import { originalCandidates } from "./cdn";
 
 /** Display names and filenames (spec 8.7). */
@@ -16,6 +17,10 @@ export interface NameInput {
   jsonLdLogo?: boolean;
   linkText?: string;
   url?: string;               // http(s) URL of the file, for the basename
+  /** The collector's last-resort places: the ancestor link, an ancestor label, the caption beside the element. */
+  hints?: NameHints;
+  /** The markup of an inline SVG, for the id a sprite reference or a gradient carries. */
+  markup?: string;
 }
 
 /** Trimmed single-line text without control characters, capped at a word boundary, or undefined when unusable. */
@@ -50,6 +55,63 @@ export function cleanBasename(url: string): string | undefined {
   return usable(base);
 }
 
+/** Path segments that say what the page is about rather than which asset this is. */
+const GENERIC_SEGMENT = /^(?:[a-z]{2}(?:[-_][a-z]{2,4})?|index|home|default|page|pages|assets?|images?|img|media|static|www|v?\d+)$/i;
+
+/**
+ * The part of an ancestor link that names the asset: the last path segment that is not a locale, a page number or a
+ * plain container. stripe.com puts its customer logos inside `/customers/hertz`, so the link names the logo the
+ * element itself leaves unnamed.
+ */
+export function hrefName(href: string | undefined): string | undefined {
+  if (!href || !/^https?:/i.test(href)) return undefined;
+  let segments: string[];
+  try {
+    segments = new URL(href).pathname.split("/").filter(Boolean).map((part) => decodeURIComponent(part));
+  } catch {
+    return undefined;
+  }
+  for (let i = segments.length - 1; i >= 0; i--) {
+    const segment = segments[i].replace(/\.[a-z0-9]{1,5}$/i, "");
+    if (!segment || GENERIC_SEGMENT.test(segment)) continue;
+    return usable(segment.replace(/[-_]+/g, " "));
+  }
+  return undefined;
+}
+
+/** React and bundler suffixes stuck on an otherwise readable id: `-:R4nrnmr6l6:`, `__abc123`. */
+const ID_NOISE = /(?:[-_]{1,2}:[^:]*:|[-_]{1,2}[0-9a-f]{6,})$/i;
+/**
+ * Words a drawing tool or a bundler writes, which say how the vector is built rather than what it shows: an id made of
+ * these alone (`clip0_1_2`, `paint0_linear_23_1`, `__lottie_element_1`) names nothing.
+ */
+const ID_FILLER = new Set([
+  "clip", "clippath", "mask", "filter", "paint", "pattern", "gradient", "linear", "radial", "stop", "defs", "use",
+  "path", "fill", "stroke", "shape", "vector", "frame", "group", "layer", "element", "lottie", "uuid", "id", "svg",
+  "graphic", "icon", "image", "img", "logo", "logotype", "wordmark", "mark", "brand",
+]);
+
+/**
+ * The name an inline SVG carries in its own markup: the id of the sprite symbol it draws, else the first id inside it,
+ * which on a hand built logo is usually the brand (`bsport-linear-gradient-a`, `daybreak-yoga-logo-gradient`).
+ */
+export function markupName(markup: string | undefined): string | undefined {
+  if (!markup) return undefined;
+  const reference = /(?:xlink:)?href="#([^"]+)"/i.exec(markup)?.[1];
+  const ids = reference ? [reference] : [...markup.matchAll(/\bid="([^"]+)"/gi)].map((match) => match[1]);
+  for (const id of ids) {
+    const words = id
+      .replace(ID_NOISE, "")
+      .replace(/([a-z\d])(?=[A-Z])/g, "$1-")
+      .split(/[-_\s]+/)
+      .map((word) => word.replace(/\d+$/, "").toLowerCase())
+      .filter((word) => word.length > 1 && !ID_FILLER.has(word));
+    const name = usable(words.join(" "));
+    if (name) return name;
+  }
+  return undefined;
+}
+
 const ROLE_DEFAULT: Partial<Record<AssetRole, string>> = {
   "site-logo": "logo",
   favicon: "favicon",
@@ -65,6 +127,12 @@ export function displayName(input: NameInput): string {
     roleDefault ??
     usable(input.linkText) ??
     (input.url ? cleanBasename(input.url) : undefined) ??
+    // Nothing on the element itself: look around it, closest and most deliberate first. This is what an inline SVG
+    // falls back on, and it is the difference between "Show the Substack testimonial" and "svg 123".
+    usable(input.hints?.ancestorLabel) ??
+    hrefName(input.hints?.linkHref) ??
+    markupName(input.markup) ??
+    usable(input.hints?.nearbyText) ??
     `${input.kind === "svg" ? "svg" : "image"} ${input.index}`
   );
 }

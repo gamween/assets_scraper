@@ -18,6 +18,20 @@ export interface CandidateContext {
   iframe: boolean;
 }
 
+/**
+ * Where a name can still come from when the element carries no label of its own (spec 8.7). Filled in by the
+ * collector, read by `displayName` after the file name of the URL, so it only ever names an asset that has no usable
+ * one: an inline SVG, a sprite symbol, a data URL.
+ */
+export interface NameHints {
+  /** Absolute href of the closest ancestor link, so `/customers/hertz` can name the logo inside it. */
+  linkHref?: string;
+  /** A short `aria-label` or `title` on an ancestor above the element and its link. Prose is left out. */
+  ancestorLabel?: string;
+  /** The text of the closest ancestor that holds any, when it is short enough to be a caption rather than a story. */
+  nearbyText?: string;
+}
+
 export interface RawCandidate {
   url: string;                              // absolute http(s), data: or blob: URL
   group: number;                            // element group (src, srcset, picture, image-set)
@@ -33,6 +47,7 @@ export interface RawCandidate {
   naturalHeight?: number;
   label?: string;                           // aria-label, title, alt, data-framer-name
   linkText?: string;
+  hints?: NameHints;
   context: CandidateContext;
   declaredOnly: boolean;
 }
@@ -47,6 +62,7 @@ export interface RawSvg {
   rect?: Rect;
   label?: string;
   linkText?: string;
+  hints?: NameHints;
   context: CandidateContext;
   usedCount: number;
   hasLiveText: boolean;

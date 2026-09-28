@@ -3,6 +3,7 @@ import { OUTPUT_LISTS } from "./lists";
 import type {
   CandidateContext,
   CollectorOptions,
+  NameHints,
   RawCandidate,
   RawCollectorOutput,
   RawFontFaceRule,
@@ -226,6 +227,7 @@ interface ElementInfo {
   rect?: Rect;
   label?: string;
   linkText?: string;
+  hints?: NameHints;
 }
 
 async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
@@ -330,13 +332,21 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
       return false;
     }
   };
+  /**
+   * A written label long enough to be a sentence describes the picture, it does not name it: stripe.com captions a
+   * 2460x1060 photograph "Aerial view of a street intersection where the crosswalks form a slanted parallelogram,
+   * imitating the Stripe logo.", and the logo and site words in there are about the scene. Class names, ids and test
+   * handles are never prose, so they are always read.
+   */
+  const PROSE_LABEL_CHARS = 60;
+  const name = (value: string | null) => (value && value.length <= PROSE_LABEL_CHARS ? value : "");
   const attributeHaystack = (el: Element) =>
     [
       typeof (el as HTMLElement).className === "string" ? (el as HTMLElement).className : (el.getAttribute("class") ?? ""),
       el.id,
-      el.getAttribute("aria-label"),
-      el.getAttribute("title"),
-      el.getAttribute("alt"),
+      name(el.getAttribute("aria-label")),
+      name(el.getAttribute("title")),
+      name(el.getAttribute("alt")),
       el.getAttribute("data-framer-name"),
       el.getAttribute("data-testid"),
       el.getAttribute("data-name"),
@@ -346,7 +356,8 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
 
   const labelOf = (el: Element): string | undefined => {
     const link = composedClosest(el, "a[href]");
-    const title = el.localName === "svg" ? el.querySelector(":scope > title")?.textContent : null;
+    // Anywhere in the vector, not only as its first child: an icon set often wraps the drawing in a <g> first.
+    const title = el.localName === "svg" ? el.querySelector("title")?.textContent : null;
     const framer = composedClosest(el, "[data-framer-name]");
     for (const value of [
       el.getAttribute("aria-label"),
@@ -372,6 +383,61 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
     });
     for (let node = walker.nextNode(); node && text.length < 200; node = walker.nextNode()) text += ` ${node.nodeValue ?? ""}`;
     return collapse(text) || undefined;
+  };
+
+  /** Short enough to be a caption rather than a paragraph. A logo sits beside a name, not beside a story. */
+  const NEARBY_TEXT_CHARS = 40;
+  const NEARBY_TEXT_WORDS = 6;
+  const HINT_DEPTH = 5;
+
+  /**
+   * The text of the closest ancestor that holds any, when it reads as a caption. Nothing from a vector or a script,
+   * and nothing from an ancestor that holds another picture: a logo wall shares one container, and the caption of a
+   * neighbour is not this logo's name.
+   */
+  const nearbyTextOf = (el: Element): string | undefined => {
+    let node = composedParent(el);
+    for (let depth = 0; node && depth < HINT_DEPTH; depth++, node = composedParent(node)) {
+      if (node.querySelectorAll("svg:not(svg svg), img, picture, video, canvas").length > 1) return undefined;
+      const walker = node.ownerDocument.createTreeWalker(node, NodeFilter.SHOW_TEXT, {
+        acceptNode: (text) =>
+          text.parentElement?.closest("svg,script,style,noscript,template") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT,
+      });
+      let text = "";
+      for (let found = walker.nextNode(); found && text.length < 200; found = walker.nextNode()) text += ` ${found.nodeValue ?? ""}`;
+      const caption = collapse(text, NEARBY_TEXT_CHARS + 1);
+      if (!caption) continue;
+      return caption.length <= NEARBY_TEXT_CHARS && caption.split(" ").length <= NEARBY_TEXT_WORDS ? caption : undefined;
+    }
+    return undefined;
+  };
+
+  /** A short `aria-label` or `title` on an ancestor: the button or region the element belongs to often names it. */
+  const ancestorLabelOf = (el: Element, own: string | undefined): string | undefined => {
+    let node = composedParent(el);
+    for (let depth = 0; node && depth < HINT_DEPTH; depth++, node = composedParent(node)) {
+      for (const value of [node.getAttribute("aria-label"), node.getAttribute("title")]) {
+        const text = collapse(name(value));
+        if (text && text !== own) return text;
+      }
+    }
+    return undefined;
+  };
+
+  const hintsOf = (el: Element, link: Element | null, label: string | undefined): NameHints | undefined => {
+    let linkHref: string | undefined;
+    const href = link?.getAttribute("href");
+    if (href) {
+      try {
+        linkHref = collapse(new URL(href, el.baseURI).href, MAX_PAGE_URL_CHARS);
+      } catch {
+        linkHref = undefined;
+      }
+    }
+    const ancestorLabel = ancestorLabelOf(el, label);
+    const nearbyText = nearbyTextOf(el);
+    if (!linkHref && !ancestorLabel && !nearbyText) return undefined;
+    return { linkHref, ancestorLabel, nearbyText };
   };
 
   const infoCache = new Map<Element, ElementInfo>();
@@ -414,6 +480,7 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
         if (similar >= 4) logoWall = true;
       }
     }
+    const label = labelOf(el);
     const info: ElementInfo = {
       context: {
         header: !!composedClosest(el, "header,[role=banner]"),
@@ -428,8 +495,9 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
       },
       visible,
       rect: r.width > 0 && r.height > 0 ? { x, y, width: Math.round(r.width), height: Math.round(r.height) } : undefined,
-      label: labelOf(el),
+      label,
       linkText: link ? linkTextOf(el) : undefined,
+      hints: hintsOf(el, link, label),
     };
     infoCache.set(el, info);
     return info;
@@ -486,6 +554,7 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
       ...(patch.naturalWidth ? { naturalWidth: patch.naturalWidth, naturalHeight: patch.naturalHeight } : {}),
       ...(info.label ? { label: info.label } : {}),
       ...(info.linkText ? { linkText: info.linkText } : {}),
+      ...(info.hints ? { hints: info.hints } : {}),
       context: info.context,
       declaredOnly: false,
     });
@@ -1127,7 +1196,7 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
         }
         const info = elementInfo(svg);
         const seen = rawHashes.get(raw);
-        const base = { source: "inline" as const, referenced: true, order, visible: info.visible, label: info.label, linkText: info.linkText, context: { ...info.context }, usedCount: 1 };
+        const base = { source: "inline" as const, referenced: true, order, visible: info.visible, label: info.label, linkText: info.linkText, hints: info.hints, context: { ...info.context }, usedCount: 1 };
         if (seen && seen.count >= MAX_SAME_MARKUP_NORMALIZATIONS) {
           const existing = svgs.get(seen.hash);
           if (existing) addSvg({ ...existing, ...base, markup: existing.markup, hash: seen.hash, rect: info.rect, hasLiveText: existing.hasLiveText, elementCount: existing.elementCount });
