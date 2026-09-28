@@ -419,7 +419,15 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
    * An ancestor that holds another picture speaks for the group, not for this element: a logo wall, a nav and a
    * customer strip each share one container, so whatever names it would name every picture under it the same way.
    */
-  const holdsAnotherPicture = (node: Element) => node.querySelectorAll("svg:not(svg svg), img, picture, video, canvas").length > 1;
+  const pictureCache = new Map<Element, boolean>();
+  const holdsAnotherPicture = (node: Element): boolean => {
+    const cached = pictureCache.get(node);
+    if (cached !== undefined) return cached;
+    // Every picture on a wall asks about the same containers, twice each, so the answer is kept.
+    const several = node.querySelectorAll("svg:not(svg svg), img, picture, video, canvas").length > 1;
+    pictureCache.set(node, several);
+    return several;
+  };
 
   /**
    * The text of the closest ancestor that holds any, when it reads as a caption. Nothing from a vector or a script,
