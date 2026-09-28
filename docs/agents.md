@@ -35,12 +35,14 @@ Tools, all returning compact JSON, never bytes:
 | --- | --- | --- |
 | `scan_page` | `url`, optional `refresh` | `scanId`, the page, counts per kind, the palette, one row per font family, the logos, and how many other assets there are |
 | `list_assets` | `scanId`, optional `kind`, `role`, `minLongSide`, `nameContains`, `limit` (40), `offset` | Compact rows: id, name, kind, role, dimensions, bytes |
-| `download_assets` | `scanId`, optional `ids`, `profile`, filters, `dest` | The written paths, total bytes, the drop reasons, the destination |
+| `download_assets` | `scanId`, optional `ids`, `profile`, filters, `maxTotalBytes`, `maxFileBytes`, `dest` | The written paths, total bytes, the drop reasons, the destination |
 | `read_svg` | `scanId`, `id` | `{ id, name, filename, markup }`, the markup as text, refused past 256 KB |
 | `get_palette` | `scanId` | The palette hexes with their roles |
 | `install_fonts` | `scanId`, optional `families` | Installed families with their licence and paths, and what could not be installed and why |
 | `list_installed_fonts` | | What this tool installed, with dates and sources |
 | `uninstall_fonts` | `families` | What was removed |
+
+A cached scan is stamped with the build that produced it, the package version plus a digest of the bundles in `dist/`, and only that build reads it back. A rebuild or an upgrade therefore starts from a cold cache rather than serving an hour of results from the code you just replaced. `ASSETS_SCRAPER_BUILD_ID` names the identity yourself when you need two runs to share, or not share, a cache.
 
 A scan is cached in `~/.cache/assets-scraper/<scanId>.json` for one hour, so `download_assets` and `install_fonts` never rescan. `scan_page` on the same URL inside the hour reuses the cache unless `refresh` is true. Reuse is scoped to where the scan ran: a run only reuses a scan of the same source, which for a remote run means the same hosted app (`--remote-url`, `ASSETS_SCRAPER_REMOTE`). A local run never reads a remote scan, a remote run never reads a local one, and a run against staging never reads a scan of production. A second remote run of the same URL inside the hour is still answered from the cache rather than by the hosted app, so use `refresh` when the answer has to be a new scan. Reading a scan back needs no token: an MCP server started with `ASSETS_SCRAPER_REMOTE` set and `ASSETS_SCRAPER_TOKEN` unset still answers `scan_page` from a fresh scan of that same app, and asks for the token on the call that has to run a scan.
 
@@ -56,7 +58,8 @@ node dist/cli.mjs scan stripe.com
 ```
 assets-scraper scan <url> [--json] [--remote]
 assets-scraper get <url> [--out DIR] [--profile deck|all] [--kind svg,image] [--role logo]
-                         [--min-long-side 600] [--max 60] [--name-contains x] [--json] [--remote]
+                         [--min-long-side 600] [--max 60] [--max-bytes 26214400] [--max-file-bytes 8388608]
+                         [--name-contains x] [--json] [--remote]
 assets-scraper fonts install <url> [--families "Inter,Roboto"] [--json]
 assets-scraper fonts list [--json]
 assets-scraper fonts uninstall <family> [--json]
@@ -134,6 +137,8 @@ Agent limits live in `src/agent/limits.ts` and each one is overridden by the SCR
 | --- | --- |
 | `minLongSide` | 600 px |
 | `maxFiles` | 60 files |
+| `maxTotalBytes` | 25 MB per download |
+| `maxFileBytes` | 8 MB per file, deck profile |
 | `nearDuplicateDistance` | 20 |
 | `scanCacheTtlMs` | 1 hour |
 | `downloadConcurrency` | 6 |

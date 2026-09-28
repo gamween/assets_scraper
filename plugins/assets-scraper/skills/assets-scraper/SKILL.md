@@ -44,9 +44,11 @@ A scan is cached for one hour, so `list_assets`, `download_assets` and `install_
 
 ## What a download takes
 
-The `deck` profile, in order: icons (48 px and under) and sprite symbols out, only the largest favicon kept, rasters whose longest side is under 600 px out unless they are a logo or a favicon, the raster dropped when an SVG of the same name exists, exact and near duplicates collapsed to one file, then a cap of 60 files sorted by relevance. SVG is never dropped for size.
+The `deck` profile, in order: icons (48 px and under) and sprite symbols out, only the largest favicon kept, rasters whose longest side is under 600 px out unless they are a logo or a favicon, files over 8 MB out, the raster dropped when an SVG of the same name exists, exact and near duplicates collapsed to one file, then a cap of 60 files sorted by relevance and a budget of 25 MB spent on the best scoring of them. SVG is never dropped for size.
 
-Every drop is counted by reason (`icon`, `small`, `duplicate`, `near-duplicate`, `vector-preferred`, `extra-favicon`, `filter`, `cap`), so you can say why a file is not there. When the user really wants everything, pass `profile: "all"`, and when they want one specific file, pass its `ids`.
+Every drop is counted by reason (`icon`, `small`, `duplicate`, `near-duplicate`, `vector-preferred`, `extra-favicon`, `filter`, `cap`, `too-large`, `over-budget`), so you can say why a file is not there. When the user really wants everything, pass `profile: "all"`, and when they want one specific file, pass its `ids`.
+
+A download the byte budget cut reports `over-budget` and `too-large`. Raise `maxTotalBytes` or `maxFileBytes` when the user asked for the big files, or pass 0 to take the selection whatever it weighs. An asset named by `ids` is written whatever its size, so a 30 MB hero the user asked for by id is never refused.
 
 The cap gives each kind its share of the 60 files, so a page whose vectors outrank its photos still yields both. `download_assets` answers the paths relative to `dir` plus the counts, and the full row per file (source URL included) is in `manifest.json` on disk.
 
