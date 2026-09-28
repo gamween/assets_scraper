@@ -56,11 +56,11 @@ The complaint this solves: the same image comes back several times, and many ima
 `selectAssets(assets, options)` with `profile: "deck" | "all"`, applied in this order:
 
 1. **Role filter.** `deck` drops `icon` (longest rendered side <= 48 px) and `sprite-symbol`, keeps `site-logo`, `logo`, `social`, `illustration`, `image`, and keeps only the single largest `favicon`.
-2. **Size gate.** A raster whose longest side is under `minLongSide` (default 600 px) is dropped unless its role is `site-logo`, `logo` or `favicon`. SVG has no size gate (it is vector and tiny).
+2. **Size gate.** A raster whose longest side is under `minLongSide` (default 600 px) is dropped unless its role is `site-logo`, `logo` or `favicon`. SVG has no size gate (it is vector and tiny). The exemption holds wherever the number came from, so a caller passing `minLongSide` gets the same gate rather than a plain filter; `profile: "all"` applies the gate only when the caller names a number.
 3. **Prefer vector.** When an SVG and a raster normalize to the same name (extension, `@2x`, `-1024x512`, `_large` and similar suffixes removed), the raster is dropped.
 4. **Exact duplicates.** Same SHA-1 of the downloaded bytes: keep one, preferring SVG, then the larger pixel area, then the format order `svg`, `png`, `webp`, `avif`, `jpg`, `gif`.
-5. **Near duplicates.** A 64 bit dHash (sharp, 9x8 greyscale) per raster; assets within a Hamming distance of 5 are one group; keep the same preference order as above. This is what removes a logo that appears as `logo.png`, `logo@2x.png` and `logo-dark.png` variants of the same visual, and the same photo served by two CDNs.
-6. **Cap.** `max` (default 60) applied after sorting by relevance, so the useful assets survive.
+5. **Near duplicates.** A perceptual fingerprint per raster: alpha flattened onto white, a 17x16 greyscale field for a 256 bit difference hash, plus the aspect ratio and a 64x64 greyscale thumbnail. Two rasters are one group when the hashes are within a Hamming distance of 20, the aspect ratios agree to within 15 percent and the thumbnails agree (root mean square difference at most 3 of 255); a hash with too little horizontal contrast to carry a visual groups with nothing. Keep the same preference order as above. This is what removes a logo that appears as `logo.png`, `logo@2x.png` and `logo-dark.png` variants of the same visual, and the same photo served by two CDNs, without merging two different wordmarks or two cards cut from one template: a 64 bit hash of a graphic set 4 to 6 of its bits, so unrelated marks landed inside any useful distance, and dropping alpha rather than flattening it made every transparent mark the same empty field. The hash only says which pairs are worth comparing, never which pairs are the same picture: sibling assets from one template sit 2 to 5 bits apart, closer than a genuine resize, so the thumbnail comparison is the whole answer and it is read at 64x64 because 16x16 (duplicates up to 4.60, distinct siblings from 3.33) and 32x32 (6.70 against 4.24) both overlap while 64x64 (1.52 against 5.38) does not. The gate sits below the distinct band, so a harsh re-encode is kept as a second file rather than a distinct asset being merged away.
+6. **Cap.** `max` (default 60) applied after sorting by relevance, so the useful assets survive. It applies to an explicit `ids` list too: those ids win over every filter and every profile rule, but the cap is the only guard on how many files one download writes, and on `download_assets` the ids come straight from an agent. The excess is reported under `cap`, and a caller that means to take more says so with `max`.
 
 Every dropped asset is counted by reason and reported (`dropped: { icon: 12, small: 31, duplicate: 9, vector-preferred: 4, cap: 0 }`), so an agent can say why it did not take something, and `profile: "all"` plus explicit filters override the whole thing.
 
@@ -92,6 +92,8 @@ Tools, all returning compact JSON:
 | `install_fonts` | `scanId`, optional `families` | Installed families with their licence, the paths, and what could not be installed and why |
 | `list_installed_fonts` | | What this tool installed, with dates and sources |
 | `uninstall_fonts` | `families` | What was removed |
+
+The `scan_page` summary is held to 4 KB: every string it carries is cut and every list capped, and when a page at all those caps at once would still be wider than that (8 logos, 12 font families and 12 swatches with every name at its cap measure 4701 bytes together) it gives up rows, warnings first then fonts, logos and swatches, rather than the budget. The scan id, the counts and the page always survive, so an agent can still ask for everything else.
 
 A scan is cached in `~/.cache/assets-scraper/<scanId>.json` for one hour, so `download_assets` never rescans. `scan_page` on the same URL inside the hour reuses the cache unless `refresh` is true.
 
@@ -129,7 +131,7 @@ Install: `claude plugin marketplace add ~/Development/tools/assets_scraper` then
 ## 10. Security
 
 - Local mode inherits every v1 guard: the scan engine runs Chromium behind the egress proxy, and every fetch goes through `safeFetch`.
-- The CLI and MCP write only inside the resolved destination directory: the path is resolved, symlinks are refused, and anything outside the project root or the fallback directory is an error.
+- The CLI and MCP write only inside the resolved destination directory: the path is resolved, symlinks are refused, and anything outside the project root or the fallback directory is an error. A destination that came from an agent is held to the narrower rule: it must be inside `<project root>/scrap` (the fallback directory when there is no project), so an agent-supplied path cannot drop scraped files into the source tree.
 - Font installs write only into the user font directory, only files this tool created, and are reversible through the manifest.
 - Agent tokens are compared in constant time, are never logged, and live only in env.
 - The ZIP endpoint applies the v1 asset caps, the proxy byte budget and the content-type allowlist.

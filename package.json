@@ -6,6 +6,7 @@
     "build:inpage": "node scripts/build-inpage.mjs",
     "dev": "node scripts/build-inpage.mjs --watch next dev",
     "build": "pnpm build:inpage && next build",
+    "build:agent": "pnpm build:inpage && node scripts/build-agent.mjs",
     "start": "next start",
     "lint": "eslint",
     "typecheck": "pnpm build:inpage && next typegen && tsc --noEmit",
