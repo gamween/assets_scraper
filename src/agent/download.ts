@@ -173,6 +173,7 @@ export async function downloadAssets(scan: AgentScan, source: ScanSource, option
   fs.mkdirSync(destination.dir, { recursive: true });
   const dir = fs.realpathSync(destination.dir);
   const profile = options.profile ?? "deck";
+  // `DownloadOptions` extends `SelectionOptions`, so the download-only keys ride along and `selectAssets` ignores them.
   const selection: SelectionOptions = { ...options, profile };
 
   // Pass one: everything the name and size rules can decide without spending a byte.
