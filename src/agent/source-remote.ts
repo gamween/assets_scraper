@@ -176,7 +176,9 @@ export function createRemoteScanSource(options: ScanSourceOptions = {}, deps: Re
         }
       }
 
-      if (!target.proxy) throw new Error(`no URL the hosted app can proxy for ${target.url || "this file"}`);
+      // The proxy is a path on the hosted app (`/api/asset?...`), which is what makes it safe to read with a plain
+      // fetch. Anything else is not a path this source knows how to call.
+      if (!target.proxy.startsWith("/")) throw new Error(`no URL the hosted app can proxy for ${target.url || "this file"}`);
       const response = await fromHost(target.proxy, { method: "GET" }, limits.proxyTimeoutMs, fetchOptions?.signal);
       if (!response.ok) throw new Error(`HTTP ${response.status} from the hosted proxy for ${target.url || target.proxy}`);
       const bytes = Buffer.from(await response.arrayBuffer());

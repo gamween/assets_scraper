@@ -8,7 +8,7 @@ import { ScanFailure } from "@/server/errors";
 import { findRecentScan, saveScan } from "./cache";
 import { downloadAssets } from "./download";
 import { createLocalScanSource } from "./source-local";
-import { RemoteScanError, createRemoteScanSource } from "./source-remote";
+import { createRemoteScanSource } from "./source-remote";
 import { summarize } from "./summary";
 import type { AgentScan, DownloadResult, DropReason, ScanSource, ScanSummary, SelectionOptions, SelectionProfile } from "./types";
 
@@ -275,12 +275,7 @@ export async function main(argv: string[]): Promise<number> {
 
 /** One line, never a stack: a scan failure keeps its code, so an agent can read what went wrong. */
 function report(error: unknown): number {
-  const message =
-    error instanceof ScanFailure
-      ? `${error.code}: ${error.message}`
-      : error instanceof RemoteScanError || error instanceof Error
-        ? error.message
-        : String(error);
+  const message = error instanceof ScanFailure ? `${error.code}: ${error.message}` : error instanceof Error ? error.message : String(error);
   process.stderr.write(`assets-scraper: ${message.replace(/\s+/g, " ").trim()}\n`);
   return 1;
 }
