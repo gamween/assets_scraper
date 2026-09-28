@@ -1,0 +1,21 @@
+{
+  "name": "assets-scraper",
+  "description": "Scan a web page for its SVGs, images, fonts and brand palette, download the usable ones into scrap/ inside the current project, and install the page fonts with their licence.",
+  "version": "0.1.0",
+  "author": {
+    "name": "gamween",
+    "url": "https://github.com/gamween"
+  },
+  "repository": "https://github.com/gamween/assets_scraper",
+  "keywords": ["assets", "svg", "fonts", "palette", "branding"],
+  "mcpServers": {
+    "assets-scraper": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/../../dist/mcp.mjs"],
+      "env": {
+        "ASSETS_SCRAPER_REMOTE": "${ASSETS_SCRAPER_REMOTE:-}",
+        "ASSETS_SCRAPER_TOKEN": "${ASSETS_SCRAPER_TOKEN:-}"
+      }
+    }
+  }
+}
