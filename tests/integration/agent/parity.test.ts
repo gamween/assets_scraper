@@ -91,6 +91,10 @@ beforeAll(async () => {
   fs.writeFileSync(path.join(project, "package.json"), "{}");
   setEnv("XDG_CACHE_HOME", path.join(home, "cache"));
   setEnv("AGENT_TOKENS", TOKEN);
+  // The cache only answers the build that wrote it, and this test is two builds: the sources vitest loads and the
+  // bundle the subprocess runs. Naming one identity is what lets them share the one scan, which is the point here:
+  // what is under test is the three adapters, not the cache.
+  setEnv("ASSETS_SCRAPER_BUILD_ID", "parity");
   server = await serveAssetsFixture();
   await execFileAsync(process.execPath, [path.join(ROOT, "scripts/build-agent.mjs")], { cwd: ROOT });
 
@@ -217,6 +221,41 @@ describe("the selection the three paths write", () => {
     for (const name of relative(fromCli)) expect(name.startsWith("svg/")).toBe(true);
     expect(fromMcpServer.dropped).toEqual(fromCli.dropped);
     expect(manifest.dropped).toEqual(fromCli.dropped);
+  }, 120_000);
+
+  /**
+   * The byte budget, which is the rule with three chances to be implemented twice: the CLI writes to disk, the MCP tool
+   * writes through the same core, and the hosted archive fetches its own bytes. One `selectAssets` decides for all
+   * three, and this is the test that says so.
+   */
+  it("spends the same byte budget on the same files", async () => {
+    const whole = JSON.parse((await cli(["get", `${server.origin}/`, "--out", path.join(home, "cli-whole"), "--max-bytes", "0", "--json"])).stdout) as DownloadResult;
+    expect(whole.files.length).toBeGreaterThan(2);
+    const budget = whole.files[0].bytes + whole.files[1].bytes;
+
+    const out = path.join(home, "cli-budget");
+    const fromCli = JSON.parse(
+      (await cli(["get", `${server.origin}/`, "--out", out, "--max-bytes", String(budget), "--json"])).stdout,
+    ) as DownloadResult;
+    const fromMcpServer = fromMcp<McpDownload>(
+      await mcp("download_assets", { scanId: scan.scanId, maxTotalBytes: budget, dest: path.join(project, "scrap", "budget") }),
+    );
+    const { manifest } = await zipEntries(`&maxBytes=${budget}`);
+
+    expect(fromCli.files.length).toBeGreaterThan(0);
+    expect(fromCli.files.length).toBeLessThan(whole.files.length);
+    expect(fromCli.totalBytes).toBeLessThanOrEqual(budget);
+    expect(fromCli.dropped["over-budget"]).toBeGreaterThan(0);
+
+    const ids = fromCli.files.map((file) => file.id);
+    expect(fromMcpServer.files.map((file) => file.id)).toEqual(ids);
+    expect(manifest.files.map((file) => file.id)).toEqual(ids);
+    expect(fromMcpServer.totalBytes).toBe(fromCli.totalBytes);
+    expect(manifest.totalBytes).toBe(fromCli.totalBytes);
+    expect(fromMcpServer.dropped).toEqual(fromCli.dropped);
+    expect(manifest.dropped).toEqual(fromCli.dropped);
+    expect(manifest.budget).toEqual({ maxTotalBytes: budget, maxFileBytes: 8 * 1024 * 1024, keptBytes: fromCli.totalBytes });
+    expect(JSON.parse(fs.readFileSync(path.join(out, "manifest.json"), "utf8")).budget).toEqual(manifest.budget);
   }, 120_000);
 });
 
