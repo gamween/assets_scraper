@@ -60,6 +60,13 @@ describe("displayName last-resort hints", () => {
     expect(markupName('<svg><radialGradient id="connect-payment-card-graphic-daybreak-yoga-logo-gradient"/></svg>')).toBe("connect payment card daybreak yoga");
     // Ids a drawing tool wrote name nothing.
     expect(markupName('<svg><path id="a"/><clipPath id="clip0_1_2"/></svg>')).toBeUndefined();
+    // Illustrator and Sketch keep the default layer name of the language the artist worked in, and their shape names
+    // say what was drawn: figma.com serves a customer logo as id="Capa_1", and on iberia.com and sncf-connect.com the
+    // first id of a vector is "Rectangle" or "Bouton". "site-rectangle.svg" is worse than "svg 49".
+    for (const id of ["Capa_1", "Calque_1", "Ebene_1", "Livello_1", "Isolation_Mode", "XMLID_1_", "Rectangle", "Oval",
+      "Artboard", "Page-1", "Combined-Shape", "Bouton", "Untitled-1"]) {
+      expect(markupName(`<svg><path id="${id}"/></svg>`), id).toBeUndefined();
+    }
     expect(markupName('<svg><linearGradient id="paint0_linear_23_1"/></svg>')).toBeUndefined();
     expect(markupName("<svg><path d=\"M0 0h8v8z\"/></svg>")).toBeUndefined();
     expect(markupName(undefined)).toBeUndefined();

@@ -85,9 +85,18 @@ const ID_NOISE = /(?:[-_]{1,2}:[^:]*:|[-_]{1,2}[0-9a-f]{6,})$/i;
  * these alone (`clip0_1_2`, `paint0_linear_23_1`, `__lottie_element_1`) names nothing.
  */
 const ID_FILLER = new Set([
+  // What a bundler, a renderer or the format itself writes.
   "clip", "clippath", "mask", "filter", "paint", "pattern", "gradient", "linear", "radial", "stop", "defs", "use",
   "path", "fill", "stroke", "shape", "vector", "frame", "group", "layer", "element", "lottie", "uuid", "id", "svg",
-  "graphic", "icon", "image", "img", "logo", "logotype", "wordmark", "mark", "brand",
+  "graphic", "icon", "image", "img", "logo", "logotype", "wordmark", "mark", "brand", "xmlid", "symbol",
+  // The word "layer" in the language the artist worked in. Illustrator and Sketch keep the localized default, so a
+  // vector drawn in Spanish ships `id="Capa_1"`, one drawn in French `id="Calque_1"`, in German `id="Ebene_1"`.
+  "capa", "capas", "calque", "calques", "ebene", "ebenen", "livello", "livelli", "laag", "lager", "camada", "warstwa",
+  // The default name of a shape, a board or a control, which says what was drawn and not what it shows:
+  // `Rectangle`, `Combined-Shape`, `Artboard`, `Page-1`, `Isolation_Mode`.
+  "rect", "rectangle", "oval", "ellipse", "circle", "square", "triangle", "polygon", "polyline", "star", "line",
+  "artboard", "board", "page", "canvas", "slice", "combined", "union", "subtract", "intersect", "difference",
+  "outline", "compound", "isolation", "mode", "component", "instance", "copy", "untitled", "button", "bouton",
 ]);
 
 /**
