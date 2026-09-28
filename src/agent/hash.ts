@@ -111,8 +111,8 @@ export function canonicalizeSvg(markup: string): string {
  * file rather than losing it. The call also waits for a render slot, so 60 of them cannot saturate the thread pool that
  * `dns.lookup` shares (review issue 3).
  */
-export function fingerprint(buffer: Buffer, signal?: AbortSignal): Promise<ImageFingerprint | null> {
-  return withRenderSlot(() => fingerprintInSlot(buffer), null, signal);
+export function fingerprint(buffer: Buffer): Promise<ImageFingerprint | null> {
+  return withRenderSlot(() => fingerprintInSlot(buffer), null);
 }
 
 async function fingerprintInSlot(buffer: Buffer): Promise<ImageFingerprint | null> {

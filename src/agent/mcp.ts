@@ -72,6 +72,13 @@ export interface AgentMcpOptions {
 
 const ok = (value: unknown): CallToolResult => ({ content: [{ type: "text", text: JSON.stringify(value) }] });
 
+const fail = (message: string): CallToolResult => ({ isError: true, content: [{ type: "text", text: message }] });
+
+const failureText = (error: unknown): string => {
+  if (error instanceof ScanFailure) return `${error.code}: ${error.message}`;
+  return error instanceof Error ? error.message : String(error);
+};
+
 /**
  * Bytes one tool answer stays under, the rule `summarize` already followed for `scan_page` (spec 2, context cost). The two
  * row-returning tools had no budget at all, so they were the ones filling an agent's context: measured on a stripe.com
@@ -96,13 +103,6 @@ function okRows<T>(rows: T[], build: (kept: T[], omitted: number) => unknown): C
     kept = Math.max(0, kept);
   }
 }
-
-const fail = (message: string): CallToolResult => ({ isError: true, content: [{ type: "text", text: message }] });
-
-const failureText = (error: unknown): string => {
-  if (error instanceof ScanFailure) return `${error.code}: ${error.message}`;
-  return error instanceof Error ? error.message : String(error);
-};
 
 /** What every tool that takes a `scanId` says when the scan has aged out of the cache or never existed. */
 const UNKNOWN_SCAN = (scanId: string): string =>
