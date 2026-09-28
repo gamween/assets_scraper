@@ -113,6 +113,14 @@ describe("POST /api/v1/scan", () => {
     }
   });
 
+  it("hands the budget unit back when no browser was free, as /api/scan does", async () => {
+    process.env.SCANS_PER_DAY = "1";
+    scan.mockRejectedValueOnce(new ScanFailure("busy", "All browsers are busy"));
+    expect((await POST(request())).status).toBe(503);
+    // The refund is what makes the retry possible: without it the one unit of the day is gone on a scan that never ran.
+    expect((await POST(request())).status).toBe(200);
+  });
+
   it("answers an internal error for an unexpected failure, without leaking its message", async () => {
     scan.mockRejectedValueOnce(new Error("postgres://user:secret@host/db is down"));
     const response = await POST(request());

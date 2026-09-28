@@ -31,14 +31,14 @@ export async function GET(request: Request): Promise<Response> {
   try {
     scan = await source.scan(target.url, { signal: request.signal });
   } catch (error) {
-    return scanFailureResponse(error);
+    return scanFailureResponse(error, target.client);
   }
 
   let built: Awaited<ReturnType<typeof buildAssetsZip>>;
   try {
     built = await buildAssetsZip(scan, source, selection.options, { signal: request.signal });
   } catch (error) {
-    return scanFailureResponse(error);
+    return scanFailureResponse(error, target.client);
   }
 
   return new Response(built.stream, {

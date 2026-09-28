@@ -45,7 +45,7 @@ export async function POST(request: Request): Promise<Response> {
   try {
     scan = await agentScanSource().scan(target.url, { signal: request.signal });
   } catch (error) {
-    return scanFailureResponse(error);
+    return scanFailureResponse(error, target.client);
   }
 
   const summary = summarize(scan);

@@ -1,5 +1,6 @@
 import type { ErrorCode } from "@/lib/contract";
 import { ScanFailure } from "@/server/errors";
+import { refundScanBudget } from "@/server/security/budget";
 import { apiError } from "@/server/security/gate";
 
 /**
@@ -35,9 +36,16 @@ export const statusForCode = (code: ErrorCode): number => STATUS[code] ?? 500;
 /**
  * The response for a failed scan. A `ScanFailure` carries a v1 code and a message written for a person; anything else
  * is an internal error whose message never reaches the client, and is logged without the URL that caused it.
+ *
+ * `client` is the caller the gate took a unit of budget from. A `busy` failure is the one case where the unit buys
+ * nothing: the queue timed out or the health gate refused the launch, and no page was ever opened, so it is handed
+ * back exactly as `/api/scan` hands it back for the browser (v1 spec 7.1 step 7).
  */
-export function scanFailureResponse(error: unknown): Response {
-  if (error instanceof ScanFailure) return apiError(statusForCode(error.code), error.code, error.message);
+export async function scanFailureResponse(error: unknown, client: string | null = null): Promise<Response> {
+  if (error instanceof ScanFailure) {
+    if (error.code === "busy") await refundScanBudget(client);
+    return apiError(statusForCode(error.code), error.code, error.message);
+  }
   console.error(`agent API scan failed: ${error instanceof Error ? error.name : typeof error}`);
   return apiError(500, "internal", "Something went wrong on our side");
 }
