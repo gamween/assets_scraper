@@ -641,13 +641,31 @@ describe("buildFontFamilies", () => {
     }
   });
 
+  /** Property reads of the hostile `document.fonts` statuses, on top of `ops`, for the test that pins how often each one is read. */
+  const statusReads = { count: 0 };
+
+  /**
+   * Every property read of `value`, counted into `ops`. The collector output a rule is matched against is plain data:
+   * a quadratic written over it calls no helper `opGrowth` can count, and reading the fields it compares is the one
+   * thing such a regression cannot avoid. `document.fonts` statuses are handed to the scan through this, so the
+   * grouping is measured on what it looks at and not only on the helpers it happens to call.
+   */
+  const countedReads = <T extends object>(value: T): T =>
+    new Proxy(value, {
+      get(target, key, receiver) {
+        ops.count += 1;
+        statusReads.count += 1;
+        return Reflect.get(target, key, receiver) as unknown;
+      },
+    });
+
   /** Collector output shaped to make every pair of names meet, one input per historical quadratic path. */
   const hostileLong = "Face".repeat(25);
   const hostile: Record<string, (size: number) => Parts> = {
     // every rule against every document.fonts status of its family
     statuses: (size) => ({
       fontFaces: Array.from({ length: size }, (_, index) => rule(hostileLong, [`${PAGE}${index}.woff2`], { weight: String(index) })),
-      fontStatuses: Array.from({ length: size }, (_, index) => loaded(hostileLong, `w${index}`)),
+      fontStatuses: Array.from({ length: size }, (_, index) => countedReads(loaded(hostileLong, `w${index}`))),
     }),
     // CSS families that clean to one name: every new one against the ones already kept
     variants: (size) => ({ fontFaces: Array.from({ length: size }, (_, index) => rule(`__${"Inter".repeat(40)}_${index.toString(16).padStart(6, "0")}`, [`${PAGE}${index}.woff2`])) }),
@@ -680,19 +698,27 @@ describe("buildFontFamilies", () => {
 
   /**
    * Regression (6482d28): every rule was matched against every `document.fonts` status of its family, which is why
-   * `statuses` is one of the hostile inputs above. The fix is the Set those keys are looked up in, and the counted gate
-   * could not see it undone, because `faceKey` was local to this module: replacing the Set with an array scanned by
-   * `faceKey` kept the counted factor under its bound and only the opt-in benchmark failed. The key is counted now,
-   * and this asserts its shape directly: one key per rule and one per status, never one per pair.
+   * `statuses` is one of the hostile inputs above. The fix is the Set those keys are looked up in, and counting calls
+   * into `faceKey` gated only the spellings that call it: written as a plain field comparison over the statuses, which
+   * is what the original bug was, the quadratic called nothing this module counts and the whole gating suite stayed
+   * green. Two things gate it now. `index.ts` keeps no descriptor on a loaded status, so that spelling does not type
+   * check any more, and the statuses reach the scan through `countedReads`, so a scan of the collector's own statuses,
+   * the one place their descriptors are left, grows `ops` with every pair it reads.
+   *
+   * This pins both directly: each status is read a bounded number of times however many rules there are, and one key
+   * is made per rule and per status rather than one per pair.
    */
   it("matches a rule to its document.fonts status by key, not by scanning the statuses", async () => {
     const size = 200;
     faceKeys.count = 0;
+    statusReads.count = 0;
 
     await buildFontFamilies(inputOf(hostile.statuses(size)));
 
     // One key per status, one per rule and one per face kept: 600 here, against 40,000 for a scan of every pair
     expect(faceKeys.count).toBeLessThan(size * 4);
+    // Fourteen field reads per status today, 2,800 in all, against 40,000 or more for a scan of every pair
+    expect(statusReads.count).toBeLessThan(size * 25);
   }, 30_000);
 
   /**

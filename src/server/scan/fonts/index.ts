@@ -238,21 +238,24 @@ function groupFiles(
   binaryName: (meta: FontBinaryMeta | null) => string | null,
 ) {
   const files = createFileLookup(captured, pageHostOf(input.page));
-  const statuses = input.collector.fontStatuses
-    .filter((status) => isRawStatus(status) && status.family.length <= MAX_FAMILY_CHARS && withinDescriptorLimits(status))
-    .map((status) => {
-      const name = statusFamily(status.family);
-      return {
-        name,
-        family: name.toLowerCase(),
-        weight: normalizeWeight(status.weight),
-        style: normalizeStyle(status.style),
-        stretch: normalizeStretch(status.stretch),
-        loaded: status.status === "loaded",
-      };
-    });
-  const loaded = statuses.filter((status) => status.loaded);
-  const loadedFaces = new Set(loaded.map((status) => faceKey(status.family, status)));
+  /** Every loaded `document.fonts` family, by display name and lowercase name. Their descriptors are not kept: see below. */
+  const loaded: { name: string; family: string }[] = [];
+  /**
+   * The identity of every loaded face, as a key. The descriptors of a status are read here and nowhere else, which is
+   * the point: `loaded` above carries no weight, style or stretch, so the only way left to ask whether a rule's face
+   * loaded is a lookup in this Set. The regression at 6482d28 was a scan comparing every rule's descriptors against
+   * every status of its family, and that shape can no longer be written over `loaded` at all. Written over
+   * `input.collector.fontStatuses` instead, the one place the descriptors still are, it is counted by the `opGrowth`
+   * gate in `index.test.ts`, which reads those statuses through a counting proxy.
+   */
+  const loadedFaces = new Set<string>();
+  for (const status of input.collector.fontStatuses) {
+    if (!isRawStatus(status) || status.status !== "loaded" || status.family.length > MAX_FAMILY_CHARS || !withinDescriptorLimits(status)) continue;
+    const name = statusFamily(status.family);
+    const family = name.toLowerCase();
+    loaded.push({ name, family });
+    loadedFaces.add(faceKey(family, { weight: normalizeWeight(status.weight), style: normalizeStyle(status.style), stretch: normalizeStretch(status.stretch) }));
+  }
   const loadedFamilies = new Set(loaded.map((status) => status.family));
   const groups = new Map<string, Group>();
   // Remote URLs of rules, to find the captures without one
