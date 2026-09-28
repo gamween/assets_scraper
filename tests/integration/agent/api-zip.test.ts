@@ -45,7 +45,7 @@ describe("GET /api/v1/assets.zip", () => {
     const manifest = manifestOf(entries);
     const paths = entries.map((entry) => entry.name).filter((name) => name !== "manifest.json");
     expect(paths.length).toBeGreaterThan(0);
-    expect(paths).toEqual(manifest.files.map((file: { path: string }) => file.path));
+    expect(paths).toEqual(manifest.files.map((file: { file: string }) => file.file));
     expect(Number(response.headers.get("x-assets-count"))).toBe(manifest.files.length);
     expect(response.headers.get("x-scan-id")).toBe(manifest.scanId);
     expect(manifest.page.host).toBe("127.0.0.1");
@@ -55,7 +55,7 @@ describe("GET /api/v1/assets.zip", () => {
     for (const path of paths) expect(path).toMatch(/^(?:svg|images)\/[^/]+$/);
     for (const file of manifest.files) {
       expect(file.bytes).toBeGreaterThan(0);
-      expect(file.keptFor).toMatch(/^(?:vector|logo|large|named)$/);
+      expect(file.keptBecause).toMatch(/^(?:deck|all) profile \(role [a-z-]+\)$/);
     }
     const svg = entries.find((entry) => entry.name.startsWith("svg/"));
     expect(new TextDecoder().decode(svg!.data)).toMatch(/<svg/);

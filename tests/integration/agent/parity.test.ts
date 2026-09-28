@@ -70,6 +70,20 @@ const zipEntries = async (query: string): Promise<{ entries: ZipEntry[]; manifes
 /** The path inside the destination, with forward slashes, which is the one name all three paths can be compared on. */
 const relative = (result: DownloadResult): string[] => result.files.map((file) => path.relative(result.dir, file.path).split(path.sep).join("/"));
 
+/**
+ * What the MCP `download_assets` tool answers: the same download, reported as paths relative to `dir` with the CDN URLs
+ * left in `manifest.json`, because a tool answer has a context budget that a CLI stdout does not (spec 2).
+ */
+interface McpDownload {
+  dir: string;
+  manifest: string;
+  count: number;
+  totalBytes: number;
+  files: { id: string; file: string; kind: string; role: string; bytes: number }[];
+  dropped: Record<string, number>;
+  failed: { id: string; name: string; reason: string }[];
+}
+
 beforeAll(async () => {
   home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agent-parity-")));
   project = path.join(home, "project");
@@ -138,7 +152,7 @@ describe("the selection the three paths write", () => {
   it("keeps the same assets, under the same names, with the same bytes", async () => {
     const out = path.join(home, "cli-deck");
     const fromCli = JSON.parse((await cli(["get", `${server.origin}/`, "--out", out, "--json"])).stdout) as DownloadResult;
-    const fromMcpServer = fromMcp<DownloadResult>(await mcp("download_assets", { scanId: scan.scanId }));
+    const fromMcpServer = fromMcp<McpDownload>(await mcp("download_assets", { scanId: scan.scanId }));
     const { entries, manifest } = await zipEntries("");
 
     expect(fromCli.files.length).toBeGreaterThan(0);
@@ -147,8 +161,8 @@ describe("the selection the three paths write", () => {
     expect(manifest.files.map((file) => file.id)).toEqual(ids);
 
     const names = relative(fromCli);
-    expect(relative(fromMcpServer)).toEqual(names);
-    expect(manifest.files.map((file) => file.path)).toEqual(names);
+    expect(fromMcpServer.files.map((file) => file.file)).toEqual(names);
+    expect(manifest.files.map((file) => file.file)).toEqual(names);
 
     const bytes = fromCli.files.map((file) => file.bytes);
     expect(fromMcpServer.files.map((file) => file.bytes)).toEqual(bytes);
@@ -159,7 +173,7 @@ describe("the selection the three paths write", () => {
     // The same file names hold the same bytes on both disks and in the archive.
     for (const [index, name] of names.entries()) {
       const written = fs.readFileSync(fromCli.files[index].path);
-      expect(fs.readFileSync(fromMcpServer.files[index].path).equals(written), name).toBe(true);
+      expect(fs.readFileSync(path.join(fromMcpServer.dir, name)).equals(written), name).toBe(true);
       expect(Buffer.from(entries.find((entry) => entry.name === name)!.data).equals(written), name).toBe(true);
     }
 
@@ -169,6 +183,16 @@ describe("the selection the three paths write", () => {
     expect(manifest.failed).toEqual(fromCli.failed);
     expect(manifest.truncated).toBe(false);
 
+    // The archive's manifest is the document a local download writes, field for field: llms.txt tells an agent to unzip
+    // this into scrap/<host>, so a reader of one has to be a reader of the other (review issue 18).
+    const local = JSON.parse(fs.readFileSync(path.join(out, "manifest.json"), "utf8")) as Record<string, unknown>;
+    const shared = (document: Record<string, unknown>) => Object.keys(document).filter((key) => key !== "downloadedAt").sort();
+    expect(shared(local).every((key) => key in manifest)).toBe(true);
+    expect(manifest.manifestVersion).toBe(1);
+    expect(manifest.profile).toBe("deck");
+    expect(new Date(manifest.downloadedAt).toISOString()).toBe(manifest.downloadedAt);
+    expect(manifest.files[0].keptBecause).toBe((local.files as { keptBecause: string }[])[0].keptBecause);
+
     // The MCP tool resolves its own destination: the scrap folder of the project it was started in (spec 2).
     expect(fromMcpServer.dir).toBe(path.join(project, "scrap", "127.0.0.1"));
     expect(fromCli.dir).toBe(out);
@@ -177,8 +201,9 @@ describe("the selection the three paths write", () => {
   it("reads the same filters the same way", async () => {
     const out = path.join(home, "cli-svg");
     const fromCli = JSON.parse((await cli(["get", `${server.origin}/`, "--out", out, "--kind", "svg", "--max", "3", "--json"])).stdout) as DownloadResult;
-    const fromMcpServer = fromMcp<DownloadResult>(
-      await mcp("download_assets", { scanId: scan.scanId, kinds: ["svg"], max: 3, dest: path.join(project, "scrap", "svg-only") }),
+    // The singular `kind` the CLI and list_assets take; the plural is an alias for several at once (review issue 6).
+    const fromMcpServer = fromMcp<McpDownload>(
+      await mcp("download_assets", { scanId: scan.scanId, kind: "svg", max: 3, dest: path.join(project, "scrap", "svg-only") }),
     );
     const { manifest } = await zipEntries("&kinds=svg&max=3");
 
@@ -187,8 +212,8 @@ describe("the selection the three paths write", () => {
     const ids = fromCli.files.map((file) => file.id);
     expect(fromMcpServer.files.map((file) => file.id)).toEqual(ids);
     expect(manifest.files.map((file) => file.id)).toEqual(ids);
-    expect(relative(fromMcpServer)).toEqual(relative(fromCli));
-    expect(manifest.files.map((file) => file.path)).toEqual(relative(fromCli));
+    expect(fromMcpServer.files.map((file) => file.file)).toEqual(relative(fromCli));
+    expect(manifest.files.map((file) => file.file)).toEqual(relative(fromCli));
     for (const name of relative(fromCli)) expect(name.startsWith("svg/")).toBe(true);
     expect(fromMcpServer.dropped).toEqual(fromCli.dropped);
     expect(manifest.dropped).toEqual(fromCli.dropped);

@@ -1,6 +1,6 @@
 import { makeZip } from "client-zip";
 import { sanitizeHost } from "@/agent/dest";
-import { safeFileName } from "@/agent/download";
+import { type DownloadManifest, type ManifestFile, safeFileName } from "@/agent/download";
 import { agentLimits } from "@/agent/limits";
 import { selectAssets } from "@/agent/select";
 import type { AgentScan, DropReason, ScanSource, SelectionOptions } from "@/agent/types";
@@ -25,34 +25,17 @@ export const zipMaxBytes = (): number => {
   return Number.isSafeInteger(value) && value > 0 ? value : DEFAULT_MAX_BYTES;
 };
 
-/** Why the selection kept a file, so an agent can explain the archive without rerunning the rules. */
-export type KeptFor = "named" | "vector" | "logo" | "large";
-
-export interface ZipFileRow {
-  path: string;
-  id: string;
-  name: string;
-  url: string;
-  kind: Asset["kind"];
-  role: Asset["role"];
-  format: Asset["format"];
-  width?: number;
-  height?: number;
-  bytes: number;
-  keptFor: KeptFor;
-}
-
-export interface ZipManifest {
-  tool: "assets-scraper";
-  scanId: string;
-  scannedAt: string;
-  page: AgentScan["page"];
+/**
+ * The archive's `manifest.json` is the document `assets-scraper get` writes, field for field, plus what only an archive
+ * has to say. That is what makes the header comment of the route true: llms.txt tells an agent to unzip this into
+ * `scrap/<host>`, so a script keying on `files[].file` and `files[].keptBecause` has to read the same names either way.
+ * It used to carry `path` and a `keptFor` enum, and no `manifestVersion`, `profile` or `downloadedAt` (review issue 18).
+ */
+export interface ZipManifest extends DownloadManifest {
+  /** The selection the query asked for, which a local download has in the command line instead. */
   selection: SelectionOptions;
-  files: ZipFileRow[];
-  dropped: Partial<Record<DropReason, number>>;
   duplicates: { keptId: string; droppedIds: string[] }[];
-  failed: { id: string; name: string; reason: string }[];
-  totalBytes: number;
+  /** True when the request cap or the daily byte budget ended the archive early; `note` then says so in words. */
   truncated: boolean;
   note?: string;
 }
@@ -69,11 +52,6 @@ export interface BuildZipOptions {
   maxBytes?: number;
   concurrency?: number;
 }
-
-const LOGO_ROLES = new Set<Asset["role"]>(["site-logo", "logo", "favicon"]);
-
-const keptFor = (asset: Asset, named: boolean): KeptFor =>
-  named ? "named" : asset.kind === "svg" ? "vector" : LOGO_ROLES.has(asset.role) ? "logo" : "large";
 
 /** The URL the file came from, or "" for markup the scan already held (inline SVG has no URL of its own). */
 const sourceUrl = (asset: Asset): string => asset.original?.url ?? asset.display?.url ?? "";
@@ -155,7 +133,7 @@ const sum = (into: Partial<Record<DropReason, number>>, from: Partial<Record<Dro
   return into;
 };
 
-const TRUNCATED_NOTE =
+export const TRUNCATED_NOTE =
   "This archive holds the front of the selection only: the request limit or the daily byte budget was reached. Ask for fewer files with max, kinds or roles.";
 
 /** Builds the archive for `scan` and returns its stream, its manifest and the file name to offer it under. */
@@ -186,8 +164,9 @@ export async function buildAssetsZip(
   );
 
   const used = new Set<string>();
-  const named = new Set(selection.ids ?? []);
-  const files: ZipFileRow[] = [];
+  const profile = selection.profile ?? "deck";
+  const winners = new Map(byBytes.duplicates.map((group) => [group.keptId, group.droppedIds]));
+  const files: ManifestFile[] = [];
   const entries: { name: string; input: Uint8Array; lastModified: Date }[] = [];
   for (const asset of byBytes.keep) {
     const buffer = fetched.bytes.get(asset.id);
@@ -195,11 +174,11 @@ export async function buildAssetsZip(
     const folder = asset.kind === "svg" ? "svg" : "images";
     const fallback = `${asset.id}.${asset.format}`;
     // The download's own rule, so the two paths never name one asset two ways (plan Task G6.2).
-    const path = `${folder}/${uniqueName(safeFileName(asset.filename || asset.name || fallback, fallback), used)}`;
+    const file = `${folder}/${uniqueName(safeFileName(asset.filename || asset.name || fallback, fallback), used)}`;
     files.push({
-      path,
       id: asset.id,
       name: asset.name,
+      file,
       url: sourceUrl(asset),
       kind: asset.kind,
       role: asset.role,
@@ -207,18 +186,23 @@ export async function buildAssetsZip(
       ...(asset.width === undefined ? {} : { width: asset.width }),
       ...(asset.height === undefined ? {} : { height: asset.height }),
       bytes: buffer.byteLength,
-      keptFor: keptFor(asset, named.has(asset.id)),
+      // The same sentence `src/agent/download.ts` writes, so the two manifests read alike.
+      keptBecause: selection.ids ? "explicit id" : `${profile} profile (role ${asset.role})`,
+      ...(winners.has(asset.id) ? { duplicatesDropped: winners.get(asset.id) } : {}),
     });
-    entries.push({ name: path, input: buffer, lastModified: new Date(scan.scannedAt) });
+    entries.push({ name: file, input: buffer, lastModified: new Date(scan.scannedAt) });
   }
 
   const dropped = sum(sum({}, byName.dropped), byBytes.dropped);
   if (fetched.unavailable > 0) sum(dropped, { unavailable: fetched.unavailable });
   const manifest: ZipManifest = {
     tool: "assets-scraper",
+    manifestVersion: 1,
     scanId: scan.scanId,
     scannedAt: scan.scannedAt,
+    downloadedAt: new Date().toISOString(),
     page: scan.page,
+    profile,
     selection,
     files,
     dropped,
