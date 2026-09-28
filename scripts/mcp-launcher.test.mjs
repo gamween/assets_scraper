@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { ensureBundle, LauncherError, missingPackage, newestSource, staleness } from "./mcp-launcher.mjs";
+import { ensureBundle, GENERATED_DIRS, LauncherError, missingPackage, newestSource, RUNTIME_PACKAGES, staleness } from "./mcp-launcher.mjs";
 
 const run = promisify(execFile);
 const launcher = fileURLToPath(new URL("./mcp-launcher.mjs", import.meta.url));
@@ -79,6 +79,30 @@ describe("staleness", () => {
     expect((await newestSource(root))?.file).toBe(path.join(nested, "index.ts"));
     expect(await staleness(root)).toBe("dist/mcp.mjs is older than src/server/scan/fonts/index.ts");
   });
+
+  /**
+   * Regression: `scripts/build-inpage.mjs` rewrites `src/server/scan/inpage/generated/*.ts` on every one-shot run, so
+   * any `pnpm test`, `pnpm typecheck` or `pnpm build` left files there newer than the bundle and the next start
+   * rebuilt, reporting the bundle as older than its sources. Generated output is not a source.
+   */
+  it("does not count the generated in-page bundles as sources", async () => {
+    const root = await fakeRepo({ bundleAt: 1_500_000, sourceAt: 1_000_000 });
+    const generated = path.join(root, GENERATED_DIRS[0]);
+    await mkdir(generated, { recursive: true });
+    const written = path.join(generated, "collector.ts");
+    await writeFile(written, "export const COLLECTOR_SOURCE = \"\";\n");
+    await utimes(written, 2_000, 2_000);
+
+    expect(await staleness(root)).toBeNull();
+    expect((await newestSource(root))?.file).toBe(path.join(root, "src/agent/mcp.ts"));
+
+    // The source those files are generated from is a source, so editing it still asks for a rebuild
+    const src = path.join(root, "src/server/scan/inpage/collector.src.ts");
+    await mkdir(path.dirname(src), { recursive: true });
+    await writeFile(src, "export const x = 1;\n");
+    await utimes(src, 2_000, 2_000);
+    expect(await staleness(root)).toBe("dist/mcp.mjs is older than src/server/scan/inpage/collector.src.ts");
+  });
 });
 
 describe("ensureBundle", () => {
@@ -118,6 +142,33 @@ describe("ensureBundle", () => {
     await expect(ensureBundle({ root, run: build, log: () => {} })).rejects.toThrow(LauncherError);
     await expect(ensureBundle({ root, run: build, log: () => {} })).rejects.toThrow(/esbuild is not installed/);
     await expect(ensureBundle({ root, run: build, log: () => {} })).rejects.toThrow(/pnpm install/);
+    expect(build.steps).toEqual([]);
+  });
+
+  /**
+   * Regression: `missingPackage` was only consulted when a rebuild was needed, so a current bundle with no node_modules
+   * fell through to the import and printed node's `Cannot find package ...` with no "run pnpm install". Both paths say
+   * what to do now.
+   */
+  it("names the install to run when the bundle is current but its dependencies are not there", async () => {
+    const root = await fakeRepo({ bundleAt: 2_000_000, sourceAt: 1_000_000, packages: false });
+    // esbuild is not needed here, only what the bundle imports
+    await mkdir(path.join(root, "node_modules/esbuild"), { recursive: true });
+    const build = fakeBuild(root);
+
+    expect(await missingPackage(root, RUNTIME_PACKAGES)).toBe("@modelcontextprotocol/sdk");
+    await expect(ensureBundle({ root, run: build, log: () => {} })).rejects.toThrow(LauncherError);
+    await expect(ensureBundle({ root, run: build, log: () => {} })).rejects.toThrow(/@modelcontextprotocol\/sdk is not installed/);
+    await expect(ensureBundle({ root, run: build, log: () => {} })).rejects.toThrow(/pnpm install/);
+    expect(build.steps).toEqual([]);
+  });
+
+  it("starts a current bundle without esbuild, which only a rebuild needs", async () => {
+    const root = await fakeRepo({ bundleAt: 2_000_000, sourceAt: 1_000_000, packages: false });
+    await mkdir(path.join(root, "node_modules/@modelcontextprotocol/sdk"), { recursive: true });
+    const build = fakeBuild(root);
+
+    expect(await ensureBundle({ root, run: build, log: () => {} })).toEqual({ bundle: path.join(root, "dist/mcp.mjs"), rebuilt: false, reason: null });
     expect(build.steps).toEqual([]);
   });
 

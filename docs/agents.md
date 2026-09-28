@@ -27,7 +27,7 @@ claude plugin install assets-scraper
 
 Google Chrome has to be installed for a local scan. Set `CHROME_EXECUTABLE_PATH` if it is not in the default location. The plugin starts the server through `scripts/mcp-launcher.mjs`, which runs `dist/mcp.mjs` and fails with a clear message when the build or the dependencies are missing.
 
-The marketplace stays pointed at the clone, and the bundle the launcher runs, `dist/mcp.mjs`, is not committed. The launcher rebuilds it whenever it is missing or older than any file under `src/agent`, `src/server` or `src/lib`, so a `git pull` no longer leaves the MCP server serving the bundle of an older commit. Restart Claude Code to pick up a rebuilt bundle. A rebuild it cannot do, node_modules not installed for instance, is reported on stderr and the server does not start. `claude mcp list` shows the server as `plugin:assets-scraper:assets-scraper` with the path it runs.
+The marketplace stays pointed at the clone, and the bundle the launcher runs, `dist/mcp.mjs`, is not committed. The launcher rebuilds it whenever it is missing or older than any source file under `src/agent`, `src/server` or `src/lib`, so a `git pull` no longer leaves the MCP server serving the bundle of an older commit. The generated in-page bundles under `src/server/scan/inpage/generated` are build output, not sources, so a `pnpm test` that rewrote them is not a reason to rebuild. Restart Claude Code to pick up a rebuilt bundle. A rebuild it cannot do, node_modules not installed for instance, is reported on stderr and the server does not start. `claude mcp list` shows the server as `plugin:assets-scraper:assets-scraper` with the path it runs.
 
 Tools, all returning compact JSON, never bytes:
 

@@ -26,11 +26,26 @@ export const BUNDLE = "dist/mcp.mjs";
  */
 export const SOURCE_DIRS = ["src/agent", "src/server", "src/lib"];
 
+/**
+ * Directories under `SOURCE_DIRS` that are build output, not source. `scripts/build-inpage.mjs` rewrites
+ * `src/server/scan/inpage/generated/*.ts` on every one-shot run, whatever it produced last time (its dedupe map only
+ * applies in watch mode), so `pnpm test`, `pnpm typecheck` and `pnpm build` all leave files there newer than the
+ * bundle. Counting them made the launcher rebuild after any of those, and say the bundle was older than its sources
+ * when the only thing that had moved was output regenerated from unchanged `*.src.ts` files.
+ */
+export const GENERATED_DIRS = ["src/server/scan/inpage/generated"];
+
 /** What `pnpm build:agent` runs, as plain node scripts: pnpm is not on the PATH of every agent that starts a plugin. */
 export const BUILD_STEPS = ["scripts/build-inpage.mjs", "scripts/build-agent.mjs"];
 
-/** Packages the build and the bundle need at run time. Both are missing together when node_modules is not installed. */
-export const REQUIRED_PACKAGES = ["esbuild", "@modelcontextprotocol/sdk"];
+/** What a rebuild needs. Only checked when there is one to run: a current bundle starts without esbuild. */
+export const BUILD_PACKAGES = ["esbuild"];
+
+/** What the bundle itself imports at run time. Missing means the server cannot start, however fresh the bundle is. */
+export const RUNTIME_PACKAGES = ["@modelcontextprotocol/sdk"];
+
+/** Everything a rebuild and a start need together. All are missing together when node_modules is not installed. */
+export const REQUIRED_PACKAGES = [...BUILD_PACKAGES, ...RUNTIME_PACKAGES];
 
 /** A reason the server cannot start, already written for the person reading stderr. */
 export class LauncherError extends Error {
@@ -38,7 +53,7 @@ export class LauncherError extends Error {
 }
 
 /** The newest file under `dir`, as `{ file, mtimeMs }`, or null when the directory has none. Unreadable files count as absent. */
-async function newestUnder(dir) {
+async function newestUnder(dir, skip) {
   let entries;
   try {
     entries = await readdir(dir, { withFileTypes: true });
@@ -49,7 +64,7 @@ async function newestUnder(dir) {
   for (const entry of entries) {
     const full = path.join(dir, entry.name);
     let found = null;
-    if (entry.isDirectory()) found = await newestUnder(full);
+    if (entry.isDirectory()) found = skip.has(full) ? null : await newestUnder(full, skip);
     else if (entry.isFile()) {
       try {
         found = { file: full, mtimeMs: (await stat(full)).mtimeMs };
@@ -62,11 +77,12 @@ async function newestUnder(dir) {
   return newest;
 }
 
-/** The newest file under `dirs` of `root`, as `{ file, mtimeMs }`, or null. */
+/** The newest source file under `dirs` of `root`, as `{ file, mtimeMs }`, or null. `GENERATED_DIRS` are not sources. */
 export async function newestSource(root, dirs = SOURCE_DIRS) {
+  const skip = new Set(GENERATED_DIRS.map((dir) => path.join(root, dir)));
   let newest = null;
   for (const dir of dirs) {
-    const found = await newestUnder(path.join(root, dir));
+    const found = await newestUnder(path.join(root, dir), skip);
     if (found && (!newest || found.mtimeMs > newest.mtimeMs)) newest = found;
   }
   return newest;
@@ -89,9 +105,9 @@ export async function staleness(root, dirs = SOURCE_DIRS) {
   return `${BUNDLE} is older than ${path.relative(root, newest.file)}`;
 }
 
-/** The first of `REQUIRED_PACKAGES` that is not installed under `root`, or null when they all are. */
-export async function missingPackage(root) {
-  for (const name of REQUIRED_PACKAGES) {
+/** The first of `names` that is not installed under `root`, or null when they all are. */
+export async function missingPackage(root, names = REQUIRED_PACKAGES) {
+  for (const name of names) {
     try {
       await stat(path.join(root, "node_modules", name));
     } catch {
@@ -127,7 +143,18 @@ export function runBuildStep(root, script) {
 export async function ensureBundle({ root = ROOT, dirs = SOURCE_DIRS, run = runBuildStep, log = () => {} } = {}) {
   const bundle = path.join(root, BUNDLE);
   const reason = await staleness(root, dirs);
-  if (!reason) return { bundle, rebuilt: false, reason: null };
+  if (!reason) {
+    // A current bundle still imports its dependencies. Saying so here rather than letting the import fail is what makes
+    // this path read like the one below: node's own ERR_MODULE_NOT_FOUND names the package and not what to do about it.
+    const uninstalled = await missingPackage(root, RUNTIME_PACKAGES);
+    if (uninstalled) {
+      throw new LauncherError(
+        `assets-scraper: ${BUNDLE} is up to date but ${uninstalled} is not installed in ${root}. ` +
+          "Run pnpm install there, then start the server again.",
+      );
+    }
+    return { bundle, rebuilt: false, reason: null };
+  }
 
   const missing = await missingPackage(root);
   if (missing) {

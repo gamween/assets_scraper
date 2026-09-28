@@ -2,7 +2,7 @@
 //   node scripts/build-agent.mjs
 // Native and heavy packages stay external, so both bundles run from the repo with its node_modules present. An entry
 // point that is not written yet is skipped with a warning, so the build works while the tracks land one by one.
-import { chmod, mkdir, readFile, stat } from "node:fs/promises";
+import { chmod, mkdir, readFile, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
@@ -71,19 +71,30 @@ for (const { name, entry } of entries) {
     continue;
   }
   const outfile = path.join(OUT, `${name}.mjs`);
-  await build({
-    entryPoints: [entryPoint],
-    outfile,
-    bundle: true,
-    platform: "node",
-    format: "esm",
-    target: "node22",
-    external,
-    alias,
-    banner: { js: banner },
-    logLevel: "warning",
-  });
-  await chmod(outfile, 0o755);
+  // Built under a temporary name and renamed into place, so the bundle is never half written: two MCP launchers can
+  // start inside the build window and both run this, and one importing dist/mcp.mjs while the other's esbuild is still
+  // writing it reads a truncated module. A rename is atomic on the same filesystem, so a reader sees one version or
+  // the other and never part of both.
+  const temporary = `${outfile}.${process.pid}.tmp`;
+  try {
+    await build({
+      entryPoints: [entryPoint],
+      outfile: temporary,
+      bundle: true,
+      platform: "node",
+      format: "esm",
+      target: "node22",
+      external,
+      alias,
+      banner: { js: banner },
+      logLevel: "warning",
+    });
+    await chmod(temporary, 0o755);
+    await rename(temporary, outfile);
+  } catch (error) {
+    await rm(temporary, { force: true });
+    throw error;
+  }
   console.log(`build-agent: wrote ${path.relative(ROOT, outfile)}`);
   built += 1;
 }
