@@ -42,7 +42,7 @@ Tools, all returning compact JSON, never bytes:
 | `list_installed_fonts` | | What this tool installed, with dates and sources |
 | `uninstall_fonts` | `families` | What was removed |
 
-A scan is cached in `~/.cache/assets-scraper/<scanId>.json` for one hour, so `download_assets` and `install_fonts` never rescan. `scan_page` on the same URL inside the hour reuses the cache unless `refresh` is true.
+A scan is cached in `~/.cache/assets-scraper/<scanId>.json` for one hour, so `download_assets` and `install_fonts` never rescan. `scan_page` on the same URL inside the hour reuses the cache unless `refresh` is true. Reuse is scoped to where the scan ran: a remote run only reuses a remote scan and a local run only a local one, so `--remote` is always answered by the hosted app.
 
 The plugin also ships the `assets-scraper` skill, which tells the agent the workflow and the context rules: scan, read the summary, filter, download, install fonts, and never list every asset or paste bytes.
 

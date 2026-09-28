@@ -242,6 +242,40 @@ describe("scan_page", () => {
     await wired.close();
   });
 
+  /**
+   * Regression: the cache was read before the source was opened, so a server configured against the hosted app could
+   * answer `scan_page` from a scan that ran on this machine and never contact it (review issue: misleading remote).
+   */
+  it("never answers from a scan the other source produced", async () => {
+    const host = "sourced.example";
+    const fresh = { ...otherPage(host), scannedAt: new Date().toISOString() };
+    const warmed = await connect({ source: { kind: "local", scan: async () => fresh, fetchBytes: async () => Buffer.alloc(0) } });
+    const local = JSON.parse(text(await call(warmed, "scan_page", { url: `https://${host}/` }))) as { scanId: string };
+    await warmed.close();
+
+    const asked: string[] = [];
+    const remote = await connect({
+      source: {
+        kind: "remote",
+        scan: async (url) => {
+          asked.push(url);
+          return { ...otherPage(host), scanId: `remote-${host}`, source: "remote", scannedAt: new Date().toISOString() };
+        },
+        fetchBytes: async () => Buffer.alloc(0),
+      },
+    });
+
+    const first = JSON.parse(text(await call(remote, "scan_page", { url: `https://${host}/` }))) as { scanId: string };
+    const second = JSON.parse(text(await call(remote, "scan_page", { url: `https://${host}/` }))) as { scanId: string };
+
+    expect(local.scanId).toBe(`scan-${host}`);
+    expect(first.scanId).toBe(`remote-${host}`);
+    // The remote answer is cached for the remote source, so the hosted app is asked once, not twice.
+    expect(second.scanId).toBe(`remote-${host}`);
+    expect(asked).toEqual([`https://${host}/`]);
+    await remote.close();
+  });
+
   it("refuses something that is not a web address, with the code the API uses", async () => {
     const result = await call(client, "scan_page", { url: "not a web address at all" });
 

@@ -220,8 +220,11 @@ export function createAgentMcpServer(options: AgentMcpOptions = {}): McpServer {
       const target = normalizeScanUrl(url);
       if (target === null) return fail(`invalid-url: ${JSON.stringify(url)} is not a valid web address`);
       try {
-        const cached = refresh === true ? null : await findRecentScan(target);
-        const scan = cached ?? (await openSource().scan(target));
+        // The source first, then the cache: only a scan this source produced is reused, so a server configured against
+        // the hosted app never answers from a local scan of the same URL.
+        const source = openSource();
+        const cached = refresh === true ? null : await findRecentScan(target, source.kind);
+        const scan = cached ?? (await source.scan(target));
         if (!cached) await saveScan(scan);
         return ok(summarize(scan));
       } catch (error) {

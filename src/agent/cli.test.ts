@@ -1,8 +1,12 @@
-import { describe, expect, it } from "vitest";
-import { DEFAULT_REMOTE, USAGE, UsageError, formatDownload, formatDropped, formatSummary, openSource, scanUrl, selectionFrom } from "./cli";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { saveScan } from "./cache";
+import { DEFAULT_REMOTE, USAGE, UsageError, formatDownload, formatDropped, formatSummary, openSource, scanPage, scanUrl, selectionFrom } from "./cli";
 import { summarize } from "./summary";
 import { testScan } from "./testing";
-import type { DownloadResult } from "./types";
+import type { AgentScan, DownloadResult, ScanSource } from "./types";
 
 /**
  * The pieces of the CLI a test can read without a browser: what it makes of the options, and what its report says. The
@@ -108,6 +112,77 @@ describe("openSource", () => {
     expect(
       withEnv({ ASSETS_SCRAPER_REMOTE: "https://scraper.example.com", ASSETS_SCRAPER_TOKEN: "t" }, () => openSource({}).kind),
     ).toBe("remote");
+  });
+});
+
+describe("scanPage", () => {
+  const trees: string[] = [];
+  afterEach(() => {
+    for (const tree of trees.splice(0)) fs.rmSync(tree, { recursive: true, force: true });
+    vi.unstubAllEnvs();
+  });
+
+  /** An empty cache directory of its own, so one test cannot read what another saved. */
+  const cache = (): void => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agent-cli-")));
+    trees.push(root);
+    vi.stubEnv("XDG_CACHE_HOME", root);
+  };
+
+  /** A source that answers from memory and records the URLs it was asked for. */
+  const fakeSource = (kind: ScanSource["kind"], scan: AgentScan): ScanSource & { asked: string[] } => {
+    const asked: string[] = [];
+    return {
+      kind,
+      asked,
+      scan: async (url) => {
+        asked.push(url);
+        return scan;
+      },
+      fetchBytes: async () => Buffer.alloc(0),
+    };
+  };
+
+  const fresh = (source: AgentScan["source"]): AgentScan =>
+    testScan({ scanId: `cached-${source}`, source, scannedAt: new Date().toISOString() });
+
+  it("reuses a cached scan of the same source", async () => {
+    cache();
+    await saveScan(fresh("local"));
+    const source = fakeSource("local", fresh("local"));
+
+    expect(await scanPage("https://stripe.com/", source, {})).toMatchObject({ reused: true, scan: { scanId: "cached-local" } });
+    expect(source.asked).toEqual([]);
+  });
+
+  /**
+   * Regression: the cache was read before the source was looked at, so `--remote` could answer from a scan that ran on
+   * this machine and never contact the hosted app. `--remote` is a claim about where the answer came from.
+   */
+  it("never answers a remote run from a local scan, and never the other way round", async () => {
+    cache();
+    await saveScan(fresh("local"));
+    const remote = fakeSource("remote", testScan({ scanId: "from-remote", source: "remote", scannedAt: new Date().toISOString() }));
+
+    const first = await scanPage("https://stripe.com/", remote, {});
+
+    expect(first).toMatchObject({ reused: false, scan: { scanId: "from-remote", source: "remote" } });
+    expect(remote.asked).toEqual(["https://stripe.com/"]);
+
+    // The remote answer is cached in its turn, for the remote source only.
+    const local = fakeSource("local", fresh("local"));
+    expect(await scanPage("https://stripe.com/", remote, {})).toMatchObject({ reused: true, scan: { scanId: "from-remote" } });
+    expect(await scanPage("https://stripe.com/", local, {})).toMatchObject({ reused: true, scan: { scanId: "cached-local" } });
+    expect(local.asked).toEqual([]);
+  });
+
+  it("scans again when --refresh is given, whatever is cached", async () => {
+    cache();
+    await saveScan(fresh("local"));
+    const source = fakeSource("local", testScan({ scanId: "rescanned", scannedAt: new Date().toISOString() }));
+
+    expect(await scanPage("https://stripe.com/", source, { refresh: true })).toMatchObject({ reused: false, scan: { scanId: "rescanned" } });
+    expect(source.asked).toEqual(["https://stripe.com/"]);
   });
 });
 

@@ -131,8 +131,13 @@ const normalizeUrl = (url: string): string =>
     .replace(/\/+$/, "");
 
 /**
- * The newest cached scan of `url` that is younger than `ttlMs`, or null. Every failure is a cache miss: a file that is
- * missing, unparseable or not a scan is skipped rather than failing the lookup.
+ * The newest cached scan of `url` that `source` produced and that is younger than `ttlMs`, or null. Every failure is a
+ * cache miss: a file that is missing, unparseable or not a scan is skipped rather than failing the lookup.
+ *
+ * The source is part of the lookup, not a detail of the answer: a local scan and a remote one answer the same URL from
+ * different engines, so serving one for the other makes `--remote` a claim the answer does not back. A remote run
+ * therefore never reads a locally produced scan, and a local run never reads a remote one (review issue: misleading
+ * `--remote`).
  *
  * A scan file is written once and never touched again, so its mtime is when the scan ran. Files older than the TTL are
  * therefore skipped on the stat, without parsing them: this runs on the hot path of every scan, the cache holds a day
@@ -140,7 +145,7 @@ const normalizeUrl = (url: string): string =>
  * was moved backwards by something other than this tool (a restored backup, a `touch`) is therefore invisible here even
  * when its `scannedAt` is inside the TTL, which costs a rescan and never a wrong answer.
  */
-export async function findRecentScan(url: string, ttlMs: number = agentLimits.scanCacheTtlMs): Promise<AgentScan | null> {
+export async function findRecentScan(url: string, source: AgentScan["source"], ttlMs: number = agentLimits.scanCacheTtlMs): Promise<AgentScan | null> {
   const dir = cacheDir();
   let names: string[];
   try {
@@ -156,7 +161,7 @@ export async function findRecentScan(url: string, ttlMs: number = agentLimits.sc
     try {
       if ((await fs.stat(path.join(dir, name))).mtimeMs < oldest) continue;
       const scan = await readScan(path.join(dir, name));
-      if (!scan) continue;
+      if (!scan || scan.source !== source) continue;
       const at = Date.parse(scan.scannedAt);
       if (!Number.isFinite(at) || at < oldest || at <= bestAt) continue;
       if (!sameUrl(scan.page.url, url) && !sameUrl(scan.page.finalUrl, url)) continue;

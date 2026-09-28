@@ -71,11 +71,11 @@ describe("findRecentScan", () => {
     });
     for (const scan of [older, newer, elsewhere]) await saveScan(scan);
 
-    expect((await findRecentScan("https://stripe.com", 3_600_000))?.scanId).toBe("newer");
-    expect((await findRecentScan("stripe.com", 3_600_000))?.scanId).toBe("newer");
-    expect((await findRecentScan("www.stripe.com/", 3_600_000))?.scanId).toBe("newer");
-    expect(await findRecentScan("stripe.com", 30_000)).toBeNull();
-    expect(await findRecentScan("nowhere.example", 3_600_000)).toBeNull();
+    expect((await findRecentScan("https://stripe.com", "local", 3_600_000))?.scanId).toBe("newer");
+    expect((await findRecentScan("stripe.com", "local", 3_600_000))?.scanId).toBe("newer");
+    expect((await findRecentScan("www.stripe.com/", "local", 3_600_000))?.scanId).toBe("newer");
+    expect(await findRecentScan("stripe.com", "local", 30_000)).toBeNull();
+    expect(await findRecentScan("nowhere.example", "local", 3_600_000)).toBeNull();
   });
 
   it("ignores a corrupt file rather than throwing", async () => {
@@ -84,7 +84,7 @@ describe("findRecentScan", () => {
     await saveScan(testScan({ scanId: "good", scannedAt: new Date().toISOString() }));
     fs.writeFileSync(path.join(xdg, "assets-scraper", "broken.json"), "{ not json");
     fs.writeFileSync(path.join(xdg, "assets-scraper", "notes.txt"), "ignored");
-    expect((await findRecentScan("stripe.com", 3_600_000))?.scanId).toBe("good");
+    expect((await findRecentScan("stripe.com", "local", 3_600_000))?.scanId).toBe("good");
   });
 
   it("ignores a file that is valid JSON but not a scan", async () => {
@@ -98,7 +98,7 @@ describe("findRecentScan", () => {
     fs.writeFileSync(path.join(dir, "untitled.json"), JSON.stringify({ ...testScan(), page: { url: "https://stripe.com" } }));
     fs.writeFileSync(path.join(dir, "list.json"), JSON.stringify([1, 2, 3]));
     fs.writeFileSync(path.join(dir, "empty.json"), "null");
-    expect((await findRecentScan("stripe.com", 3_600_000))?.scanId).toBe("good");
+    expect((await findRecentScan("stripe.com", "local", 3_600_000))?.scanId).toBe("good");
     expect(await loadScan("half")).toBeNull();
     expect(await loadScan("untitled")).toBeNull();
     expect(await loadScan("list")).toBeNull();
@@ -130,7 +130,7 @@ describe("findRecentScan", () => {
     for (const name of ["source", "stats", "warnings", "fonts", "palette", "statsless", "fontless", "sourceless", "assetless", "hueless"]) {
       expect(await loadScan(name), name).toBeNull();
     }
-    expect((await findRecentScan("stripe.com", 3_600_000))?.scanId).toBe("good");
+    expect((await findRecentScan("stripe.com", "local", 3_600_000))?.scanId).toBe("good");
   });
 
   it("keeps a field the schema does not know about", async () => {
@@ -149,13 +149,13 @@ describe("findRecentScan", () => {
     const stale = path.join(xdg, "assets-scraper", "stale.json");
     const long = new Date(Date.now() - 7_200_000);
     fs.utimesSync(stale, long, long);
-    expect(await findRecentScan("stripe.com", 3_600_000)).toBeNull();
+    expect(await findRecentScan("stripe.com", "local", 3_600_000)).toBeNull();
     expect((await loadScan("stale"))?.scanId).toBe("stale");
   });
 
   it("returns null when nothing has been cached yet", async () => {
     vi.stubEnv("XDG_CACHE_HOME", path.join(makeTree(), "not-created"));
-    expect(await findRecentScan("stripe.com", 3_600_000)).toBeNull();
+    expect(await findRecentScan("stripe.com", "local", 3_600_000)).toBeNull();
   });
 });
 
