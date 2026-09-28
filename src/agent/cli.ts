@@ -8,6 +8,9 @@ import { normalizeInputUrl } from "@/lib/url";
 import { ScanFailure } from "@/server/errors";
 import { findRecentScan, saveScan } from "./cache";
 import { downloadAssets } from "./download";
+import { listInstalledFonts } from "./font-manifest";
+import { formatFontInstall, formatFontList, formatFontUninstall } from "./font-report";
+import { installFonts, uninstallFonts } from "./fonts";
 import { createLocalScanSource } from "./source-local";
 import { createRemoteScanSource } from "./source-remote";
 import { summarize } from "./summary";
@@ -30,6 +33,12 @@ Usage
       Scan a page and print what is on it: counts, palette, fonts, logos.
   assets-scraper get <url> [options]
       Scan a page and download a selection into scrap/<host> inside the current project.
+  assets-scraper fonts install <url> [options]
+      Scan a page, convert its fonts to TTF and install them in the user font directory.
+  assets-scraper fonts list [options]
+      What this tool installed, with the licence, the files and where they came from.
+  assets-scraper fonts uninstall <family> [options]
+      Remove the files install wrote for these families.
 
 Options
   --out DIR             Where to write. Default: <project root>/scrap/<host>, or ~/Downloads/assets-scraper/<host>
@@ -40,6 +49,7 @@ Options
   --max 60              Files one download writes, highest scoring first
   --name-contains TEXT  Only assets whose name holds TEXT
   --include-icons       Keep icons the deck profile would drop
+  --families "A,B"      Font families to install or remove, as scan reported them
   --json                Print JSON instead of a report
   --refresh             Scan again instead of reusing a scan of the last hour
   --remote              Scan on the hosted app. Needs ASSETS_SCRAPER_TOKEN
@@ -51,6 +61,7 @@ Examples
   assets-scraper scan stripe.com
   assets-scraper get stripe.com --role logo,site-logo --json
   assets-scraper get stripe.com --profile all --kind svg --out ./brand
+  assets-scraper fonts install stripe.com --families "Söhne"
 `;
 
 /** How the report names each drop reason, so one line can say why a file was not taken. */
@@ -76,6 +87,7 @@ const OPTIONS = {
   max: { type: "string" },
   "name-contains": { type: "string" },
   "include-icons": { type: "boolean" },
+  families: { type: "string" },
   json: { type: "boolean" },
   refresh: { type: "boolean" },
   remote: { type: "boolean" },
@@ -241,6 +253,53 @@ export function formatDownload(result: DownloadResult): string {
   return rows.join("\n");
 }
 
+/** The families `--families`, or the positionals of `fonts uninstall`, name. */
+function familyList(raw: string | undefined): string[] | undefined {
+  if (raw === undefined) return undefined;
+  const families = raw.split(",").map((name) => name.trim()).filter((name) => name !== "");
+  if (families.length === 0) throw new UsageError("--families takes a comma separated list of family names");
+  return families;
+}
+
+/** `fonts install`, `fonts list` and `fonts uninstall` (spec 7): the font side of the same scan the other commands use. */
+async function runFonts(positionals: string[], values: Values): Promise<number> {
+  const subcommand = positionals[1];
+  const named = familyList(asString(values, "families"));
+  switch (subcommand) {
+    case "install": {
+      const url = positionals[2];
+      if (!url) throw new UsageError("fonts install needs a URL: assets-scraper fonts install stripe.com");
+      const source = openSource(values);
+      const { scan } = await scanPage(scanUrl(url), source, values);
+      const report = await installFonts(scan.fonts, {
+        fetchBytes: (file, fetchOptions) => source.fetchBytes(file, fetchOptions),
+        pageHost: scan.page.host,
+        ...(named === undefined ? {} : { only: named }),
+      });
+      line(values.json === true ? JSON.stringify(report) : formatFontInstall(report));
+      return 0;
+    }
+    case "list": {
+      const fonts = await listInstalledFonts();
+      line(values.json === true ? JSON.stringify({ fonts }) : formatFontList(fonts));
+      return 0;
+    }
+    case "uninstall": {
+      const families = [...positionals.slice(2), ...(named ?? [])];
+      if (families.length === 0) throw new UsageError("fonts uninstall needs a family: assets-scraper fonts uninstall Inter");
+      const result = await uninstallFonts(families);
+      line(values.json === true ? JSON.stringify(result) : formatFontUninstall(result));
+      return 0;
+    }
+    default:
+      throw new UsageError(
+        subcommand === undefined ?
+          "fonts needs install, list or uninstall: assets-scraper fonts install stripe.com"
+        : `unknown fonts command ${JSON.stringify(subcommand)}. It takes install, list or uninstall`,
+      );
+  }
+}
+
 async function runScan(url: string | undefined, values: Values): Promise<number> {
   if (!url) throw new UsageError("scan needs a URL: assets-scraper scan stripe.com");
   const { scan, reused } = await scanPage(scanUrl(url), openSource(values), values);
@@ -290,8 +349,7 @@ export async function main(argv: string[]): Promise<number> {
     case "get":
       return await runGet(positionals[1], values);
     case "fonts":
-      // Font installation is the MCP track (plan Task G3.1). It is wired in here when `src/agent/fonts.ts` lands.
-      throw new UsageError("fonts commands need the font installer, which is not in this build yet");
+      return await runFonts(positionals, values);
     default:
       throw new UsageError(`unknown command ${JSON.stringify(command)}. Run assets-scraper --help`);
   }

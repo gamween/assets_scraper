@@ -7,7 +7,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createAgentMcpServer, MCP_TOOL_NAMES, missingRuntimeDependency } from "./mcp";
 import { testAsset, testScan } from "./testing";
-import type { AgentScan, ScanSource } from "./types";
+import type { AgentScan, DownloadResult, ScanSource } from "./types";
 
 /**
  * The MCP server against a scan source that answers from memory, so the tool behavior an agent depends on is pinned
@@ -104,19 +104,17 @@ describe("list_assets", () => {
 });
 
 describe("download_assets", () => {
-  /**
-   * The downloader `src/agent/download.ts` provides is wired in at plan Task G6.1. Until then the default port says so in
-   * one sentence rather than writing nothing quietly, and this is the test that has to change when it is wired: replace it
-   * with one asserting that a server created with no `downloadAssets` writes files through the real downloader.
-   */
-  it("says the downloader is not wired in this build, in words an agent can report", async () => {
-    const unwired = await connect();
+  /** A server built with no `downloadAssets` writes through `src/agent/download.ts`, which is the shipped path. */
+  it("writes files through the real downloader by default", async () => {
+    const wired = await connect();
 
-    const result = await call(unwired, "download_assets", { scanId });
+    const result = JSON.parse(text(await call(wired, "download_assets", { scanId, ids: ["vector-logo"] }))) as DownloadResult;
 
-    expect(result.isError).toBe(true);
-    expect(text(result)).toContain("src/agent/download.ts");
-    await unwired.close();
+    expect(result.dir).toBe(path.join(home, "scrap", "stripe.com"));
+    expect(result.files.map((file) => file.id)).toEqual(["vector-logo"]);
+    expect(fs.readFileSync(result.files[0].path, "utf8")).toContain("<svg");
+    expect(JSON.parse(fs.readFileSync(result.manifestPath, "utf8"))).toMatchObject({ tool: "assets-scraper" });
+    await wired.close();
   });
 
   it("passes the resolved destination and the filters to the downloader it was given", async () => {
@@ -132,6 +130,30 @@ describe("download_assets", () => {
 
     expect(seen).toEqual([{ dir: path.join(home, "scrap", "stripe.com"), ids: ["hero"] }]);
     await wired.close();
+  });
+});
+
+describe("the scan source", () => {
+  /**
+   * A remote with no token cannot be built at all, so the server opens its source on the first tool call: it starts, and
+   * the agent reads the refusal as a tool error naming what is missing rather than as a server that would not come up.
+   */
+  it("reports a remote with no token on the first call instead of failing to start", async () => {
+    previousEnv.set("ASSETS_SCRAPER_REMOTE", process.env.ASSETS_SCRAPER_REMOTE);
+    previousEnv.set("ASSETS_SCRAPER_TOKEN", process.env.ASSETS_SCRAPER_TOKEN);
+    process.env.ASSETS_SCRAPER_REMOTE = "https://example.test";
+    delete process.env.ASSETS_SCRAPER_TOKEN;
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const remoteClient = new Client({ name: "test", version: "0" });
+    await Promise.all([remoteClient.connect(clientTransport), createAgentMcpServer({ cwd: home }).connect(serverTransport)]);
+
+    // A URL nothing cached, so the tool has to open the source to answer it.
+    const result = await call(remoteClient, "scan_page", { url: "https://linear.app" });
+
+    expect(result.isError).toBe(true);
+    expect(text(result)).toContain("ASSETS_SCRAPER_TOKEN");
+    await remoteClient.close();
+    delete process.env.ASSETS_SCRAPER_REMOTE;
   });
 });
 

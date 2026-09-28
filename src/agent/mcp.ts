@@ -8,6 +8,7 @@ import { type Asset, AssetKind, AssetRole } from "@/lib/contract";
 import { ScanFailure } from "@/server/errors";
 import { findRecentScan, loadScan, saveScan } from "./cache";
 import { resolveDestination } from "./dest";
+import { downloadAssets } from "./download";
 import { listInstalledFonts } from "./font-manifest";
 import { installFonts, uninstallFonts } from "./fonts";
 import { agentLimits } from "./limits";
@@ -48,9 +49,9 @@ const MAX_ASSET_ROWS = 200;
 const MAX_SVG_TEXT_BYTES = 256 * 1024;
 
 /**
- * Writes a selection to disk. Track G2 owns the implementation (`src/agent/download.ts`); this is the shape the tool
- * calls it through. The destination is resolved here, not there, because it is the agent that supplied it and spec 10
- * holds an agent-supplied path to the project's scrap directory.
+ * Writes a selection to disk. `src/agent/download.ts` holds the implementation; this is the shape the tool calls it
+ * through, so a test can watch what the tool asked for. The destination is resolved here, not there, because it is the
+ * agent that supplied it and spec 10 holds an agent-supplied path to the project's scrap directory.
  */
 export type DownloadAssetsPort = (
   scan: AgentScan,
@@ -62,7 +63,7 @@ export interface AgentMcpOptions {
   source?: ScanSource;
   /** The working directory the destination rule resolves from. Defaults to the directory the server was started in. */
   cwd?: string;
-  /** Wired at integration (plan Task G6.1), once `src/agent/download.ts` has landed. */
+  /** Stands in for the real downloader in a test. Defaults to `downloadAssets`. */
   downloadAssets?: DownloadAssetsPort;
 }
 
@@ -79,9 +80,16 @@ const failureText = (error: unknown): string => {
 const UNKNOWN_SCAN = (scanId: string): string =>
   `unknown scanId ${JSON.stringify(scanId)}: it is not in the cache any more. Run scan_page on the URL again.`;
 
-const downloadUnavailable: DownloadAssetsPort = () => {
-  throw new Error("downloads are not available in this build: src/agent/download.ts is not wired in yet");
-};
+/**
+ * The real downloader, behind the port. The destination is already resolved and confined by the tool, so it is passed as
+ * an explicit `dest`, which `resolveDestination` takes as it is rather than deriving a second path from the host.
+ */
+const downloadThroughCore: DownloadAssetsPort = (scan, options) =>
+  downloadAssets(scan, options.source, {
+    ...(options.selection ?? {}),
+    dest: options.dir,
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+  });
 
 /** The filters `list_assets` takes, in the words of spec section 4. */
 const listFilterShape = {
@@ -111,9 +119,14 @@ const passesSizeGate = (asset: Asset, minLongSide: number): boolean => {
 };
 
 export function createAgentMcpServer(options: AgentMcpOptions = {}): McpServer {
-  const source = options.source ?? createScanSource();
+  /**
+   * The scan source, opened on the first tool call rather than at startup: a remote with no token refuses to be built,
+   * and an agent reads that as a tool error it can act on instead of a server that would not start.
+   */
+  let opened = options.source;
+  const openSource = (): ScanSource => (opened ??= createScanSource());
   const cwd = options.cwd ?? process.cwd();
-  const download = options.downloadAssets ?? downloadUnavailable;
+  const download = options.downloadAssets ?? downloadThroughCore;
   const server = new McpServer({ name: "assets-scraper", version: SERVER_VERSION });
 
   /** The cached scan, or the answer that tells the agent what to do about it. */
@@ -142,7 +155,7 @@ export function createAgentMcpServer(options: AgentMcpOptions = {}): McpServer {
     async ({ url, refresh }) => {
       try {
         const cached = refresh === true ? null : await findRecentScan(url);
-        const scan = cached ?? (await source.scan(url));
+        const scan = cached ?? (await openSource().scan(url));
         if (!cached) await saveScan(scan);
         return ok(summarize(scan));
       } catch (error) {
@@ -214,7 +227,7 @@ export function createAgentMcpServer(options: AgentMcpOptions = {}): McpServer {
     async ({ scanId, dest, ...filters }) =>
       withScan(scanId, async (scan) => {
         const destination = resolveDestination({ host: scan.page.host, cwd, restrictToProject: true, ...(dest === undefined ? {} : { dest }) });
-        const result = await download(scan, { dir: destination.dir, source, selection: filters });
+        const result = await download(scan, { dir: destination.dir, source: openSource(), selection: filters });
         return ok(result);
       }),
   );
@@ -237,7 +250,7 @@ export function createAgentMcpServer(options: AgentMcpOptions = {}): McpServer {
         const markup =
           inline && "text" in inline ? inline.text
           : inline && "base64" in inline ? Buffer.from(inline.base64, "base64").toString("utf8")
-          : (await source.fetchBytes(asset.display ?? asset.original ?? { url: "", proxy: "", format: asset.format })).toString("utf8");
+          : (await openSource().fetchBytes(asset.display ?? asset.original ?? { url: "", proxy: "", format: asset.format })).toString("utf8");
         if (Buffer.byteLength(markup) > MAX_SVG_TEXT_BYTES) {
           return fail(`this SVG is ${Buffer.byteLength(markup)} bytes, too much to read into a context. Use download_assets instead.`);
         }
@@ -280,7 +293,7 @@ export function createAgentMcpServer(options: AgentMcpOptions = {}): McpServer {
     async ({ scanId, families }) =>
       withScan(scanId, async (scan) => {
         const report = await installFonts(scan.fonts, {
-          fetchBytes: (file, fetchOptions) => source.fetchBytes(file, fetchOptions),
+          fetchBytes: (file, fetchOptions) => openSource().fetchBytes(file, fetchOptions),
           pageHost: scan.page.host,
           ...(families === undefined ? {} : { only: families }),
         });
