@@ -160,6 +160,8 @@ function downloadAnswer(result: DownloadResult, unknownIds: string[]): CallToolR
     files,
     ...(omitted > 0 ? { filesOmitted: omitted, hint: `${omitted} more files are on disk and in manifest.json. Read that file if you need every row.` } : {}),
     dropped: result.dropped,
+    // Three numbers, so an agent reading `over-budget` knows which limit to raise rather than having to open the manifest.
+    budget: result.budget,
     failed: result.failed.slice(0, MAX_FAILED_ROWS),
     ...(result.failed.length > MAX_FAILED_ROWS ? { failedOmitted: result.failed.length - MAX_FAILED_ROWS } : {}),
     ...(unknownIds.length > 0 ? { unknownIds: unknownIds.slice(0, 20) } : {}),

@@ -467,7 +467,15 @@ describe("selectAssets, byte rules", () => {
     const selection = await selectAssets(assets, { ids: ["hero", "second"] });
     expect(selection.keep.map((asset) => asset.id)).toEqual(["hero", "second"]);
     expect(selection.dropped).toEqual({});
-    expect(selection.budget.maxTotalBytes).toBe(0);
+    expect(selection.budget).toEqual({ maxTotalBytes: 0, maxFileBytes: 0, keptBytes: 60 * MB });
+  });
+
+  /** Lifting a budget is deliberate, so a number that is not one reads as the default rather than as no limit. */
+  it("takes only an explicit 0 as lifting a limit", async () => {
+    const assets = [make({ file: "hero.png", width: 4000, height: 3000, bytes: 12 * MB })];
+    expect(await kept(assets, { maxFileBytes: Number.NaN })).toEqual([]);
+    expect(await kept(assets, { maxFileBytes: -1 })).toEqual([]);
+    expect(await kept(assets, { maxFileBytes: 0 })).toEqual(["hero.png"]);
   });
 
   /** The second pass is the one that decides: a URL that answers with more than the scan measured is caught there. */

@@ -351,7 +351,7 @@ describe("downloadAssets, byte rules", () => {
 
     expect(result.files.map((file) => file.id)).toEqual(["huge"]);
     expect(result.dropped).toEqual({});
-    expect(readManifest(result).budget.maxTotalBytes).toBe(0);
+    expect(readManifest(result).budget).toEqual({ maxTotalBytes: 0, maxFileBytes: 0, keptBytes: 30 * MB });
   });
 
   it("reads the limits from the environment like every other agent limit", async () => {

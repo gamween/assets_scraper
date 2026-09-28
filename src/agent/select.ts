@@ -49,7 +49,7 @@ const isAvailable = (asset: Asset): boolean => Boolean(asset.inline ?? asset.dis
  * for a size nobody measured: the second pass runs with the bytes in hand, so a file that turns out to be too big is
  * dropped then rather than guessed at now.
  */
-export function assetBytes(asset: Asset, bytes?: ReadonlyMap<string, Buffer>): number {
+function assetBytes(asset: Asset, bytes?: ReadonlyMap<string, Buffer>): number {
   const fetched = bytes?.get(asset.id);
   if (fetched) return fetched.length;
   const inline = asset.inline;
@@ -57,11 +57,15 @@ export function assetBytes(asset: Asset, bytes?: ReadonlyMap<string, Buffer>): n
   return asset.bytes ?? (asset.original ?? asset.display)?.bytes ?? 0;
 }
 
-/** A limit the caller may raise or lift: an explicit number wins, 0 means no limit, and nothing named takes `fallback`. */
+/**
+ * A limit the caller may raise or lift: a whole number above 0 is the limit, exactly 0 lifts it, and anything else,
+ * `undefined` or a number that is not one, takes `fallback`. Lifting a budget is a thing a caller says deliberately,
+ * so a NaN from a JSON body reads as "the default" rather than as "no limit at all".
+ */
 const limitOf = (asked: number | undefined, fallback: number): number =>
-  asked === undefined ? fallback
-  : Number.isSafeInteger(asked) && asked > 0 ? asked
-  : 0;
+  asked === 0 ? 0
+  : asked !== undefined && Number.isSafeInteger(asked) && asked > 0 ? asked
+  : fallback;
 
 /**
  * The name two variants of the same picture share: no extension, no `@2x`, no `-1024x512`, no `_large`, lower case.
@@ -115,21 +119,18 @@ export async function selectAssets(
 
   /**
    * The tail both paths end on: sort by relevance, cap, spend the byte budget on the best of what is left, and report
-   * only the duplicate groups whose winner survived. `budgeted` is 0 for a call naming ids, because an asset the caller
-   * asked for by id is never dropped for its size (spec 4: explicit ids win over every filter and every profile rule).
+   * only the duplicate groups whose winner survived. `applied` is what the byte rules actually were for this call, so a
+   * call naming ids reports none of them: an asset the caller asked for by id is never dropped for its size (spec 4,
+   * explicit ids win over every filter and every profile rule), and the manifest should not claim a ceiling it skipped.
    */
-  const finish = (selected: Asset[], budgeted: number): Selection => {
+  const finish = (selected: Asset[], applied: Pick<SelectionBudget, "maxTotalBytes" | "maxFileBytes">): Selection => {
     const sorted = selected.sort(byRelevance);
     const max = options.max ?? agentLimits.maxFiles;
     const capped = capByKind(sorted, Math.max(0, max));
     drop("cap", sorted.length - capped.length);
-    const keep = withinBudget(capped, budgeted, bytes, drop);
+    const keep = withinBudget(capped, applied.maxTotalBytes, bytes, drop);
     const kept = new Set(keep.map((asset) => asset.id));
-    const budget: SelectionBudget = {
-      maxTotalBytes: budgeted,
-      maxFileBytes,
-      keptBytes: keep.reduce((total, asset) => total + assetBytes(asset, bytes), 0),
-    };
+    const budget: SelectionBudget = { ...applied, keptBytes: keep.reduce((total, asset) => total + assetBytes(asset, bytes), 0) };
     return { keep, dropped, duplicates: duplicates.filter((group) => kept.has(group.keptId)), budget };
   };
 
@@ -141,7 +142,7 @@ export async function selectAssets(
     const wanted = new Set(options.ids);
     const named = pool.filter((asset) => wanted.has(asset.id));
     drop("filter", pool.length - named.length);
-    return finish(named, 0);
+    return finish(named, { maxTotalBytes: 0, maxFileBytes: 0 });
   }
 
   const needle = options.nameContains?.toLowerCase();
@@ -217,7 +218,7 @@ export async function selectAssets(
     }
   }
 
-  return finish(pool, maxTotalBytes);
+  return finish(pool, { maxTotalBytes, maxFileBytes });
 }
 
 /**
