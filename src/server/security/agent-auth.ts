@@ -28,7 +28,7 @@ export function agentTokens(): string[] {
 }
 
 /** Constant-time comparison over digests, so neither the length nor the first differing byte shows in the timing. */
-function safeEqual(a: string, b: string): boolean {
+export function safeEqual(a: string, b: string): boolean {
   return timingSafeEqual(createHash("sha256").update(a).digest(), createHash("sha256").update(b).digest());
 }
 

@@ -41,7 +41,8 @@ const nextConfig: NextConfig = {
   typedRoutes: true,
   reactCompiler: true,
   serverExternalPackages: ["@sparticuz/chromium", "playwright-core", "sharp", "fontkit", "wawoff2"],
-  outputFileTracingIncludes: { "/api/scan": chromiumFiles },
+  // Every route that launches a browser: `/api/scan` for the UI, and the agent API, which runs the same engine.
+  outputFileTracingIncludes: { "/api/scan": chromiumFiles, "/api/v1/scan": chromiumFiles, "/api/v1/assets.zip": chromiumFiles },
   poweredByHeader: false,
   async headers() {
     return [
