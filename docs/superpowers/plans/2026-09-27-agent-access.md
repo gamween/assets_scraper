@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Status (2026-09-29):** done. Implemented and merged in #18 to #26, deployed, and fixed since in #29 to #32. Only some checkboxes below were ticked and some values changed during review (`nearDuplicateDistance` and the perceptual hash, for instance), so where this plan disagrees with the spec or the code, the spec and the code win. The current deploy procedure is the Deploy section of `README.md`.
+
 **Goal:** Build what `docs/superpowers/specs/2026-09-27-agent-access-design.md` describes: an agent core with smart selection, a CLI, an MCP server with font installation, a hosted JSON and ZIP API for agents, and a Claude Code plugin.
 
 **Architecture:** One shared core (`src/agent/*`) on top of the v1 scan engine, with a local source (Chromium in process) and a remote source (the hosted `/api/v1`). The CLI, the MCP server and the hosted routes are thin adapters over that core.

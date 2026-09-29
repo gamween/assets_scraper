@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Status (2026-09-29):** done. Implemented and merged in #3 to #16, and deployed. The checkboxes below were not kept up to date and some values changed during review, so where this plan disagrees with the spec or the code, the spec and the code win. The current deploy procedure is the Deploy section of `README.md`.
+
 **Goal:** Build Assets Scraper v1 as specified in `docs/superpowers/specs/2026-09-16-assets-scraper-design.md`: paste a URL, get every SVG, image and font plus the brand palette, select and download.
 
 **Architecture:** One Next.js 16 app on Vercel. `POST /api/scan` streams NDJSON events from a host-agnostic scan engine that drives a hardened headless Chromium behind a per-scan egress proxy, runs bundled in-page collectors, then post-processes in Node. `GET /api/asset` is a signed byte proxy used as a fallback. The client renders results, handles selection and builds ZIPs in the browser.
