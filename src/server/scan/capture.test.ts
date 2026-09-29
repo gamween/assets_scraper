@@ -97,6 +97,47 @@ describe("startCapture", () => {
     expect(fonts.filter((font) => font.meta === null)).toHaveLength(9);
   });
 
+  it("replaces a failed response with a later good one for the same URL, and keeps the first good one", async () => {
+    const page = new EventEmitter();
+    const capture = startCapture(page as unknown as Page, { signal: new AbortController().signal, toneFromBytes: async () => "unknown", parseFontBinary: () => META });
+    const reads: string[] = [];
+    const bodies: Promise<unknown>[] = [];
+    const respond = (url: string, status: number, type: "image" | "font" | "stylesheet", contentType: string, body: string) =>
+      page.emit("response", {
+        url: () => url,
+        status: () => status,
+        headers: () => ({ "content-type": contentType }),
+        request: () => ({ resourceType: () => type }),
+        body: () => {
+          reads.push(`${status} ${url}`);
+          const read = Promise.resolve(Buffer.from(body));
+          bodies.push(read);
+          return read;
+        },
+      } as unknown as Response);
+    const image = "https://example.com/upload.png";
+    const font = "https://example.com/a.woff2";
+    const sheet = "https://example.com/a.css";
+    respond(image, 503, "image", "text/html", "busy");
+    respond(font, 404, "font", "text/html", "missing");
+    respond(sheet, 500, "stylesheet", "text/html", "error");
+    respond(image, 200, "image", "image/png", "first good");
+    respond(font, 200, "font", "font/woff2", "font bytes");
+    respond(sheet, 200, "stylesheet", "text/css", ".a{}");
+    // A later answer never replaces a good one, failed or not
+    respond(image, 404, "image", "text/html", "gone");
+    respond(image, 200, "image", "image/png", "second good");
+    await new Promise((resolve) => setImmediate(resolve));
+    await Promise.all(bodies);
+    const network = await capture.settle(10_000);
+
+    expect(network.images.map(({ url, status, bytes }) => ({ url, status, bytes }))).toEqual([{ url: image, status: 200, bytes: "first good".length }]);
+    expect(network.fonts.map(({ url, status, meta }) => ({ url, status, meta }))).toEqual([{ url: font, status: 200, meta: META }]);
+    expect(network.sheets).toEqual([{ url: sheet, status: 200, cssText: ".a{}" }]);
+    // Failed responses are never read, and a URL is read once
+    expect(reads).toEqual([`200 ${image}`, `200 ${font}`, `200 ${sheet}`]);
+  });
+
   it("keeps scheduling cheap with thousands of reads waiting for the total cap", async () => {
     const page = new EventEmitter();
     const capture = startCapture(page as unknown as Page, { signal: new AbortController().signal, toneFromBytes: async () => "unknown", bodyReadMs: 60_000 });

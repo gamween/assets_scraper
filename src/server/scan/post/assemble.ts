@@ -331,15 +331,11 @@ async function buildRecords(input: PostInput, baseUrl: string, limiter: Limiter,
 
   for (const candidate of collector.candidates) add(candidate);
 
-  // Captured bodies, by URL. An empty body (a response Chrome abandoned, or a broken 200) is no capture: the URL is
-  // checked like one the network did not load.
+  // Captured bodies, by URL: one record per URL, where a good response has already replaced a failed one. An empty
+  // body (a response Chrome abandoned, or a broken 200) is no capture: the URL is checked like one the network did not load.
   const captured = new Map<string, CapturedImage>();
   const ok = (status: number) => status >= 200 && status < 300;
-  for (const image of network.images) {
-    if (image.bytes === 0) continue;
-    const existing = captured.get(image.url);
-    if (!existing || (!ok(existing.status) && ok(image.status))) captured.set(image.url, image);
-  }
+  for (const image of network.images) if (image.bytes !== 0) captured.set(image.url, image);
 
   // Captured stylesheet text (spec 8.1). The CSSOM walk already declared every URL of the sheets it could read, so this
   // adds what it could not reach: cross-origin sheets, their @import children, sheets whose response URL differs from
