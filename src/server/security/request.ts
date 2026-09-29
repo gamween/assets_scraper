@@ -1,4 +1,5 @@
 import { createHash, timingSafeEqual } from "node:crypto";
+import { ipAddress } from "@vercel/functions";
 import { declaredType } from "./sniff";
 
 /**
@@ -43,4 +44,14 @@ export async function readCappedBody(request: Request, maxBytes: number = MAX_BO
     return null;
   }
   return Buffer.concat(chunks);
+}
+
+/**
+ * The caller's address, the key of its per-client daily quotas, or null. Only on Vercel is `x-real-ip` the platform's
+ * word: its edge sets the header itself, over anything the client sent. On any other host the header is whatever the
+ * client chose, and a fresh value per request would be a fresh quota (or somebody else's), so there the per-client
+ * quotas are off and the shared daily budgets bound everything, as they do for a request with no address at all.
+ */
+export function clientAddress(request: Request): string | null {
+  return process.env.VERCEL ? (ipAddress(request) ?? null) : null;
 }

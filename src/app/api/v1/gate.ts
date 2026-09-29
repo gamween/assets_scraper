@@ -1,4 +1,3 @@
-import { ipAddress } from "@vercel/functions";
 import { AssetKind, AssetRole, type ErrorCode } from "@/lib/contract";
 import { agentLimits } from "@/agent/limits";
 import type { SelectionOptions, SelectionProfile } from "@/agent/types";
@@ -6,7 +5,7 @@ import { zipMaxBytes } from "./zip";
 import { authenticateAgent } from "@/server/security/agent-auth";
 import { takeScanBudget } from "@/server/security/budget";
 import { apiError, checkScanTarget, refuseWhenClosed, type GateRefusal } from "@/server/security/gate";
-import { readCappedBody, requestMediaType } from "@/server/security/request";
+import { clientAddress, readCappedBody, requestMediaType } from "@/server/security/request";
 
 /**
  * The request gate of the agent API (spec section 8): the order of v1 spec 7.1 minus BotID, which the bearer token
@@ -58,7 +57,7 @@ export async function gateAgentTarget(input: string | null | undefined, request:
   if (!input) return fail(400, "invalid-url", INVALID_URL);
   const target = checkScanTarget(input, INVALID_URL);
   if (!target.ok) return target;
-  const client = ipAddress(request) ?? null;
+  const client = clientAddress(request);
   if (!(await takeScanBudget(client))) return fail(429, "budget", "Daily scan limit reached.");
   return { ok: true, url: target.url, host: target.host, client };
 }

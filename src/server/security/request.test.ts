@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { MAX_BODY_BYTES, readCappedBody, requestMediaType, safeEqual } from "./request";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { clientAddress, MAX_BODY_BYTES, readCappedBody, requestMediaType, safeEqual } from "./request";
 
 const post = (body: BodyInit | null, headers: Record<string, string> = {}) =>
   new Request("https://assets.example.com/api/scan", { method: "POST", body, headers });
@@ -29,5 +29,24 @@ describe("request helpers", () => {
     expect(safeEqual("open-sesame", "open-sesame")).toBe(true);
     expect(safeEqual("open-sesame", "open-sesamE")).toBe(false);
     expect(safeEqual("open", "open-sesame")).toBe(false);
+  });
+});
+
+describe("clientAddress", () => {
+  const from = (address?: string) => new Request("https://assets.example.com/", { headers: address ? { "x-real-ip": address } : {} });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("is the address Vercel's edge writes, on Vercel", () => {
+    vi.stubEnv("VERCEL", "1");
+    expect(clientAddress(from("203.0.113.7"))).toBe("203.0.113.7");
+    expect(clientAddress(from())).toBeNull();
+  });
+
+  it("is null anywhere else, where x-real-ip is whatever the client sent", () => {
+    vi.stubEnv("VERCEL", "");
+    expect(clientAddress(from("203.0.113.7"))).toBeNull();
   });
 });

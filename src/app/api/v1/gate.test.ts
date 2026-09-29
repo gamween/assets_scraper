@@ -98,9 +98,17 @@ describe("gateAgentTarget", () => {
   });
 
   it("keys the per-address quota on the caller's address like the browser gate does", async () => {
+    process.env.VERCEL = "1";
     ipAddress.mockReturnValue("203.0.113.7");
     const result = await gateAgentTarget("linear.app", post({ url: "linear.app" }));
     expect(result).toMatchObject({ ok: true, client: "203.0.113.7" });
+  });
+
+  it("keys nothing on an address off Vercel, where the client writes x-real-ip itself", async () => {
+    delete process.env.VERCEL;
+    ipAddress.mockReturnValue("203.0.113.7");
+    const result = await gateAgentTarget("linear.app", post({ url: "linear.app" }));
+    expect(result).toMatchObject({ ok: true, client: null });
   });
 
   it("refuses a missing or unusable URL", async () => {
