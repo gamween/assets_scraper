@@ -1,12 +1,11 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page, type TestInfo } from "@playwright/test";
 import { diagnostics, findAsset, loadFixture } from "./support/fixtures";
 import { installControlledScan, mockScan, openResults } from "./support/routes";
 
 /**
  * The layout rules of spec 12.6 at the three reference viewports (spec 15), on every screen: columns per breakpoint, a
- * sticky top bar, a selection bar inside the viewport, and nothing that scrolls sideways. These used to save a
- * screenshot per screen that nothing compared and that a green run threw away; the rules are what a review of them
- * would have checked.
+ * sticky top bar, a selection bar inside the viewport, and nothing that scrolls sideways. The rules are what gates a
+ * change; the screenshots of the spec 15 visual review are only taken on a local run (see `checkScreen`).
  */
 const VIEWPORTS = [
   { name: "desktop", width: 1470, height: 956, columns: 6 },
@@ -17,25 +16,35 @@ const VIEWPORTS = [
 const linear = loadFixture("linear");
 const siteLogo = findAsset(linear, (a) => a.role === "site-logo" && a.width === 88);
 
-/** Nothing on the screen scrolls sideways, once the web fonts that set every line's width have loaded. */
-async function expectNoSidewaysScroll(page: Page, name: string) {
+/**
+ * Nothing on the screen scrolls sideways, once the web fonts that set every line's width have loaded. Run locally, the
+ * screen is also saved to the report for the visual review before a release (spec 15). Nothing compares the pictures,
+ * and a green CI run keeps no report, so CI does not take them.
+ */
+async function checkScreen(page: Page, testInfo: TestInfo, name: string) {
   await page.evaluate(() => document.fonts.ready.then(() => {}));
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
   expect(overflow, `${name} scrolls horizontally`).toBeLessThanOrEqual(0);
+  if (process.env.CI) return;
+  // Lets the lazy previews and the fades settle, for the picture only: no assertion waits on it.
+  await page.waitForTimeout(400);
+  const path = testInfo.outputPath(`${name}.png`);
+  await page.screenshot({ path });
+  await testInfo.attach(name, { path, contentType: "image/png" });
 }
 
 for (const viewport of VIEWPORTS) {
   test.describe(`${viewport.name} ${viewport.width}x${viewport.height}`, () => {
     test.use({ viewport: { width: viewport.width, height: viewport.height } });
 
-    test("landing", async ({ page }) => {
+    test("landing", async ({ page }, testInfo) => {
       await page.addInitScript(() => localStorage.setItem("assets-scraper:recent", JSON.stringify(["vercel.com", "ripple.com"])));
       await page.goto("/");
       await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
-      await expectNoSidewaysScroll(page, `landing-${viewport.width}`);
+      await checkScreen(page, testInfo, `landing-${viewport.width}`);
     });
 
-    test("scanning", async ({ page }) => {
+    test("scanning", async ({ page }, testInfo) => {
       const scan = await installControlledScan(page);
       await page.goto("/");
       await page.getByRole("textbox", { name: "Page URL" }).fill("linear.app");
@@ -47,28 +56,28 @@ for (const viewport of VIEWPORTS) {
         linear.find((event) => event.type === "page")!,
       );
       await expect(page.getByTestId("scan-status")).toBeVisible();
-      await expectNoSidewaysScroll(page, `scanning-${viewport.width}`);
+      await checkScreen(page, testInfo, `scanning-${viewport.width}`);
     });
 
-    test("results", async ({ page }) => {
+    test("results", async ({ page }, testInfo) => {
       await openResults(page);
       const columns = await page.locator(".asset-grid").first().evaluate((grid) => getComputedStyle(grid).gridTemplateColumns.split(" ").length);
       expect(columns).toBe(viewport.columns);
-      await expectNoSidewaysScroll(page, `results-${viewport.width}`);
+      await checkScreen(page, testInfo, `results-${viewport.width}`);
 
       // The top bar and the filter row stay in place while the grid scrolls.
       await page.mouse.wheel(0, 1200);
       await expect.poll(() => page.locator("header").first().boundingBox().then((box) => box?.y)).toBe(0);
-      await expectNoSidewaysScroll(page, `results-scrolled-${viewport.width}`);
+      await checkScreen(page, testInfo, `results-scrolled-${viewport.width}`);
     });
 
-    test("detail", async ({ page }) => {
+    test("detail", async ({ page }, testInfo) => {
       await openResults(page, { query: `&asset=${siteLogo.id}` });
       await expect(page.getByRole("dialog")).toBeVisible();
-      await expectNoSidewaysScroll(page, `detail-${viewport.width}`);
+      await checkScreen(page, testInfo, `detail-${viewport.width}`);
     });
 
-    test("selection bar", async ({ page }) => {
+    test("selection bar", async ({ page }, testInfo) => {
       await openResults(page);
       const cards = page.getByTestId("asset-card");
       for (const index of [0, 1, 3]) await cards.nth(index).locator("[data-card-main]").click({ modifiers: ["ControlOrMeta"] });
@@ -79,17 +88,17 @@ for (const viewport of VIEWPORTS) {
       const box = (await bar.boundingBox())!;
       expect(box.x).toBeGreaterThanOrEqual(0);
       expect(box.x + box.width).toBeLessThanOrEqual(viewport.width);
-      await expectNoSidewaysScroll(page, `selection-${viewport.width}`);
+      await checkScreen(page, testInfo, `selection-${viewport.width}`);
     });
 
-    test("error", async ({ page }) => {
+    test("error", async ({ page }, testInfo) => {
       await mockScan(page, [
         { type: "accepted", scanId: diagnostics.scanId, url: "https://linear.app/" },
         { type: "error", code: "internal", message: "internal", diagnostics },
       ]);
       await page.goto(`/?url=${encodeURIComponent("https://linear.app/")}`);
       await expect(page.getByTestId("error-panel")).toBeVisible();
-      await expectNoSidewaysScroll(page, `error-${viewport.width}`);
+      await checkScreen(page, testInfo, `error-${viewport.width}`);
     });
   });
 }
