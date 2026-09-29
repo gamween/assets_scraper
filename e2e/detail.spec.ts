@@ -1,18 +1,11 @@
 import { expect, test, type Page } from "@playwright/test";
 import type { ScanEvent } from "../src/lib/contract";
 import { diagnostics, findAsset, loadFixture, mapAssets } from "./support/fixtures";
-import { mockAssetRoutes, mockScan } from "./support/routes";
+import { mockAssetRoutes, mockScan, openResults } from "./support/routes";
 
 const linear = loadFixture("linear");
 const siteLogo = findAsset(linear, (a) => a.role === "site-logo" && a.width === 88);
 const photo = findAsset(linear, (a) => a.kind === "image" && a.role === "image" && a.visible && (a.renderedWidth ?? 0) > 100);
-
-async function openResults(page: Page, events: ScanEvent[] = linear, query = "") {
-  await mockAssetRoutes(page, events);
-  await mockScan(page, events);
-  await page.goto(`/?url=${encodeURIComponent("https://linear.app/")}${query}`);
-  await expect(page.getByTestId("results")).toBeVisible();
-}
 
 const card = (page: Page, id: string) => page.locator(`[data-asset-id="${id}"] [data-card-main]`);
 const dialog = (page: Page) => page.getByRole("dialog");
@@ -145,7 +138,7 @@ test.describe("detail view", () => {
   });
 
   test("&asset= opens the detail after results load and closing removes it", async ({ page }) => {
-    await openResults(page, linear, `&asset=${photo.id}`);
+    await openResults(page, { query: `&asset=${photo.id}` });
     await expect(dialog(page).getByRole("heading", { level: 2 })).toHaveText(photo.name);
     // Every role has a badge in the detail view, plain images included.
     await expect(dialog(page).getByTestId("detail-badge")).toHaveText("Image");
@@ -199,7 +192,7 @@ test.describe("detail view", () => {
 
   test("&asset= for a small icon walks its collapsed section without expanding it for good", async ({ page }) => {
     const icon = findAsset(linear, (a) => a.kind === "svg" && a.role === "icon");
-    await openResults(page, linear, `&asset=${icon.id}`);
+    await openResults(page, { query: `&asset=${icon.id}` });
     await expect(dialog(page).getByRole("heading", { level: 2 })).toHaveText(icon.name);
     await expect(dialog(page).getByTestId("detail-counter")).toHaveText(/^\d+ of \d+$/);
     await page.keyboard.press("Escape");
@@ -212,7 +205,7 @@ test.describe("detail view", () => {
   test("Download as displayed appears only when the framing changed", async ({ page }) => {
     const other = findAsset(linear, (a) => a.kind === "image" && a.role === "image" && a.id !== photo.id && !!a.original);
     const events = mapAssets(linear, (asset) => (asset.id === photo.id ? { ...asset, aspectChanged: true } : asset));
-    await openResults(page, events);
+    await openResults(page, { events });
     await card(page, photo.id).click();
     const displayed = dialog(page).getByRole("button", { name: "Download as displayed" });
     await expect(displayed).toBeVisible();
@@ -242,7 +235,7 @@ test.describe("detail view", () => {
     const long = mapAssets(linear, (asset) =>
       asset.id === siteLogo.id ? { ...asset, inline: { mime: "image/svg+xml" as const, text: `<svg>${"\n<path d='M0 0' />".repeat(60)}</svg>` } } : asset,
     );
-    await openResults(page, long);
+    await openResults(page, { events: long });
     await card(page, siteLogo.id).click();
     await dialog(page).getByRole("button", { name: "Code", exact: true }).click();
     const code = dialog(page).getByTestId("detail-code");

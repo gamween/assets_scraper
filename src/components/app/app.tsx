@@ -7,6 +7,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { bootstrap, syncFromLocation } from "@/lib/client/scan-session";
 import { useApp } from "@/lib/client/store";
 import { normalizeInputUrl } from "@/lib/url";
+import { Announcer } from "./announcer";
 import { useDocumentTitle, useGlobalShortcuts } from "./shortcuts";
 import { Workspace } from "./workspace";
 
@@ -30,7 +31,10 @@ export function App({ initialUrl }: { initialUrl: string | null }) {
 
   return (
     <TooltipProvider>
-      <Toaster>{phase === "idle" && !pendingHost ? <Landing /> : <Workspace pendingHost={pendingHost} />}</Toaster>
+      <Toaster>
+        {phase === "idle" && !pendingHost ? <Landing /> : <Workspace pendingHost={pendingHost} />}
+        <Announcer />
+      </Toaster>
     </TooltipProvider>
   );
 }

@@ -2,7 +2,7 @@ import { downloadZip as clientZip } from "client-zip";
 import type { Asset, FontFamily } from "@/lib/contract";
 import { getAssetBlob, getFontFileBlob } from "./asset-bytes";
 import { saveBlob } from "./download";
-import { fontFileEntries, getFontTtfBlob, safeSegment, withUniqueName } from "./font-files";
+import { fontFileEntries, getFontTtfBlob, safeSegment, slugify, withUniqueName } from "./font-files";
 
 export type ZipItem = { type: "asset"; asset: Asset } | { type: "font"; font: FontFamily };
 
@@ -20,8 +20,10 @@ export interface ZipOptions {
   concurrency?: number;
 }
 
-interface PlannedEntry {
+export interface PlannedEntry {
+  /** Path inside the archive. */
   path: string;
+  /** Display name for the `Show` list when the file fails. */
   label: string;
   load: (signal?: AbortSignal) => Promise<Blob>;
 }
@@ -57,15 +59,36 @@ export function planZip(items: ZipItem[], host: string): PlannedEntry[] {
   return entries;
 }
 
+/**
+ * `Download` and `Download TTF` on a font row: the family's files, or their TTF conversions, at the root of
+ * `<family>.zip` or `<family>-ttf.zip`, under the names they get in the page ZIP.
+ */
+export function planFontFamily(family: FontFamily, kind: "files" | "ttf"): { zipName: string; entries: PlannedEntry[] } {
+  const base = slugify(family.name) || "font";
+  const entries = fontFileEntries(family).flatMap((entry): PlannedEntry[] => {
+    if (kind === "files") return [{ path: entry.name, label: `${family.name} ${entry.name}`, load: (signal) => getFontFileBlob(entry.file, { signal }) }];
+    return entry.ttfName ? [{ path: entry.ttfName, label: `${family.name} ${entry.ttfName}`, load: (signal) => getFontTtfBlob(entry.file, { signal }) }] : [];
+  });
+  return { zipName: kind === "files" ? `${base}.zip` : `${base}-ttf.zip`, entries };
+}
+
 type Loaded = { ok: true; blob: Blob } | { ok: false; error: unknown };
 
 /**
- * Builds the ZIP as a streamed Response. Entries load 6 at a time, in order; an entry that fails is skipped and listed
- * in `result.failed`. `result` settles once the response body has been read to the end (or rejects on abort).
+ * Builds the ZIP of the page items as a streamed Response (see `streamZip`), in the spec 12.4 layout of `planZip`.
  */
 export function buildZip(items: ZipItem[], host: string, options: ZipOptions = {}) {
+  return streamZip(planZip(items, host), options);
+}
+
+/**
+ * Builds a ZIP of planned entries as a streamed Response. Entries load `concurrency` (6) at a time, in order; an entry
+ * that fails is skipped and listed in `result.failed`. `result` settles once the response body has been read to the
+ * end (or rejects on abort). Every archive the app builds goes through here, so none of them fetches everything at
+ * once or loses the files that loaded to one that did not.
+ */
+export function streamZip(plan: PlannedEntry[], options: ZipOptions = {}) {
   const { signal, onProgress, concurrency = 6 } = options;
-  const plan = planZip(items, host);
   const failed: ZipFailure[] = [];
   let settle!: { resolve: (value: { failed: ZipFailure[] }) => void; reject: (error: unknown) => void };
   const result = new Promise<{ failed: ZipFailure[] }>((resolve, reject) => {
@@ -111,6 +134,14 @@ export function buildZip(items: ZipItem[], host: string, options: ZipOptions = {
 
   const response = clientZip(entries(), { buffersAreUTF8: true });
   return { response, total: plan.length, result };
+}
+
+/** A small archive built in memory (one font family), for a save that needs no picker. */
+export async function zipToBlob(plan: PlannedEntry[], options: ZipOptions = {}): Promise<{ blob: Blob; failed: ZipFailure[] }> {
+  const { response, result } = streamZip(plan, options);
+  const blob = await response.blob();
+  const { failed } = await result;
+  return { blob, failed };
 }
 
 interface SaveFilePickerWindow {

@@ -1,11 +1,11 @@
 "use client";
 
-import { downloadZip } from "client-zip";
+import { showZipFailures } from "@/components/selection/zip-actions";
 import type { FontFamily } from "@/lib/contract";
 import { formatBytes } from "@/lib/format";
-import { getFontFileBlob } from "@/lib/client/asset-bytes";
 import { saveBlob } from "@/lib/client/download";
-import { fontFileEntries, getFontTtfBlob, slugify } from "@/lib/client/font-files";
+import { fontFileEntries } from "@/lib/client/font-files";
+import { planFontFamily, zipToBlob, type PlannedEntry, type ZipFailure } from "@/lib/client/zip";
 import { notify } from "./asset-actions";
 
 const WEIGHT_NAMES: Record<number, string> = {
@@ -64,33 +64,46 @@ export const LICENCE_LABELS: Record<FontFamily["license"]["kind"], string> = {
 export const googleFontsUrl = (family: string) => `https://fonts.google.com/specimen/${encodeURIComponent(family.trim()).replace(/%20/g, "+")}`;
 export const adobeFontsUrl = (family: string) => `https://fonts.adobe.com/search?query=${encodeURIComponent(family)}`;
 
-async function saveFiles(files: { name: string; load: () => Promise<Blob> }[], zipName: string) {
-  if (files.length === 1) {
-    saveBlob(await files[0].load(), files[0].name);
-    return;
+/**
+ * One file saves as it is. Several go through the loader of the page ZIP (six at a time, a file that fails skipped and
+ * listed) instead of all at once, where a single 404 among the unicode-range subsets of a family threw every file
+ * away. The archive is saved unless no file loaded at all.
+ */
+async function saveFamily(entries: PlannedEntry[], zipName: string): Promise<ZipFailure[]> {
+  if (entries.length === 1) {
+    saveBlob(await entries[0].load(), entries[0].path);
+    return [];
   }
-  const loaded = await Promise.all(files.map(async (file) => ({ name: file.name, input: await file.load(), lastModified: new Date() })));
-  saveBlob(await downloadZip(loaded).blob(), zipName);
+  const { blob, failed } = await zipToBlob(entries);
+  if (failed.length === entries.length) throw new Error("No file of the family could be downloaded");
+  saveBlob(blob, zipName);
+  return failed;
+}
+
+/** Downloads already loading, by kind and family: a second click waits for the first instead of fetching it all again. */
+const inFlight = new Set<string>();
+
+function downloadFamily(family: FontFamily, kind: "files" | "ttf", failure: string) {
+  const { zipName, entries } = planFontFamily(family, kind);
+  const key = `${kind} ${family.id}`;
+  if (!entries.length || inFlight.has(key)) return;
+  inFlight.add(key);
+  void saveFamily(entries, zipName)
+    .then((failed) => {
+      if (failed.length) showZipFailures(failed);
+    })
+    .catch(() => notify(failure, { error: true, description: family.name }))
+    .finally(() => inFlight.delete(key));
 }
 
 /** Spec 12.2 font `Download`: the files as served, one file directly or a small ZIP for several. */
 export function downloadFontFiles(family: FontFamily) {
-  if (!family.downloadable) return;
-  const entries = fontFileEntries(family);
-  void saveFiles(
-    entries.map((entry) => ({ name: entry.name, load: () => getFontFileBlob(entry.file) })),
-    `${slugify(family.name) || "font"}.zip`,
-  ).catch(() => notify("This font couldn't be downloaded", { error: true, description: family.name }));
+  if (family.downloadable) downloadFamily(family, "files", "This font couldn't be downloaded");
 }
 
 /** `Download TTF`: converted on the server through the proxy (`fmt=ttf`), offered only for convertible families. */
 export function downloadFontTtf(family: FontFamily) {
-  const entries = fontFileEntries(family).filter((entry) => entry.ttfName);
-  if (!entries.length) return;
-  void saveFiles(
-    entries.map((entry) => ({ name: entry.ttfName!, load: () => getFontTtfBlob(entry.file) })),
-    `${slugify(family.name) || "font"}-ttf.zip`,
-  ).catch(() => notify("The TTF couldn't be created", { error: true, description: family.name }));
+  downloadFamily(family, "ttf", "The TTF couldn't be created");
 }
 
 export const canDownloadTtf = (family: FontFamily) => fontFileEntries(family).some((entry) => entry.ttfName);

@@ -1,7 +1,9 @@
+import { readFileSync } from "node:fs";
 import { expect, test, type Page } from "@playwright/test";
 import type { FontFamily, ScanEvent } from "../src/lib/contract";
 import { fontsOf, loadFixture, withFonts } from "./support/fixtures";
 import { mockAssetRoutes, mockScan, type AssetRouteOptions } from "./support/routes";
+import { readZip } from "./support/zip";
 
 const linear = loadFixture("linear");
 const [inter, berkeley] = fontsOf(linear);
@@ -63,6 +65,18 @@ test.describe("font rows", () => {
     const ttf = page.waitForEvent("download");
     await interRow.getByRole("button", { name: "Download TTF" }).click();
     expect((await ttf).suggestedFilename()).toBe("inter-variable-ttf.zip");
+  });
+
+  test("Download keeps the files that loaded when one of the family fails", async ({ page }) => {
+    const italic = new URL(inter.faces[1].files[0].url).pathname;
+    await openFonts(page, linear, { failDirect: [italic], failProxy: [italic] });
+    const zip = page.waitForEvent("download");
+    await row(page, "Inter Variable").getByRole("button", { name: "Download", exact: true }).click();
+    // One file failing used to fail the whole family, and nothing was saved.
+    const file = await zip;
+    expect(file.suggestedFilename()).toBe("inter-variable.zip");
+    expect(readZip(readFileSync((await file.path())!)).map((entry) => entry.name)).toEqual(["inter-variable-100-900.woff2"]);
+    await expect(page.getByTestId("toast")).toContainText("1 file couldn't be downloaded");
   });
 
   test("Copy name copies the family name", async ({ page, context }) => {

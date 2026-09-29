@@ -8,7 +8,7 @@ import { originalCandidates, variantKey } from "./cdn";
 import { extensionFor, formatFromContentType, formatFromUrl, sniffFormat } from "./format";
 import { createFilenamer, displayName } from "./naming";
 import { noiseReason, svgNoiseReason, TINY_DATA_URI_BYTES } from "./noise";
-import { decodeDataUri, forEachStylesheetUrl } from "./parse";
+import { decodeDataUri, forEachStylesheetUrl, largestIconSize, svgSize, withoutFragment } from "./parse";
 import { assignRole, isSpriteSheet, logoScore, relevanceScore } from "./roles";
 import { createToneBudget } from "./tone";
 import { groupVariants, pickBest, sizeScore, type SizeHints, type VariantMember } from "./variants";
@@ -80,21 +80,6 @@ const sha1 = (value: string | Buffer) => createHash("sha1").update(value).digest
 const area = (size?: { width?: number; height?: number }) => (size?.width ?? 0) * (size?.height ?? 0);
 const defined = <T extends object>(value: T): T =>
   Object.fromEntries(Object.entries(value).filter(([, v]) => v !== undefined)) as T;
-
-/** Width and height of an SVG from its root attributes, else from its viewBox. */
-export function svgSize(markup: string): { width?: number; height?: number } {
-  // The slice bounds every regex below, the way preflight caps a tag: a real <svg> root tag is never near 4 KB, and a
-  // scraped one can be megabytes of junk.
-  const root = (/<svg\b[^>]*>/i.exec(markup)?.[0] ?? "").slice(0, 4096);
-  // The digit runs are bounded so the alternatives at each start position stay constant: an unbounded `\d*\.?\d+`
-  // backtracks quadratically over a long digit run that never reaches the closing quote.
-  const attribute = (name: string) => Number(new RegExp(`\\s${name}\\s*=\\s*["']\\s*(\\d{1,10}(?:\\.\\d{1,10})?|\\.\\d{1,10})(?:px)?\\s*["']`, "i").exec(root)?.[1]) || undefined;
-  const width = attribute("width");
-  const height = attribute("height");
-  if (width && height) return { width, height };
-  const box = /\sviewBox\s*=\s*["']([^"']+)["']/i.exec(root)?.[1]?.trim().split(/[\s,]+/).map(Number);
-  return box?.length === 4 && box[2] > 0 && box[3] > 0 ? { width: box[2], height: box[3] } : {};
-}
 
 /** Second-level labels under a two-letter country code that are public suffixes: shop.co.uk, shop.com.au. */
 const SECOND_LEVEL_LABELS = /^(?:ac|co|com|edu|go|gov|ne|net|or|org)$/;
@@ -267,7 +252,9 @@ async function buildRecords(input: PostInput, baseUrl: string, limiter: Limiter,
       try {
         const parsed = new URL(url, baseUrl);
         if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return;
-        url = parsed.href;
+        // Keyed like the capture: Chrome reports responses without the fragment, so `icons.svg#logo` kept its own
+        // record, missed the body the page loaded, spent a probe and came back as a second, unlabelled asset.
+        url = withoutFragment(parsed);
       } catch {
         return;
       }
@@ -294,12 +281,10 @@ async function buildRecords(input: PostInput, baseUrl: string, limiter: Limiter,
       record.naturalWidth = candidate.naturalWidth;
       record.naturalHeight = candidate.naturalHeight;
     }
-    for (const match of (candidate.sizes ?? "").matchAll(/(\d+)x(\d+)/gi)) {
-      const size = { width: Number(match[1]), height: Number(match[2]) };
-      if (area(size) > area({ width: record.declaredWidth, height: record.declaredHeight })) {
-        record.declaredWidth = size.width;
-        record.declaredHeight = size.height;
-      }
+    const declared = largestIconSize(candidate.sizes);
+    if (declared && area(declared) > area({ width: record.declaredWidth, height: record.declaredHeight })) {
+      record.declaredWidth = declared.width;
+      record.declaredHeight = declared.height;
     }
     record.visible ||= candidate.visible;
     if (candidate.visible && candidate.rect && area(candidate.rect) > area(record.rendered)) {
@@ -322,15 +307,11 @@ async function buildRecords(input: PostInput, baseUrl: string, limiter: Limiter,
 
   for (const candidate of collector.candidates) add(candidate);
 
-  // Captured bodies, by URL. An empty body (a response Chrome abandoned, or a broken 200) is no capture: the URL is
-  // checked like one the network did not load.
+  // Captured bodies, by URL: one record per URL, where a good response has already replaced a failed one. An empty
+  // body (a response Chrome abandoned, or a broken 200) is no capture: the URL is checked like one the network did not load.
   const captured = new Map<string, CapturedImage>();
   const ok = (status: number) => status >= 200 && status < 300;
-  for (const image of network.images) {
-    if (image.bytes === 0) continue;
-    const existing = captured.get(image.url);
-    if (!existing || (!ok(existing.status) && ok(image.status))) captured.set(image.url, image);
-  }
+  for (const image of network.images) if (image.bytes !== 0) captured.set(image.url, image);
 
   // Captured stylesheet text (spec 8.1). The CSSOM walk already declared every URL of the sheets it could read, so this
   // adds what it could not reach: cross-origin sheets, their @import children, sheets whose response URL differs from

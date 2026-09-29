@@ -31,7 +31,10 @@ export function SelectionBar() {
   if (count === 0 && !zipping) return null;
 
   return (
-    <div data-selection-bar className="pointer-events-none fixed inset-x-0 bottom-[calc(12px+env(safe-area-inset-bottom,0px))] z-40 flex justify-center px-3">
+    <div
+      data-selection-bar
+      className="pointer-events-none fixed inset-x-0 bottom-[calc(12px+env(safe-area-inset-bottom,0px))] z-40 flex justify-center pr-[max(12px,env(safe-area-inset-right,0px))] pl-[max(12px,env(safe-area-inset-left,0px))]"
+    >
       <section
         aria-label="Selection"
         data-motion="move"
@@ -40,7 +43,7 @@ export function SelectionBar() {
           "animate-in fade-in-0 slide-in-from-bottom-2 duration-200 ease-enter",
         )}
       >
-        <span data-testid="selection-count" className="mr-auto inline-flex h-8 min-w-0 items-center truncate rounded-md bg-accent-soft px-2.5 font-mono text-mono whitespace-nowrap text-text tabular-nums sm:mr-3" aria-live="polite">
+        <span data-testid="selection-count" className="mr-auto inline-flex h-8 min-w-0 items-center truncate rounded-md bg-accent-soft px-2.5 font-mono text-mono whitespace-nowrap text-text tabular-nums sm:mr-3">
           {formatCount(count)} selected{bytes ? ` · ${formatBytes(bytes)}` : ""}
         </span>
         {zipping ? (

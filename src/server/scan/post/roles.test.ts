@@ -1,6 +1,21 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { LINEAR_OP_GROWTH_BOUND, opGrowth } from "../fonts/testing";
 import type { CandidateContext } from "../types";
 import { assignRole, isSpriteSheet, logoScore, relevanceScore, type RoleInput } from "./roles";
+
+/** The characters each `searchFrom` steps over, counted for `opGrowth`. */
+const ops = vi.hoisted(() => ({ count: 0 }));
+vi.mock("./search", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./search")>();
+  return {
+    ...actual,
+    searchFrom: (text: string, pattern: RegExp, from: number) => {
+      const match = actual.searchFrom(text, pattern, from);
+      ops.count += (match ? match.index + match[0].length : text.length) - from;
+      return match;
+    },
+  };
+});
 
 const context = (patch: Partial<CandidateContext> = {}): CandidateContext => ({
   header: false, nav: false, footer: false, homeLink: false, logoWord: false, siteWord: false, logoWall: false,
@@ -135,5 +150,31 @@ describe("isSpriteSheet", () => {
     expect(isSpriteSheet('<svg><defs><symbol id="a"><path d="M0 0h8v8z"/></symbol></defs><use href="#a"/></svg>')).toBe(false);
     expect(isSpriteSheet('<svg><symbol id="a"><path d="M0 0h8v8z"/></symbol><rect width="8" height="8"/></svg>')).toBe(false);
     expect(isSpriteSheet('<svg><path d="M0 0h8v8z"/></svg>')).toBe(false);
+  });
+
+  it("reads a drawing left open in a symbol or a definition as drawn", () => {
+    expect(isSpriteSheet('<svg><symbol id="a"><path d="M0 0h8v8z"/></svg>')).toBe(false);
+    expect(isSpriteSheet('<svg><symbol id="a"/></symbol><defs><path d="M0 0h8v8z"/></svg>')).toBe(false);
+    expect(isSpriteSheet('<svg><SYMBOL id="a"><path d="M0 0h8v8z"/></SYMBOL ><symbol id="b"><rect/></symbol></svg>')).toBe(true);
+  });
+
+  /**
+   * Regression: the lazy strip read from every `<symbol` without a closer to the end of the markup, so a valid 1 MB SVG
+   * holding `<symbol` 150,000 times in a comment took 20 seconds, for each file asset that carried it.
+   */
+  it("reads hostile markup in linear time", async () => {
+    const hostile: Record<string, (size: number) => string> = {
+      symbols: (size) => `<svg><!--${"<symbol ".repeat(size / 8)}--><path d="M0 0"/></svg>`,
+      definitions: (size) => `<svg><symbol id="a"/></symbol><!--${"<defs ".repeat(size / 6)}--><path d="M0 0"/></svg>`,
+      closed: (size) => `<svg>${'<symbol id="a"><path d="M0 0"/></symbol>'.repeat(size / 40)}</svg>`,
+    };
+    for (const [kind, markup] of Object.entries(hostile)) {
+      const { small, large, factor } = await opGrowth((size) => isSpriteSheet(markup(size)), 20_000, ops);
+      expect.soft(small, kind).toBeGreaterThan(0);
+      expect.soft(factor, kind).toBeLessThan(LINEAR_OP_GROWTH_BOUND);
+      // Each pass reads the markup once
+      expect.soft(large, kind).toBeLessThanOrEqual(3 * markup(20_000 * 8).length);
+    }
+    expect(isSpriteSheet(`<svg><!--${"<symbol ".repeat(150_000)}--><path d="M0 0"/></svg>`)).toBe(false);
   });
 });

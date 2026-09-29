@@ -1,4 +1,6 @@
-// Test helpers for the fonts module, shared by its unit tests and tests/integration/fonts. Not used at runtime.
+// Test helpers for the fonts module, shared by its unit tests and tests/integration/fonts, and the growth measures of
+// every performance test of the scan engine (`opGrowth`). Not used at runtime.
+import { it } from "vitest";
 import type { SafeFetch, SafeFetchOptions, SafeResponse } from "../types";
 
 export function fakeResponse(url: string, status: number, body = ""): SafeResponse {
@@ -40,8 +42,27 @@ export function random(seed: number): () => number {
   };
 }
 
+/** Whether this run is `pnpm bench`, the one run that measures wall time. */
+export const BENCH = process.env.FONTS_BENCH === "1";
+
+/**
+ * A test that measures wall time, run by `pnpm bench` and skipped by the gating suite. CI runs the benchmarks in a job
+ * that reports and does not block (`.github/workflows/ci.yml`), so a regression only wall time can read is still seen.
+ */
+export const benchmark = it.runIf(BENCH);
+
+/**
+ * `fastestMs` and `growthFactor` refuse to run outside `pnpm bench`: a ratio of two timings flakes on a loaded runner,
+ * so the gating suite counts operations instead (`opGrowth`), and a wall-clock check written into it fails at once, on
+ * every machine, rather than now and then in CI.
+ */
+function benchOnly(helper: string): void {
+  if (!BENCH) throw new Error(`${helper} measures wall time, which only \`pnpm bench\` does: gate on opGrowth, or measure it in a benchmark`);
+}
+
 /** The fastest of `runs` runs of `task`, in milliseconds, so a GC pause or a JIT tier change in one run does not count. */
 export async function fastestMs(task: () => unknown, runs = 3): Promise<number> {
+  benchOnly("fastestMs");
   let fastest = Infinity;
   for (let run = 0; run < runs; run += 1) {
     const started = performance.now();
@@ -87,6 +108,7 @@ async function msPerRun(task: () => unknown): Promise<number> {
  * more than the setup of the task, and where `GROWTH` times `size` stays under the caps of the code under test.
  */
 export async function growthFactor(task: (size: number) => unknown, size: number): Promise<number> {
+  benchOnly("growthFactor");
   await task(size);
   const small = await msPerRun(() => task(size));
   const large = await msPerRun(() => task(size * GROWTH));

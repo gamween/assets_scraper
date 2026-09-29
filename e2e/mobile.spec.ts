@@ -1,15 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { loadFixture } from "./support/fixtures";
-import { mockAssetRoutes, mockScan } from "./support/routes";
-
-const linear = loadFixture("linear");
-
-async function openResults(page: Page) {
-  await mockAssetRoutes(page, linear);
-  await mockScan(page, linear);
-  await page.goto(`/?url=${encodeURIComponent("https://linear.app/")}`);
-  await expect(page.getByTestId("results")).toBeVisible();
-}
+import { mockAssetRoutes, mockScan, openResults } from "./support/routes";
 
 /** The 360 px toast and the bottom centre bar share the bottom edge on a narrow window, and the toast wins on z-index. */
 async function expectToastClearOfTheBar(page: Page) {
@@ -56,6 +47,17 @@ test.describe("phone toolbar", () => {
 
     // The `/` chip is a keyboard hint: a touch device has no keyboard to press it with.
     await expect(page.getByText("/", { exact: true })).toBeHidden();
+  });
+
+  test("text fields and selects read at 16 px, so iOS does not zoom into them", async ({ page }) => {
+    await openResults(page);
+    // iOS Safari zooms into a focused field set under 16 px and never zooms back out: the grid then scrolled sideways.
+    const sizes = await page
+      .locator("input:not([type=checkbox]), select")
+      .evaluateAll((fields) => fields.map((field) => [field.getAttribute("aria-label"), parseFloat(getComputedStyle(field).fontSize)] as const));
+    expect(sizes.map(([label]) => label)).toEqual(expect.arrayContaining(["Page URL", "Filter by name or URL", "Sort", "Preview background"]));
+    for (const [label, size] of sizes) expect(size, `${label} font size`).toBeGreaterThanOrEqual(16);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(0);
   });
 
   test("Select still turns the checkboxes on", async ({ page }) => {
@@ -119,6 +121,74 @@ test.describe("phone toolbar", () => {
     const first = (await page.getByTestId("swatch-chip").first().boundingBox())!;
     expect(rule.y).toBeLessThan(first.y + first.height);
     expect(first.y).toBeLessThan(rule.y + rule.height);
+  });
+});
+
+test.describe("phone detail sheet", () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+
+  test("Back closes the sheet and keeps the results", async ({ page }) => {
+    const linear = loadFixture("linear");
+    await mockAssetRoutes(page, linear);
+    const scan = await mockScan(page, linear);
+    await page.goto("/");
+    await page.getByRole("textbox", { name: "Page URL" }).fill("linear.app");
+    await page.keyboard.press("Enter");
+    await expect(page.getByTestId("results")).toBeVisible();
+
+    const sheet = page.getByRole("dialog");
+    await page.locator("[data-card-main]").first().tap();
+    await expect(sheet).toBeVisible();
+    await expect(page).toHaveURL(/&asset=/);
+
+    // The sheet covers the screen like a page, so Back is how it is closed. It used to pop the scan's own entry: the
+    // landing came back, and Forward scanned the page again.
+    await page.goBack();
+    await expect(sheet).toHaveCount(0);
+    await expect(page.getByTestId("results")).toBeVisible();
+    await expect(page).toHaveURL(/\?url=https%3A%2F%2Flinear\.app%2F$/);
+    await page.goForward();
+    await expect(sheet).toBeVisible();
+
+    // Close goes back over the entry the sheet pushed: the next Back leaves the results, as it would have before.
+    await sheet.getByRole("button", { name: "Close" }).tap();
+    await expect(sheet).toHaveCount(0);
+    await expect(page).toHaveURL(/\?url=https%3A%2F%2Flinear\.app%2F$/);
+    await page.goBack();
+    await expect(page.getByRole("heading", { level: 1, name: "Every SVG, image and font on a page." })).toBeVisible();
+    expect(scan.bodies).toHaveLength(1);
+  });
+});
+
+test.describe("notched phone in landscape", () => {
+  test.use({ viewport: { width: 844, height: 390 }, hasTouch: true, isMobile: true });
+
+  test("the page, the selection bar and the detail keep out of the safe area", async ({ page }) => {
+    // `viewport-fit=cover` hands the notch side to the page: 47 px here, more than the 32 px gutter.
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send("Emulation.setSafeAreaInsetsOverride", { insets: { top: 0, left: 47, bottom: 21, right: 47 } });
+    await openResults(page);
+    const left = async (locator: ReturnType<Page["locator"]>) => (await locator.boundingBox())!.x;
+    // The mark, not the link around it, whose hover background reaches 6 px past it on purpose.
+    expect(await left(page.getByRole("link", { name: "Assets Scraper" }).locator("svg"))).toBeGreaterThanOrEqual(47);
+    expect(await left(page.getByTestId("asset-card").first())).toBeGreaterThanOrEqual(47);
+    const gutters = await page.locator(".page-x").first().evaluate((element) => [getComputedStyle(element).paddingLeft, getComputedStyle(element).paddingRight]);
+    expect(gutters).toEqual(["47px", "47px"]);
+
+    await page.getByRole("button", { name: "Select" }).click();
+    await page.getByTestId("asset-card").first().getByRole("checkbox").click();
+    const bar = page.locator("[data-selection-bar]");
+    expect(await bar.evaluate((element) => [getComputedStyle(element).paddingLeft, getComputedStyle(element).paddingRight])).toEqual(["47px", "47px"]);
+
+    await page.getByRole("button", { name: "Done" }).click();
+    await page.getByRole("button", { name: "Clear" }).click();
+    await page.locator("[data-card-main]").first().tap();
+    const detail = page.getByRole("dialog");
+    await expect(detail).toBeVisible();
+    const box = (await detail.boundingBox())!;
+    expect(box.x).toBeGreaterThanOrEqual(47);
+    expect(box.x + box.width).toBeLessThanOrEqual(844 - 47);
+    expect(await left(detail.getByRole("radiogroup", { name: "Preview background" }))).toBeGreaterThanOrEqual(47);
   });
 });
 

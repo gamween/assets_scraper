@@ -78,6 +78,13 @@ export function hrefName(href: string | undefined): string | undefined {
   return usable(meaningful[meaningful.length - 1].replace(/[-_]+/g, " "));
 }
 
+/**
+ * The number that ends a word of an id (`clip0`, `logo2`). The lookbehind lets only the first digit of the run start a
+ * match: `\d+$` alone tried from every digit of a run that does not end the word, and one id of a few hundred thousand
+ * digits in a page's SVG held the event loop for minutes.
+ */
+const TRAILING_DIGITS = /(?<!\d)\d+$/;
+
 /** React and bundler suffixes stuck on an otherwise readable id: `-:R4nrnmr6l6:`, `__abc123`. */
 const ID_NOISE = /(?:[-_]{1,2}:[^:]*:|[-_]{1,2}[0-9a-f]{6,})$/i;
 /**
@@ -112,7 +119,7 @@ export function markupName(markup: string | undefined): string | undefined {
       .replace(ID_NOISE, "")
       .replace(/([a-z\d])(?=[A-Z])/g, "$1-")
       .split(/[-_\s]+/)
-      .map((word) => word.replace(/\d+$/, "").toLowerCase())
+      .map((word) => word.replace(TRAILING_DIGITS, "").toLowerCase())
       .filter((word) => word.length > 1 && !ID_FILLER.has(word));
     const name = usable(words.join(" "));
     if (name) return name;

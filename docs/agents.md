@@ -110,7 +110,7 @@ curl -fsSL -o assets.zip \
 - `GET /api/v1/assets.zip?url=...&profile=deck&kinds=svg,image&roles=logo&max=60` streams a ZIP with the same selection rules and a `manifest.json` inside. `-f` matters: without it, curl saves an error's JSON body as `assets.zip` and exits 0.
 - `GET /llms.txt` and `GET /api/openapi.json` describe both endpoints for machines.
 
-A token skips the bot check and nothing else: the access code, the rate limit, the scan budget, the SSRF guards and every v1 cap still apply. On a deployment the owner put behind `ACCESS_CODE`, send the code in `x-access-code` next to the token; the CLI and the MCP server send `ASSETS_SCRAPER_ACCESS_CODE` when it is set. Tokens live in the `AGENT_TOKENS` environment variable of the deployment, comma separated, and are never logged.
+A token skips the bot check and nothing else: the access code, the rate limit, the scan budget, the SSRF guards and every v1 cap still apply. On a deployment the owner put behind `ACCESS_CODE`, send the code in `x-access-code` next to the token; the CLI and the MCP server send `ASSETS_SCRAPER_ACCESS_CODE` when it is set. Tokens live in the `AGENT_TOKENS` environment variable of the deployment, comma separated, and are never logged. A token shorter than 24 characters is ignored, so a placeholder or a typo there can never be the only thing guarding the API.
 
 A client the hosting firewall challenges gets `403` with an HTML page and `x-vercel-mitigated: challenge` on every path until it expires, which only a browser can pass. The CLI and the MCP server say so in words (`the firewall of ... stopped this client`) rather than as a refused token: wait a few minutes, or scan locally.
 
@@ -191,7 +191,7 @@ Every v1 limit still applies to the scan itself: 90 s for the whole scan, at mos
 | `CHROME_EXECUTABLE_PATH` | Chrome, when it is not in the default location |
 | `ASSETS_SCRAPER_NO_SANDBOX` | `1` runs Chrome without its sandbox, only for a host where it cannot start one |
 | `XDG_CACHE_HOME` | Where the scan cache goes, `~/.cache` by default |
-| `ASSETS_SCRAPER_BUILD_ID` | The build identity cached scans are stamped with, instead of the version plus the bundle digest |
-| `ASSETS_SCRAPER_FONT_DIR` | Where fonts are installed, instead of `~/Library/Fonts` or `~/.local/share/fonts` |
-| `ASSETS_SCRAPER_STATE_DIR` | Where `installed-fonts.json` is kept, instead of `~/.local/state/assets-scraper` |
-| `XDG_STATE_HOME` | The state root when `ASSETS_SCRAPER_STATE_DIR` is not set, `~/.local/state` by default |
+| `ASSETS_SCRAPER_FONT_DIR` | Where fonts are installed, instead of `~/Library/Fonts` on macOS and `~/.local/share/fonts` elsewhere |
+| `ASSETS_SCRAPER_STATE_DIR` | Where the record of installed fonts goes, instead of `~/.local/state/assets-scraper` |
+| `XDG_STATE_HOME` | The base of that record when `ASSETS_SCRAPER_STATE_DIR` is unset, `~/.local/state` by default |
+| `ASSETS_SCRAPER_BUILD_ID` | The build identity that stamps cached scans, instead of the package version plus a digest of `dist/` |

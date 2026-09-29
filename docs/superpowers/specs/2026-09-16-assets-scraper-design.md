@@ -84,7 +84,7 @@ The route handler is a thin adapter that runs the gate and writes events as NDJS
 | `src/lib/format.ts` | Bytes, dimensions, counts formatting | none |
 | `src/lib/ndjson.ts` | NDJSON encoder (server) and streaming line decoder (client) | contract |
 | `src/server/config/limits.ts` | Every limit and budget in one place, env-overridable | none |
-| `src/server/net/ip.ts` | `isPublicIp`, `resolvePublicHost`, own-host checks | ipaddr.js |
+| `src/server/net/ip.ts` | `isPublicIp`, `resolvePublicAddresses`, own-host checks | ipaddr.js |
 | `src/server/net/safe-fetch.ts` | undici Agent with checked DNS lookup, manual redirects re-validated, byte and time caps | undici, ip |
 | `src/server/net/egress-proxy.ts` | Per-scan HTTP/CONNECT proxy that pins checked IPs, ports 80/443 only, byte and socket caps | ip |
 | `src/server/security/sign.ts` | HMAC signing and verification of asset proxy URLs | node:crypto |
@@ -457,7 +457,7 @@ The palette module is a port of the validated lab code (v2 with every fix enable
 ### 11.1 SSRF
 
 - Every Chromium request goes through the per-scan egress proxy. The proxy resolves DNS once, requires every A and AAAA record to be public, connects to the checked IP, allows only ports 80 and 443, denies own hosts, and caps 96 sockets and 400 MB per scan. Playwright proxies loopback too.
-- Every Node request (preflight, verification, probes, manifest, icons, Google Fonts check, Wikidata, asset proxy) goes through `safeFetch` with the same `resolvePublicHost`: undici Agent with a checked `connect.lookup`, IP literals checked separately, `redirect: "manual"` with every hop re-validated (at most 5), timeouts and byte caps.
+- Every Node request (preflight, verification, probes, manifest, icons, Google Fonts check, Wikidata, asset proxy) goes through `safeFetch` with the same `resolvePublicAddresses`: undici Agent with a checked `connect.lookup`, IP literals checked separately, `redirect: "manual"` with every hop re-validated (at most 5), timeouts and byte caps.
 - `isPublicIp`: ipaddr.js `range() === "unicast"` after unwrapping IPv4-mapped IPv6, and an explicit block of `::/96` (IPv4-compatible), which ipaddr.js wrongly classifies as unicast.
 - Own hosts: `VERCEL_URL`, `VERCEL_BRANCH_URL`, `VERCEL_PROJECT_PRODUCTION_URL`, `APP_HOSTS` (comma list) and, in production, `localhost`. This stops a scan from scanning the app itself.
 - Tests only: `SCAN_TEST_ALLOW_HOSTS` accepts exact `host:port` pairs, honored only when `NODE_ENV !== "production"` and `VERCEL` is unset.
@@ -470,7 +470,7 @@ The palette module is a port of the validated lab code (v2 with every fix enable
 - `safeFetch` with `Referer` set to the page origin, 25 MB cap, 20 s timeout, 5 redirects. Content types allowed: `image/*`, `font/*`, `application/font-*`, `application/x-font-*`, and `application/octet-stream` after magic-byte sniffing.
 - Response headers: `content-security-policy: default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; sandbox`, `x-content-type-options: nosniff`, `cross-origin-resource-policy: same-origin`, `content-disposition` (attachment with the sanitized `dl` name, else inline), `cache-control: private, max-age=3600`, `vercel-cdn-cache-control: public, s-maxage=86400`.
 - Daily proxied bytes budget (`PROXY_BYTES_PER_DAY`), taken before bytes are served: a known `content-length` in full, a body of unknown length in blocks of at least 1 MiB (the first before the status, the next whenever a chunk passes what the body holds). A take refused before the status gives 429; a block refused mid-body errors the stream. The unused part of the last block goes back when the body ends, fails or is cancelled (through `waitUntil`), so bodies in flight overshoot a store without atomic increments by at most one block each.
-- The client uses the proxy only when direct access fails, and always for `http:` URLs. A `proxy` of `""` means direct fetch only: when that fetch fails, the client marks the asset or file unavailable.
+- The client uses the proxy only when direct access fails, and always for `http:` URLs. Font files are the exception and go through the proxy first: a font is only ever read with `fetch`, and many font hosts do not send `Access-Control-Allow-Origin`, so a direct attempt would often fail and log a CORS error before the proxy answered. A `proxy` of `""` means direct fetch only: when that fetch fails, the client marks the asset or file unavailable.
 
 ### 11.3 Budgets and switches
 

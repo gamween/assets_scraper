@@ -2,15 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import type { Asset, ScanEvent } from "../src/lib/contract";
 import { formatBytes, formatDimensions } from "../src/lib/format";
 import { assetsOf, findAsset, fontsOf, loadFixture, withDone } from "./support/fixtures";
-import { mockAssetRoutes, mockScan, type AssetRouteOptions } from "./support/routes";
-
-async function openResults(page: Page, events: ScanEvent[], options: AssetRouteOptions = {}, url = "https://linear.app/") {
-  const assetLog = await mockAssetRoutes(page, events, options);
-  const scan = await mockScan(page, events);
-  await page.goto(`/?url=${encodeURIComponent(url)}`);
-  await expect(page.getByTestId("results")).toBeVisible();
-  return { assetLog, scan };
-}
+import { openResults } from "./support/routes";
 
 const linear = loadFixture("linear");
 const linearAssets = assetsOf(linear);
@@ -20,7 +12,7 @@ const section = (page: Page, name: string) => page.getByRole("region", { name, e
 test.describe("results", () => {
   test("header shows the title, meta and actions", async ({ page, context }) => {
     await context.grantPermissions(["clipboard-read", "clipboard-write"]);
-    await openResults(page, linear);
+    await openResults(page);
     await expect(page.getByRole("heading", { level: 1, name: "Linear: The system for product development" })).toBeVisible();
     // Fonts count in their tab, not in the asset count (contract `stats.assets`).
     const stats = linear.flatMap((event) => (event.type === "done" ? [event.stats] : []))[0];
@@ -38,7 +30,7 @@ test.describe("results", () => {
 
   test("palette swatches copy their hex", async ({ page, context }) => {
     await context.grantPermissions(["clipboard-read", "clipboard-write"]);
-    await openResults(page, linear);
+    await openResults(page);
     const palette = page.getByRole("region", { name: "Palette" });
     await expect(palette.getByRole("button", { name: /^Copy #/ })).toHaveCount(5);
     await palette.getByRole("button", { name: "Copy #5e6ad2" }).click();
@@ -54,11 +46,11 @@ test.describe("results", () => {
   test("brand links come from the last page event and scan their page", async ({ page }) => {
     // The client replaces page info with each page event: a later page without links clears them.
     const cleared = [...linear.slice(0, -1), { type: "page", page: { requestedUrl: "https://linear.app/", finalUrl: "https://linear.app/", host: "linear.app", title: "Linear", status: 200, brandLinks: [] } } as ScanEvent, linear.at(-1)!];
-    await openResults(page, cleared);
+    await openResults(page, { events: cleared });
     await expect(page.getByRole("group", { name: "Brand resources on this site" })).toHaveCount(0);
 
     await page.unrouteAll({ behavior: "ignoreErrors" });
-    const { scan } = await openResults(page, linear);
+    const { scan } = await openResults(page);
     const brand = page.getByRole("group", { name: "Brand resources on this site" });
     await expect(brand.getByRole("button")).toHaveText(["Brand"]);
     await brand.getByRole("button", { name: "Brand" }).click();
@@ -67,7 +59,7 @@ test.describe("results", () => {
   });
 
   test("tabs show counts and switch with 1 to 4", async ({ page }) => {
-    await openResults(page, linear);
+    await openResults(page);
     const svg = linearAssets.filter((a) => a.kind === "svg").length;
     const tabs = page.getByRole("tab");
     await expect(tabs).toHaveText([`All ${linearTotal}`, `SVG ${svg}`, `Images ${linearAssets.length - svg}`, "Fonts 2"]);
@@ -84,7 +76,7 @@ test.describe("results", () => {
   });
 
   test("the tablist takes one tab stop and the arrows move the selection", async ({ page }) => {
-    await openResults(page, linear);
+    await openResults(page);
     const all = page.getByRole("tab", { name: /^All/ });
     const svg = page.getByRole("tab", { name: /^SVG/ });
     // Roving tabindex: only the selected tab is in the tab order, and it controls the panel it switches.
@@ -104,7 +96,7 @@ test.describe("results", () => {
   });
 
   test("Auto never picks the checkerboard, and a pale swatch is still a swatch", async ({ page }) => {
-    await openResults(page, linear);
+    await openResults(page);
     // Spec 12.3: light on dark, dark on light, everything else on the plain well. The checkerboard is opt-in.
     await expect(page.locator('[data-testid="preview-well"][data-background="grid"]')).toHaveCount(0);
     await expect(page.locator('[data-testid="preview-well"][data-background="plain"]').first()).toBeVisible();
@@ -131,14 +123,14 @@ test.describe("results", () => {
     const wwwHost = linear.map((event) =>
       event.type === "page" ? { ...event, page: { ...event.page, host: "www.linear.app", finalUrl: "https://www.linear.app/" } } : event,
     );
-    await openResults(page, wwwHost);
+    await openResults(page, { events: wwwHost });
     await expect(page.getByTestId("results-meta")).toContainText("linear.app · ");
     await expect(page.getByTestId("results-meta")).not.toContainText("www.");
     await expect(page).toHaveTitle(/^\d+ assets · linear\.app$/);
   });
 
   test("Logos lead All, and the SVG tab has no Logos section", async ({ page }) => {
-    await openResults(page, linear);
+    await openResults(page);
     const headings = page.getByTestId("results").getByRole("heading", { level: 2 });
     await expect(headings.first()).toHaveText("Logos");
     await expect(section(page, "Logos").getByTestId("asset-card").first()).toHaveAttribute("data-role", "site-logo");
@@ -151,7 +143,7 @@ test.describe("results", () => {
   });
 
   test("Small icons start collapsed behind Show", async ({ page }) => {
-    await openResults(page, linear);
+    await openResults(page);
     const small = section(page, "Small icons");
     await expect(small.getByTestId("asset-card")).toHaveCount(0);
     await small.getByRole("button", { name: "Show" }).click();
@@ -160,7 +152,7 @@ test.describe("results", () => {
   });
 
   test("search with / filters, and an empty match offers Clear search", async ({ page }) => {
-    await openResults(page, linear);
+    await openResults(page);
     await page.keyboard.press("/");
     const search = page.getByRole("searchbox", { name: "Filter by name or URL" });
     await expect(search).toBeFocused();
@@ -180,7 +172,7 @@ test.describe("results", () => {
   });
 
   test("sort changes the order", async ({ page }) => {
-    await openResults(page, linear);
+    await openResults(page);
     await page.getByRole("tab", { name: /^Images/ }).click();
     const images = section(page, "Images").getByTestId("asset-card");
     const names = async () => images.evaluateAll((cards) => cards.map((card) => card.getAttribute("data-name") ?? ""));
@@ -194,7 +186,7 @@ test.describe("results", () => {
   });
 
   test("the background control overrides tile backgrounds", async ({ page }) => {
-    await openResults(page, linear);
+    await openResults(page);
     const siteLogo = section(page, "Logos").getByTestId("asset-card").first();
     const well = siteLogo.getByTestId("preview-well");
     // The Linear logo is light: Auto shows it on the dark preview color.
@@ -208,7 +200,7 @@ test.describe("results", () => {
   });
 
   test("a search keeps collapsed sections collapsed, and Cmd+A takes only what shows", async ({ page }) => {
-    await openResults(page, linear);
+    await openResults(page);
     const icon = findAsset(linear, (a) => a.kind === "svg" && a.role === "icon");
     const search = page.getByRole("searchbox", { name: "Filter by name or URL" });
     await search.fill(icon.filename);
@@ -229,7 +221,7 @@ test.describe("results", () => {
   });
 
   test("tiles show the file name and a mono meta line", async ({ page }) => {
-    await openResults(page, linear);
+    await openResults(page);
     const logo = findAsset(linear, (a) => a.role === "site-logo" && a.width === 88);
     const card = page.locator(`[data-asset-id="${logo.id}"]`);
     await expect(card.getByTestId("asset-filename")).toHaveText(logo.filename);
@@ -244,7 +236,7 @@ test.describe("results", () => {
   });
 
   test("the file name can be selected with the mouse, and still opens the tile", async ({ page }) => {
-    await openResults(page, linear);
+    await openResults(page);
     const logo = findAsset(linear, (a) => a.role === "site-logo" && a.width === 88);
     const name = page.locator(`[data-asset-id="${logo.id}"]`).getByTestId("asset-filename");
     await expect(name).toHaveAttribute("title", logo.filename);
@@ -278,11 +270,14 @@ test.describe("results", () => {
   test("a remote image that fails loads through the proxy", async ({ page }) => {
     const hero = findAsset(linear, (a) => a.kind === "image" && a.role === "image" && a.visible && !!a.display && (a.renderedWidth ?? 0) > 100);
     const directPath = new URL(hero.display!.url).pathname;
-    await openResults(page, linear, { failDirect: [directPath] });
+    const { assets } = await openResults(page, { assets: { failDirect: [directPath] } });
     const img = page.locator(`[data-asset-id="${hero.id}"] img`);
     await img.scrollIntoViewIfNeeded();
     await expect.poll(() => img.getAttribute("src")).toBe(hero.display!.proxy);
     await expect.poll(() => img.evaluate((el: HTMLImageElement) => el.complete && el.naturalWidth > 0)).toBe(true);
+    // The bytes came through the proxy, after the direct fetch failed, and not from anything else that set the src.
+    expect(assets.direct).toContain(directPath);
+    expect(assets.proxy).toContain(new URL(hero.display!.proxy, "https://e2e.test").search);
   });
 
   function withGifs() {
@@ -304,7 +299,7 @@ test.describe("results", () => {
 
   test("GIF tiles show their first frame and play only while hovered", async ({ page }) => {
     const { events, remoteGif, inlineGif } = withGifs();
-    await openResults(page, events);
+    await openResults(page, { events });
     await page.getByRole("tab", { name: /^Images/ }).click();
 
     for (const id of [remoteGif.id, inlineGif.id]) {
@@ -341,7 +336,7 @@ test.describe("results", () => {
       HTMLCanvasElement.prototype.getContext = () => null;
     });
     const { events, remoteGif, inlineGif } = withGifs();
-    await openResults(page, events);
+    await openResults(page, { events });
     await page.getByRole("tab", { name: /^Images/ }).click();
 
     for (const id of [remoteGif.id, inlineGif.id]) {
@@ -364,7 +359,7 @@ test.describe("results", () => {
   });
 
   test("scraped SVG markup never reaches the DOM", async ({ page }) => {
-    await openResults(page, linear);
+    await openResults(page);
     await section(page, "Small icons").getByRole("button", { name: "Show" }).click();
     await expect(page.locator("main svg[data-scraped]")).toHaveCount(0);
     const logo = findAsset(linear, (a) => a.role === "site-logo" && a.width === 88);
@@ -375,7 +370,7 @@ test.describe("results", () => {
   });
 
   test("the footer counts hidden noise, where images are on screen", async ({ page }) => {
-    await openResults(page, linear);
+    await openResults(page);
     const footer = page.getByText("9 hidden: tracking pixels and spacer images");
     await expect(footer).toBeVisible();
 
@@ -392,7 +387,7 @@ test.describe("results", () => {
   test("brand resources keep to one line, with the rest behind a +N", async ({ page }) => {
     const many = ["/brand", "/press", "/media-kit", "/logos", "/identity", "/newsroom"].map((path) => ({ href: `https://linear.app${path}`, text: path.slice(1) }));
     const events = linear.map((event) => (event.type === "page" ? { ...event, page: { ...event.page, brandLinks: many } } : event));
-    await openResults(page, events);
+    await openResults(page, { events });
     const group = page.getByRole("group", { name: "Brand resources on this site" });
     await expect(group.getByRole("button")).toHaveText(["brand", "press", "media-kit", "+3"]);
 
@@ -406,7 +401,7 @@ test.describe("results", () => {
     test("brand resources are one closed disclosure", async ({ page }) => {
       const many = ["/brand", "/press", "/media-kit", "/logos", "/identity", "/newsroom"].map((path) => ({ href: `https://linear.app${path}`, text: path.slice(1) }));
       const events = linear.map((event) => (event.type === "page" ? { ...event, page: { ...event.page, brandLinks: many } } : event));
-      await openResults(page, events);
+      await openResults(page, { events });
       const group = page.getByRole("group", { name: "Brand resources on this site" });
       const toggle = group.getByRole("button", { name: /^Brand resources/ });
       await expect(toggle).toHaveAttribute("aria-expanded", "false");
@@ -420,7 +415,7 @@ test.describe("results", () => {
     });
 
     test("the background control is a compact select next to the tabs", async ({ page }) => {
-      await openResults(page, linear);
+      await openResults(page);
       await expect(page.getByRole("radiogroup", { name: "Preview background" })).toBeHidden();
       const select = page.getByRole("combobox", { name: "Preview background" });
       await expect(select).toBeVisible();
@@ -437,7 +432,18 @@ test.describe("results", () => {
 
   test("a partial scan shows the banner", async ({ page }) => {
     const partial = withDone(loadFixture("framer"), (done) => ({ ...done, partial: true }));
-    await openResults(page, partial, {}, "https://framer.com/");
+    await openResults(page, { events: partial, url: "https://framer.com/" });
     await expect(page.getByText("Partial results. The page didn't finish loading.")).toBeVisible();
+    await expect(page.getByTestId("truncated-notice")).toHaveCount(0);
+  });
+
+  test("a scan that stopped listing says some files are not listed", async ({ page }) => {
+    // The `truncated` warning (past the asset cap, or the collector's output cut to size) was stored and never shown,
+    // so such a scan looked complete.
+    const events = loadFixture("linear");
+    const done = events.findIndex((event) => event.type === "done");
+    const truncated: ScanEvent[] = [...events.slice(0, done), { type: "warning", code: "truncated" }, ...events.slice(done)];
+    await openResults(page, { events: truncated });
+    await expect(page.getByTestId("truncated-notice")).toHaveText("Some files are not listed. This page has more than one scan can collect.");
   });
 });

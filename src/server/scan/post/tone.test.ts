@@ -95,7 +95,10 @@ describe("createToneBudget", () => {
     const started = performance.now();
     expect(await createToneBudget({ budgetMs: 50 }).svg(heavy(400))).toBe("unknown");
     expect(performance.now() - started).toBeLessThan(1_000);
-  });
+    // The render the budget gave up on keeps its slot until it ends: wait for it here, so it never runs into the
+    // next test, which counts the renders in flight.
+    await expect.poll(() => toneRenderStats().active, { timeout: 30_000 }).toBe(0);
+  }, 40_000);
 
   it("keeps two renders in flight across budgets, renders a spent budget gave up on included, and starts no more", async () => {
     await expect.poll(() => toneRenderStats().active, { timeout: 30_000 }).toBe(0);
@@ -115,7 +118,8 @@ describe("createToneBudget", () => {
     } finally {
       clearInterval(sampler);
     }
-  });
+    // Two waits of up to 30 seconds each for heavy renders to end, which the default 5 second timeout cut short
+  }, 70_000);
 
   it("starts nothing once its signal aborts, and skips SVGs over the markup cap", async () => {
     const before = toneRenderStats().started;
@@ -147,5 +151,6 @@ describe("createToneBudget", () => {
     expect(performance.now() - started).toBeLessThan(budgetMs + 1_000);
     expect(tones.at(-1)).toBe("unknown");
     expect(tones.filter((tone) => tone === "unknown").length).toBeGreaterThan(40);
-  });
+    // Three timed renders and a budget's worth of more: seconds on a busy runner, past the default 5 second timeout
+  }, 30_000);
 });

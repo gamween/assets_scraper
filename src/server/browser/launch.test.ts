@@ -10,6 +10,7 @@ import {
   chromiumArgs,
   isServerlessRuntime,
   launchOptions,
+  localExecutablePath,
   NO_SANDBOX_ENV,
   parseMemAvailableMb,
   PIDFILE_ENV,
@@ -138,6 +139,21 @@ describe("launchOptions", () => {
     expect(options.proxy).toEqual({ server: "http://127.0.0.1:8123" });
     expect(options.args).toContain(`--assets-scraper-pidfile=${target.pidfile}`);
     expect(options.env).toEqual({ PATH: "/bin", [PIDFILE_ENV]: target.pidfile });
+  });
+});
+
+describe("localExecutablePath", () => {
+  it("runs the Chrome that CHROME_EXECUTABLE_PATH names, on any platform", () => {
+    expect(localExecutablePath({ CHROME_EXECUTABLE_PATH: "/opt/chrome/chrome" }, "linux")).toBe("/opt/chrome/chrome");
+    expect(localExecutablePath({ CHROME_EXECUTABLE_PATH: "/opt/chrome/chrome" }, "darwin")).toBe("/opt/chrome/chrome");
+  });
+
+  it("falls back to where Google Chrome installs itself on each platform", () => {
+    // The integration tests launch through this too: a hardcoded macOS path there failed every launch on Linux.
+    expect(localExecutablePath({}, "darwin")).toBe("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome");
+    expect(localExecutablePath({}, "win32")).toBe("C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe");
+    expect(localExecutablePath({}, "linux")).toBe("/usr/bin/google-chrome");
+    expect(localExecutablePath({ CHROME_EXECUTABLE_PATH: "" }, "linux")).toBe("/usr/bin/google-chrome");
   });
 });
 

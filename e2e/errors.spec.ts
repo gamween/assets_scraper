@@ -54,6 +54,36 @@ test.describe("error states", () => {
     });
   }
 
+  test("an error code from a newer deploy shows the internal panel instead of breaking the page", async ({ page }) => {
+    // Production passes stream events through unchecked, for a tab older than the deploy that answers it.
+    const future = stream("internal").map((event) => (event.type === "error" ? { ...event, code: "quota" as ErrorCode, message: "Monthly quota reached" } : event));
+    await scan(page, future);
+    await expectPanel(page, "Something went wrong on our side", null, ["Try again", "Copy debug info"]);
+    await expect(page.getByTestId("top-bar-url")).toBeVisible();
+  });
+
+  test("an event this tab cannot render shows the error page, not a blank screen", async ({ page }) => {
+    // A deploy newer than the tab can send an asset in a shape it does not know. Rendering it threw, and Next's
+    // client-side exception screen replaced the whole page, with no way back but the address bar.
+    const events = loadFixture("linear");
+    const done = events.findIndex((event) => event.type === "done");
+    const unknownShape = { type: "assets", items: [{ id: "from-the-future", kind: "svg" }] } as unknown as ScanEvent;
+    await mockScan(page, [...events.slice(0, done), unknownShape, ...events.slice(done)]);
+    await page.goto(`/?url=${encodeURIComponent("https://linear.app/")}`);
+    const error = page.getByTestId("app-error");
+    await expect(error.getByRole("heading", { level: 1 })).toHaveText("Something went wrong on our side");
+    await error.getByRole("button", { name: "Start again" }).click();
+    await expect(page.getByRole("heading", { level: 1, name: "Every SVG, image and font on a page." })).toBeVisible();
+  });
+
+  test("a scan that fails offline blames the connection, not the service", async ({ page, context }) => {
+    await page.goto("/");
+    await context.setOffline(true);
+    await page.getByRole("textbox", { name: "Page URL" }).fill("linear.app");
+    await page.keyboard.press("Enter");
+    await expectPanel(page, "You're offline", "Check your connection and try again.", ["Try again"]);
+  });
+
   test("busy shows its panel after one automatic retry", async ({ page }) => {
     const record = await scan(page, stream("busy"));
     await expectPanel(page, "All browsers are busy", "Try again in a moment.", ["Try again"]);
@@ -199,6 +229,36 @@ test.describe("error states", () => {
     await expectPanel(page, "This URL is a file, not a page", "You can download it directly.", []);
     await expect(page.getByTestId("asset-card")).toHaveCount(1);
     await expect(page.getByTestId("asset-card").getByTestId("asset-filename")).toHaveText("linear-brand.png");
+  });
+
+  test("not-html of a type the scan cannot name downloads under its own extension", async ({ page }) => {
+    const url = "https://e2e.test/e2e-assets/file/guide.pdf";
+    const file: Asset = {
+      id: "the-pdf",
+      kind: "image",
+      role: "image",
+      name: "guide.pdf",
+      filename: "linear-guide.pdf",
+      format: "other",
+      foundIn: ["public-source"],
+      visible: false,
+      declaredOnly: false,
+      order: 0,
+      score: 100,
+      usedCount: 1,
+      tone: "unknown",
+      display: null,
+      original: { url, proxy: `/api/asset?u=${Buffer.from(url).toString("base64url")}&e=1&s=s`, format: "other" },
+    };
+    const events = stream("not-html", { fallback: [file] });
+    await mockAssetRoutes(page, events);
+    await scan(page, events);
+    await page.getByTestId("asset-card").locator("[data-card-main]").click();
+    // Named like the card (`FILE`) and the metadata row (`File`), not `Download OTHER`.
+    const button = page.getByRole("dialog").getByRole("button", { name: "Download file" });
+    const download = page.waitForEvent("download");
+    await button.click();
+    expect((await download).suggestedFilename()).toBe("linear-guide.pdf");
   });
 
   test("Copy debug info copies the diagnostics with the scan id", async ({ page, context }) => {

@@ -4,9 +4,7 @@ import { toast } from "@/components/ui/toast";
 import type { Asset } from "@/lib/contract";
 import { getAssetBlob } from "@/lib/client/asset-bytes";
 import { copyText, copyTextFrom } from "@/lib/client/clipboard";
-import { replaceExtension, saveBlob } from "@/lib/client/download";
-
-const EXTENSIONS: Record<Asset["format"], string> = { svg: "svg", png: "png", jpg: "jpg", webp: "webp", avif: "avif", gif: "gif", ico: "ico", bmp: "bmp", other: "bin" };
+import { filenameForFormat, saveBlob } from "@/lib/client/download";
 
 export function notify(title: string, options: { error?: boolean; description?: string } = {}) {
   toast.add({ title, description: options.description, timeout: options.error ? 4000 : 2000, priority: options.error ? "high" : "low" });
@@ -28,15 +26,16 @@ export function copySvgCode(asset: Asset) {
   void copyTextFrom(svgMarkup(asset)).then((ok) => notify(ok ? "SVG code copied" : "Copy failed. Use Download instead.", { error: !ok }));
 }
 
+/** `linear-hero.png` shown on the page as WebP saves as `linear-hero-as-displayed.webp`. */
 export function displayFilename(asset: Asset): string {
-  const format = asset.display?.format ?? asset.format;
-  const base = asset.filename.replace(/\.[^.]+$/, "");
-  return `${base}-as-displayed.${EXTENSIONS[format]}`;
+  const name = filenameForFormat(asset.filename, asset.display?.format ?? asset.format);
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? `${name.slice(0, dot)}-as-displayed${name.slice(dot)}` : `${name}-as-displayed`;
 }
 
 /** Spec 12.2: `Download` (D) saves the original; `Download as displayed` saves the version shown on the page. */
 export function downloadAsset(asset: Asset, which: "original" | "display" = "original") {
-  const filename = which === "display" ? displayFilename(asset) : replaceExtension(asset.filename, EXTENSIONS[asset.original?.format ?? asset.format]);
+  const filename = which === "display" ? displayFilename(asset) : filenameForFormat(asset.filename, asset.original?.format ?? asset.format);
   void getAssetBlob(asset, which)
     .then((blob) => saveBlob(blob, filename))
     .catch(() => notify("This file couldn't be downloaded", { error: true, description: asset.filename }));

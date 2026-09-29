@@ -5,6 +5,8 @@ import type { Tone } from "@/lib/contract";
 import { timeoutAfter } from "@/server/async";
 import { limits } from "@/server/config/limits";
 import { parseFontBinary } from "./fonts";
+import { svgSize } from "./post/parse";
+import { withRenderSlot } from "./post/render-slot";
 import { createToneBudget } from "./post/tone";
 import type { CapturedFont, CapturedImage, CapturedNetwork, CapturedSheet, FontBinaryMeta } from "./types";
 
@@ -42,9 +44,9 @@ class BodyTimeout extends Error {}
 
 /**
  * Network capture (spec 7.4), attached before navigation. Images, fonts and stylesheets are recorded once per URL, up
- * to `maxRecords` URLs (responses past that count as skipped bodies); 3xx responses are skipped. Bodies are read with
- * caps (size, time, concurrency, total bytes), then hashed, measured, toned or parsed within budgets and dropped. Only
- * SVG text, CSS text and `blob:` bytes are kept.
+ * to `maxRecords` URLs (responses past that count as skipped bodies), and a failed response gives way to a later good
+ * one for the same URL; 3xx responses are skipped. Bodies are read with caps (size, time, concurrency, total bytes),
+ * then hashed, measured, toned or parsed within budgets and dropped. Only SVG text, CSS text and `blob:` bytes are kept.
  *
  * Playwright hands over a body only whole, so the total cap works by reservation: a read starts only when its declared
  * length, or the per-body cap when no length is declared, still fits next to the bytes already read and the reads in
@@ -84,10 +86,11 @@ export function startCapture(page: Page, options: CaptureOptions): CaptureHandle
 
   const isStopped = () => stopped || options.signal.aborted;
 
-  // Tone runs within this stage's caps (spec 8.8) and stops once settle has returned the records: a render that ends
-  // later is never read, so none starts, and the ones still waiting for a render slot give up.
-  const toneDone = new AbortController();
-  const toneBudget = createToneBudget({ signal: AbortSignal.any([toneDone.signal, options.signal]), tone: options.toneFromBytes });
+  // Header reads and tone run within this stage's caps (spec 8.8) and stop once settle has returned the records: a read
+  // or a render that ends later is never read, so none starts, and the ones still waiting for a render slot give up.
+  const settled = new AbortController();
+  const stage = AbortSignal.any([settled.signal, options.signal]);
+  const toneBudget = createToneBudget({ signal: stage, tone: options.toneFromBytes });
 
   /**
    * Runs `read` once a body slot is free and its reservation fits in the total cap (see above). A body declared over
@@ -197,23 +200,35 @@ export function startCapture(page: Page, options: CaptureOptions): CaptureHandle
     record.bytes = body.length;
     record.sha1 = createHash("sha1").update(body).digest("hex");
     const svg = SVG(record.url, record.contentType);
-    // An SVG over the markup cap is dropped as noise (spec 8.2), so its size is never used: no need to parse it.
-    if (!svg || body.length <= limits.svgMaxBytes) {
-      try {
-        const { width, height } = await sharp(body).metadata();
-        if (width && height) Object.assign(record, { width, height });
-      } catch {
-        // Not a format sharp reads (ico, broken bytes): no dimensions.
-      }
-    }
+    // An SVG over the markup cap is dropped as noise (spec 8.2), so its size is never used: no need to read it. One
+    // within the cap is sized from its root tag, as post-processing sizes SVG markup: sharp would parse the whole
+    // document with librsvg on the thread pool the proxy's DNS lookups share, about 50 ms for a 1 MB illustration.
+    const text = svg && body.length <= limits.svgMaxBytes ? body.toString("utf8") : undefined;
+    const { width, height } = text !== undefined ? svgSize(text) : svg ? {} : await rasterSize(body);
+    if (width && height) Object.assign(record, { width, height });
     // The budget gives an SVG over the markup cap no tone either.
     record.tone = await toneBudget.raster(body, record.contentType);
-    if (svg && body.length <= limits.svgMaxBytes) record.svgText = body.toString("utf8");
+    if (text !== undefined) record.svgText = text;
     if (record.url.startsWith("blob:") && body.length <= limits.blobMaxBytes && blobBytes + body.length <= limits.blobTotalBytes) {
       blobBytes += body.length;
       record.blobBase64 = body.toString("base64");
     }
   };
+
+  /**
+   * A raster's dimensions from its header, through the process-wide render gate every sharp call shares (see
+   * `render-slot.ts`): up to `bodyConcurrency` bodies land at once, and the thread pool they would queue on also
+   * resolves the names of the hosts the page connects to.
+   */
+  const rasterSize = (body: Buffer) =>
+    withRenderSlot(
+      () =>
+        sharp(body)
+          .metadata()
+          .catch(() => ({ width: undefined, height: undefined })), // not a format sharp reads (ico, broken bytes)
+      { width: undefined, height: undefined },
+      stage,
+    );
 
   const captureFont = (record: CapturedFont, body: Buffer) => {
     record.bytes = body.length;
@@ -244,25 +259,32 @@ export function startCapture(page: Page, options: CaptureOptions): CaptureHandle
     const contentType = headers["content-type"] ?? "";
     const resourceType = response.request().resourceType();
     const readable = status < 400;
-    const full = () => {
-      if (images.size + fonts.size + sheets.size < maxRecords) return false;
+    /**
+     * Whether this response takes a record for its URL. The first response of a URL does, within `maxRecords`, and a
+     * later one only to replace a failed first one: a page that retries a request answered 404 or 503 and then gets
+     * the file (a lazy loader, an upload shown once processed) would otherwise keep the failure, which hides the image
+     * as `not-image` and never reads its good body. A failed record was never read, so nothing is read twice.
+     */
+    const takes = (existing: { status: number } | undefined) => {
+      if (existing) return existing.status >= 400 && readable;
+      if (images.size + fonts.size + sheets.size < maxRecords) return true;
       skippedBodies += 1;
-      return true;
+      return false;
     };
 
     if (resourceType === "font" || FONT_TYPE.test(contentType) || FONT_EXTENSION.test(url)) {
-      if (fonts.has(url) || full()) return;
+      if (!takes(fonts.get(url))) return;
       const record: CapturedFont = { url, status, contentType, meta: null };
       fonts.set(url, record);
       if (readable) schedule(response, (body) => captureFont(record, body));
     } else if (resourceType === "image" || /^image\//i.test(contentType)) {
-      if (images.has(url) || full()) return;
+      if (!takes(images.get(url))) return;
       const record: CapturedImage = { url, status, contentType, tone: "unknown" };
       if (headers.server) record.server = headers.server;
       images.set(url, record);
       if (readable) schedule(response, (body) => captureImage(record, body));
     } else if (resourceType === "stylesheet" || /^text\/css/i.test(contentType)) {
-      if (sheets.has(url) || full()) return;
+      if (!takes(sheets.get(url))) return;
       const record: CapturedSheet = { url, status, cssText: "" };
       sheets.set(url, record);
       if (readable) schedule(response, (body) => captureSheet(record, body));
@@ -279,7 +301,7 @@ export function startCapture(page: Page, options: CaptureOptions): CaptureHandle
         next();
       }
       if (jobs.size) await timeoutAfter(Promise.allSettled([...jobs]), timeoutMs, () => new BodyTimeout()).catch(() => {});
-      toneDone.abort();
+      settled.abort();
       return {
         images: [...images.values()].map((record) => ({ ...record })),
         fonts: [...fonts.values()].map((record) => ({ ...record })),

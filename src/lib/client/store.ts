@@ -4,7 +4,6 @@ import type { Asset, Diagnostics, FontFamily, PageInfo, Palette, ScanEvent, Scan
 import {
   BACKGROUNDS,
   SORT_KEYS,
-  assetKey,
   publicSourcesSection,
   sectionize,
   visibleItems,
@@ -352,8 +351,6 @@ export function findAsset(state: AppState, id: string | null): Asset | null {
   if (!id) return null;
   return state.assets.find((asset) => asset.id === id) ?? state.error?.fallback?.find((asset) => asset.id === id) ?? null;
 }
-
-export { assetKey };
 
 export const appStore = createAppStore();
 

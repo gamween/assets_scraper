@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ScanEvent } from "@/lib/contract";
-import { ACCESS_CODE_KEY, startScan, type ScanErrorInfo } from "./scan-client";
+import { ErrorCode, type ScanEvent } from "@/lib/contract";
+import { ACCESS_CODE_KEY, isErrorCode, startScan, type ScanErrorInfo } from "./scan-client";
 
 function ndjsonResponse(lines: unknown[], options: { hold?: boolean } = {}) {
   const encoder = new TextEncoder();
@@ -137,6 +137,61 @@ describe("startScan", () => {
     await startScan("https://x.com/", lenient.handlers).done;
     expect(lenient.events).toEqual([malformed]);
     expect(lenient.errors).toEqual([]);
+  });
+
+  it("reads an error code from a newer deploy as internal and keeps the code in the message", async () => {
+    // Production passes events through unchecked, so a code this tab has no copy for used to reach the error panel
+    // as is and throw during its render.
+    vi.stubEnv("NODE_ENV", "production");
+    const future = { type: "error", code: "quota", message: "Monthly quota reached" };
+    vi.stubGlobal("fetch", vi.fn(async () => ndjsonResponse([{ type: "accepted", scanId: "s1", url: "https://x.com/" }, future]).response));
+    const rec = recorder();
+    await startScan("https://x.com/", rec.handlers).done;
+    expect(rec.errors).toEqual([{ code: "internal", message: "quota: Monthly quota reached" }]);
+  });
+
+  it("takes a gate body only with a code it knows", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(403, { error: { code: "quota", message: "Monthly quota reached" } })));
+    const unknown = recorder();
+    await startScan("https://x.com/", unknown.handlers).done;
+    expect(unknown.errors).toEqual([{ code: "internal", message: "Unexpected response (403)", httpStatus: 403 }]);
+
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(429, { error: { code: "rate-limited" } })));
+    const noMessage = recorder();
+    await startScan("https://x.com/", noMessage.handlers).done;
+    expect(noMessage.errors).toEqual([{ code: "rate-limited", message: "Too many scans", httpStatus: 429 }]);
+  });
+
+  it("knows every contract error code and nothing else", () => {
+    for (const code of ErrorCode.options) expect(isErrorCode(code)).toBe(true);
+    for (const value of ["quota", "offline", "", "toString", "__proto__", 1, null, undefined]) expect(isErrorCode(value)).toBe(false);
+  });
+
+  it("blames the connection, not the service, for a request that fails offline", async () => {
+    vi.stubGlobal("navigator", { onLine: false });
+    vi.stubGlobal("fetch", vi.fn(async () => Promise.reject(new TypeError("Failed to fetch"))));
+    const refused = recorder();
+    await startScan("https://x.com/", refused.handlers).done;
+    expect(refused.errors).toEqual([{ code: "offline", message: "Failed to fetch" }]);
+
+    // The connection dropping mid-stream reads the same.
+    const broken = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(`${JSON.stringify({ type: "accepted", scanId: "s1", url: "https://x.com/" })}\n`));
+        controller.error(new TypeError("network error"));
+      },
+    });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(broken, { status: 200 })));
+    const dropped = recorder();
+    await startScan("https://x.com/", dropped.handlers).done;
+    expect(dropped.errors).toEqual([{ code: "offline", message: "network error" }]);
+
+    // Online, the same failures stay `internal`: a stream cut short can be the function stopped on the server.
+    vi.stubGlobal("navigator", { onLine: true });
+    vi.stubGlobal("fetch", vi.fn(async () => Promise.reject(new TypeError("Failed to fetch"))));
+    const online = recorder();
+    await startScan("https://x.com/", online.handlers).done;
+    expect(online.errors).toEqual([{ code: "internal", message: "Failed to fetch" }]);
   });
 
   it("reports a stream that ends without done or error", async () => {
