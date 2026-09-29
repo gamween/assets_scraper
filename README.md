@@ -13,7 +13,7 @@ A scan opens the page in a headless Chromium behind an egress proxy, walks the D
 - Web fonts, grouped by family, with the files each family loads and a TTF conversion for the ones whose licence allows it.
 - The brand color palette, read from what the page actually paints.
 
-Selected assets are zipped in the browser. Remote files load through a signed, rate-limited proxy, never straight from the page's origin.
+Selected assets are zipped in the browser. Remote files load through a signed, byte-budgeted proxy, never straight from the page's origin.
 
 ## Use it from an agent
 
@@ -66,8 +66,9 @@ Every limit in `src/server/config/limits.ts` can be overridden the same way, by 
 
 - One scan per instance, 15 s in the queue, then `busy`. 90 s for the whole scan, 120 s of function time.
 - 8 s preflight, 20 s to launch Chromium, 25 s to navigate, 8 s of scrolling, 15 s of collection.
-- At most 1,500 assets and 2,000 signed URLs per scan; 1 MB per SVG; 25 MB per proxied file.
-- The scan budget above, and the per-day proxy byte budget, shared across the deployment.
+- At most 1,500 assets and 2,000 signed URLs per scan; 1 MB per SVG; 25 MB per proxied file, kept at the CDN only up to 4 MB and never past its link's expiry.
+- The scan budget above, and the per-day proxy byte budget, shared across the deployment, each with a per-client share.
+- At the edge, one Vercel WAF rule, set in the Vercel dashboard rather than in this repo: 20 requests per 10 minutes per IP, one counter for `/api/scan`, `/api/v1/scan` and `/api/v1/assets.zip`. The asset proxy is not under it: a results page loads many files through it, so it is bounded by the byte budgets instead.
 - A page that stops the scan early still returns what is ready, with `partial: true`.
 
 ## Layout

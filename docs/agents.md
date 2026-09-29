@@ -79,16 +79,18 @@ curl -s https://assets-scraper.vercel.app/api/v1/scan \
 ```
 
 ```bash
-curl -s -o assets.zip \
+curl -sS --fail-with-body -o assets.zip \
   -H "Authorization: Bearer $ASSETS_SCRAPER_TOKEN" \
   "https://assets-scraper.vercel.app/api/v1/assets.zip?url=stripe.com&profile=deck&kinds=svg&max=20"
 ```
+
+`--fail-with-body` makes curl exit with an error on a refusal, so a script stops before it unzips; `assets.zip` then holds the JSON error, which `cat assets.zip` shows.
 
 - `POST /api/v1/scan` takes `{ "url": "...", "view": "summary" | "full" }` and returns one JSON document. `summary` is what `scan_page` returns; `full` adds every asset and font.
 - `GET /api/v1/assets.zip?url=...&profile=deck&kinds=svg,image&roles=logo&max=60` streams a ZIP with the same selection rules and a `manifest.json` inside.
 - `GET /llms.txt` and `GET /api/openapi.json` describe both endpoints for machines.
 
-A token skips the bot check and nothing else: the rate limit, the scan budget, the SSRF guards and every v1 cap still apply. Tokens live in the `AGENT_TOKENS` environment variable of the deployment, comma separated, and are never logged.
+A token skips the bot check and nothing else: the edge rate limit (20 requests per 10 minutes per address, shared with `/api/scan`), the daily scan budget, the SSRF guards and every v1 cap still apply, and the ZIP endpoint's bytes come out of the daily proxy budget, 75 MB of it per client address. The edge answers some requests itself, before the app runs and never as `{"error":...}` JSON: a 429 with `x-vercel-mitigated: deny` past the rate limit, and at times a 403 HTML challenge with `x-vercel-mitigated: challenge` from Vercel's own protection, on any path. Wait before trying again. Tokens live in the `AGENT_TOKENS` environment variable of the deployment, comma separated, and are never logged.
 
 Running the deployment: `AGENT_TOKENS` is set for production and preview in the Vercel project, and adding a client means appending its token to that variable and redeploying. The owner's own token is kept out of the repo, in `~/.config/assets-scraper/agent.env` (mode 600, key `AGENT_TOKEN`), so a shell reads it with `set -a; . ~/.config/assets-scraper/agent.env; set +a` and then uses `$AGENT_TOKEN`. The CLI and the MCP server read a token from `ASSETS_SCRAPER_TOKEN`, not from that file.
 
@@ -146,6 +148,8 @@ Agent limits live in `src/agent/limits.ts` and each one is overridden by the SCR
 | `fontInstallMaxBytes` | 8 MB per font file |
 
 Every v1 limit still applies to the scan itself: 90 s for the whole scan, at most 1,500 assets, 1 MB per SVG, 25 MB per proxied file. See the limits section of the README.
+
+The hosted ZIP endpoint adds two of its own, overridden by `AGENT_ZIP_MAX_BYTES` and `AGENT_ZIP_DEADLINE_MS`: 64 MB per archive, and 100 s from the request to the finished archive, scan included, so it always goes out before the function's 120 s. What does not fit either is left out, with `truncated: true` and a note in `manifest.json`.
 
 | Variable | Purpose |
 | --- | --- |

@@ -275,7 +275,7 @@ Rules:
 
 ### 7.1 Gate (route handler, in order)
 
-1. Vercel WAF rate-limit rule on `/api/scan`: 20 requests per 10 minutes per IP (one rule on Hobby).
+1. Vercel WAF rate-limit rule on `/api/scan`, `/api/v1/scan` and `/api/v1/assets.zip`: 20 requests per 10 minutes per IP, one counter for the three paths (one rule on Hobby, kept in the Vercel dashboard). Its refusal is a 429 with `x-vercel-mitigated: deny` and a body that is not an `ApiError`. Vercel's own system mitigation can also answer any path with a 403 HTML challenge (`x-vercel-mitigated: challenge`).
 2. Method POST, `content-type: application/json`, `Origin` equal to our own origin.
 3. Body `{ url: string }` validated with zod, at most 2,048 characters.
 4. `checkBotId()`; a bot gets `bot` (403).
@@ -466,24 +466,25 @@ The palette module is a port of the validated lab code (v2 with every fix enable
 
 - HMAC-SHA256 with `ASSET_URL_SECRET` over `v1\n<expiry>\n<url>\n<dl>`, truncated to 32 base64url characters, timing-safe comparison. Expiry is bucketed by hour, 6 to 7 hours of life, so CDN cache keys repeat. Development without the secret uses a random per-process key.
 - At most 2,000 signed URLs per scan, one signer shared by the assets and the fonts. Assets sign first (`http:` sources first, then by score), font files after them: files of loaded faces, then Basic-Latin files of unloaded faces, then the rest. Past the cap a source or file keeps its `url` with `proxy: ""` and the scan emits a `truncated` warning.
-- `Sec-Fetch-Site` must be `same-origin` or `none`, with `Vary: Sec-Fetch-Site`.
+- `Sec-Fetch-Site` must be `same-origin` or `none`, with `Vary: Sec-Fetch-Site`. An agent bearer token stands in for it; an answer a token earned is never stored at the CDN, so `Vary` needs no `Authorization`.
+- The query must be the signer's own spelling, byte for byte (`u`, `e`, `s`, then `dl`, then the client's `fmt=ttf`), so one signature is one CDN cache key: a reordered or differently encoded query gets 400.
 - `safeFetch` with `Referer` set to the page origin, 25 MB cap, 20 s timeout, 5 redirects. Content types allowed: `image/*`, `font/*`, `application/font-*`, `application/x-font-*`, and `application/octet-stream` after magic-byte sniffing.
-- Response headers: `content-security-policy: default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; sandbox`, `x-content-type-options: nosniff`, `cross-origin-resource-policy: same-origin`, `content-disposition` (attachment with the sanitized `dl` name, else inline), `cache-control: private, max-age=3600`, `vercel-cdn-cache-control: public, s-maxage=86400`.
-- Daily proxied bytes budget (`PROXY_BYTES_PER_DAY`), taken before bytes are served: a known `content-length` in full, a body of unknown length in blocks of at least 1 MiB (the first before the status, the next whenever a chunk passes what the body holds). A take refused before the status gives 429; a block refused mid-body errors the stream. The unused part of the last block goes back when the body ends, fails or is cancelled (through `waitUntil`), so bodies in flight overshoot a store without atomic increments by at most one block each.
+- Response headers: `content-security-policy: default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; sandbox`, `x-content-type-options: nosniff`, `cross-origin-resource-policy: same-origin`, `content-disposition` (attachment with the sanitized `dl` name, else inline), `cache-control: private, max-age=3600`, and `vercel-cdn-cache-control: public, s-maxage=<seconds the link has left>` for a body of a known length up to 4 MB (`PROXY_CDN_MAX_BYTES`), `no-store` otherwise: a CDN hit skips the expiry check and the byte budget.
+- Daily proxied bytes budget (`PROXY_BYTES_PER_DAY`), with a share per client address (`PROXY_BYTES_PER_IP_PER_DAY`, taken first, the way the scan quota is), taken before bytes are served: a known `content-length` in full, a body of unknown length in blocks of at least 1 MiB (the first before the status, the next whenever a chunk passes what the body holds). A take refused before the status gives 429; a block refused mid-body errors the stream. The unused part of the last block goes back when the body ends, fails or is cancelled (through `waitUntil`), so bodies in flight overshoot a store without atomic increments by at most one block each.
 - The client uses the proxy only when direct access fails, and always for `http:` URLs. A `proxy` of `""` means direct fetch only: when that fetch fails, the client marks the asset or file unavailable.
 
 ### 11.3 Budgets and switches
 
 - `BudgetStore.incr(key, by, ttlSeconds)` implementations (atomic increment that returns the new total; `takeScanBudget` and `takeProxyBytes` compare it with the limit), selected at runtime: Upstash Redis when `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` exist, Vercel Runtime Cache when available on the plan, otherwise in-memory per instance. If the store errors, fall back to the in-memory counter.
-- Defaults: 80 scans per day, 800 per month, 300 MB proxied per day. All env-overridable.
-- Kill switch `SCAN_DISABLED=1`. Optional `ACCESS_CODE`.
+- Defaults: 80 scans per day, 800 per month, 20 scans per client address per day, 300 MB proxied per day, 75 MB of it per client address. All env-overridable. The client address is the one Vercel's edge sets (`x-real-ip`); off Vercel the per-client quotas are off, since the header is then the client's to choose.
+- Kill switches `SCAN_DISABLED=1` (scans) and `PROXY_DISABLED=1` (the asset proxy). Optional `ACCESS_CODE`.
 - BotID (basic) protects `POST /api/scan`, initialized in `instrumentation-client.ts`.
 
 ### 11.4 XSS and content safety
 
 - Scraped SVG markup is never inserted into the DOM. Previews use `<img src="blob:...">` built from the markup. Code is shown as text.
 - `blob:` URLs of scraped SVGs are never opened in a tab. "Open source" exists only for remote http(s) URLs, with `rel="noopener noreferrer"`.
-- App headers: CSP `default-src 'self'; img-src 'self' blob: data: https:; font-src 'self' blob: data:; connect-src 'self' https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'`, `X-Robots-Tag: noindex, nofollow`, `Referrer-Policy: strict-origin-when-cross-origin`. `robots.txt` disallows everything.
+- App headers: CSP `default-src 'self'; img-src 'self' blob: data: https:; font-src 'self' blob: data:; connect-src 'self' https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'`, `X-Robots-Tag: noindex, nofollow`, `Referrer-Policy: strict-origin-when-cross-origin`. `robots.txt` disallows everything but `/llms.txt` and `/api/openapi.json`, which user-directed agent fetchers must be able to read.
 - ZIP entry names sanitized.
 
 ### 11.5 Low profile
@@ -604,9 +605,9 @@ All in `src/server/config/limits.ts`, env-overridable.
 
 | Limit | Value |
 |---|---|
-| WAF rule on `/api/scan` | 20 requests / 10 min per IP |
+| WAF rule on `/api/scan`, `/api/v1/scan`, `/api/v1/assets.zip` | 20 requests / 10 min per IP |
 | Scans | 80 per day, 800 per month |
-| Proxied bytes | 300 MB per day |
+| Proxied bytes | 300 MB per day, 75 MB of it per client address |
 | Scan deadline | 90 s (function `maxDuration` 120) |
 | Queue wait | 15 s |
 | Egress per scan | 400 MB, 96 sockets |
@@ -635,7 +636,7 @@ All in `src/server/config/limits.ts`, env-overridable.
 - Vercel project `assets-scraper` (existing), framework Next.js, Node 24.x, Fluid on, region `iad1`. Deploys through the Vercel CLI (remote builds on x64; never `--prebuilt` from Apple Silicon).
 - `next.config.ts`: `outputFileTracingIncludes` for `/api/scan` with the real (symlink-resolved) paths of `@sparticuz/chromium/bin/**` and `playwright-core/browsers.json`; security headers; `typedRoutes`; React Compiler.
 - `vercel.json`: `{ "fluid": true, "regions": ["iad1"], "functions": { "src/app/api/scan/route.ts": { "maxDuration": 120, "supportsCancellation": true }, "src/app/api/asset/route.ts": { "maxDuration": 30, "supportsCancellation": true } } }`.
-- Env: `ASSET_URL_SECRET` (required in production), optional `SCAN_DISABLED`, `ACCESS_CODE`, `SCANS_PER_DAY`, `SCANS_PER_MONTH`, `SCANS_PER_IP_PER_DAY`, `PROXY_BYTES_PER_DAY`, `APP_HOSTS`, `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`. `.env.example` lists them with `OPS_TOKEN` and the test-only `SCAN_TEST_ALLOW_HOSTS`. The CI e2e job sets `ASSET_URL_SECRET` to a fixed test value, since `next start` runs in production mode.
+- Env: `ASSET_URL_SECRET` (required in production), optional `SCAN_DISABLED`, `ACCESS_CODE`, `SCANS_PER_DAY`, `SCANS_PER_MONTH`, `SCANS_PER_IP_PER_DAY`, `PROXY_BYTES_PER_DAY`, `PROXY_BYTES_PER_IP_PER_DAY`, `PROXY_DISABLED`, `APP_HOSTS`, `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`. `.env.example` lists them with `OPS_TOKEN` and the test-only `SCAN_TEST_ALLOW_HOSTS`. The CI e2e job sets `ASSET_URL_SECRET` to a fixed test value, since `next start` runs in production mode.
 - Firewall: one rate-limit rule (section 7.1), BotID enabled.
 - Diagnostics travel in `done` and `error` events because Hobby keeps runtime logs for one hour. `GET /api/health` returns the build SHA and flags, never URLs.
 - Dependency policy: `@sparticuz/chromium` and `playwright-core` pinned exactly and bumped together within a week of each Chrome security release.
@@ -644,5 +645,5 @@ All in `src/server/config/limits.ts`, env-overridable.
 
 - Measure whether Chromium CPU counts toward Active CPU on Hobby (dashboard usage after a known number of scans) and tune the daily budget.
 - A/B single-process vs multi-process Chromium on Vercel during the first production validation (memory, CPU, `/tmp`).
-- Bound `/api/asset` and `/api/health` invocations at the edge. Nothing inside a function can do it (a per-client counter still costs the invocation), the byte budget bounds bytes served and charges nothing on an error path, and Hobby allows one firewall rule, currently on `/api/scan`.
+- Bound `/api/asset` and `/api/health` invocations at the edge. Nothing inside a function can do it (a per-client counter still costs the invocation), the byte budget bounds bytes served and charges nothing on an error path, and Hobby allows one firewall rule, currently on the three scan endpoints. The per-client byte share bounds what one address can take, not how often it asks.
 - Confirm on the first deploy that the `functions` glob in `vercel.json` matches the route, that BotID works with a streaming POST, and whether Vercel Runtime Cache is available on Hobby.
