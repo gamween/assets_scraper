@@ -1,6 +1,22 @@
 /** Prefix that `sniffContentType` looks at: magic numbers, or an XML preamble up to `<svg`. */
 export const SNIFF_BYTES = 4096;
 
+/** The media type a `content-type` value names, lower cased and without its parameters; "" when there is none. */
+export const declaredType = (value: string | null | undefined): string => (value ?? "").split(";")[0].trim().toLowerCase();
+
+/** Declared types that say nothing about the bytes, so their magic numbers decide what they are (spec 11.2). */
+export const UNTYPED: ReadonlySet<string> = new Set(["", "application/octet-stream", "binary/octet-stream"]);
+
+const MEDIA_TYPE = /^[a-z0-9][a-z0-9.+-]*\/[a-z0-9][a-z0-9.+-]*$/;
+const IMAGE_OR_FONT = /^(?:image\/|font\/|application\/font-|application\/x-font-)/;
+
+/**
+ * Whether a declared type is one served as it is (spec 11.2): `image/*`, `font/*`, `application/font-*` or
+ * `application/x-font-*`, well formed. The one allowlist of the asset proxy and of every byte the agent core reads off
+ * the network, so the browser and an agent can never be handed different kinds of file for the same URL.
+ */
+export const isAllowedDeclaredType = (type: string): boolean => MEDIA_TYPE.test(type) && IMAGE_OR_FONT.test(type);
+
 const startsWith = (bytes: Uint8Array, text: string, offset = 0) =>
   bytes.length >= offset + text.length && Buffer.from(bytes.subarray(offset, offset + text.length)).toString("latin1") === text;
 

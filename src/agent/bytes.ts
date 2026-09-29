@@ -1,5 +1,7 @@
 import type { AssetFormat, FontFormat } from "@/lib/contract";
-import { sniffContentType } from "@/server/security/sniff";
+import { isAllowedDeclaredType, sniffContentType, UNTYPED } from "@/server/security/sniff";
+
+export { declaredType } from "@/server/security/sniff";
 
 /**
  * The content-type allowlist the agent paths owe their callers (spec section 10: "the ZIP endpoint applies the v1 asset
@@ -24,24 +26,16 @@ export class UnsupportedBytesError extends Error {
   }
 }
 
-const MEDIA_TYPE = /^[a-z0-9][a-z0-9.+-]*\/[a-z0-9][a-z0-9.+-]*$/;
-const ALLOWED_DECLARED = /^(?:image\/|font\/|application\/font-|application\/x-font-)/;
-/** Types that say nothing, so the magic numbers decide: the set `handleAssetRequest` uses. */
-const UNTYPED = new Set(["", "application/octet-stream", "binary/octet-stream"]);
-
 /** Formats only a font file has. `other` is in both enums, so it is deliberately not here: it accepts either class. */
 const FONT_FORMATS = new Set<string>(["woff2", "woff", "ttf", "otf", "eot"]);
 
-/** The content type a response declares, lower cased and without its parameters. */
-export const declaredType = (value: string | null | undefined): string => (value ?? "").split(";")[0].trim().toLowerCase();
-
 /**
- * Refuses a declared content type that is not an image or a font, before the body is read. Same rule as the proxy's
- * `allowedDeclaredType`, so a page that answers `text/html` for the URL of an image costs nothing to refuse.
+ * Refuses a declared content type that is not an image or a font, before the body is read. It is the proxy's own rule
+ * (`isAllowedDeclaredType`, with untyped bodies left to their magic numbers), so a page that answers `text/html` for the
+ * URL of an image costs nothing to refuse.
  */
 export function assertDeclaredType(declared: string, subject: string): void {
-  if (UNTYPED.has(declared)) return;
-  if (MEDIA_TYPE.test(declared) && ALLOWED_DECLARED.test(declared)) return;
+  if (UNTYPED.has(declared) || isAllowedDeclaredType(declared)) return;
   throw new UnsupportedBytesError(`${subject} answered with ${declared}, which is not an image or a font`);
 }
 

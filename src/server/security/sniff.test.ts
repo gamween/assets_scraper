@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { sniffContentType } from "./sniff";
+import { declaredType, isAllowedDeclaredType, sniffContentType, UNTYPED } from "./sniff";
 
 const SVG = '<svg xmlns="http://www.w3.org/2000/svg"></svg>';
 const MB = 1024 * 1024;
@@ -92,5 +92,26 @@ describe("sniffContentType", () => {
     const ftyp = timed(() => sniffContentType(box));
     expect(ftyp.value).toBeNull();
     expect(ftyp.ms).toBeLessThan(500);
+  });
+});
+
+describe("the declared type allowlist", () => {
+  it("reads a content-type header as its lower cased media type", () => {
+    expect(declaredType("Image/PNG; charset=binary")).toBe("image/png");
+    expect(declaredType(null)).toBe("");
+    expect(declaredType(" font/woff2 ")).toBe("font/woff2");
+  });
+
+  it("serves images and fonts under every name they go by, and nothing else", () => {
+    for (const type of ["image/png", "image/svg+xml", "font/woff2", "application/font-woff", "application/x-font-ttf"]) {
+      expect(isAllowedDeclaredType(type), type).toBe(true);
+    }
+    for (const type of ["text/html", "application/javascript", "application/octet-stream", "image/", "image/png;x", "", "IMAGE/PNG"]) {
+      expect(isAllowedDeclaredType(type), type).toBe(false);
+    }
+  });
+
+  it("leaves a type that says nothing to the magic numbers", () => {
+    expect([...UNTYPED].sort()).toEqual(["", "application/octet-stream", "binary/octet-stream"]);
   });
 });

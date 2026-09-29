@@ -8,7 +8,7 @@ import { meterProxyBytes, PROXY_BYTES_BLOCK, takeProxyBytes } from "./budget";
 import { contentDisposition } from "./download-name";
 import { convertWoff2, takeConversionSlot, WOFF2_MAX_OUTPUT_BYTES, WOFF2_MAX_SOURCE_BYTES } from "./font-convert";
 import { verifyAssetParams } from "./sign";
-import { SNIFF_BYTES, sniffContentType } from "./sniff";
+import { declaredType, isAllowedDeclaredType, SNIFF_BYTES, sniffContentType, UNTYPED } from "./sniff";
 
 export interface AssetProxyOptions {
   maxBytes?: number;
@@ -30,8 +30,6 @@ const RESPONSE_HEADERS = {
   "vercel-cdn-cache-control": "public, s-maxage=86400",
 } as const;
 
-const MEDIA_TYPE = /^[a-z0-9][a-z0-9.+-]*\/[a-z0-9][a-z0-9.+-]*$/;
-const UNTYPED = new Set(["", "application/octet-stream", "binary/octet-stream"]);
 const WOFF2_SIGNATURE_BYTES = 4;
 const FETCH_STATUS: Record<SafeFetchErrorCode, number> = {
   "invalid-url": 403, "blocked-address": 403, "own-host": 403, "unsupported-port": 403,
@@ -65,10 +63,6 @@ async function fetchAsset(url: string, signal: AbortSignal, maxBytes: number, ti
   if (upstream.status >= 200 && upstream.status <= 299) return upstream;
   await upstream.cancel();
   return errorResponse(502, "upstream-status", `The asset host answered ${upstream.status}.`);
-}
-
-function allowedDeclaredType(mediaType: string): boolean {
-  return MEDIA_TYPE.test(mediaType) && /^(?:image\/|font\/|application\/font-|application\/x-font-)/.test(mediaType);
 }
 
 /** Reads at least `minBytes` (or the whole body when shorter) and returns them with the rest of the stream. */
@@ -221,7 +215,7 @@ export async function handleAssetRequest(request: Request, options: AssetProxyOp
     const upstream = await fetchAsset(url, request.signal, maxBytes, timeoutMs);
     if (upstream instanceof Response) return upstream;
 
-    const declared = (upstream.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
+    const declared = declaredType(upstream.headers.get("content-type"));
     const encoded = upstream.headers.has("content-encoding");
     const length = Number(upstream.headers.get("content-length") ?? Number.NaN);
     const knownLength = !encoded && Number.isSafeInteger(length) && length >= 0 ? length : undefined;
@@ -229,7 +223,7 @@ export async function handleAssetRequest(request: Request, options: AssetProxyOp
       await upstream.cancel();
       return errorResponse(413, "too-large", "The asset is too large.");
     }
-    if (!allowedDeclaredType(declared) && !UNTYPED.has(declared)) {
+    if (!isAllowedDeclaredType(declared) && !UNTYPED.has(declared)) {
       await upstream.cancel();
       return errorResponse(415, "unsupported-type", "Only images and fonts can be downloaded.");
     }
