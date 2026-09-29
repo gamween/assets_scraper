@@ -1,75 +1,14 @@
 import { tokenize, tokenTypes as T } from "css-tree/tokenizer";
 import { ByteStack } from "../byte-stack";
+import { extractCssUrls } from "../inpage/css-values";
 import { percentDecode } from "../percent";
+import { searchFrom } from "./search";
 
 /**
- * Parsers shared by post-processing. The in-page collector (`inpage/collector.src.ts`) cannot import app code, so it
- * carries its own copies of `parseSrcset` and `extractCssUrls`: keep both in sync.
+ * Parsers of what post-processing, capture and probes read from page text: stylesheets, icon `sizes`, SVG root tags and
+ * `data:` URIs. The URLs of one CSS value are read by `extractCssUrls`, which the in-page collector bundles too
+ * (`inpage/css-values.ts`), so the page and Node read `url()` and `image-set()` the same way.
  */
-
-export interface SrcsetCandidate {
-  url: string;
-  w?: number;
-  x?: number;
-}
-
-/** HTML-style srcset parser: a URL runs until whitespace, so commas inside URLs (Cloudinary `w_500,c_fill`) are kept. */
-export function parseSrcset(value: string | null | undefined): SrcsetCandidate[] {
-  const out: SrcsetCandidate[] = [];
-  if (!value) return out;
-  const s = value;
-  const n = s.length;
-  const space = /\s/;
-  let i = 0;
-  while (i < n) {
-    while (i < n && (s[i] === "," || space.test(s[i]))) i++;
-    if (i >= n) break;
-    const start = i;
-    while (i < n && !space.test(s[i])) i++;
-    let url = s.slice(start, i);
-    let descriptor = "";
-    if (/,+$/.test(url)) {
-      url = url.replace(/,+$/, "");
-    } else {
-      let depth = 0;
-      const descriptorStart = i;
-      while (i < n) {
-        const c = s[i];
-        if (c === "(") depth++;
-        else if (c === ")") depth--;
-        else if (c === "," && depth <= 0) break;
-        i++;
-      }
-      descriptor = s.slice(descriptorStart, i).trim();
-      i++;
-    }
-    if (!url) continue;
-    // The digit runs are bounded and the alternation removes the `\d*`/`\d+` overlap: the unbounded form is cubic in
-    // the descriptor length, so one long digit run blocks the caller for minutes. Nine digits is far beyond any real
-    // descriptor, and a longer run is not a number `Number()` could use.
-    const w = descriptor.match(/(\d{1,9})w\b/);
-    const x = descriptor.match(/(\d{1,9}(?:\.\d{1,9})?|\.\d{1,9})x\b/);
-    if (w) out.push({ url, w: Number(w[1]) });
-    else out.push({ url, x: x ? Number(x[1]) : 1 });
-  }
-  return out;
-}
-
-const URL_TOKEN = /url\(\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|([^)\s]*))\s*\)/g;
-const QUOTED = /"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'/g;
-const unescapeCss = (text: string) => text.replace(/\\(.)/g, "$1");
-
-/** URLs in a CSS value: every `url()`, plus the bare strings of `image-set()`. Fragment-only references are skipped. */
-export function extractCssUrls(value: string | null | undefined): string[] {
-  const out: string[] = [];
-  if (!value || value === "none") return out;
-  for (const match of value.matchAll(URL_TOKEN)) out.push(unescapeCss(match[1] ?? match[2] ?? match[3] ?? ""));
-  if (/image-set\(/i.test(value)) {
-    const rest = value.replace(URL_TOKEN, " ");
-    for (const match of rest.matchAll(QUOTED)) out.push(unescapeCss(match[1] ?? match[2] ?? ""));
-  }
-  return [...new Set(out)].filter((url) => url && !url.startsWith("#"));
-}
 
 export interface StylesheetUrl {
   url: string;
@@ -110,6 +49,15 @@ function colonOutsideComments(text: string): number {
 class Stop extends Error {}
 
 /**
+ * The URL of a file as the network sees it: an http(s) URL without its fragment, which no request carries, so that
+ * `icons.svg#home` meets the capture of `icons.svg`. A fragment is part of the payload of a `data:` URI and stays.
+ */
+export function withoutFragment(url: URL): string {
+  if (url.protocol === "http:" || url.protocol === "https:") url.hash = "";
+  return url.href;
+}
+
+/**
  * Image URLs declared in a stylesheet's text, for sheets the page could not read through CSSOM (spec 8.1), passed to
  * `visit` in sheet order; `visit` returns `"stop"` to end the scan. `@font-face` rules are left to the fonts module.
  *
@@ -145,7 +93,7 @@ export function forEachStylesheetUrl(cssText: string, baseUrl: string, visit: (i
     for (const raw of extractCssUrls(value)) {
       let url: string;
       try {
-        url = new URL(raw, baseUrl).href;
+        url = withoutFragment(new URL(raw, baseUrl));
       } catch {
         continue; // not a URL
       }
@@ -194,13 +142,49 @@ export function forEachStylesheetUrl(cssText: string, baseUrl: string, visit: (i
   }
 }
 
-/** Every image URL `forEachStylesheetUrl` reads from a stylesheet's text. */
-export function extractStylesheetUrls(cssText: string, baseUrl: string): StylesheetUrl[] {
-  const out: StylesheetUrl[] = [];
-  forEachStylesheetUrl(cssText, baseUrl, (item) => {
-    out.push(item);
-  });
-  return out;
+/** The most characters of a `sizes` value read: a real one lists a few sizes, a page or a manifest can send megabytes. */
+export const MAX_ICON_SIZES_CHARS = 256;
+/** One `WxH` size, a whole number of at most five digits on each side. */
+const ICON_SIZE = /(?<!\d)(\d{1,5})[xX](\d{1,5})(?!\d)/g;
+
+/**
+ * The largest size an icon declares in its `sizes` (`"16x16 32x32 any"`), from a `<link>` or a web manifest. Only the
+ * first `MAX_ICON_SIZES_CHARS` are read. The unbounded `(\d+)x(\d+)` this replaces backtracked over a long digit run from
+ * every digit of it: half a million digits in a manifest held the event loop for over a minute.
+ */
+export function largestIconSize(sizes: string | undefined): { width: number; height: number } | undefined {
+  if (!sizes) return undefined;
+  const text = sizes.slice(0, MAX_ICON_SIZES_CHARS);
+  let largest: { width: number; height: number } | undefined;
+  for (let match = searchFrom(text, ICON_SIZE, 0); match; match = searchFrom(text, ICON_SIZE, match.index + match[0].length)) {
+    const width = Number(match[1]);
+    const height = Number(match[2]);
+    if (!largest || width * height > largest.width * largest.height) largest = { width, height };
+  }
+  return largest;
+}
+
+/** The start of an `<svg>` tag, and the end of any tag. */
+const SVG_TAG = /<svg\b/gi;
+const TAG_END = />/g;
+/** The longest root tag read: a real one is never near this, and a scraped one can be megabytes of junk. */
+const MAX_ROOT_TAG_CHARS = 4096;
+
+/** Width and height of an SVG from its root attributes, else from its viewBox. */
+export function svgSize(markup: string): { width?: number; height?: number } {
+  // Two forward searches find the root tag, and the cut bounds every regex below, the way preflight caps a tag. One
+  // pattern for the whole tag (`<svg\b[^>]*>`) read from every `<svg` to the end of the markup when no `>` followed.
+  const open = searchFrom(markup, SVG_TAG, 0);
+  const close = open && searchFrom(markup, TAG_END, open.index + open[0].length);
+  const root = open && close ? markup.slice(open.index, Math.min(close.index + 1, open.index + MAX_ROOT_TAG_CHARS)) : "";
+  // The digit runs are bounded so the alternatives at each start position stay constant: an unbounded `\d*\.?\d+`
+  // backtracks quadratically over a long digit run that never reaches the closing quote.
+  const attribute = (name: string) => Number(new RegExp(`\\s${name}\\s*=\\s*["']\\s*(\\d{1,10}(?:\\.\\d{1,10})?|\\.\\d{1,10})(?:px)?\\s*["']`, "i").exec(root)?.[1]) || undefined;
+  const width = attribute("width");
+  const height = attribute("height");
+  if (width && height) return { width, height };
+  const box = /\sviewBox\s*=\s*["']([^"']+)["']/i.exec(root)?.[1]?.trim().split(/[\s,]+/).map(Number);
+  return box?.length === 4 && box[2] > 0 && box[3] > 0 ? { width: box[2], height: box[3] } : {};
 }
 
 /**

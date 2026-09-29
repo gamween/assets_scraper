@@ -88,7 +88,7 @@ curl -s -o assets.zip \
 - `GET /api/v1/assets.zip?url=...&profile=deck&kinds=svg,image&roles=logo&max=60` streams a ZIP with the same selection rules and a `manifest.json` inside.
 - `GET /llms.txt` and `GET /api/openapi.json` describe both endpoints for machines.
 
-A token skips the bot check and nothing else: the rate limit, the scan budget, the SSRF guards and every v1 cap still apply. Tokens live in the `AGENT_TOKENS` environment variable of the deployment, comma separated, and are never logged.
+A token skips the bot check and nothing else: the rate limit, the scan budget, the SSRF guards and every v1 cap still apply. Tokens live in the `AGENT_TOKENS` environment variable of the deployment, comma separated, and are never logged. A token shorter than 24 characters is ignored, so a placeholder or a typo there can never be the only thing guarding the API.
 
 Running the deployment: `AGENT_TOKENS` is set for production and preview in the Vercel project, and adding a client means appending its token to that variable and redeploying. The owner's own token is kept out of the repo, in `~/.config/assets-scraper/agent.env` (mode 600, key `AGENT_TOKEN`), so a shell reads it with `set -a; . ~/.config/assets-scraper/agent.env; set +a` and then uses `$AGENT_TOKEN`. The CLI and the MCP server read a token from `ASSETS_SCRAPER_TOKEN`, not from that file.
 
@@ -154,3 +154,7 @@ Every v1 limit still applies to the scan itself: 90 s for the whole scan, at mos
 | `ASSETS_SCRAPER_OUT` | Destination root, host appended, overriding the project rule |
 | `CHROME_EXECUTABLE_PATH` | Chrome, when it is not in the default location |
 | `XDG_CACHE_HOME` | Where the scan cache goes, `~/.cache` by default |
+| `ASSETS_SCRAPER_FONT_DIR` | Where fonts are installed, instead of `~/Library/Fonts` on macOS and `~/.local/share/fonts` elsewhere |
+| `ASSETS_SCRAPER_STATE_DIR` | Where the record of installed fonts goes, instead of `~/.local/state/assets-scraper` |
+| `XDG_STATE_HOME` | The base of that record when `ASSETS_SCRAPER_STATE_DIR` is unset, `~/.local/state` by default |
+| `ASSETS_SCRAPER_BUILD_ID` | The build identity that stamps cached scans, instead of the package version plus a digest of `dist/` |

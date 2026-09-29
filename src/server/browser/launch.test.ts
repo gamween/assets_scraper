@@ -5,7 +5,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import chromium from "@sparticuz/chromium";
 import { describe, expect, it } from "vitest";
-import { browserEnv, chromiumArgs, isServerlessRuntime, parseMemAvailableMb, PIDFILE_ENV, userAgentFor, wrapperScript } from "./launch";
+import { browserEnv, chromiumArgs, isServerlessRuntime, localExecutablePath, parseMemAvailableMb, PIDFILE_ENV, userAgentFor, wrapperScript } from "./launch";
 
 describe("chromiumArgs", () => {
   it("drops the insecure serverless flags and adds the hardening flags", () => {
@@ -91,6 +91,21 @@ describe("isServerlessRuntime", () => {
     expect(isServerlessRuntime({ VERCEL: "1", VERCEL_ENV: "production" }, "darwin")).toBe(false);
     expect(isServerlessRuntime({ AWS_LAMBDA_FUNCTION_NAME: "scan" }, "darwin")).toBe(false);
     expect(isServerlessRuntime({}, "linux")).toBe(false);
+  });
+});
+
+describe("localExecutablePath", () => {
+  it("runs the Chrome that CHROME_EXECUTABLE_PATH names, on any platform", () => {
+    expect(localExecutablePath({ CHROME_EXECUTABLE_PATH: "/opt/chrome/chrome" }, "linux")).toBe("/opt/chrome/chrome");
+    expect(localExecutablePath({ CHROME_EXECUTABLE_PATH: "/opt/chrome/chrome" }, "darwin")).toBe("/opt/chrome/chrome");
+  });
+
+  it("falls back to where Google Chrome installs itself on each platform", () => {
+    // The integration tests launch through this too: a hardcoded macOS path there failed every launch on Linux.
+    expect(localExecutablePath({}, "darwin")).toBe("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome");
+    expect(localExecutablePath({}, "win32")).toBe("C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe");
+    expect(localExecutablePath({}, "linux")).toBe("/usr/bin/google-chrome");
+    expect(localExecutablePath({ CHROME_EXECUTABLE_PATH: "" }, "linux")).toBe("/usr/bin/google-chrome");
   });
 });
 

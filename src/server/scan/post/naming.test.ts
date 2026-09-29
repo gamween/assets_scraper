@@ -73,6 +73,12 @@ describe("displayName last-resort hints", () => {
     expect(name({ kind: "svg", markup: '<svg><use href="#klarna"/></svg>' })).toBe("klarna");
   });
 
+  it("reads an id of a long digit run that does not end the word", () => {
+    // `\d+$` tried from every digit of the run: 400,000 digits in one id took minutes on the event loop.
+    expect(markupName(`<svg><path id="${"1".repeat(400_000)}x"/></svg>`)).toBe("1".repeat(80));
+    expect(markupName('<svg><path id="acme2-logo"/></svg>')).toBe("acme");
+  });
+
   it("falls back to the caption beside the element, then to the generic name", () => {
     expect(name({ kind: "svg", hints: { nearbyText: "Jackson Hot Yoga" } })).toBe("Jackson Hot Yoga");
     // Everything closer wins over it.

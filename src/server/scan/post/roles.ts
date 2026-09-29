@@ -1,5 +1,6 @@
 import type { AssetKind, AssetRole, FoundIn } from "@/lib/contract";
 import type { CandidateContext, Rect } from "../types";
+import { searchFrom } from "./search";
 
 /** Roles and relevance (spec 8.5). */
 
@@ -18,12 +19,33 @@ const LOGO_MAX_AREA = 120_000;
 /** Score at which position alone makes an asset the site logo. */
 const LOGO_SCORE_PROMOTION = 6;
 const DRAWABLE = /<(?:path|circle|rect|ellipse|line|polyline|polygon|text|image|use)\b/i;
+const SYMBOL = { open: /<symbol\b/gi, close: /<\/symbol\s*>/gi };
+const DEFS = { open: /<defs\b/gi, close: /<\/defs\s*>/gi };
+
+/**
+ * `markup` without its closed blocks of one element, each from its opening tag to the first closer after it. A block
+ * left open stays, with the rest of the markup after it: no later one can be closed either. Each search starts where
+ * the last one ended, where the lazy pattern this replaces (`<symbol\b[\s\S]*?</symbol>`) read from every unclosed
+ * `<symbol` to the end, and one 1 MB SVG of them took 20 seconds.
+ */
+function withoutBlocks(markup: string, tag: { open: RegExp; close: RegExp }): string {
+  const kept: string[] = [];
+  let from = 0;
+  for (;;) {
+    const open = searchFrom(markup, tag.open, from);
+    const close = open && searchFrom(markup, tag.close, open.index + open[0].length);
+    if (!open || !close) break;
+    kept.push(markup.slice(from, open.index));
+    from = close.index + close[0].length;
+  }
+  kept.push(markup.slice(from));
+  return kept.join("");
+}
 
 /** An SVG file that only holds `<symbol>` definitions (an external sprite sheet), so it draws nothing by itself. */
 export function isSpriteSheet(markup: string): boolean {
-  if (!/<symbol\b/i.test(markup)) return false;
-  const outside = markup.replace(/<symbol\b[\s\S]*?<\/symbol\s*>/gi, "").replace(/<defs\b[\s\S]*?<\/defs\s*>/gi, "");
-  return !DRAWABLE.test(outside);
+  if (!searchFrom(markup, SYMBOL.open, 0)) return false;
+  return !DRAWABLE.test(withoutBlocks(withoutBlocks(markup, SYMBOL), DEFS));
 }
 
 /** logo word 3 + link to home 3 + header or nav 2 + site word 2 + visible within the top 160 px 1 + footer 1. */

@@ -92,10 +92,14 @@ export function isServerlessRuntime(env: Record<string, string | undefined> = pr
 
 const isServerless = () => isServerlessRuntime();
 
-function localExecutablePath(): string {
-  if (process.env.CHROME_EXECUTABLE_PATH) return process.env.CHROME_EXECUTABLE_PATH;
-  if (process.platform === "darwin") return "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-  if (process.platform === "win32") return "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
+/**
+ * The Chrome a local scan runs: `CHROME_EXECUTABLE_PATH`, else where Google Chrome installs itself on the platform. The
+ * integration tests launch their browsers through it too, so they find the same binary as the engine they test.
+ */
+export function localExecutablePath(env: Record<string, string | undefined> = process.env, platform: NodeJS.Platform = process.platform): string {
+  if (env.CHROME_EXECUTABLE_PATH) return env.CHROME_EXECUTABLE_PATH;
+  if (platform === "darwin") return "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+  if (platform === "win32") return "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
   return "/usr/bin/google-chrome";
 }
 

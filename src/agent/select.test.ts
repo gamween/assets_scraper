@@ -1,6 +1,7 @@
 import sharp from "sharp";
 import { beforeAll, describe, expect, it } from "vitest";
 import type { Asset, AssetFormat, AssetKind, AssetRole } from "@/lib/contract";
+import { fingerprint } from "./hash";
 import { normalizeAssetName, selectAssets } from "./select";
 import { TEMPLATE_CARD_HEIGHT, TEMPLATE_CARD_WIDTH, templateCardImage } from "./testing";
 
@@ -191,6 +192,9 @@ describe("selectAssets, deck profile", () => {
     // returned one file and counted the other two as near duplicates.
     const marks = ["ACME", "GLOBEX", "INITECH"];
     const bytes = new Map(await Promise.all(marks.map(async (text, index) => [`logo-${index}.png`, await wordmark(text)] as const)));
+    // The marks are text drawn with the system fonts. On a host with none they come out blank, get no fingerprint, and
+    // all three are kept without the hash comparing anything, so the test would pass on nothing.
+    for (const mark of bytes.values()) expect(await fingerprint(mark)).not.toBeNull();
     const assets = marks.map((_, index) => make({ file: `logo-${index}.png`, role: "logo", width: 800, height: 200, score: 90 - index }));
     const selection = await selectAssets(assets, {}, bytes);
     expect(selection.keep.map((asset) => asset.id)).toEqual(["logo-0.png", "logo-1.png", "logo-2.png"]);

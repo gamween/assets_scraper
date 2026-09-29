@@ -109,7 +109,8 @@ describe("convertWoff2", () => {
     const concurrent = await Promise.all([convertWoff2(inter, signal), convertWoff2(ss3, signal), convertWoff2(inter, signal)]);
     const bytes = (result: Awaited<ReturnType<typeof convertWoff2>>) => (result.ok ? Buffer.from(result.bytes) : null);
     expect(concurrent.map(bytes)).toEqual([bytes(sequential[0]), bytes(sequential[1]), bytes(sequential[0])]);
-  });
+    // Five WOFF2 decompressions, over two seconds on a CI runner: the default 5 second timeout left little room
+  }, 30_000);
 
   it("never returns more than WOFF2_MAX_OUTPUT_BYTES, whatever size the header declares", async () => {
     const signal = new AbortController().signal;
