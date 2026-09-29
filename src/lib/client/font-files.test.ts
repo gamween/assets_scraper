@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fontFileEntries, hasTtf, safeSegment, slugify } from "./font-files";
+import { fontFileEntries, hasTtf, safeSegment, slugify, specimenAlias } from "./font-files";
 import { makeFont, makeFontFile } from "./testing";
 
 describe("slugify", () => {
@@ -29,6 +29,29 @@ describe("safeSegment", () => {
     expect(safeSegment("Inter Variable")).toBe("Inter Variable");
     expect(safeSegment("Söhne.woff2")).toBe("Söhne.woff2");
     expect(safeSegment("a".repeat(200))).toHaveLength(120);
+  });
+});
+
+describe("specimenAlias", () => {
+  it("gives every family of a scan its own name, however long the prefix the ids share", () => {
+    // Server ids are `font-<slug>`, suffixed `-2` for a second family with the same slug. Cut to 16 characters, each
+    // pair below used to share one FontFace name, and one row showed the other family's glyphs.
+    const siblings = [
+      ["font-helvetica-now-display", "font-helvetica-now-text"],
+      ["font-founders-grotesk", "font-founders-grotesk-mono"],
+      ["font-neue-haas-grotesk-display", "font-neue-haas-grotesk-text"],
+      ["font-source-sans-pro", "font-source-sans-pro-2"],
+    ];
+    for (const [a, b] of siblings) expect(specimenAlias(a)).not.toBe(specimenAlias(b));
+    expect(specimenAlias("font-helvetica-now-display")).toBe("as-specimen-font-helvetica-now-display");
+  });
+
+  it("keeps ids apart that differ only in case or in characters it cannot put in the name", () => {
+    // Family names match whatever their case, and the alias sits in a quoted CSS string.
+    const ids = ["font-a", "font-A", "font-a_", "font-a_5f_", 'font-a"', "font-a\\", "font-é", "font-e"];
+    const aliases = ids.map(specimenAlias);
+    expect(new Set(aliases).size).toBe(ids.length);
+    for (const alias of aliases) expect(alias).toMatch(/^as-specimen-[a-z0-9_-]+$/);
   });
 });
 

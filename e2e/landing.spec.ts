@@ -141,6 +141,5 @@ test.describe("landing", () => {
     await page.goto("/?url=https%3A%2F%2Flinear.app%2F");
     await expect(page).toHaveTitle(/^\d+ assets · linear\.app$/);
     expect(scan.bodies).toEqual([{ url: "https://linear.app/" }]);
-    await page.goBack().catch(() => {});
   });
 });

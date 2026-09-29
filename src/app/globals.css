@@ -1,11 +1,10 @@
 @import "tailwindcss";
 @import "tw-animate-css";
-@import "shadcn/tailwind.css";
 
 /*
- * Light theme only. Without this line Tailwind v4 applies `dark:` utilities under `prefers-color-scheme: dark`,
- * so the shadcn components would switch to dark styles on a system in dark mode. No `.dark` class is ever set,
- * so `dark:` never matches.
+ * Light theme only. Without this line Tailwind v4 applies `dark:` utilities under `prefers-color-scheme: dark`, so a
+ * shadcn component added later with `dark:` classes would switch to dark styles on a system in dark mode. No `.dark`
+ * class is ever set, so `dark:` never matches.
  */
 @custom-variant dark (&:is(.dark *));
 
@@ -44,6 +43,12 @@
   --swatch-edge: color-mix(in srgb, var(--ink) 10%, transparent);
   /* A pale swatch is told from the page by its border alone, so that border carries the 3:1 a boundary needs. */
   --swatch-edge-strong: color-mix(in srgb, var(--ink) 61%, var(--bg));
+  /*
+   * Edge of a form control (field, select, checkbox), which is what tells it apart from the page: at least 3:1 on the
+   * surface, the page and the well (WCAG 1.4.11). `--border` (1.3:1) stays for dividers and cards, which are not
+   * controls. Darker on hover, the accent on focus.
+   */
+  --control-edge: color-mix(in srgb, var(--ink) 50%, var(--surface));
 
   --top-bar-height: 56px;
   --filter-bar-height: 52px;
@@ -75,27 +80,12 @@
   --color-success-line: var(--success-line);
   --color-swatch-edge: var(--swatch-edge);
   --color-swatch-edge-strong: var(--swatch-edge-strong);
+  --color-control-edge: var(--control-edge);
   --color-preview-light: var(--preview-light);
   --color-preview-dark: var(--preview-dark);
-  --color-grid-a: var(--grid-a);
-  --color-grid-b: var(--grid-b);
-
-  /* Names the shadcn primitives expect, mapped onto the tokens above. */
-  --color-background: var(--bg);
-  --color-foreground: var(--text);
-  --color-popover: var(--surface);
-  --color-popover-foreground: var(--text);
-  --color-primary: var(--ink);
-  --color-primary-foreground: var(--ink-fg);
-  --color-muted: var(--well);
-  --color-muted-foreground: var(--text-3);
-  --color-destructive: var(--danger);
-  --color-input: var(--border-strong);
-  --color-ring: var(--accent);
 
   --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
   --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
-  --font-heading: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
 
   /* Type scale (spec 12.6). */
   --text-display: 32px;
@@ -126,9 +116,8 @@
   --ease-enter: cubic-bezier(0.2, 0, 0, 1);
   --ease-exit: cubic-bezier(0.4, 0, 1, 1);
 
-  /* Grid breakpoints (spec 12.6): 2 columns, 3 from 480, 4 from 768, 5 from 1024, 6 from 1280, 7 from 1680. */
+  /* 480, the 3-column step of the grid (spec 12.6), below the stock `sm`. `.asset-grid` holds every step, 1680 included. */
   --breakpoint-xs: 30rem;
-  --breakpoint-3xl: 105rem;
 }
 
 @layer base {
@@ -211,6 +200,18 @@
   body:has([data-selection-bar]) [data-toast-viewport] {
     bottom: calc(76px + env(safe-area-inset-bottom, 0px));
   }
+
+  /*
+   * iOS Safari zooms the page into a focused field whose text is under 16 px and never zooms back out, and the
+   * sticky filter bar and the grid then scroll sideways. On a touch screen every text field and select reads at 16 px;
+   * the dense sizes stay where a pointer is fine. The selector outranks a `text-*` utility on purpose, so a field
+   * added later cannot miss it.
+   */
+  @media (pointer: coarse) {
+    :is(input, select, textarea):not([type="checkbox"], [type="radio"], [type="range"], [type="color"]) {
+      font-size: 16px;
+    }
+  }
 }
 
 @layer components {
@@ -251,15 +252,21 @@
     }
   }
 
-  /* Page gutter (spec 12.6): 32, or 16 on phones (below 640); content capped at 1600 from 1680. */
+  /*
+   * Page gutter (spec 12.6): 32, or 16 on phones (below 640); content capped at 1600 from 1680. With
+   * `viewport-fit=cover`, a notched phone in landscape has a safe area of 47 to 59 px on its sides, wider than the
+   * gutter: the gutter grows to it, so nothing sits under the sensor housing or the rounded corner.
+   */
   .page-x {
     margin-inline: auto;
     max-width: calc(1600px + 2 * 32px);
-    padding-inline: 16px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
   }
   @media (width >= 40rem) {
     .page-x {
-      padding-inline: 32px;
+      padding-left: max(32px, env(safe-area-inset-left, 0px));
+      padding-right: max(32px, env(safe-area-inset-right, 0px));
     }
   }
 
@@ -272,8 +279,9 @@
     animation: spin 700ms linear infinite;
   }
 
-  .fade-in {
-    animation: fade-in 120ms var(--ease-enter) both;
+  /* Not `fade-in`: tw-animate-css already owns that name, as a utility for its `animate-in` keyframes. */
+  .appear {
+    animation: appear 120ms var(--ease-enter) both;
   }
 
   /* A scroll container whose overflow is not otherwise visible keeps a thin scrollbar as the hint that it has more. */
@@ -289,7 +297,7 @@
   }
 }
 
-@keyframes fade-in {
+@keyframes appear {
   from {
     opacity: 0;
   }

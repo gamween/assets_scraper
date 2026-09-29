@@ -1,6 +1,6 @@
 "use client";
 
-import { CircleAlert, FileWarning, KeyRound, Lock, ShieldAlert, TimerOff } from "lucide-react";
+import { CircleAlert, FileWarning, KeyRound, Lock, ShieldAlert, TimerOff, WifiOff } from "lucide-react";
 import { copyWithToast } from "@/components/results/asset-actions";
 import { Button } from "@/components/ui/button";
 import { rescan } from "@/lib/client/scan-session";
@@ -20,7 +20,7 @@ interface ErrorCopy {
 const CANT_SCAN = "This address can't be scanned";
 const CHECK_ADDRESS = "Check the address and try again.";
 
-/** Spec 13: title, line and actions for every error code. */
+/** Spec 13: title, line and actions for every error code, and for `offline`, the client's own. */
 export function errorCopy(error: ScanErrorInfo, host: string): ErrorCopy {
   switch (error.code) {
     case "invalid-url":
@@ -57,6 +57,8 @@ export function errorCopy(error: ScanErrorInfo, host: string): ErrorCopy {
       return { title: "The page took too long to load", actions: ["rescan"], icon: TimerOff };
     case "internal":
       return { title: "Something went wrong on our side", actions: ["try-again", "debug"], icon: CircleAlert };
+    case "offline":
+      return { title: "You're offline", line: "Check your connection and try again.", actions: ["try-again"], icon: WifiOff };
   }
 }
 

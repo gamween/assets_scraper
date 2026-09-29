@@ -8,7 +8,7 @@ vi.mock("node:dns/promises", async (importOriginal) => {
   return { ...actual, default: { ...actual, lookup: dnsMock.lookup }, lookup: dnsMock.lookup };
 });
 
-import { isOwnHost, isPublicIp, isTestAllowed, pinnedConnectOptions, pinnedLookup, privateHostReason, resolvePublicAddresses, resolvePublicHost, SsrfError } from "./ip";
+import { isOwnHost, isPublicIp, isTestAllowed, pinnedConnectOptions, pinnedLookup, privateHostReason, resolvePublicAddresses, SsrfError } from "./ip";
 
 describe("isPublicIp", () => {
   it.each([
@@ -69,7 +69,7 @@ describe("own hosts and test allowlist", () => {
     const dots = `${".".repeat(32_000)}x`;
     const start = performance.now();
     expect(isOwnHost(dots)).toBe(false);
-    await expect(resolvePublicHost(dots, 443)).rejects.toMatchObject({ reason: "invalid-host" });
+    await expect(resolvePublicAddresses(dots, 443)).rejects.toMatchObject({ reason: "invalid-host" });
     expect(performance.now() - start).toBeLessThan(500);
     vi.stubEnv("APP_HOSTS", "scraper.example.com");
     expect(isOwnHost(`scraper.example.com${".".repeat(32_000)}`)).toBe(true);
@@ -114,34 +114,30 @@ describe("own hosts and test allowlist", () => {
   });
 });
 
-describe("resolvePublicHost", () => {
+describe("resolvePublicAddresses", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
     dnsMock.lookup.mockClear();
   });
 
   it("rejects private literals and loopback names", async () => {
-    await expect(resolvePublicHost("127.0.0.1", 443)).rejects.toBeInstanceOf(SsrfError);
-    await expect(resolvePublicHost("[::1]", 443)).rejects.toBeInstanceOf(SsrfError);
-    await expect(resolvePublicHost("localhost", 80)).rejects.toBeInstanceOf(SsrfError);
-    await expect(resolvePublicHost("localhost.", 80)).rejects.toBeInstanceOf(SsrfError);
+    await expect(resolvePublicAddresses("127.0.0.1", 443)).rejects.toBeInstanceOf(SsrfError);
+    await expect(resolvePublicAddresses("[::1]", 443)).rejects.toBeInstanceOf(SsrfError);
+    await expect(resolvePublicAddresses("localhost", 80)).rejects.toBeInstanceOf(SsrfError);
+    await expect(resolvePublicAddresses("localhost.", 80)).rejects.toBeInstanceOf(SsrfError);
   });
 
   it("checks literals without DNS, including legacy IPv4 spellings and IPv4-compatible IPv6", async () => {
     for (const host of ["2130706433", "0x7f.1", "[::ffff:7f00:1]", "[::7f00:1]", "0.0.0.0", "[fe80::1]"]) {
-      await expect(resolvePublicHost(host, 443)).rejects.toMatchObject({ reason: "private-ip" });
+      await expect(resolvePublicAddresses(host, 443)).rejects.toMatchObject({ reason: "private-ip" });
     }
-    await expect(resolvePublicHost("app.localhost", 443)).rejects.toMatchObject({ reason: "private-dns" });
+    await expect(resolvePublicAddresses("app.localhost", 443)).rejects.toMatchObject({ reason: "private-dns" });
     expect(dnsMock.lookup).not.toHaveBeenCalled();
-    await expect(resolvePublicHost("[2606:4700:4700::1111]", 443)).resolves.toBe("2606:4700:4700::1111");
-    await expect(resolvePublicHost("134744072", 443)).resolves.toBe("8.8.8.8");
+    await expect(resolvePublicAddresses("[2606:4700:4700::1111]", 443)).resolves.toEqual(["2606:4700:4700::1111"]);
+    await expect(resolvePublicAddresses("134744072", 443)).resolves.toEqual(["8.8.8.8"]);
   });
 
-  it("requires every DNS record to be public and returns the first one", async () => {
-    dnsMock.lookup.mockResolvedValueOnce([{ address: "93.184.215.14", family: 4 }, { address: "2606:2800:21f:cb07:6820:80da:af6b:8b2c", family: 6 }]);
-    await expect(resolvePublicHost("example.com", 443)).resolves.toBe("93.184.215.14");
-    expect(dnsMock.lookup).toHaveBeenLastCalledWith("example.com", { all: true, order: "verbatim" });
-
+  it("requires every DNS record to be public and returns them all", async () => {
     // every checked record, in resolver order and without duplicates, so callers can fall back to the next one
     dnsMock.lookup.mockResolvedValueOnce([
       { address: "2606:2800:21f:cb07:6820:80da:af6b:8b2c", family: 6 },
@@ -149,37 +145,37 @@ describe("resolvePublicHost", () => {
       { address: "93.184.215.14", family: 4 },
     ]);
     await expect(resolvePublicAddresses("example.com", 443)).resolves.toEqual(["2606:2800:21f:cb07:6820:80da:af6b:8b2c", "93.184.215.14"]);
-    await expect(resolvePublicAddresses("[2606:4700:4700::1111]", 443)).resolves.toEqual(["2606:4700:4700::1111"]);
+    expect(dnsMock.lookup).toHaveBeenLastCalledWith("example.com", { all: true, order: "verbatim" });
 
     dnsMock.lookup.mockResolvedValueOnce([{ address: "93.184.215.14", family: 4 }, { address: "10.0.0.7", family: 4 }]);
-    await expect(resolvePublicHost("rebind.example", 443)).rejects.toMatchObject({ reason: "private-dns", host: "rebind.example" });
+    await expect(resolvePublicAddresses("rebind.example", 443)).rejects.toMatchObject({ reason: "private-dns", host: "rebind.example" });
 
     dnsMock.lookup.mockResolvedValueOnce([{ address: "::ffff:169.254.169.254", family: 6 }]);
-    await expect(resolvePublicHost("metadata.example", 80)).rejects.toMatchObject({ reason: "private-dns" });
+    await expect(resolvePublicAddresses("metadata.example", 80)).rejects.toMatchObject({ reason: "private-dns" });
   });
 
   it("maps DNS failures and junk hosts", async () => {
     dnsMock.lookup.mockRejectedValueOnce(Object.assign(new Error("getaddrinfo ENOTFOUND"), { code: "ENOTFOUND" }));
-    await expect(resolvePublicHost("missing.example", 443)).rejects.toMatchObject({ reason: "dns-failure" });
+    await expect(resolvePublicAddresses("missing.example", 443)).rejects.toMatchObject({ reason: "dns-failure" });
     dnsMock.lookup.mockResolvedValueOnce([]);
-    await expect(resolvePublicHost("empty.example", 443)).rejects.toMatchObject({ reason: "dns-failure" });
+    await expect(resolvePublicAddresses("empty.example", 443)).rejects.toMatchObject({ reason: "dns-failure" });
     for (const host of ["", "a b.com", "evil.com/x", "[::1", "x..com"]) {
-      await expect(resolvePublicHost(host, 443)).rejects.toMatchObject({ reason: "invalid-host" });
+      await expect(resolvePublicAddresses(host, 443)).rejects.toMatchObject({ reason: "invalid-host" });
     }
   });
 
   it("denies own hosts before any lookup", async () => {
     vi.stubEnv("APP_HOSTS", "scraper.example.com");
-    await expect(resolvePublicHost("Scraper.Example.com.", 443)).rejects.toMatchObject({ reason: "own-host" });
+    await expect(resolvePublicAddresses("Scraper.Example.com.", 443)).rejects.toMatchObject({ reason: "own-host" });
     expect(dnsMock.lookup).not.toHaveBeenCalled();
   });
 
   it("skips the private check only for an exact test allowlist entry", async () => {
     vi.stubEnv("SCAN_TEST_ALLOW_HOSTS", "127.0.0.1:8787,localhost:3000");
-    await expect(resolvePublicHost("127.0.0.1", 8787)).resolves.toBe("127.0.0.1");
-    await expect(resolvePublicHost("127.0.0.1", 443)).rejects.toMatchObject({ reason: "private-ip" });
+    await expect(resolvePublicAddresses("127.0.0.1", 8787)).resolves.toEqual(["127.0.0.1"]);
+    await expect(resolvePublicAddresses("127.0.0.1", 443)).rejects.toMatchObject({ reason: "private-ip" });
     dnsMock.lookup.mockResolvedValueOnce([{ address: "127.0.0.1", family: 4 }]);
-    await expect(resolvePublicHost("localhost", 3000)).resolves.toBe("127.0.0.1");
+    await expect(resolvePublicAddresses("localhost", 3000)).resolves.toEqual(["127.0.0.1"]);
   });
 });
 

@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
-import type { Asset, ScanEvent } from "../src/lib/contract";
+import type { Asset } from "../src/lib/contract";
 import { findAsset, loadFixture, mapAssets } from "./support/fixtures";
-import { mockAssetRoutes, mockScan } from "./support/routes";
+import { openResults } from "./support/routes";
 
 const linear = loadFixture("linear");
 
@@ -22,13 +22,6 @@ const tallRaster = findAsset(linear, (asset) => asset.kind === "image" && asset.
 const events = mapAssets(linear, (asset) =>
   asset.id === tallVector.id ? resize(asset, 14, 44) : asset.id === tallRaster.id ? resize(asset, 616, 1050) : asset,
 );
-
-async function openResults(page: Page, scan: ScanEvent[] = events) {
-  await mockAssetRoutes(page, scan);
-  await mockScan(page, scan);
-  await page.goto(`/?url=${encodeURIComponent("https://linear.app/")}`);
-  await expect(page.getByTestId("results")).toBeVisible();
-}
 
 /** Tiles are `loading="lazy"`: a tile that never entered the viewport has no image to measure. */
 async function paintEveryTile(page: Page) {
@@ -66,7 +59,7 @@ async function overflowingTiles(page: Page) {
 
 test.describe("preview sizing", () => {
   test("no tile preview is clipped by its well, on either branch of the sizing rule", async ({ page }) => {
-    await openResults(page);
+    await openResults(page, { events });
     await paintEveryTile(page);
     const { out, loaded } = await overflowingTiles(page);
     expect(loaded).toBeGreaterThan(20);
@@ -74,7 +67,7 @@ test.describe("preview sizing", () => {
   });
 
   test("the detail preview fits inside the dialog", async ({ page }) => {
-    await openResults(page);
+    await openResults(page, { events });
     for (const asset of [tallVector, tallRaster]) {
       await page.locator(`[data-asset-id="${asset.id}"] [data-card-main]`).click();
       const dialog = page.getByRole("dialog");
@@ -98,7 +91,7 @@ test.describe("dialog height", () => {
   test("a small asset gets a small dialog and a big one still fills the screen", async ({ page }) => {
     const small = findAsset(linear, (asset) => asset.kind === "svg" && asset.role === "site-logo");
     const events = mapAssets(linear, (asset) => (asset.id === small.id ? resize(asset, 60, 25) : asset.id === tallRaster.id ? resize(asset, 2000, 2000) : asset));
-    await openResults(page, events);
+    await openResults(page, { events });
 
     const heightOf = async (id: string) => {
       await page.locator(`[data-asset-id="${id}"] [data-card-main]`).click();

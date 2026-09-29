@@ -1,11 +1,11 @@
 import { expect, test, type Page, type TestInfo } from "@playwright/test";
-import type { ScanEvent } from "../src/lib/contract";
 import { diagnostics, findAsset, loadFixture } from "./support/fixtures";
-import { installControlledScan, mockAssetRoutes, mockScan } from "./support/routes";
+import { installControlledScan, mockScan, openResults } from "./support/routes";
 
 /**
- * Responsive screenshots (spec 15 visual QA). Not pixel-compared: they are attached to the report for review. Each
- * screen also checks the layout rules of spec 12.6 that a screenshot review would catch.
+ * The layout rules of spec 12.6 at the three reference viewports (spec 15), on every screen: columns per breakpoint, a
+ * sticky top bar, a selection bar inside the viewport, and nothing that scrolls sideways. The rules are what gates a
+ * change; the screenshots of the spec 15 visual review are only taken on a local run (see `checkScreen`).
  */
 const VIEWPORTS = [
   { name: "desktop", width: 1470, height: 956, columns: 6 },
@@ -16,21 +16,21 @@ const VIEWPORTS = [
 const linear = loadFixture("linear");
 const siteLogo = findAsset(linear, (a) => a.role === "site-logo" && a.width === 88);
 
-async function capture(page: Page, testInfo: TestInfo, name: string) {
-  // Let lazy previews and fades settle.
+/**
+ * Nothing on the screen scrolls sideways, once the web fonts that set every line's width have loaded. Run locally, the
+ * screen is also saved to the report for the visual review before a release (spec 15). Nothing compares the pictures,
+ * and a green CI run keeps no report, so CI does not take them.
+ */
+async function checkScreen(page: Page, testInfo: TestInfo, name: string) {
+  await page.evaluate(() => document.fonts.ready.then(() => {}));
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+  expect(overflow, `${name} scrolls horizontally`).toBeLessThanOrEqual(0);
+  if (process.env.CI) return;
+  // Lets the lazy previews and the fades settle, for the picture only: no assertion waits on it.
   await page.waitForTimeout(400);
   const path = testInfo.outputPath(`${name}.png`);
   await page.screenshot({ path });
   await testInfo.attach(name, { path, contentType: "image/png" });
-  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
-  expect(overflow, `${name} scrolls horizontally`).toBeLessThanOrEqual(0);
-}
-
-async function openResults(page: Page, events: ScanEvent[] = linear, query = "") {
-  await mockAssetRoutes(page, events);
-  await mockScan(page, events);
-  await page.goto(`/?url=${encodeURIComponent("https://linear.app/")}${query}`);
-  await expect(page.getByTestId("results")).toBeVisible();
 }
 
 for (const viewport of VIEWPORTS) {
@@ -41,7 +41,7 @@ for (const viewport of VIEWPORTS) {
       await page.addInitScript(() => localStorage.setItem("assets-scraper:recent", JSON.stringify(["vercel.com", "ripple.com"])));
       await page.goto("/");
       await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
-      await capture(page, testInfo, `landing-${viewport.width}`);
+      await checkScreen(page, testInfo, `landing-${viewport.width}`);
     });
 
     test("scanning", async ({ page }, testInfo) => {
@@ -56,25 +56,25 @@ for (const viewport of VIEWPORTS) {
         linear.find((event) => event.type === "page")!,
       );
       await expect(page.getByTestId("scan-status")).toBeVisible();
-      await capture(page, testInfo, `scanning-${viewport.width}`);
+      await checkScreen(page, testInfo, `scanning-${viewport.width}`);
     });
 
     test("results", async ({ page }, testInfo) => {
       await openResults(page);
       const columns = await page.locator(".asset-grid").first().evaluate((grid) => getComputedStyle(grid).gridTemplateColumns.split(" ").length);
       expect(columns).toBe(viewport.columns);
-      await capture(page, testInfo, `results-${viewport.width}`);
+      await checkScreen(page, testInfo, `results-${viewport.width}`);
 
       // The top bar and the filter row stay in place while the grid scrolls.
       await page.mouse.wheel(0, 1200);
       await expect.poll(() => page.locator("header").first().boundingBox().then((box) => box?.y)).toBe(0);
-      await capture(page, testInfo, `results-scrolled-${viewport.width}`);
+      await checkScreen(page, testInfo, `results-scrolled-${viewport.width}`);
     });
 
     test("detail", async ({ page }, testInfo) => {
-      await openResults(page, linear, `&asset=${siteLogo.id}`);
+      await openResults(page, { query: `&asset=${siteLogo.id}` });
       await expect(page.getByRole("dialog")).toBeVisible();
-      await capture(page, testInfo, `detail-${viewport.width}`);
+      await checkScreen(page, testInfo, `detail-${viewport.width}`);
     });
 
     test("selection bar", async ({ page }, testInfo) => {
@@ -88,7 +88,7 @@ for (const viewport of VIEWPORTS) {
       const box = (await bar.boundingBox())!;
       expect(box.x).toBeGreaterThanOrEqual(0);
       expect(box.x + box.width).toBeLessThanOrEqual(viewport.width);
-      await capture(page, testInfo, `selection-${viewport.width}`);
+      await checkScreen(page, testInfo, `selection-${viewport.width}`);
     });
 
     test("error", async ({ page }, testInfo) => {
@@ -98,7 +98,7 @@ for (const viewport of VIEWPORTS) {
       ]);
       await page.goto(`/?url=${encodeURIComponent("https://linear.app/")}`);
       await expect(page.getByTestId("error-panel")).toBeVisible();
-      await capture(page, testInfo, `error-${viewport.width}`);
+      await checkScreen(page, testInfo, `error-${viewport.width}`);
     });
   });
 }

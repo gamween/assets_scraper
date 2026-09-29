@@ -97,7 +97,7 @@ function SearchField() {
             else inputRef.current?.blur();
           }
         }}
-        className="peer h-8 w-full rounded-md border border-border bg-surface pr-8 pl-8 text-body text-text transition-[border-color,box-shadow] duration-100 outline-none placeholder:text-text-3 hover:border-border-strong focus-visible:border-accent focus-visible:shadow-[0_0_0_3px_var(--accent-soft)] [&::-webkit-search-cancel-button]:hidden"
+        className="peer h-8 w-full rounded-md border border-control-edge bg-surface pr-8 pl-8 text-body text-text transition-[border-color,box-shadow] duration-100 outline-none placeholder:text-text-3 hover:border-text-3 focus-visible:border-accent focus-visible:shadow-[0_0_0_3px_var(--accent-soft)] [&::-webkit-search-cancel-button]:hidden"
       />
       {query ? (
         <button
@@ -127,7 +127,7 @@ function SortSelect() {
         aria-label="Sort"
         value={sort}
         onChange={(event) => setSort(event.target.value as SortKey)}
-        className="h-8 appearance-none rounded-md border border-border bg-surface pr-8 pl-2.5 text-body text-text transition-colors duration-100 outline-none hover:border-border-strong focus-visible:border-accent focus-visible:shadow-[0_0_0_3px_var(--accent-soft)]"
+        className="h-8 appearance-none rounded-md border border-control-edge bg-surface pr-8 pl-2.5 text-body text-text transition-colors duration-100 outline-none hover:border-text-3 focus-visible:border-accent focus-visible:shadow-[0_0_0_3px_var(--accent-soft)]"
       >
         {SORT_KEYS.map((key) => (
           <option key={key} value={key}>
@@ -197,7 +197,7 @@ function BackgroundSelect({ value, onChange, className }: { value: Background; o
   return (
     <div
       className={cn(
-        "relative flex h-8 shrink-0 items-center gap-1 rounded-md border border-border bg-surface pr-1.5 pl-2 text-text-3 transition-colors duration-100 hover:border-border-strong has-[select:focus-visible]:border-accent has-[select:focus-visible]:shadow-[0_0_0_3px_var(--accent-soft)]",
+        "relative flex h-8 shrink-0 items-center gap-1 rounded-md border border-control-edge bg-surface pr-1.5 pl-2 text-text-3 transition-colors duration-100 hover:border-text-3 has-[select:focus-visible]:border-accent has-[select:focus-visible]:shadow-[0_0_0_3px_var(--accent-soft)]",
         className,
       )}
     >

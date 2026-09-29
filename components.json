@@ -17,7 +17,7 @@
     "utils": "@/components/common/cn",
     "ui": "@/components/ui",
     "lib": "@/lib",
-    "hooks": "@/hooks"
+    "hooks": "@/components/common"
   },
   "menuColor": "default",
   "menuAccent": "subtle",

@@ -15,6 +15,15 @@ export function isEditableTarget(target: EventTarget | null): boolean {
 }
 
 /**
+ * Whether a dialog holds the focus (the ZIP failures list, a toast reached with F6): its keys and pastes are its own,
+ * and must not select, switch tabs or start a scan in the page behind it. The detail view is a dialog too, and handles
+ * its own keys.
+ */
+function dialogHasFocus(): boolean {
+  return document.activeElement?.closest('[role="dialog"], [role="alertdialog"]') != null;
+}
+
+/**
  * The URL a paste should scan, or null when the text is not one URL-like token. Shared with the landing field, which
  * is autofocused and so never reaches the document listener below.
  */
@@ -28,7 +37,7 @@ export function pastedScanUrl(text: string | undefined): string | null {
 export function useGlobalShortcuts() {
   useEffect(() => {
     const onPaste = (event: ClipboardEvent) => {
-      if (isEditableTarget(document.activeElement) || appStore.getState().detailId) return;
+      if (isEditableTarget(document.activeElement) || appStore.getState().detailId || dialogHasFocus()) return;
       const url = pastedScanUrl(event.clipboardData?.getData("text/plain"));
       if (!url) return;
       event.preventDefault();
@@ -71,13 +80,13 @@ export function shortcutScope(state: Pick<AppState, "phase" | "assets" | "fonts"
 
 /**
  * Spec 12.5 results keys: `/` search, `1` to `4` tabs, Cmd/Ctrl+A select all visible, Esc clears the selection, then
- * the search. The detail view handles its own keys while it is open.
+ * the search. The detail view handles its own keys while it is open, and no key reaches the page past a dialog.
  */
 export function useResultsShortcuts() {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const state = appStore.getState();
-      if (state.detailId || event.defaultPrevented || event.isComposing) return;
+      if (state.detailId || event.defaultPrevented || event.isComposing || dialogHasFocus()) return;
       const scope = shortcutScope(state);
       if (!scope) return;
       const editable = isEditableTarget(event.target);

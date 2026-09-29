@@ -130,14 +130,6 @@ export async function resolvePublicAddresses(host: string, port: number): Promis
 }
 
 /**
- * The first address `resolvePublicAddresses` returns: the single-address form spec 11.1 names. The app itself calls
- * `resolvePublicAddresses`, so a dead first address falls back to the next one.
- */
-export async function resolvePublicHost(host: string, port: number): Promise<string> {
-  return (await resolvePublicAddresses(host, port))[0];
-}
-
-/**
  * A `lookup` for `net.connect` (and undici or `http.request`, which pass it through) that answers with addresses that
  * were already checked and never queries DNS. With `all`, as Node asks when it autoselects the address family, every
  * address is returned, so a dead first record falls back to the next one.

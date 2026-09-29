@@ -80,6 +80,17 @@ export async function getFontTtfBlob(file: FontFile, options: BytesOptions = {})
   return response.blob();
 }
 
+/**
+ * The family name a font row registers its specimen under (`new FontFace(alias, bytes)`), which keeps scraped fonts
+ * away from the app's own text. It must differ for every family of a scan: two rows under one name both render with
+ * whichever face was added last, so `Helvetica Now Display` showed the glyphs of `Helvetica Now Text`. Font ids are
+ * unique per scan, so the alias keeps the whole id and escapes every character outside `[a-z0-9-]` as its code point:
+ * family names match whatever their case, and the alias is quoted in CSS.
+ */
+export function specimenAlias(fontId: string): string {
+  return `as-specimen-${fontId.replace(/[^a-z0-9-]/gu, (char) => `_${char.codePointAt(0)!.toString(16)}_`)}`;
+}
+
 /** The file most likely to render Latin text in a specimen: loaded, upright, near 400, Latin, smallest format first. */
 export function specimenFile(family: FontFamily): FontFile | null {
   const formatRank: Record<FontFile["format"], number> = { woff2: 0, woff: 1, ttf: 2, otf: 3, eot: 9, other: 9 };
