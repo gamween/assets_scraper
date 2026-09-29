@@ -181,7 +181,9 @@ function DetailBody({ asset }: { asset: Asset }) {
   const index = list.findIndex((item) => item.id === asset.id);
   const svg = asset.kind === "svg";
   const remote = sourceUrl(asset) !== null;
-  const formatLabel = (asset.original?.format ?? asset.format).toUpperCase();
+  const format = asset.original?.format ?? asset.format;
+  // A file of format `other` is named by what it is, as on its card and in its metadata, not `Download OTHER`.
+  const downloadLabel = format === "other" ? "Download file" : `Download ${format.toUpperCase()}`;
   const { nextDetail, previousDetail } = appStore.getState();
 
   // The grid row is explicit: an implicit `auto` row makes `md:h-full` on the preview column cyclic, so the column
@@ -247,7 +249,7 @@ function DetailBody({ asset }: { asset: Asset }) {
         <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-5 pb-5">
           <div className="flex flex-col gap-2">
             {svg ? <ActionButton primary label="Copy SVG code" shortcut="C" icon={<Copy aria-hidden="true" />} onClick={() => copySvgCode(asset)} /> : null}
-            <ActionButton primary={!svg} label={`Download ${formatLabel}`} shortcut="D" icon={<Download aria-hidden="true" />} onClick={() => downloadAsset(asset)} />
+            <ActionButton primary={!svg} label={downloadLabel} shortcut="D" icon={<Download aria-hidden="true" />} onClick={() => downloadAsset(asset)} />
             {!svg && asset.aspectChanged && asset.display ? (
               <ActionButton label="Download as displayed" icon={<Download aria-hidden="true" />} onClick={() => downloadAsset(asset, "display")} />
             ) : null}

@@ -201,6 +201,36 @@ test.describe("error states", () => {
     await expect(page.getByTestId("asset-card").getByTestId("asset-filename")).toHaveText("linear-brand.png");
   });
 
+  test("not-html of a type the scan cannot name downloads under its own extension", async ({ page }) => {
+    const url = "https://e2e.test/e2e-assets/file/guide.pdf";
+    const file: Asset = {
+      id: "the-pdf",
+      kind: "image",
+      role: "image",
+      name: "guide.pdf",
+      filename: "linear-guide.pdf",
+      format: "other",
+      foundIn: ["public-source"],
+      visible: false,
+      declaredOnly: false,
+      order: 0,
+      score: 100,
+      usedCount: 1,
+      tone: "unknown",
+      display: null,
+      original: { url, proxy: `/api/asset?u=${Buffer.from(url).toString("base64url")}&e=1&s=s`, format: "other" },
+    };
+    const events = stream("not-html", { fallback: [file] });
+    await mockAssetRoutes(page, events);
+    await scan(page, events);
+    await page.getByTestId("asset-card").locator("[data-card-main]").click();
+    // Named like the card (`FILE`) and the metadata row (`File`), not `Download OTHER`.
+    const button = page.getByRole("dialog").getByRole("button", { name: "Download file" });
+    const download = page.waitForEvent("download");
+    await button.click();
+    expect((await download).suggestedFilename()).toBe("linear-guide.pdf");
+  });
+
   test("Copy debug info copies the diagnostics with the scan id", async ({ page, context }) => {
     await context.grantPermissions(["clipboard-read", "clipboard-write"]);
     await scan(page, stream("internal"));
