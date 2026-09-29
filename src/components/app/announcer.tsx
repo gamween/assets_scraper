@@ -14,7 +14,8 @@ type Watched = Pick<AppState, "phase" | "steps" | "host" | "assets" | "fonts" | 
 export function announcement(previous: Watched, next: Watched): string | null {
   if (next.phase === "scanning") {
     const current = stepRows(next.steps).find((row) => row.current);
-    const before = previous.phase === "scanning" ? stepRows(previous.steps).find((row) => row.current) : undefined;
+    // A scan of another page started while one was still on its first step stands on the same step, and is still news.
+    const before = previous.phase === "scanning" && previous.host === next.host ? stepRows(previous.steps).find((row) => row.current) : undefined;
     return current && current.step !== before?.step ? stepLabel(current.step, next.host ?? "") : null;
   }
   if (next.phase === "results" && previous.phase !== "results") {

@@ -35,4 +35,18 @@ describe("announcement", () => {
       "Selection cleared",
     ]);
   });
+
+  it("says the new page when a scan replaces one still opening", () => {
+    const store = createAppStore();
+    const said: string[] = [];
+    store.subscribe((next, previous) => {
+      const text = announcement(previous, next);
+      if (text) said.push(text);
+    });
+    store.getState().beginScan({ url: "https://linear.app/", host: "linear.app" });
+    store.getState().applyEvent({ type: "step", step: "open", state: "start" });
+    // A second address typed in the top bar before the first page opened: both scans stand on the same step.
+    store.getState().beginScan({ url: "https://stripe.com/", host: "stripe.com" });
+    expect(said).toEqual(["Opening linear.app", "Opening stripe.com"]);
+  });
 });
