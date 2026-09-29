@@ -134,63 +134,60 @@ async function readBudgeted(reader: ReadableStreamDefaultReader<Uint8Array>, hea
  * return (`WOFF2_MAX_OUTPUT_BYTES`) is reserved, and the part not served is handed back, so the work is never done for
  * an output the budget then refuses.
  *
- * The whole exchange, waiting for a conversion slot and the licence check included, stays within `timeoutMs` (504 past
- * it), so a slot is never held longer; no free slot in time gives 503.
+ * A conversion slot (`CONVERSION_SLOTS` per instance) is taken once the source is in, for the conversion alone: an
+ * upstream that trickles its bytes ties up its own request and nobody else's, where a slot held through the download let
+ * two slow sources stop every conversion on the instance. What downloads buffer at once is bounded by the budget
+ * instead, which every source byte is taken from before it is kept. The whole exchange, the download, the wait for a
+ * slot and the licence check included, stays within `timeoutMs` (504 past it), so a slot is never held longer; no free
+ * slot in time gives 503.
  */
 async function convertFont(
   link: Link,
   signal: AbortSignal,
   { maxBytes, timeoutMs, client }: { maxBytes: number; timeoutMs: number; client: string | null },
 ): Promise<Response> {
-  const busy = () => errorResponse(503, "busy", "Too many fonts are being converted. Try again in a moment.", { "retry-after": "5" });
-  const started = Date.now();
   const deadline = AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]);
-  const release = await takeConversionSlot(deadline);
-  if (!release) return busy();
-  try {
-    const remainingMs = timeoutMs - (Date.now() - started);
-    if (remainingMs <= 0) return busy();
-    const upstream = await fetchAsset(link.url, signal, Math.min(maxBytes, WOFF2_MAX_SOURCE_BYTES), remainingMs);
-    if (upstream instanceof Response) return upstream;
-    const { head, rest } = await peek(upstream.stream(), WOFF2_SIGNATURE_BYTES);
-    if (sniffContentType(head) !== "font/woff2") {
-      await rest.cancel().catch(() => {});
-      return errorResponse(415, "not-convertible", "Only WOFF2 fonts can be converted.");
-    }
-    const source = await readBudgeted(rest, head, client);
+  const upstream = await fetchAsset(link.url, signal, Math.min(maxBytes, WOFF2_MAX_SOURCE_BYTES), timeoutMs);
+  if (upstream instanceof Response) return upstream;
+  const { head, rest } = await peek(upstream.stream(), WOFF2_SIGNATURE_BYTES);
+  if (sniffContentType(head) !== "font/woff2") {
+    await rest.cancel().catch(() => {});
+    return errorResponse(415, "not-convertible", "Only WOFF2 fonts can be converted.");
+  }
+  const source = await readBudgeted(rest, head, client);
 
-    const output = meterProxyBytes(client);
-    try {
-      if (!(await output.reserve(WOFF2_MAX_OUTPUT_BYTES))) return budgetExhausted();
-      const converted = await convertWoff2(source, deadline);
-      if (!converted.ok) {
-        return converted.reason === "license"
-          ? errorResponse(403, "license", "This font's licence does not allow conversion.")
-          : errorResponse(415, "not-convertible", "The font could not be converted.");
-      }
-      const { bytes, contentType } = converted;
-      if (!(await output.take(bytes.byteLength))) return budgetExhausted();
-      // one chunk of a stream, because Response copies a typed array body: the converted bytes are never copied again
-      const body = new ReadableStream<Uint8Array>({
-        start(controller) {
-          controller.enqueue(bytes);
-          controller.close();
-        },
-      });
-      return new Response(body, {
-        headers: {
-          ...SAFETY_HEADERS,
-          ...cacheHeaders(link, bytes.byteLength),
-          "content-type": contentType,
-          "content-length": String(bytes.byteLength),
-          "content-disposition": contentDisposition(link.dl, contentType),
-        },
-      });
-    } finally {
-      await output.settle();
+  const release = await takeConversionSlot(deadline);
+  if (!release) return errorResponse(503, "busy", "Too many fonts are being converted. Try again in a moment.", { "retry-after": "5" });
+  const output = meterProxyBytes(client);
+  try {
+    if (!(await output.reserve(WOFF2_MAX_OUTPUT_BYTES))) return budgetExhausted();
+    const converted = await convertWoff2(source, deadline);
+    if (!converted.ok) {
+      return converted.reason === "license"
+        ? errorResponse(403, "license", "This font's licence does not allow conversion.")
+        : errorResponse(415, "not-convertible", "The font could not be converted.");
     }
+    const { bytes, contentType } = converted;
+    if (!(await output.take(bytes.byteLength))) return budgetExhausted();
+    // one chunk of a stream, because Response copies a typed array body: the converted bytes are never copied again
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(bytes);
+        controller.close();
+      },
+    });
+    return new Response(body, {
+      headers: {
+        ...SAFETY_HEADERS,
+        ...cacheHeaders(link, bytes.byteLength),
+        "content-type": contentType,
+        "content-length": String(bytes.byteLength),
+        "content-disposition": contentDisposition(link.dl, contentType),
+      },
+    });
   } finally {
     release();
+    await output.settle();
   }
 }
 

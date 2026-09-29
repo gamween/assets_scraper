@@ -97,7 +97,11 @@ beforeAll(async () => {
       for (let i = 0; i < 11; i++) s.write(Buffer.alloc(1024 * 1024));
       s.end();
     },
-    "/woff2-stall": (_q, s) => { s.writeHead(200, { "content-type": "font/woff2" }); s.write(woff2.subarray(0, 64)); },
+    "/woff2-stall": (_q, s) => {
+      hits.set("/woff2-stall", (hits.get("/woff2-stall") ?? 0) + 1);
+      s.writeHead(200, { "content-type": "font/woff2" });
+      s.write(woff2.subarray(0, 64));
+    },
     "/woff2-truncated": (_q, s) => { s.writeHead(200, { "content-type": "font/woff2" }); s.end(woff2.subarray(0, 64)); },
     "/chunked-late": (_q, s) => {
       s.writeHead(200, { "content-type": "image/png" });
@@ -432,27 +436,42 @@ describe("handleAssetRequest", () => {
   });
 
   it("runs at most two conversions at once and answers 503 when no slot frees in time", async () => {
-    const holders = [new AbortController(), new AbortController()];
-    const held = holders.map((controller) => {
+    // Two conversions held inside their licence check, which runs with the slot taken.
+    const answers: ((convertible: boolean) => void)[] = [];
+    fonts.isConvertibleFont.mockImplementation(() => new Promise((resolve) => answers.push(resolve)));
+    const held = [0, 1].map(() => handleAssetRequest(proxied("/assets/__inter.woff2", "&fmt=ttf"), { timeoutMs: 60_000 }));
+    try {
+      await vi.waitFor(() => expect(answers).toHaveLength(2), { timeout: 10_000 });
+      const refused = await handleAssetRequest(proxied("/assets/__inter.woff2", "&fmt=ttf"), { timeoutMs: 1_000 });
+      expect(await errorOf(refused)).toMatchObject({ status: 503, code: "busy" });
+      expect(refused.headers.get("retry-after")).toBe("5");
+      // a waiter takes the first slot that frees
+      fonts.isConvertibleFont.mockResolvedValue(true);
+      const waiting = handleAssetRequest(proxied("/assets/__inter.woff2", "&fmt=ttf"), { timeoutMs: 10_000 });
+      answers[0](true);
+      expect((await waiting).status).toBe(200);
+    } finally {
+      for (const answer of answers) answer(true);
+      await Promise.all(held);
+    }
+    expect((await handleAssetRequest(proxied("/assets/__inter.woff2", "&fmt=ttf"))).status).toBe(200);
+  });
+
+  it("holds no conversion slot while a source downloads, so slow upstreams stop nobody else", async () => {
+    // Before, each request below took a slot before its download and kept it for as long as the upstream trickled.
+    const stalls = [new AbortController(), new AbortController(), new AbortController()];
+    const stalled = stalls.map((controller) => {
       const request = proxied("/woff2-stall", "&fmt=ttf");
       return handleAssetRequest(new Request(request.url, { headers: SAME_ORIGIN, signal: controller.signal }), { timeoutMs: 60_000 });
     });
     try {
-      // a conversion that gets a slot before both holders do still succeeds, so retry until both slots are taken
-      await vi.waitFor(async () => {
-        const response = await handleAssetRequest(proxied("/assets/__inter.woff2", "&fmt=ttf"), { timeoutMs: 300 });
-        expect(await errorOf(response)).toMatchObject({ status: 503, code: "busy" });
-        expect(response.headers.get("retry-after")).toBe("5");
-      }, { timeout: 10_000, interval: 50 });
-      // a waiter takes the first slot that frees
-      const waiting = handleAssetRequest(proxied("/assets/__inter.woff2", "&fmt=ttf"), { timeoutMs: 10_000 });
-      holders[0].abort();
-      expect((await waiting).status).toBe(200);
+      // every one of them is downloading: with a slot taken first, the third would still be waiting for one
+      await vi.waitFor(() => expect(hits.get("/woff2-stall")).toBe(3), { timeout: 5_000 });
+      expect((await handleAssetRequest(proxied("/assets/__inter.woff2", "&fmt=ttf"), { timeoutMs: 2_000 })).status).toBe(200);
     } finally {
-      for (const controller of holders) controller.abort();
-      await Promise.all(held);
+      for (const controller of stalls) controller.abort();
+      await Promise.all(stalled);
     }
-    expect((await handleAssetRequest(proxied("/assets/__inter.woff2", "&fmt=ttf"))).status).toBe(200);
   });
 
   it("frees conversion slots when the licence check outlasts the proxy timeout", async () => {
