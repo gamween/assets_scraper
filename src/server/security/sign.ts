@@ -83,7 +83,7 @@ const invalid = (message: string) => new HttpError(400, "invalid-params", messag
 /**
  * Verifies the query of an `/api/asset` request (`URL.search`, with or without its `?`). 400 for unknown, repeated,
  * missing, malformed or non-canonical params (checked before the secret is needed), 403 for a bad signature or an
- * expired link.
+ * expired link. `expiry` comes back in seconds, so the proxy can keep the CDN from outliving the link.
  *
  * The query is the CDN cache key, so it has to be the one the signer wrote, byte for byte (plus the client's `&fmt=ttf`):
  * any other spelling of the same values, reordered or percent-encoded some other way, would be one more cache miss, one
@@ -92,7 +92,11 @@ const invalid = (message: string) => new HttpError(400, "invalid-params", messag
  * No caller names its downloads today, so every signed path is an inline one, but a signer given a name signs it with
  * the URL and appends it as `dl`.
  */
-export function verifyAssetParams(search: string, now: number = Date.now(), secret?: string): { url: string; dl?: string; fmt?: "ttf" } {
+export function verifyAssetParams(
+  search: string,
+  now: number = Date.now(),
+  secret?: string,
+): { url: string; expiry: number; dl?: string; fmt?: "ttf" } {
   const query = search.startsWith("?") ? search.slice(1) : search;
   const params = new URLSearchParams(query);
   for (const key of new Set(params.keys())) {
@@ -125,5 +129,5 @@ export function verifyAssetParams(search: string, now: number = Date.now(), secr
     throw invalid("Invalid URL");
   }
   if (protocol !== "http:" && protocol !== "https:") throw invalid("Invalid URL");
-  return { url, ...(dl !== null && { dl }), ...(fmt === "ttf" && { fmt: "ttf" as const }) };
+  return { url, expiry, ...(dl !== null && { dl }), ...(fmt === "ttf" && { fmt: "ttf" as const }) };
 }

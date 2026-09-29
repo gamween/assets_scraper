@@ -131,6 +131,12 @@ const defaults = {
   proxyMaxBytes: 25 * MB,
   proxyTimeoutMs: 20_000,
   proxyMaxRedirects: 5,
+  /**
+   * The largest proxied body the CDN may keep. A CDN hit costs no invocation and no byte of the budget, so a large file
+   * cached there could be pulled again and again for nothing but the deployment's bandwidth. Past this size, and for a
+   * body whose size is not known up front, every read goes through the function and is counted.
+   */
+  proxyCdnMaxBytes: 4 * MB,
 
   // Budgets (spec 11.3)
   scansPerDay: 80,

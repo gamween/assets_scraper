@@ -32,7 +32,7 @@ describe("sign", () => {
     const a = signer.sign("https://cdn.example.com/logo.svg");
     const b = createSigner({ secret, now: now + 10 * 60_000 }).sign("https://cdn.example.com/logo.svg");
     expect(a).toBe(b);
-    expect(verifyAssetParams(queryOf(a), now, secret)).toEqual({ url: "https://cdn.example.com/logo.svg" });
+    expect(verifyAssetParams(queryOf(a), now, secret)).toEqual({ url: "https://cdn.example.com/logo.svg", expiry: Date.UTC(2026, 8, 16, 19) / 1000 });
   });
 
   it("rejects tampering, expiry and unknown params", () => {
@@ -45,7 +45,7 @@ describe("sign", () => {
 
   it("accepts a signed dl and fmt=ttf, rejects other fmt", () => {
     const path = createSigner({ secret, now }).sign("https://a.com/f.woff2", "inter.woff2");
-    expect(verifyAssetParams(`${queryOf(path)}&fmt=ttf`, now, secret)).toEqual({ url: "https://a.com/f.woff2", dl: "inter.woff2", fmt: "ttf" });
+    expect(verifyAssetParams(`${queryOf(path)}&fmt=ttf`, now, secret)).toMatchObject({ url: "https://a.com/f.woff2", dl: "inter.woff2", fmt: "ttf" });
     expect(statusOf(() => verifyAssetParams(`${queryOf(path)}&fmt=png`, now, secret))).toBe(400);
   });
 
@@ -53,13 +53,13 @@ describe("sign", () => {
     // An unsigned name turns one signed link into unlimited cache misses, each a fresh invocation and upstream fetch.
     const signer = createSigner({ secret, now });
     const plain = signer.sign("https://a.com/x.png");
-    expect(verifyAssetParams(queryOf(plain), now, secret)).toEqual({ url: "https://a.com/x.png" });
+    expect(verifyAssetParams(queryOf(plain), now, secret)).not.toHaveProperty("dl");
     expect(statusOf(() => verifyAssetParams(`${queryOf(plain)}&dl=x.png`, now, secret))).toBe(403);
 
     const named = signer.sign("https://a.com/x.png", "Logo dark.png");
     expect(paramsOf(named).get("dl")).toBe("Logo dark.png");
     expect(paramsOf(named).get("s")).not.toBe(paramsOf(plain).get("s"));
-    expect(verifyAssetParams(queryOf(named), now, secret)).toEqual({ url: "https://a.com/x.png", dl: "Logo dark.png" });
+    expect(verifyAssetParams(queryOf(named), now, secret)).toMatchObject({ url: "https://a.com/x.png", dl: "Logo dark.png" });
     expect(statusOf(() => verifyAssetParams(queryOf(named).replace("Logo%20dark", "Logo%20light"), now, secret))).toBe(403);
   });
 

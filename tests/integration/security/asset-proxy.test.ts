@@ -195,7 +195,8 @@ describe("handleAssetRequest", () => {
     expect(response.headers.get("x-content-type-options")).toBe("nosniff");
     expect(response.headers.get("cross-origin-resource-policy")).toBe("same-origin");
     expect(response.headers.get("content-security-policy")).toBe(CSP);
-    expect(response.headers.get("vercel-cdn-cache-control")).toBe("public, s-maxage=86400");
+    // no content-length: the CDN only keeps a body whose size was counted up front
+    expect(response.headers.get("vercel-cdn-cache-control")).toBe("no-store");
     expect(response.headers.get("cache-control")).toBe("private, max-age=3600");
     expect(response.headers.get("vary")).toBe("Sec-Fetch-Site");
     expect(response.headers.get("content-disposition")).toBe("inline");
@@ -204,7 +205,39 @@ describe("handleAssetRequest", () => {
     const sized = await handleAssetRequest(proxied("/sized.png", "", "none"));
     expect(sized.status).toBe(200);
     expect(sized.headers.get("content-length")).toBe(String(png.length));
+    expect(sized.headers.get("vercel-cdn-cache-control")).toMatch(/^public, s-maxage=\d+$/);
     expect(Buffer.from(await sized.arrayBuffer())).toEqual(png);
+  });
+
+  /**
+   * A CDN hit reaches neither the expiry check nor the byte budget. Kept a day, a link signed for six hours was served
+   * for up to a day after it expired, and a large file there could be pulled again and again without ever being counted.
+   */
+  it("keeps an asset at the CDN no longer than its link lives, and never a large or unsized one", async () => {
+    const lifetime = (response: Response) => Number(/^public, s-maxage=(\d+)$/.exec(response.headers.get("vercel-cdn-cache-control") ?? "")?.[1]);
+    const signedAt = (hoursAgo: number, assetPath: string) =>
+      new Request(`https://app.local${createSigner({ now: Date.now() - hoursAgo * 3_600_000 }).sign(`${upstream.origin}${assetPath}`)}`, { headers: SAME_ORIGIN });
+    const expiryOf = (request: Request) => Number(new URL(request.url).searchParams.get("e"));
+
+    const fresh = signedAt(0, "/sized.png");
+    const freshLife = lifetime(await handleAssetRequest(fresh));
+    expect(freshLife).toBeGreaterThan(6 * 3_600 - 60);
+    expect(freshLife).toBeLessThanOrEqual(expiryOf(fresh) - Math.floor(Date.now() / 1000));
+    // links are bucketed by hour and live 6 to 7 hours, so one signed 6 hours ago has at most an hour left
+    const old = signedAt(6, "/sized.png");
+    const oldLife = lifetime(await handleAssetRequest(old));
+    expect(oldLife).toBeGreaterThan(0);
+    expect(oldLife).toBeLessThanOrEqual(expiryOf(old) - Math.floor(Date.now() / 1000));
+    expect(oldLife).toBeLessThanOrEqual(3_600);
+
+    // a converted font has its length once it is converted, and falls under the same rule
+    expect(lifetime(await handleAssetRequest(proxied("/assets/__inter.woff2", "&fmt=ttf")))).toBeGreaterThan(6 * 3_600 - 60);
+
+    vi.stubEnv("PROXY_CDN_MAX_BYTES", String(png.length - 1));
+    const large = await handleAssetRequest(proxied("/sized.png"));
+    expect(large.status).toBe(200);
+    expect(large.headers.get("vercel-cdn-cache-control")).toBe("no-store");
+    await large.arrayBuffer();
   });
 
   it("refuses HEAD and other methods without fetching the upstream", async () => {

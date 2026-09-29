@@ -26,12 +26,26 @@ const SAFETY_HEADERS = {
   vary: "Sec-Fetch-Site",
 } as const;
 
+/** What a verified request says about how its answer may be cached. */
+interface Link {
+  url: string;
+  dl?: string;
+  /** When the signature stops being valid, in seconds. */
+  expiry: number;
+  /** An agent token, not Fetch Metadata, let the request in. */
+  viaToken: boolean;
+}
+
 /**
- * Cache headers of a served asset: an hour in the browser, and a day at the CDN, unless an agent token earned it. That
- * answer is never stored at the CDN, which keys on `Sec-Fetch-Site` alone.
+ * Cache headers of a served asset. The browser keeps it an hour. The CDN keeps it for what is left of its link's life
+ * and no longer, since a hit never reaches the expiry check, and only when it is a body of a known length up to
+ * `PROXY_CDN_MAX_BYTES`, since a hit never reaches the byte budget either. An answer an agent token earned is never
+ * stored there, because the CDN keys on `Sec-Fetch-Site` alone.
  */
-function cacheHeaders(viaToken: boolean): Record<string, string> {
-  return { "cache-control": "private, max-age=3600", "vercel-cdn-cache-control": viaToken ? "no-store" : "public, s-maxage=86400" };
+function cacheHeaders(link: Link, length: number | undefined): Record<string, string> {
+  const lifetime = link.expiry - Math.floor(Date.now() / 1000);
+  const cdn = !link.viaToken && lifetime > 0 && length !== undefined && length <= limits.proxyCdnMaxBytes;
+  return { "cache-control": "private, max-age=3600", "vercel-cdn-cache-control": cdn ? `public, s-maxage=${lifetime}` : "no-store" };
 }
 
 const WOFF2_SIGNATURE_BYTES = 4;
@@ -124,10 +138,9 @@ async function readBudgeted(reader: ReadableStreamDefaultReader<Uint8Array>, hea
  * it), so a slot is never held longer; no free slot in time gives 503.
  */
 async function convertFont(
-  url: string,
-  dl: string | undefined,
+  link: Link,
   signal: AbortSignal,
-  { maxBytes, timeoutMs, client, viaToken }: { maxBytes: number; timeoutMs: number; client: string | null; viaToken: boolean },
+  { maxBytes, timeoutMs, client }: { maxBytes: number; timeoutMs: number; client: string | null },
 ): Promise<Response> {
   const busy = () => errorResponse(503, "busy", "Too many fonts are being converted. Try again in a moment.", { "retry-after": "5" });
   const started = Date.now();
@@ -137,7 +150,7 @@ async function convertFont(
   try {
     const remainingMs = timeoutMs - (Date.now() - started);
     if (remainingMs <= 0) return busy();
-    const upstream = await fetchAsset(url, signal, Math.min(maxBytes, WOFF2_MAX_SOURCE_BYTES), remainingMs);
+    const upstream = await fetchAsset(link.url, signal, Math.min(maxBytes, WOFF2_MAX_SOURCE_BYTES), remainingMs);
     if (upstream instanceof Response) return upstream;
     const { head, rest } = await peek(upstream.stream(), WOFF2_SIGNATURE_BYTES);
     if (sniffContentType(head) !== "font/woff2") {
@@ -167,10 +180,10 @@ async function convertFont(
       return new Response(body, {
         headers: {
           ...SAFETY_HEADERS,
-          ...cacheHeaders(viaToken),
+          ...cacheHeaders(link, bytes.byteLength),
           "content-type": contentType,
           "content-length": String(bytes.byteLength),
-          "content-disposition": contentDisposition(dl, contentType),
+          "content-disposition": contentDisposition(link.dl, contentType),
         },
       });
     } finally {
@@ -184,7 +197,8 @@ async function convertFont(
 /**
  * Signed byte proxy behind `GET /api/asset` (spec 11.2): GET only, same-origin callers only, HMAC-checked URL, SSRF-safe
  * fetch with size and time caps, image and font types only (untyped bytes by magic number), sandboxed and not
- * sniffable, cached on the CDN, and taken from the caller's and the day's proxied bytes budgets before it is served.
+ * sniffable, cached on the CDN within its link's life when small, and taken from the caller's and the day's proxied
+ * bytes budgets before it is served.
  * `fmt=ttf` decompresses an open-licence WOFF2. `PROXY_DISABLED=1` turns it off, for an operator stopping abuse without
  * stopping scans.
  *
@@ -214,10 +228,11 @@ export async function handleAssetRequest(request: Request, options: AssetProxyOp
     const viaToken = site !== "same-origin" && site !== "none";
     if (viaToken && !authenticateAgent(request).ok) return errorResponse(403, "cross-site", "Only this app can load proxied assets.");
 
-    const { url, dl, fmt } = verifyAssetParams(new URL(request.url).search);
+    const { url, dl, fmt, expiry } = verifyAssetParams(new URL(request.url).search);
+    const link: Link = { url, ...(dl !== undefined && { dl }), expiry, viaToken };
     const client = clientAddress(request);
     if (!(await takeProxyBytes(0, client))) return budgetExhausted();
-    if (fmt === "ttf") return await convertFont(url, dl, request.signal, { maxBytes, timeoutMs, client, viaToken });
+    if (fmt === "ttf") return await convertFont(link, request.signal, { maxBytes, timeoutMs, client });
 
     const upstream = await fetchAsset(url, request.signal, maxBytes, timeoutMs);
     if (upstream instanceof Response) return upstream;
@@ -292,7 +307,7 @@ export async function handleAssetRequest(request: Request, options: AssetProxyOp
     return new Response(body, {
       headers: {
         ...SAFETY_HEADERS,
-        ...cacheHeaders(viaToken),
+        ...cacheHeaders(link, knownLength),
         "content-type": contentType,
         "content-disposition": contentDisposition(dl, contentType),
         ...(knownLength !== undefined && { "content-length": String(knownLength) }),
