@@ -34,11 +34,24 @@ test.describe("response headers", () => {
 
   test("the asset proxy is left to set its own CSP", async ({ request }) => {
     // Next drops a route handler header that next.config already set, so the app CSP must not reach
-    // /api/asset or it would replace the proxy's sandbox CSP (spec 11.2).
+    // /api/asset or it would replace the proxy's sandbox CSP (spec 11.2). Its refusals carry that CSP too.
     for (const path of ["/api/asset", "/api/asset?u=x"]) {
       const headers = (await request.get(path)).headers();
-      expect(headers["content-security-policy"] ?? "").not.toContain("script-src");
+      expect(headers["content-security-policy"]).toBe("default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; sandbox");
       expect(headers["x-robots-tag"]).toBe("noindex, nofollow");
     }
+  });
+
+  test("a path under the asset proxy is the 404 page, under the app CSP", async ({ request }) => {
+    const response = await request.get("/api/asset/x");
+    expect(response.status()).toBe(404);
+    expect(response.headers()["content-security-policy"]).toContain("frame-ancestors 'none'");
+  });
+
+  test("the asset proxy refuses another method with its own JSON 405", async ({ request }) => {
+    const response = await request.post("/api/asset");
+    expect(response.status()).toBe(405);
+    expect(response.headers()["allow"]).toBe("GET");
+    expect(await response.json()).toEqual({ error: { code: "method", message: "Use GET." } });
   });
 });
