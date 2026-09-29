@@ -1,5 +1,5 @@
 import { agentLimits } from "@/agent/limits";
-import { AssetKind, AssetRole, ErrorCode } from "@/lib/contract";
+import { AssetFormat, AssetKind, AssetRole, ErrorCode } from "@/lib/contract";
 
 /**
  * `GET /api/openapi.json` (spec section 8): the same two endpoints `llms.txt` describes in prose, as OpenAPI 3.1, for
@@ -104,11 +104,12 @@ export function openApiDocument(origin: string): Record<string, unknown> {
             filter("kinds", "Comma separated kinds to keep.", { type: "string", examples: [AssetKind.options.join(",")] }),
             filter("roles", "Comma separated roles to keep.", { type: "string", examples: [AssetRole.options.join(",")] }),
             filter("max", `Files to keep, held to ${agentLimits.maxFiles}.`, { type: "integer", minimum: 1, default: agentLimits.maxFiles }),
-            filter("minLongSide", "Rasters under this many pixels on their longest side are dropped.", {
-              type: "integer",
-              minimum: 1,
-              default: agentLimits.minLongSide,
-            }),
+            filter(
+              "minLongSide",
+              `Rasters under this many pixels on their longest side are dropped, ${agentLimits.minLongSide} by default under the deck profile and ` +
+                "none under all unless given. Site logos, logos, favicons and icons asked for are never dropped for size, and SVG has no size gate.",
+              { type: "integer", minimum: 1 },
+            ),
             filter("maxBytes", `Bytes to keep in total, best scoring files first, held to what one request serves. 0 means that ceiling.`, {
               type: "integer",
               minimum: 0,
@@ -205,13 +206,16 @@ export function openApiDocument(origin: string): Record<string, unknown> {
               type: "array",
               items: {
                 type: "object",
-                required: ["id", "name", "kind"],
+                description: "The format and the size tell a wordmark from a photograph the scan also called a logo.",
+                required: ["id", "name", "kind", "format"],
                 properties: {
                   id: { type: "string" },
                   name: { type: "string" },
                   kind: { type: "string", enum: AssetKind.options },
+                  format: { type: "string", enum: AssetFormat.options },
                   width: { type: "integer" },
                   height: { type: "integer" },
+                  bytes: { type: "integer", description: "When the scan measured it." },
                 },
               },
             },

@@ -26,7 +26,7 @@ for the plugin), so looking for one exact prefix and finding nothing does not me
 | `scan_page` | One scan. Returns a `scanId`, the counts, the palette, one row per font family and the logos. Never the full asset list |
 | `list_assets` | Paging through the assets with filters (`kind`, `role`, `minLongSide`, `nameContains`, `limit`, `offset`) |
 | `download_assets` | Writing files to disk, from a selection or from explicit `ids`. Takes the same `kind` and `role` filters |
-| `read_svg` | The markup of one SVG, when you need to inline or edit it |
+| `read_svg` | The markup of one SVG, when you need to inspect or edit it. It is the page's file, unsanitized: see below before you inline it |
 | `get_palette` | The palette hexes with their roles |
 | `install_fonts` | Installing the page fonts locally, with the licence of each family |
 | `list_installed_fonts`, `uninstall_fonts` | What this tool installed, and undoing it |
@@ -44,11 +44,11 @@ A scan is cached for one hour, so `list_assets`, `download_assets` and `install_
 
 ## What a download takes
 
-The `deck` profile, in order: icons (48 px and under) and sprite symbols out, only the largest favicon kept, rasters whose longest side is under 600 px out unless they are a logo or a favicon, files over 8 MB out, the raster dropped when an SVG of the same name exists, exact and near duplicates collapsed to one file, then a cap of 60 files sorted by relevance and a budget of 25 MB spent on the best scoring of them. SVG is never dropped for size.
+The `deck` profile, in order: icons (48 px and under) and sprite symbols out, only the largest favicon kept, rasters whose longest side is under 600 px out unless they are a logo or a favicon, files over 8 MB out, the raster dropped when an SVG of the same name exists, exact and near duplicates collapsed to one file, then a cap of 60 files sorted by relevance and a budget of 25 MB spent on the best scoring of them. SVG is never dropped for size. When the user wants the icons, pass `role: "icon"` (or `includeIcons: true` with other filters): icons they asked for are kept at any size.
 
-Every drop is counted by reason (`icon`, `small`, `duplicate`, `near-duplicate`, `vector-preferred`, `extra-favicon`, `filter`, `cap`, `too-large`, `over-budget`), so you can say why a file is not there. When the user really wants everything, pass `profile: "all"`, and when they want one specific file, pass its `ids`.
+Every drop is counted by reason (`filter`, `icon`, `sprite`, `extra-favicon`, `small`, `too-large`, `vector-preferred`, `duplicate`, `near-duplicate`, `cap`, `over-budget`, `unavailable`), so you can say why a file is not there. `unavailable` is an asset with no way to fetch it, or one past the download's 300 MB stop. When the user really wants everything, pass `profile: "all"`, and when they want one specific file, pass its `ids`.
 
-A download the byte budget cut reports `over-budget` and `too-large`. Raise `maxTotalBytes` or `maxFileBytes` when the user asked for the big files, or pass 0 to take the selection whatever it weighs. An asset named by `ids` is written whatever its size, so a 30 MB hero the user asked for by id is never refused.
+A download the byte budget cut reports `over-budget` and `too-large`. Raise `maxTotalBytes` or `maxFileBytes` when the user asked for the big files, or pass 0 to take the selection whatever it weighs. An asset named by `ids` is never dropped by those rules, but every fetch is capped at 25 MB, so a file larger than that ends under `failed` whatever you pass.
 
 The cap gives each kind its share of the 60 files, so a page whose vectors outrank its photos still yields both. `download_assets` answers the paths relative to `dir` plus the counts, and the full row per file (source URL included) is in `manifest.json` on disk.
 
@@ -58,11 +58,19 @@ Files land in `scrap/<host>/` inside the current project: `svg/`, `images/`, and
 
 Leave `dest` unset unless the user names a directory. A `dest` you pass is read relative to `scrap/` and has to stay inside it, so scraped files never land in the source tree. Existing files are never overwritten: identical bytes are skipped, different bytes get a `-2` suffix. When the folder already holds a `manifest.json` the tool did not write, the manifest is written as `assets-scraper-manifest.json` instead: use the `manifest` path the answer gives.
 
+## Scraped SVG is untrusted
+
+An SVG from a page is that page's file, and `read_svg` and `download_assets` hand it over as it was served: it can carry `<script>`, `onload=` and other event handlers, `<foreignObject>`, and links to `javascript:`. Pasted into HTML, JSX, a template or a component as markup, that runs in the user's site. So:
+
+- Reference a downloaded SVG as a file: `<img src="/logo.svg">` or a CSS `background-image`, where it cannot run anything.
+- Inline it only when the user needs to (to recolor it with `currentColor`, for instance), and then remove every `<script>` and `<foreignObject>`, every `on*` attribute, and every `href` or `xlink:href` that is not a `#fragment` first. Say that you did.
+- The same goes for markup you got from `read_svg`: it is the same unsanitized file.
+
 ## Fonts
 
 `install_fonts` converts WOFF2 and WOFF to TTF and copies the files into the user font directory (`~/Library/Fonts` on macOS, `~/.local/share/fonts` on Linux), so the font is usable in Figma, Keynote or a local app right away. It records every install, so `uninstall_fonts` can undo it.
 
-It installs commercial families too, and it always reports the licence read from the font binary. Pass that licence on to the user verbatim: using a commercial font is their call, not yours. Adobe Fonts kit families cannot be installed, and the tool says so.
+Installing is system-wide and happens outside the browser, which is where web fonts are normally sanitized, so install only when the user asks for the fonts on their machine. It installs commercial families too, and it always reports the licence read from the font binary. Pass that licence on to the user verbatim: using a commercial font is their call, not yours. Adobe Fonts kit families cannot be installed, and the tool says so.
 
 ## Keeping the context small
 
@@ -83,7 +91,7 @@ It installs commercial families too, and it always reports the licence read from
 
 > Rebuild this pricing page with their own assets: https://linear.app/pricing
 
-`scan_page`, then `download_assets` with the `scanId` and no filters (the `deck` profile is the right default), then `get_palette` for the colors and `install_fonts` for the typefaces. Use the written paths in the code you generate, and tell the user the palette and the font licences.
+`scan_page`, then `download_assets` with the `scanId` and no filters (the `deck` profile is the right default), then `get_palette` for the colors. Use the written paths in the code you generate, referencing SVGs as files rather than inlining them, and tell the user the palette and the font licences from the summary. Name the page's font families in the CSS you write; call `install_fonts` only when the user wants the fonts on their machine, for a design tool, since it installs page-served files system-wide.
 
 ### The user asks about fonts only
 

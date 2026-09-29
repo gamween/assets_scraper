@@ -52,6 +52,13 @@ describe("GET /api/openapi.json", () => {
     expect(doc.paths["/api/v1/scan"].post.responses["401"].description).toContain("x-access-code");
   });
 
+  /** Regression: summarize() always sends a logo's format, and its bytes when measured, which the schema left out. */
+  it("describes the logo rows the summary actually sends", async () => {
+    const logos = (await document()).components.schemas.ScanSummary.properties.logos.items;
+    expect(logos.required).toEqual(["id", "name", "kind", "format"]);
+    expect(Object.keys(logos.properties)).toEqual(expect.arrayContaining(["format", "bytes", "width", "height"]));
+  });
+
   it("documents the bearer scheme and every error code with its status", async () => {
     const doc = await document();
     expect(doc.components.securitySchemes.bearerAuth).toEqual({ type: "http", scheme: "bearer" });

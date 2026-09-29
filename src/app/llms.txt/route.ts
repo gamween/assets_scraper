@@ -65,8 +65,9 @@ Query: url, profile, kinds, roles, max, maxBytes, maxFileBytes, minLongSide, nam
   maxBytes       bytes to keep in total, best scoring files first, default ${mb(agentLimits.maxTotalBytes)} and at most
                  ${mb(zipMaxBytes())}, which is what 0 asks for. Files that do not fit are counted under over-budget
   maxFileBytes   bytes one file may take under the deck profile, default ${mb(agentLimits.maxFileBytes)}, 0 lifts it
-  minLongSide    a raster under this many pixels on its longest side is dropped, default ${agentLimits.minLongSide} px.
-                 A site logo, a logo and a favicon are never dropped for size, and SVG has no size gate.
+  minLongSide    a raster under this many pixels on its longest side is dropped, default ${agentLimits.minLongSide} px under deck
+                 and none under all. A site logo, a logo, a favicon and an icon asked for are never dropped for
+                 size, and SVG has no size gate.
   nameContains   keeps the files whose name contains this text
   includeIcons   true keeps the icons the deck profile drops, at any size. Asking for roles=icon does the same
 
@@ -95,11 +96,11 @@ a few minutes and slow down rather than retrying at once or changing the token.
 
 Read what a page holds:
 
-    curl -s -X POST ${origin}/api/v1/scan -H "Authorization: Bearer $ASSETS_SCRAPER_TOKEN" -H "content-type: application/json" -d '{"url":"stripe.com"}'
+    curl -sS --fail-with-body -X POST ${origin}/api/v1/scan -H "Authorization: Bearer $ASSETS_SCRAPER_TOKEN" -H "content-type: application/json" -d '{"url":"stripe.com"}'
 
-Take the logos and the large images into ./scrap/stripe.com:
+Take the logos and the large images into ./scrap/stripe.com (-f keeps an error's JSON body out of assets.zip):
 
-    curl -s -L -o assets.zip "${origin}/api/v1/assets.zip?url=stripe.com&profile=deck&max=20" -H "Authorization: Bearer $ASSETS_SCRAPER_TOKEN" && mkdir -p scrap/stripe.com && unzip -o assets.zip -d scrap/stripe.com
+    curl -fsSL -o assets.zip "${origin}/api/v1/assets.zip?url=stripe.com&profile=deck&max=20" -H "Authorization: Bearer $ASSETS_SCRAPER_TOKEN" && mkdir -p scrap/stripe.com && unzip -o assets.zip -d scrap/stripe.com
 
 ## Machine readable
 

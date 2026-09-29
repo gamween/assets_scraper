@@ -35,12 +35,14 @@ Tools, all returning compact JSON, never bytes:
 | --- | --- | --- |
 | `scan_page` | `url`, optional `refresh` | `scanId`, the page, counts per kind, the palette, one row per font family, the logos, and how many other assets there are |
 | `list_assets` | `scanId`, optional `kind`, `role`, `minLongSide`, `nameContains`, `limit` (40), `offset` | Compact rows: id, name, kind, role, dimensions, bytes |
-| `download_assets` | `scanId`, optional `ids`, `profile`, filters, `maxTotalBytes`, `maxFileBytes`, `dest` | The written paths, total bytes, the drop reasons, the destination |
-| `read_svg` | `scanId`, `id` | `{ id, name, filename, markup }`, the markup as text, refused past 256 KB |
+| `download_assets` | `scanId`, optional `ids`, `profile`, filters, `includeIcons`, `max`, `maxTotalBytes`, `maxFileBytes`, `dest` | The written paths, total bytes, the drop reasons, the destination and the manifest |
+| `read_svg` | `scanId`, `id` | `{ id, name, filename, markup }`, the page's own markup as text, unsanitized, refused past 256 KB |
 | `get_palette` | `scanId` | The palette hexes with their roles |
-| `install_fonts` | `scanId`, optional `families` | Installed families with their licence and paths, and what could not be installed and why |
-| `list_installed_fonts` | | What this tool installed, with dates and sources |
-| `uninstall_fonts` | `families` | What was removed |
+| `install_fonts` | `scanId`, optional `families` | Installed families with their licence and paths, and what could not be installed and why, names and licences cut to a line |
+| `list_installed_fonts` | | What this tool installed, with dates and sources, cut to stay small, and the manifest that holds every row |
+| `uninstall_fonts` | `families` | What was removed, and what was left in place because it is no longer the file the tool installed |
+
+Every answer stays under 8 KB: long lists are cut, and the answer says how many rows it left out and where the rest is. Scans run one at a time in a server: a second `scan_page` waits for the first rather than failing, and a call the client cancels stops its scan.
 
 A cached scan is stamped with the build that produced it, the package version plus a digest of the bundles in `dist/`, and only that build reads it back. A rebuild or an upgrade therefore starts from a cold cache rather than serving an hour of results from the code you just replaced. `ASSETS_SCRAPER_BUILD_ID` names the identity yourself when you need two runs to share, or not share, a cache.
 
@@ -92,20 +94,20 @@ Human output by default, `--json` for agents, exit code 1 on failure, every path
 Ask the owner for a token, then:
 
 ```bash
-curl -s https://assets-scraper.vercel.app/api/v1/scan \
+curl -sS --fail-with-body https://assets-scraper.vercel.app/api/v1/scan \
   -H "Authorization: Bearer $ASSETS_SCRAPER_TOKEN" \
   -H "content-type: application/json" \
   -d '{"url":"stripe.com","view":"summary"}'
 ```
 
 ```bash
-curl -s -o assets.zip \
+curl -fsSL -o assets.zip \
   -H "Authorization: Bearer $ASSETS_SCRAPER_TOKEN" \
   "https://assets-scraper.vercel.app/api/v1/assets.zip?url=stripe.com&profile=deck&kinds=svg&max=20"
 ```
 
 - `POST /api/v1/scan` takes `{ "url": "...", "view": "summary" | "full" }` and returns one JSON document. `summary` is what `scan_page` returns; `full` adds every asset and font.
-- `GET /api/v1/assets.zip?url=...&profile=deck&kinds=svg,image&roles=logo&max=60` streams a ZIP with the same selection rules and a `manifest.json` inside.
+- `GET /api/v1/assets.zip?url=...&profile=deck&kinds=svg,image&roles=logo&max=60` streams a ZIP with the same selection rules and a `manifest.json` inside. `-f` matters: without it, curl saves an error's JSON body as `assets.zip` and exits 0.
 - `GET /llms.txt` and `GET /api/openapi.json` describe both endpoints for machines.
 
 A token skips the bot check and nothing else: the access code, the rate limit, the scan budget, the SSRF guards and every v1 cap still apply. On a deployment the owner put behind `ACCESS_CODE`, send the code in `x-access-code` next to the token; the CLI and the MCP server send `ASSETS_SCRAPER_ACCESS_CODE` when it is set. Tokens live in the `AGENT_TOKENS` environment variable of the deployment, comma separated, and are never logged.
@@ -116,16 +118,21 @@ Running the deployment: `AGENT_TOKENS` is set for production and preview in the 
 
 ## What a download takes
 
-The point of the `deck` profile (the default) is that a download does not take everything blindly. In order:
+The point of the `deck` profile (the default) is that a download does not take everything blindly. In order (`src/agent/select.ts`):
 
-1. Roles: `icon` (48 px and under) and `sprite-symbol` out, `site-logo`, `logo`, `social`, `illustration` and `image` in, and only the largest `favicon`.
-2. Size: a raster whose longest side is under 600 px is dropped unless its role is `site-logo`, `logo` or `favicon`. SVG has no size gate.
-3. Vector wins: when an SVG and a raster normalize to the same name (`@2x`, `-1024x512`, `_large` and similar suffixes off), the raster goes.
-4. Exact duplicates: same bytes, one file kept, preferring SVG, then the larger pixel area, then `svg`, `png`, `webp`, `avif`, `jpg`, `gif`.
-5. Near duplicates: a perceptual fingerprint per raster groups `logo.png`, `logo@2x.png` and the same photo from two CDNs, without merging two different wordmarks.
-6. Cap: 60 files, after sorting by relevance.
+1. Filters the caller gave: `kinds`, `roles`, and `nameContains`, which matches the asset's name (not its file name, which starts with the site's name).
+2. Roles: `sprite-symbol` and `icon` (48 px and under) out, unless the caller asked for them by naming the role or with `includeIcons`; only the largest `favicon` kept; `site-logo`, `logo`, `social`, `illustration` and `image` in.
+3. Size: a raster whose longest side is under 600 px (`minLongSide`) is dropped, unless its role is `site-logo`, `logo` or `favicon`, or it is an icon the caller asked for. SVG has no size gate, and an asset the scan could not measure is kept.
+4. Per-file ceiling: a file over 8 MB (`maxFileBytes`, 0 lifts it) is dropped, from what the scan measured before anything is fetched and from the real bytes after.
+5. Vector wins: when an SVG and a raster normalize to the same name (`@2x`, `-1024x512`, `_large` and similar suffixes off), the raster goes.
+6. Exact duplicates, once the bytes are in: same bytes (SVG compared with its generated ids renumbered), one file kept, preferring SVG, then the larger pixel area, then `svg`, `png`, `webp`, `avif`, `jpg`, `gif`.
+7. Near duplicates: a perceptual fingerprint per raster groups `logo.png`, `logo@2x.png` and the same photo from two CDNs, without merging two different wordmarks.
+8. Cap: 60 files (`max`), sorted by relevance, each kind keeping its share, so a page whose vectors outrank its photos still yields both.
+9. Byte budget: 25 MB (`maxTotalBytes`, 0 lifts it) spent on the best scoring files; a file too big for what is left is passed over, not the end of the list.
 
-Every drop is counted by reason (`icon`, `small`, `duplicate`, `near-duplicate`, `vector-preferred`, `extra-favicon`, `filter`, `cap`, `unavailable`), so an agent can say why a file is not there. `profile: "all"` plus explicit filters override the whole thing, and explicit `ids` win over every rule except the cap and path safety.
+The `all` profile keeps everything the explicit filters allow: no role rule, no vector rule and no near duplicates, a size gate or a per-file ceiling only when the caller names one, and still byte-identical copies, the cap and the byte budget. Explicit `ids` win over every rule except the cap and path safety, and are never dropped for their size; every fetch is still capped at 25 MB, so a larger file ends under `failed`. A download also stops fetching past 300 MB (`maxDownloadBytes`), counting what it never fetched as `unavailable`.
+
+Every drop is counted by reason, so an agent can say why a file is not there: `filter`, `icon`, `sprite`, `extra-favicon`, `small`, `too-large`, `vector-preferred`, `duplicate`, `near-duplicate`, `cap`, `over-budget`, and `unavailable` for an asset with no way to fetch it or one the download never reached. A file whose fetch failed is not a drop: it is listed under `failed` with the reason.
 
 ## Where the files go
 
@@ -155,6 +162,8 @@ Existing files are never silently overwritten: identical bytes are skipped, diff
 
 The licence read from the font binary is reported every time, including for commercial families, which do install. Whether you may use a commercial font is your call, not the tool's, so the licence text is printed rather than the install being refused. Adobe Fonts kit families cannot be installed: the scan never exposes their bytes.
 
+Installing a font is not like viewing it on the page. A browser runs every web font through a sanitizer (OTS) that rebuilds its tables before the operating system's font engine sees them; this tool has no such sanitizer, since none exists for Node that can be trusted with it, and only checks the file's signature and unwraps WOFF or WOFF2. The installed file is then parsed outside any sandbox by the system and by every app that lists or previews fonts (Font Book, Figma, Keynote), so a font crafted to exploit the font engine would reach it that way. Install fonts from pages you trust, and only when you mean to use them locally.
+
 ## Limits and environment
 
 Agent limits live in `src/agent/limits.ts` and each one is overridden by the SCREAMING_SNAKE_CASE of its key with an `AGENT_` prefix (`minLongSide` reads `AGENT_MIN_LONG_SIDE`):
@@ -182,3 +191,7 @@ Every v1 limit still applies to the scan itself: 90 s for the whole scan, at mos
 | `CHROME_EXECUTABLE_PATH` | Chrome, when it is not in the default location |
 | `ASSETS_SCRAPER_NO_SANDBOX` | `1` runs Chrome without its sandbox, only for a host where it cannot start one |
 | `XDG_CACHE_HOME` | Where the scan cache goes, `~/.cache` by default |
+| `ASSETS_SCRAPER_BUILD_ID` | The build identity cached scans are stamped with, instead of the version plus the bundle digest |
+| `ASSETS_SCRAPER_FONT_DIR` | Where fonts are installed, instead of `~/Library/Fonts` or `~/.local/share/fonts` |
+| `ASSETS_SCRAPER_STATE_DIR` | Where `installed-fonts.json` is kept, instead of `~/.local/state/assets-scraper` |
+| `XDG_STATE_HOME` | The state root when `ASSETS_SCRAPER_STATE_DIR` is not set, `~/.local/state` by default |
