@@ -86,10 +86,11 @@ export function startCapture(page: Page, options: CaptureOptions): CaptureHandle
 
   const isStopped = () => stopped || options.signal.aborted;
 
-  // Tone runs within this stage's caps (spec 8.8) and stops once settle has returned the records: a render that ends
-  // later is never read, so none starts, and the ones still waiting for a render slot give up.
-  const toneDone = new AbortController();
-  const toneBudget = createToneBudget({ signal: AbortSignal.any([toneDone.signal, options.signal]), tone: options.toneFromBytes });
+  // Header reads and tone run within this stage's caps (spec 8.8) and stop once settle has returned the records: a read
+  // or a render that ends later is never read, so none starts, and the ones still waiting for a render slot give up.
+  const settled = new AbortController();
+  const stage = AbortSignal.any([settled.signal, options.signal]);
+  const toneBudget = createToneBudget({ signal: stage, tone: options.toneFromBytes });
 
   /**
    * Runs `read` once a body slot is free and its reservation fits in the total cap (see above). A body declared over
@@ -226,7 +227,7 @@ export function startCapture(page: Page, options: CaptureOptions): CaptureHandle
           .metadata()
           .catch(() => ({ width: undefined, height: undefined })), // not a format sharp reads (ico, broken bytes)
       { width: undefined, height: undefined },
-      options.signal,
+      stage,
     );
 
   const captureFont = (record: CapturedFont, body: Buffer) => {
@@ -300,7 +301,7 @@ export function startCapture(page: Page, options: CaptureOptions): CaptureHandle
         next();
       }
       if (jobs.size) await timeoutAfter(Promise.allSettled([...jobs]), timeoutMs, () => new BodyTimeout()).catch(() => {});
-      toneDone.abort();
+      settled.abort();
       return {
         images: [...images.values()].map((record) => ({ ...record })),
         fonts: [...fonts.values()].map((record) => ({ ...record })),

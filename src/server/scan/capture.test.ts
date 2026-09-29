@@ -4,6 +4,7 @@ import sharp from "sharp";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { startCapture } from "./capture";
 import { LINEAR_OP_GROWTH_BOUND, opGrowth } from "./fonts/testing";
+import { acquireRender, releaseRender, renderStats } from "./post/render-slot";
 
 /**
  * Reads of a limit, counted. Each one parses the environment, which is why the capture reads them once per step rather
@@ -208,6 +209,36 @@ describe("startCapture", () => {
     expect(network.images.filter((image) => image.url.endsWith(".svg")).map(({ width, height }) => [width, height])).toEqual(Array(4).fill([64, 16]));
     expect(metadataCalls.total).toBe(20);
     expect(metadataCalls.peak).toBeLessThanOrEqual(2);
+  });
+
+  it("gives up the header reads still waiting for the render gate once settle has returned", async () => {
+    // settle returns copies of the records, so a header read that starts after it is never used: it would only take a
+    // render slot from the post-processing of this scan and of every other one.
+    const png = await sharp({ create: { width: 4, height: 3, channels: 4, background: "#123456" } }).png().toBuffer();
+    const page = new EventEmitter();
+    const capture = startCapture(page as unknown as Page, { signal: new AbortController().signal, toneFromBytes: async () => "unknown" });
+    let read: Promise<Buffer> = Promise.resolve(png);
+    // Both slots of the gate busy, as with two heavy renders of other scans
+    expect([await acquireRender(), await acquireRender()]).toEqual([true, true]);
+    try {
+      metadataCalls.total = 0;
+      page.emit("response", {
+        url: () => "https://example.com/late.png",
+        status: () => 200,
+        headers: () => ({ "content-type": "image/png", "content-length": String(png.length) }),
+        request: () => ({ resourceType: () => "image" }),
+        body: () => (read = Promise.resolve(png)),
+      } as unknown as Response);
+      await read;
+      const network = await capture.settle(50);
+      expect(network.images.map(({ sha1, width }) => ({ read: Boolean(sha1), width }))).toEqual([{ read: true, width: undefined }]);
+    } finally {
+      releaseRender();
+      releaseRender();
+    }
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(renderStats().active).toBe(0);
+    expect(metadataCalls.total).toBe(0);
   });
 
   /**
