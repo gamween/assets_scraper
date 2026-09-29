@@ -113,11 +113,16 @@ let scanning: Promise<void> = Promise.resolve();
  * wait is sized for a shared server (15 s, then `busy`), while an agent asked for the logos of two pages sends both
  * `scan_page` calls at once and a scan takes 20 to 90 s, so the second one failed with `busy`. A call whose request is
  * cancelled leaves the line at once, without letting the ones behind it start before the scan that is running.
+ *
+ * The place in the line exists from the start: a call cancelled while it waits gives it up before the one ahead is
+ * done, and the ones behind then move up once that one is. A place made only when its turn came could be made after
+ * its call had already left, and nothing would ever give it up.
  */
 async function inTurn<T>(job: () => Promise<T>, signal: AbortSignal): Promise<T> {
   const ahead = scanning;
   let leave = (): void => {};
-  scanning = ahead.then(() => new Promise<void>((resolve) => (leave = resolve)));
+  const done = new Promise<void>((resolve) => (leave = resolve));
+  scanning = ahead.then(() => done);
   try {
     await untilAborted(ahead, signal);
     return await job();

@@ -424,6 +424,41 @@ describe("scan_page", () => {
     await wired.close();
   });
 
+  /**
+   * Regression: a call cancelled while it was still waiting its turn left the line before its place in it existed, so
+   * the place was made later and never given up, and every scan after it waited forever, until the server restarted.
+   */
+  it("keeps the line moving after a call is cancelled while it waits", async () => {
+    let release = (): void => {};
+    const scanned: string[] = [];
+    const wired = await connect({
+      source: {
+        kind: "local",
+        scan: async (url) => {
+          scanned.push(url);
+          if (url === "https://first.example/") await new Promise<void>((resolve) => (release = resolve));
+          return { ...otherPage(new URL(url).hostname), scanId: `scan-${new URL(url).hostname}`, scannedAt: new Date().toISOString() };
+        },
+        fetchBytes: async () => Buffer.alloc(0),
+      },
+    });
+    const controller = new AbortController();
+
+    const first = call(wired, "scan_page", { url: "https://first.example/" });
+    await expect.poll(() => scanned).toEqual(["https://first.example/"]);
+    const waiting = call(wired, "scan_page", { url: "https://waiting.example/" }, controller.signal);
+    controller.abort(new Error("the user cancelled"));
+    await expect(waiting).rejects.toThrow();
+    release();
+    expect((await first).isError).toBeFalsy();
+
+    const after = await call(wired, "scan_page", { url: "https://after.example/" });
+
+    expect((JSON.parse(text(after)) as { scanId: string }).scanId).toBe("scan-after.example");
+    expect(scanned).toEqual(["https://first.example/", "https://after.example/"]);
+    await wired.close();
+  });
+
   it("refuses something that is not a web address, with the code the API uses", async () => {
     const result = await call(client, "scan_page", { url: "not a web address at all" });
 
