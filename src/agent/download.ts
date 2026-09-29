@@ -3,6 +3,7 @@ import path from "node:path";
 import type { Asset, AssetFormat, AssetKind, AssetRole } from "@/lib/contract";
 import { createFileInside, resolveDestination } from "./dest";
 import { agentLimits } from "./limits";
+import { safeFileName } from "./names";
 import { selectAssets } from "./select";
 import type {
   AgentScan,
@@ -81,19 +82,6 @@ export const MANIFEST_NAME = "manifest.json";
 const MAX_NAME_ATTEMPTS = 50;
 
 const FILE_MODE = 0o644;
-
-/**
- * One file name from an asset: the last path segment only, so a name like `../../evil.svg` cannot walk anywhere, and
- * nothing a file system reads as special. `createFileInside` checks the result again, this only keeps names readable.
- */
-export function safeFileName(value: string, fallback: string): string {
-  const last = value.split(/[\\/]/).pop() ?? "";
-  const cleaned = last
-    .replace(/[\x00-\x1f\x7f:*?"<>|]+/g, "-")
-    .replace(/^[\s.]+|[\s.]+$/g, "")
-    .slice(0, 120);
-  return cleaned || fallback;
-}
 
 /** The bytes an asset carries itself (inline SVG markup or inline base64), or null when it has to be fetched. */
 function inlineBytes(asset: Asset): Buffer | null {

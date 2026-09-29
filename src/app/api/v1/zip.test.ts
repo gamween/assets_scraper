@@ -3,7 +3,8 @@ import { testAsset, testScan } from "@/agent/testing";
 import type { ScanSource } from "@/agent/types";
 import type { AssetSource } from "@/lib/contract";
 import type { ProxyBytesMeter } from "@/server/security/budget";
-import { TRUNCATED_NOTE, buildAssetsZip, zipMaxBytes } from "./zip";
+import { zipMaxBytes } from "./limits";
+import { TRUNCATED_NOTE, buildAssetsZip } from "./zip";
 
 /**
  * `buildAssetsZip` when it cannot fit the whole selection (plan Task G4.3: "stops cleanly when the budget runs out, the
@@ -115,13 +116,5 @@ describe("buildAssetsZip", () => {
 
     expect(built.manifest.files).toEqual([]);
     expect(built.manifest.dropped["too-large"]).toBe(4);
-  });
-
-  it("reads AGENT_ZIP_MAX_BYTES for the per request cap", () => {
-    vi.stubEnv("AGENT_ZIP_MAX_BYTES", "4096");
-    expect(zipMaxBytes()).toBe(4_096);
-    vi.stubEnv("AGENT_ZIP_MAX_BYTES", "not a number");
-    expect(zipMaxBytes()).toBe(64 * 1024 * 1024);
-    vi.unstubAllEnvs();
   });
 });

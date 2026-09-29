@@ -1,11 +1,12 @@
 import { makeZip } from "client-zip";
-import { sanitizeHost } from "@/agent/dest";
-import { type DownloadManifest, type ManifestFile, safeFileName } from "@/agent/download";
+import type { DownloadManifest, ManifestFile } from "@/agent/download";
 import { agentLimits } from "@/agent/limits";
+import { safeFileName, sanitizeHost } from "@/agent/names";
 import { selectAssets } from "@/agent/select";
 import type { AgentScan, DropReason, ScanSource, SelectionOptions } from "@/agent/types";
 import type { Asset } from "@/lib/contract";
 import { meterProxyBytes, type ProxyBytesMeter } from "@/server/security/budget";
+import { zipMaxBytes } from "./limits";
 
 /**
  * The ZIP of a selection, built on the server (spec section 8). It is the same selection the CLI writes into `scrap/`,
@@ -16,14 +17,6 @@ import { meterProxyBytes, type ProxyBytesMeter } from "@/server/security/budget"
  * per request cap and the daily proxy budget are what bound that, and reaching either ends the archive cleanly with a
  * note in the manifest rather than an error.
  */
-
-/** Bytes one ZIP request serves, whatever the daily budget still allows: it is also what one function holds in memory. */
-const DEFAULT_MAX_BYTES = 64 * 1024 * 1024;
-
-export const zipMaxBytes = (): number => {
-  const value = Number(process.env.AGENT_ZIP_MAX_BYTES);
-  return Number.isSafeInteger(value) && value > 0 ? value : DEFAULT_MAX_BYTES;
-};
 
 /**
  * The archive's `manifest.json` is the document `assets-scraper get` writes, field for field, plus what only an archive

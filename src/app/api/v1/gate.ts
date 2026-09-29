@@ -1,7 +1,7 @@
 import { AssetKind, AssetRole, type ErrorCode } from "@/lib/contract";
 import { agentLimits } from "@/agent/limits";
 import type { SelectionOptions, SelectionProfile } from "@/agent/types";
-import { zipMaxBytes } from "./zip";
+import { zipMaxBytes } from "./limits";
 import { authenticateAgent } from "@/server/security/agent-auth";
 import { takeScanBudget } from "@/server/security/budget";
 import { apiError, checkScanTarget, refuseWhenClosed, type GateRefusal } from "@/server/security/gate";

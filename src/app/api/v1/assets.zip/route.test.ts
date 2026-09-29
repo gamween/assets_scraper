@@ -174,7 +174,7 @@ describe("GET /api/v1/assets.zip", () => {
    * out of the folder loses its path here exactly as it does on disk.
    */
   it("names files the way a local download does", async () => {
-    const { safeFileName } = await import("@/agent/download");
+    const { safeFileName } = await import("@/agent/names");
     scan.mockResolvedValue(
       testScan({
         assets: [

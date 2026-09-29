@@ -1,5 +1,5 @@
 import { agentLimits } from "@/agent/limits";
-import { zipMaxBytes } from "@/app/api/v1/zip";
+import { zipMaxBytes } from "@/app/api/v1/limits";
 import { limits } from "@/server/config/limits";
 
 /**
