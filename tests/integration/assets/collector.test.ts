@@ -460,6 +460,36 @@ describe("collector limits and hostile pages", () => {
     expect(JSON.stringify(tiny).length).toBeLessThanOrEqual(tinyCap);
   });
 
+  it("reads hostile attributes, markup and CSS without losing the page to them", async () => {
+    // Each of these made one of the collector's regular expressions quadratic, and a collector that outlives its
+    // budget loses its whole output: a lazy background of `url(url(`, a srcset URL holding a run of commas, a link
+    // path holding a run of slashes, a var() fallback after a run of spaces, an inline style of `url(#`, and an
+    // @font-face src with a run of spaces inside a quoted URL.
+    const { context, page } = await openPage(browser, `${server.origin}/`);
+    await page.evaluate(() => {
+      const lazy = document.createElement("div");
+      lazy.setAttribute("data-bg", "url(".repeat(100_000));
+      const img = document.createElement("img");
+      img.setAttribute("srcset", `/assets/og.png?x=${",".repeat(200_000)}y 2x`);
+      const link = document.createElement("a");
+      link.href = `/press${"/".repeat(200_000)}kit`;
+      link.textContent = "Press kit";
+      const holder = document.createElement("div");
+      holder.innerHTML = `<svg width="20" height="20"><style>.hostile{fill:${"url(#".repeat(50_000)}}</style><rect width="20" height="20" fill="var(--hostile,${" ".repeat(200_000)}#123456)"/></svg>`;
+      const style = document.createElement("style");
+      style.textContent = `@font-face{font-family:Hostile;src:url("h${" ".repeat(100_000)}\\"x.woff2")}`;
+      document.head.append(style);
+      document.body.prepend(link, lazy, img, holder);
+    });
+    const hostile = await runCollector(page, collectorOptions(server.host, "Fixture"));
+    await context.close();
+    expect(hostile.stats.truncated).toBe(false);
+    expect(hostile.candidates.some((c) => c.url.startsWith(`${server.origin}/assets/og.png?x=,,,`) && c.url.endsWith(",y"))).toBe(true);
+    expect(hostile.brandLinks.some((l) => l.href.endsWith("///kit"))).toBe(true);
+    expect(hostile.svgs.some((s) => s.markup.includes('fill="#123456"'))).toBe(true);
+    expect(hostile.fontFaces.find((face) => face.family === "Hostile")?.src).toEqual([{ url: `${server.origin}/h${"%20".repeat(100_000)}%22x.woff2` }]);
+  });
+
   it("cuts a huge title and site name and drops a huge manifest URL before fitting, so the lists stay", async () => {
     const { context, page } = await openPage(browser, `${server.origin}/`);
     await page.evaluate(() => {

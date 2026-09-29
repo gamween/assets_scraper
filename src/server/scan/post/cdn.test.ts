@@ -122,6 +122,18 @@ describe("originalCandidates", () => {
     expect(originalCandidates("https://example.com/logo.png", { pageUrl: "https://example.com/" })).toEqual([]);
   });
 
+  it("reads hostile paths in linear time", () => {
+    // Each of these took seconds to minutes: a Jetpack host segment of dots tried against every split of it, and a
+    // Hugo name repeating `_hu<hash>` read to its end from each of them.
+    expect(originalCandidates(`https://i0.wp.com/${"a.".repeat(200_000)}`, {})).toEqual([]);
+    expect(originalCandidates(`https://site.example/a${"_hu00000000_1_x_fit".repeat(20_000)}-`, {})).toEqual([]);
+    // A Hugo name past what a file system allows is not a Hugo name
+    expect(originalCandidates(`https://gohugo.io/images/${"h".repeat(800)}_hu3f9ab1c2e4a5b6c7_123456_300x0_resize_q75_box.webp`, {})).toEqual([]);
+    // A Jetpack host needs a dot inside it
+    expect(originalCandidates("https://i0.wp.com/.example/a.jpg", {})).toEqual([]);
+    expect(originalCandidates("https://i0.wp.com/example./a.jpg", {})).toEqual([]);
+  });
+
   it("ignores URLs that are not http(s)", () => {
     expect(originalCandidates("data:image/png;base64,AAAA", {})).toEqual([]);
     expect(originalCandidates("blob:https://a.example/1", {})).toEqual([]);

@@ -9,6 +9,8 @@ export interface SrcsetCandidate {
   x?: number;
 }
 
+const TRAILING_COMMAS = /(?<!,),+$/;
+
 /** HTML-style srcset parser: a URL runs until whitespace, so commas inside URLs (Cloudinary `w_500,c_fill`) are kept. */
 export function parseSrcset(value: string | null | undefined): SrcsetCandidate[] {
   const out: SrcsetCandidate[] = [];
@@ -24,8 +26,10 @@ export function parseSrcset(value: string | null | undefined): SrcsetCandidate[]
     while (i < n && !space.test(s[i])) i++;
     let url = s.slice(start, i);
     let descriptor = "";
-    if (/,+$/.test(url)) {
-      url = url.replace(/,+$/, "");
+    // Trailing commas end the candidate. The lookbehind lets only the first comma of a run start a match: `,+$` alone
+    // tried from every comma of a run inside the URL, which was quadratic in its length.
+    if (TRAILING_COMMAS.test(url)) {
+      url = url.replace(TRAILING_COMMAS, "");
     } else {
       let depth = 0;
       const descriptorStart = i;

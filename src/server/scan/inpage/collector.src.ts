@@ -2,6 +2,7 @@ import type { FoundIn, HiddenReason } from "@/lib/contract";
 import { extractCssUrls, readCssUrls, readFontFaceSrc } from "./css-values";
 import { OUTPUT_LISTS } from "./lists";
 import { parseSrcset } from "./srcset";
+import { canonicalSvgMarkup, varFallback } from "./svg-markup";
 import type {
   CandidateContext,
   CollectorOptions,
@@ -1050,8 +1051,8 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
           for (const property of [...style]) if (property.startsWith("--") || style.getPropertyValue(property).includes("var(")) style.removeProperty(property);
           if (!node.getAttribute("style")?.trim()) node.removeAttribute("style");
         } else if (attribute.value.includes("var(") && name !== "d") {
-          const fallback = attribute.value.replace(/var\(\s*--[\w-]+\s*(?:,\s*((?:[^()]|\([^()]*\))*))?\)/g, (_, value?: string) => (value ?? "").trim()).trim();
-          if (fallback && !fallback.includes("var(")) node.setAttribute(name, fallback);
+          const fallback = varFallback(attribute.value);
+          if (fallback) node.setAttribute(name, fallback);
           else node.removeAttribute(name);
         } else if ((attribute.localName === "href") && !attribute.value.startsWith("#") && !attribute.value.startsWith("data:")) {
           const url = abs(attribute.value, svg.baseURI);
@@ -1063,16 +1064,7 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
 
     // Serialize, then hash a canonical form: ids renamed in order of appearance, whitespace collapsed
     const markup = new XMLSerializer().serializeToString(clone);
-    let canonical = markup;
-    let next = 0;
-    const ids = new Map<string, string>();
-    for (const match of markup.matchAll(/\sid="([^"]+)"/g)) if (!ids.has(match[1])) ids.set(match[1], `i${next++}`);
-    for (const [id, replacement] of ids) {
-      const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      canonical = canonical.replace(new RegExp(`(id="|#)${escaped}(?=["')\\s])`, "g"), `$1${replacement}`);
-    }
-    canonical = canonical.replace(/>\s+</g, "><").replace(/\s{2,}/g, " ");
-    return { markup, hash: sha1Hex(canonical), elementCount: liveElements.length, hasLiveText: hasText && hasWebFontText(svg) };
+    return { markup, hash: sha1Hex(canonicalSvgMarkup(markup)), elementCount: liveElements.length, hasLiveText: hasText && hasWebFontText(svg) };
   };
 
   const addSvg = (entry: RawSvg) => {
@@ -1277,7 +1269,9 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
       const text = collapse(el.textContent, 80) || collapse(el.getAttribute("aria-label"), 80) || collapse(el.getAttribute("title"), 80);
       // Only the last path segment counts, not the whole path: `/newsroom/news/<headline>` is one press release out of
       // many, not the press kit, and matching anywhere in the path filled stripe.com's row with five news articles.
-      const segment = decodeURIComponentSafe(url.pathname.replace(/\/+$/, "").split("/").pop() ?? "");
+      // The lookbehind lets only the first slash of a trailing run start a match: `\/+$` alone tried from every slash
+      // of a run that does not end the path, which was quadratic in its length.
+      const segment = decodeURIComponentSafe(url.pathname.replace(/(?<!\/)\/+$/, "").split("/").pop() ?? "");
       if (!isBrandLink(segment) && !isBrandLink(text)) continue;
       seen.add(url.href);
       brandLinks.push({ href: url.href, text });

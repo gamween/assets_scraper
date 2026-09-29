@@ -46,6 +46,12 @@ const PRESENTATIONAL_PARAMS = [
   "imwidth", "v", "ver", "version", "cache", "cb",
 ];
 
+/**
+ * The longest file name a rule reads, percent-encoded: file systems cap a name at 255 bytes, which encode to at most
+ * three times as many characters.
+ */
+const MAX_FILE_NAME_CHARS = 765;
+
 const tryUrl = (value: string | null | undefined, base?: string): URL | null => {
   if (value == null) return null;
   try {
@@ -233,10 +239,12 @@ function oneStep(u: URL, hints: CdnHints, depth: number): Rewrite[] {
     // Jetpack or VIP on the site's own domain: ?resize=668,445, ?w=668
     if (WORDPRESS_PARAMS.some((key) => sp.has(key))) push(withoutParams(u, [...WORDPRESS_PARAMS, "ssl"]));
   }
-  // Jetpack Photon: i0.wp.com/<host>/<path>
+  // Jetpack Photon: i0.wp.com/<host>/<path>. The first segment is the host, with a dot that neither starts nor ends
+  // it. Found with a plain look at the segment: `[^/]+\.[^/]+` tried every dot of a long segment against every way to
+  // split it, which was quadratic in its length.
   if (/^i[0-3]\.wp\.com$/.test(host)) {
-    const m = path.match(/^\/([^/]+\.[^/]+)(\/.*)$/);
-    if (m) push(`https://${m[1]}${m[2]}`, "medium");
+    const m = path.match(/^\/([^/]+)(\/.*)$/);
+    if (m && m[1].slice(1, -1).includes(".")) push(`https://${m[1]}${m[2]}`, "medium");
   }
   // WordPress.com hosted files
   if (/\.wordpress\.com$/.test(host) && ["w", "h", "resize", "fit", "crop"].some((key) => sp.has(key))) {
@@ -249,10 +257,14 @@ function oneStep(u: URL, hints: CdnHints, depth: number): Rewrite[] {
     if (m) push(`${u.origin}${m[1]}/${m[2]}`);
   }
 
-  // Hugo image processing: name_hu<hash>_<bytes>_<WxH>_<op>_<opts>.<ext>. The original extension is unknown.
+  // Hugo image processing: name_hu<hash>_<bytes>_<WxH>_<op>_<opts>.<ext>. The original extension is unknown. Only a
+  // file name of a length a file system allows is read: the pattern tries each `_hu` of the name against the rest of
+  // it, which grows with the square of a hostile name's length.
   {
-    const m = path.match(/^(.*\/[^/]+?)_hu[0-9a-f]{8,}_\d+_\d*x\d*_(?:resize|fit|fill|crop)[^/]*\.(\w+)$/i);
-    if (m) for (const extension of ["png", "jpg", "jpeg", "webp"]) push(`${u.origin}${m[1]}.${extension}`, "low");
+    const slash = path.lastIndexOf("/");
+    const name = path.slice(slash + 1);
+    const m = name.length <= MAX_FILE_NAME_CHARS ? name.match(/^(.+?)_hu[0-9a-f]{8,}_\d+_\d*x\d*_(?:resize|fit|fill|crop)[^/]*\.(\w+)$/i) : null;
+    if (m) for (const extension of ["png", "jpg", "jpeg", "webp"]) push(`${u.origin}${path.slice(0, slash + 1)}${m[1]}.${extension}`, "low");
   }
 
   // A query built only from size, quality and format parameters, on a path that already names an image file. Every
