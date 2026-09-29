@@ -79,7 +79,8 @@ the note in manifest.json says which.
   ${limits.scansPerDay} scans a day for this deployment, ${limits.scansPerIpPerDay} a day per client address
   ${seconds(limits.scanDeadlineMs)} for one scan, then it answers with what it has
   ${agentLimits.maxFiles} files and ${mb(zipMaxBytes())} for one archive, built within ${seconds(zipDeadlineMs())} of the request
-  ${mb(limits.proxyBytesPerDay)} of archived asset bytes a day, ${mb(limits.proxyBytesPerIpPerDay)} of them per client address
+  ${mb(limits.proxyBytesPerDay)} of asset bytes a day for this deployment, archives and the app's downloads together,
+  ${mb(limits.proxyBytesPerIpPerDay)} of them per client address
   ${limits.maxAssets} assets in one scan
 
 Errors use the codes of the v1 contract with the matching HTTP status: 400 invalid-url, 401 access-code,

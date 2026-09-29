@@ -40,6 +40,7 @@ describe("GET /llms.txt", () => {
     process.env.AGENT_MAX_FILES = "41";
     process.env.AGENT_MIN_LONG_SIDE = "777";
     process.env.AGENT_ZIP_DEADLINE_MS = "61000";
+    process.env.PROXY_BYTES_PER_DAY = String(333 * 1024 * 1024);
     process.env.PROXY_BYTES_PER_IP_PER_DAY = String(44 * 1024 * 1024);
     const text = await textOf();
     expect(text).toContain("37 scans a day for this deployment, 9 a day per client address");
@@ -47,6 +48,8 @@ describe("GET /llms.txt", () => {
     expect(text).toContain("41 files");
     expect(text).toContain("777 px");
     expect(text).toContain("built within 61 s");
+    // One daily byte budget for the deployment: archives share it with the app's own downloads.
+    expect(text).toContain("333 MB of asset bytes a day for this deployment, archives and the app's downloads together");
     expect(text).toContain("44 MB of them per client address");
   });
 
