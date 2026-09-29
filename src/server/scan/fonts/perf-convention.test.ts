@@ -1,13 +1,16 @@
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { BENCH, fastestMs, growthFactor } from "./testing";
 
 /**
  * The repo gates a performance guarantee on counted operations (`opGrowth`), not on wall time: a ratio of two timings
  * flakes, and one of the checks below failed CI on exactly that. The wall-clock helpers are still used in this folder,
- * which is why AGENTS.md calls them the exception rather than the rule. This test pins the exception so the wording
- * stays true: a new `growthFactor` or `fastestMs` call fails here, and the fix is a counted gate, or an edit to both
- * this list and AGENTS.md when wall time really is the only way to measure it.
+ * in benchmarks only: they refuse to run outside `pnpm bench`, so none of them can gate the suite, and CI runs them in
+ * a job that reports and does not block. This test pins the list of those measurements so it does not grow, which is
+ * why AGENTS.md calls them the exception rather than the rule: a new `growthFactor` or `fastestMs` call fails here, and
+ * the fix is a counted gate, or an edit to both this list and AGENTS.md when wall time really is the only way to
+ * measure it.
  */
 
 const HERE = path.join(process.cwd(), "src/server/scan/fonts");
@@ -18,7 +21,7 @@ const WALL_CLOCK: Record<string, number> = {
   "names.test.ts": 1,
   // parsing against tokenizing, the tokenizer's state between parses, rules per sheet, and hostile `src` values
   "css.test.ts": 6,
-  // the opt-in benchmark of the hostile inputs, and the name-length check that reads two runs
+  // the hostile collector output, and the length of names read in two runs
   "index.test.ts": 3,
 };
 
@@ -32,5 +35,10 @@ describe("the performance gate convention", () => {
       if (found > 0) counts[name] = found;
     }
     expect(counts).toEqual(WALL_CLOCK);
+  });
+
+  it.skipIf(BENCH)("measures wall time only in pnpm bench", async () => {
+    await expect(fastestMs(() => {})).rejects.toThrow(/pnpm bench/);
+    await expect(growthFactor(() => {}, 1)).rejects.toThrow(/pnpm bench/);
   });
 });

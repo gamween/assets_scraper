@@ -1,3 +1,5 @@
+import type { AssetFormat } from "@/lib/contract";
+
 /** Saves a blob under `filename` through a temporary object URL. */
 export function saveBlob(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
@@ -17,4 +19,13 @@ export function saveBlob(blob: Blob, filename: string): void {
 export function replaceExtension(filename: string, extension: string): string {
   const dot = filename.lastIndexOf(".");
   return `${dot > 0 ? filename.slice(0, dot) : filename}.${extension}`;
+}
+
+/**
+ * The name bytes of `format` save under: `linear-hero.webp` saved as PNG is `linear-hero.png`. A known format is its
+ * own extension. A file of format `other` (a PDF or a TIFF scanned as the page itself) keeps the extension the server
+ * gave it from its URL, the only name its type has here, rather than turning into `.bin`.
+ */
+export function filenameForFormat(filename: string, format: AssetFormat): string {
+  return format === "other" ? filename : replaceExtension(filename, format);
 }

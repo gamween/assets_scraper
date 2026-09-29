@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Page } from "playwright-core";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { browserStateDir, BusyError, PIDFILE_ENV, pidfileMarker, withBrowser, wrapperScript } from "@/server/browser/launch";
+import { browserStateDir, BusyError, localExecutablePath, PIDFILE_ENV, pidfileMarker, withBrowser, wrapperScript } from "@/server/browser/launch";
 import { serveFixture, type FixtureServer } from "../../fixtures/serve";
 import { delay, isProcessAlive, startTestProxy, type TestProxy } from "./helpers";
 
@@ -52,7 +52,7 @@ afterEach(() => {
 });
 
 const open = () => ({ egressPort: proxy.port, signal: new AbortController().signal });
-const CHROME = process.env.CHROME_EXECUTABLE_PATH ?? (process.platform === "darwin" ? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" : "/usr/bin/google-chrome");
+const CHROME = localExecutablePath();
 const fetchClip = () => fetch("/clip.mp4").then(() => "loaded", () => "blocked");
 
 /**
@@ -83,6 +83,22 @@ describe("withBrowser", () => {
     expect(state).toBe("complete");
     expect(pid).toBeGreaterThan(1);
     await expect.poll(() => isProcessAlive(pid), { timeout: 5000 }).toBe(false);
+  });
+
+  /**
+   * The browser a local scan starts is the user's own Google Chrome, driven to pages an agent picked: its renderer
+   * sandbox is what contains a page that exploits it. Playwright turns it off unless told otherwise, so this reads the
+   * command line Chrome actually runs with. `ASSETS_SCRAPER_NO_SANDBOX=1` is the one reason for it to be missing.
+   */
+  it.skipIf(process.env.ASSETS_SCRAPER_NO_SANDBOX === "1")("starts a local Chrome with its sandbox on", async () => {
+    const command = await withBrowser(open(), async ({ pid }) => {
+      expect(pid).toBeGreaterThan(1);
+      return process.platform === "linux"
+        ? readFileSync(`/proc/${pid}/cmdline`, "utf8").replaceAll("\0", " ")
+        : spawnSync("ps", ["-ww", "-o", "command=", "-p", String(pid)]).stdout.toString();
+    });
+    expect(command).toContain(pidfileMarker(path.join(browserStateDir(), `chromium-${process.pid}-0.pid`)));
+    expect(command).not.toContain("--no-sandbox");
   });
 
   it("reports only the first launch of an instance as cold", async () => {

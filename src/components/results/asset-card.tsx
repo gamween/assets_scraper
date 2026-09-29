@@ -94,7 +94,7 @@ export const AssetCard = memo(function AssetCard({ asset, section }: { asset: As
           }}
           className={cn(
             "absolute top-2 right-2 z-10 grid size-5 place-items-center rounded-sm border-[1.5px] transition-[opacity,background-color,border-color] duration-100 focus-visible:opacity-100 focus-ring-tight",
-            selected ? "border-accent bg-accent text-accent-fg" : "border-border-strong bg-surface text-transparent hover:border-text-3",
+            selected ? "border-accent bg-accent text-accent-fg" : "border-control-edge bg-surface text-transparent hover:border-text-3",
             selected || selecting ? "opacity-100" : "opacity-0 group-hover/card:opacity-100",
           )}
         >
@@ -147,6 +147,8 @@ export const AssetCard = memo(function AssetCard({ asset, section }: { asset: As
               {part}
             </span>
           ))}
+          {/* The card's button describes itself with this line: it is also where a screen reader learns the card is selected. */}
+          {selected ? <span className="sr-only">, selected</span> : null}
         </span>
       </div>
 

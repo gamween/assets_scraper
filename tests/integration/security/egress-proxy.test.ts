@@ -22,9 +22,8 @@ vi.mock("node:dns/promises", async (importOriginal) => {
   return { ...actual, default: { ...actual, lookup }, lookup };
 });
 
+import { localExecutablePath } from "@/server/browser/launch";
 import { startEgressProxy, type EgressProxy } from "@/server/net/egress-proxy";
-
-const CHROME = process.env.CHROME_EXECUTABLE_PATH ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 
 /** An "internal" service on every loopback address that counts TCP connections and HTTP requests. */
 let victim: http.Server;
@@ -178,7 +177,7 @@ async function listenBlackhole(): Promise<{ host: string; port: number; close():
 /** Chrome with the flags of the scan, through the proxy on `proxyPort` when there is one. */
 const launchChrome = (proxyPort?: number) =>
   chromium.launch({
-    executablePath: CHROME,
+    executablePath: localExecutablePath(),
     headless: true,
     args: ["--force-webrtc-ip-handling-policy=disable_non_proxied_udp"],
     ...(proxyPort !== undefined && { proxy: { server: `http://127.0.0.1:${proxyPort}` } }),

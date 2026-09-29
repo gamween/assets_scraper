@@ -681,10 +681,14 @@ async function runBrowserStage(input: ScanContext & {
         palette = extracted === stopped ? null : extracted;
 
         const timeoutMs = Math.max(1_000, collectEnds - Date.now());
+        // The collector keeps a second of the timeout for its answer to come back. The deadline also counts what
+        // runInPage spends before the collector runs, which its own budget, counted from its first line, cannot see.
+        const timeBudgetMs = Math.max(500, timeoutMs - 1_000);
         const options: CollectorOptions = {
           host,
           siteName: pre.head?.siteName ?? "",
-          timeBudgetMs: Math.max(500, timeoutMs - 1_000),
+          timeBudgetMs,
+          deadline: Date.now() + timeBudgetMs,
           maxElements: limits.collectorMaxElements,
           maxSvgNormalizations: limits.svgMaxNormalizations,
           maxSvgBytes: limits.svgMaxBytes,

@@ -12,6 +12,11 @@ import { sanitizeHost } from "./names";
  * directory itself is never a project root, so a session started outside one lands in the fallback rather than writing
  * into the top of the user's home. A `dest` that came from an agent goes through `restrictToProject`, which confines it
  * to the scrap directory.
+ *
+ * The project rule and the fallback are confined too, after their symbolic links are resolved: a repository that
+ * commits `scrap -> /somewhere/else` (or `scrap/<host>` pointing out) would otherwise have a download write into that
+ * directory and replace a `manifest.json` it found there. Only a destination the user named, `--out` or
+ * `ASSETS_SCRAPER_OUT`, may lead anywhere, because naming it is the user's own choice.
  */
 
 /** The directory name a download writes into inside a project. */
@@ -41,10 +46,11 @@ export interface DestinationOptions {
   /** An explicit destination directory. Used as is, with no host segment appended. */
   dest?: string;
   /**
-   * Refuses an explicit `dest` that is not inside `<project root>/scrap`, or inside the fallback directory when there is
-   * no project. Every caller that takes a `dest` from an agent (the MCP `download_assets` tool, the ZIP endpoint) sets
-   * this. The project root itself is not enough: it would let an agent-supplied path drop scraped files into `src/`, and
-   * the destination this tool offers is the scrap folder. The CLI leaves it off, because a `--out` the user typed is the
+   * Holds an explicit `dest` to `<project root>/scrap`, or to the fallback directory when there is no project, and reads
+   * a relative one from there: `dest: "stripe-brand"` is `<project root>/scrap/stripe-brand` whatever directory the
+   * server runs in. The MCP `download_assets` tool, the one caller that takes a `dest` from an agent, sets this. The
+   * project root itself is not enough: it would let an agent-supplied path drop scraped files into `src/`, and the
+   * destination this tool offers is the scrap folder. The CLI leaves it off, because a `--out` the user typed is the
    * user's own choice of where their files go.
    */
   restrictToProject?: boolean;
@@ -79,10 +85,30 @@ function* ancestors(from: string): Generator<string> {
   }
 }
 
-/** The one directory an agent-supplied `dest` may write inside: the project's scrap folder, or the fallback directory. */
-function scrapRoot(cwd: string): string {
+/**
+ * The one directory an agent-supplied `dest` may write inside, and the directory that one has to stay inside once its
+ * links are resolved: the project's scrap folder within the project root, or the fallback directory within itself.
+ */
+function scrapRoot(cwd: string): { scrap: string; within: string } {
   const projectRoot = findProjectRoot(cwd);
-  return projectRoot ? path.join(projectRoot, SCRAP_DIR_NAME) : path.join(os.homedir(), ...FALLBACK_SEGMENTS);
+  if (projectRoot) return { scrap: path.join(projectRoot, SCRAP_DIR_NAME), within: projectRoot };
+  const fallbackRoot = path.join(os.homedir(), ...FALLBACK_SEGMENTS);
+  return { scrap: fallbackRoot, within: fallbackRoot };
+}
+
+/**
+ * Refuses a destination the tool chose, or an agent did, whose real path leaves `within`: a symbolic link on the way
+ * that points out of the project. The message says how to write elsewhere on purpose.
+ */
+function assertContained(within: string, dir: string): void {
+  try {
+    assertInside(within, dir);
+  } catch (error) {
+    throw new Error(
+      `${error instanceof Error ? error.message : String(error)}. A symbolic link on the way to ${dir} leads out of ${within}; ` +
+        "pass --out or set ASSETS_SCRAPER_OUT to write somewhere else on purpose",
+    );
+  }
 }
 
 export function resolveDestination(options: DestinationOptions = {}): Destination {
@@ -90,8 +116,14 @@ export function resolveDestination(options: DestinationOptions = {}): Destinatio
   const host = sanitizeHost(options.host ?? "");
 
   if (options.dest !== undefined && options.dest !== "") {
-    const dir = path.resolve(cwd, options.dest);
-    if (options.restrictToProject === true) assertInside(scrapRoot(cwd), dir);
+    if (options.restrictToProject !== true) {
+      const dir = path.resolve(cwd, options.dest);
+      return { dir, projectRoot: dir, host, fallback: false };
+    }
+    const { scrap, within } = scrapRoot(cwd);
+    const dir = path.resolve(scrap, options.dest);
+    assertInside(scrap, dir);
+    assertContained(within, dir);
     return { dir, projectRoot: dir, host, fallback: false };
   }
 
@@ -102,10 +134,16 @@ export function resolveDestination(options: DestinationOptions = {}): Destinatio
   }
 
   const projectRoot = findProjectRoot(cwd);
-  if (projectRoot) return { dir: path.join(projectRoot, SCRAP_DIR_NAME, host), projectRoot, host, fallback: false };
+  if (projectRoot) {
+    const dir = path.join(projectRoot, SCRAP_DIR_NAME, host);
+    assertContained(projectRoot, dir);
+    return { dir, projectRoot, host, fallback: false };
+  }
 
   const fallbackRoot = path.join(os.homedir(), ...FALLBACK_SEGMENTS);
-  return { dir: path.join(fallbackRoot, host), projectRoot: fallbackRoot, host, fallback: true };
+  const dir = path.join(fallbackRoot, host);
+  assertContained(fallbackRoot, dir);
+  return { dir, projectRoot: fallbackRoot, host, fallback: true };
 }
 
 /** True when `target` itself is a symbolic link, whatever it points at. */
@@ -159,7 +197,7 @@ export function assertInside(root: string, target: string): string {
 }
 
 /** Mode a downloaded file is created with: readable, and writable only by its owner. */
-const FILE_MODE = 0o644;
+export const FILE_MODE = 0o644;
 
 /**
  * Creates `target` inside `root` for writing and returns the open descriptor, which the caller closes. The parent

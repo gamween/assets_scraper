@@ -1,3 +1,4 @@
+import { deflateSync } from "node:zlib";
 import sharp from "sharp";
 import type { Asset, AssetRole, FontFamily, FontFile, Palette } from "@/lib/contract";
 import type { AgentScan, SelectionBudget } from "./types";
@@ -115,4 +116,44 @@ export function templateCardImage(index: number): Promise<Buffer> {
   bar(40, 470, 470, 488, 74);
   bar(40, 530, 180, 564, 26);
   return sharp(pixels, { raw: { width: TEMPLATE_CARD_WIDTH, height: TEMPLATE_CARD_HEIGHT, channels: 1 } }).png().toBuffer();
+}
+
+/**
+ * A WOFF (version 1) file wrapping `sfnt`, the way a font tool writes one: the sfnt directory in tag order, each table
+ * zlib compressed when that makes it smaller, the data in the order the sfnt stored it and padded to 4 bytes.
+ */
+export function woffFromSfnt(sfnt: Buffer): Buffer {
+  const count = sfnt.readUInt16BE(4);
+  const tables = Array.from({ length: count }, (_, index) => {
+    const at = 12 + index * 16;
+    const offset = sfnt.readUInt32BE(at + 8);
+    const data = sfnt.subarray(offset, offset + sfnt.readUInt32BE(at + 12));
+    const compressed = deflateSync(data);
+    return { tag: sfnt.readUInt32BE(at), checksum: sfnt.readUInt32BE(at + 4), offset, data, stored: compressed.length < data.length ? compressed : data };
+  });
+  const pad = (length: number): number => (length + 3) & ~3;
+  const placed = new Map<(typeof tables)[number], number>();
+  let cursor = 44 + count * 20;
+  for (const table of [...tables].sort((a, b) => a.offset - b.offset)) {
+    placed.set(table, cursor);
+    cursor += pad(table.stored.length);
+  }
+  const woff = Buffer.alloc(cursor);
+  woff.write("wOFF", 0, "latin1");
+  woff.writeUInt32BE(sfnt.readUInt32BE(0), 4);
+  woff.writeUInt32BE(cursor, 8);
+  woff.writeUInt16BE(count, 12);
+  woff.writeUInt32BE(12 + count * 16 + tables.reduce((total, table) => total + pad(table.data.length), 0), 16);
+  woff.writeUInt16BE(1, 20);
+  tables.forEach((table, index) => {
+    const at = 44 + index * 20;
+    const offset = placed.get(table) ?? 0;
+    woff.writeUInt32BE(table.tag, at);
+    woff.writeUInt32BE(offset, at + 4);
+    woff.writeUInt32BE(table.stored.length, at + 8);
+    woff.writeUInt32BE(table.data.length, at + 12);
+    woff.writeUInt32BE(table.checksum, at + 16);
+    table.stored.copy(woff, offset);
+  });
+  return woff;
 }

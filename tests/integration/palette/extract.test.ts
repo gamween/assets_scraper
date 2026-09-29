@@ -3,6 +3,7 @@ import path from "node:path";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright-core";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Palette, type Swatch } from "@/lib/contract";
+import { localExecutablePath } from "@/server/browser/launch";
 import { PALETTE_SOURCE } from "@/server/scan/inpage/generated/palette";
 import { extractPalette, type ExtractPaletteOptions, type PaletteNullReason } from "@/server/scan/palette";
 import { buildPalette, toContractPalette } from "@/server/scan/palette/build";
@@ -12,9 +13,6 @@ import { readSignals, type RawPaletteSignals } from "@/server/scan/palette/signa
 import type { SafeFetch } from "@/server/scan/types";
 import { serveFixture, type FixtureServer } from "../../fixtures/serve";
 
-const CHROME =
-  process.env.CHROME_EXECUTABLE_PATH ??
-  (process.platform === "darwin" ? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" : "/usr/bin/google-chrome");
 const CONSENT_HTML = readFileSync(path.join(import.meta.dirname, "../../fixtures/palette/consent.html"));
 /** Same value as RESTORE_WAIT_MS in extractPalette. */
 const RESTORE_WAIT_MS = 500;
@@ -98,7 +96,7 @@ beforeAll(async () => {
       res.end(CONSENT_HTML);
     },
   });
-  browser = await chromium.launch({ executablePath: CHROME, headless: true });
+  browser = await chromium.launch({ executablePath: localExecutablePath(), headless: true });
 });
 
 afterAll(async () => {
@@ -257,14 +255,20 @@ describe("extractPalette", () => {
 
   it("builds the palette from the walk when a later step outlasts the budget", async () => {
     await page.goto(`${server.origin}/slow-icon.html`, { waitUntil: "domcontentloaded" });
-    // The page blocks its main thread from well after the walk has returned its signals until well past the budget, so
-    // the screenshot cannot render and the icon decode never answers. That used to throw the signals away with them.
-    await page.evaluate(() =>
-      setTimeout(() => {
-        const end = performance.now() + 6000;
-        while (performance.now() < end);
-      }, 800),
-    );
+    // The page blocks its main thread from the moment the walk has returned its signals, when the screenshot is asked
+    // for, until well past the budget, so the screenshot cannot render and the icon decode never answers. That used to
+    // throw the signals away with them. Started by the screenshot rather than by a timer, so a slow walk on a busy
+    // runner can never be caught in the block itself.
+    const screenshot = page.screenshot.bind(page);
+    page.screenshot = (async (options) => {
+      await page.evaluate(() =>
+        setTimeout(() => {
+          const end = performance.now() + 6000;
+          while (performance.now() < end);
+        }, 0),
+      );
+      return screenshot(options);
+    }) as typeof page.screenshot;
     const timeBudgetMs = 4000;
 
     const started = performance.now();

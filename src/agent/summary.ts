@@ -1,4 +1,4 @@
-import type { FontFamily, FontFormat } from "@/lib/contract";
+import { isInstallableFamily } from "./font-candidates";
 import type { AgentScan, ScanSummary } from "./types";
 
 /**
@@ -32,21 +32,6 @@ const MAX_NAME_CHARS = 60;
 const MAX_WARNING_CHARS = 120;
 
 const cut = (text: string, max: number): string => (text.length <= max ? text : `${text.slice(0, max - 1)}…`);
-
-/** Formats the installer can turn into a TTF (spec 5.2). EOT and the rest are not worth installing. */
-const INSTALLABLE_FORMATS = new Set<FontFormat>(["woff2", "woff", "ttf", "otf"]);
-
-/**
- * Whether `installFonts` could install this family: its bytes are reachable (Adobe Fonts kits never are) and at least
- * one file is in a format that converts. The licence does not decide it: a commercial family installs too, with its
- * licence reported (spec 5.5).
- */
-export function isInstallableFamily(family: FontFamily): boolean {
-  if (!family.downloadable) return false;
-  return family.faces.some((face) =>
-    face.files.some((file) => INSTALLABLE_FORMATS.has(file.format) && (file.inline !== undefined || file.url !== "")),
-  );
-}
 
 const LOGO_ROLES = new Set(["site-logo", "logo"]);
 
@@ -95,6 +80,7 @@ export function summarize(scan: AgentScan): ScanSummary {
       family: cut(family.name, MAX_NAME_CHARS),
       license: family.license.kind,
       usedOnPage: family.usedOnPage,
+      // The installer's own rule (`font-candidates.ts`), so this column never promises what `install_fonts` refuses.
       installable: isInstallableFamily(family),
     })),
     logos,

@@ -1,4 +1,4 @@
-import type { AssetFormat, FontFormat } from "@/lib/contract";
+import type { AssetFormat, AssetSource, FontFile, FontFormat } from "@/lib/contract";
 import { isAllowedDeclaredType, sniffContentType, UNTYPED } from "@/server/security/sniff";
 
 export { declaredType } from "@/server/security/sniff";
@@ -13,9 +13,9 @@ export { declaredType } from "@/server/security/sniff";
  * bytes afterwards would otherwise have that answer written to disk as `images/hero.png`, with `manifest.json` asserting
  * `format: "png"`, and streamed out of `/api/v1/assets.zip` for an agent to unzip and trust.
  *
- * Everything `fetchBytes` returns goes through this, a `data:` URI and an inline font file included, so a caller never has
- * to ask where the bytes came from to know what they are. The inline SVG markup the download and the archive read
- * straight out of the scan does not: that is the document the scan itself produced, not a second answer from a host.
+ * Everything `fetchBytes` returns goes through this, an inline font file included, and so do the bytes an asset carries
+ * inline, which the download and the archive read straight out of the scan (`inlineAssetBytes` in `entries.ts`): a
+ * `data:` URI is only as honest as the page that wrote it, and a remote answer only as honest as the host that sent it.
  */
 
 /** A file whose bytes are not the kind of file the scan said they were. Reported under `failed`, never thrown outward. */
@@ -55,4 +55,16 @@ export function assertSupportedBytes(bytes: Buffer, format: AssetFormat | FontFo
   if (wanted !== "" && !sniffed.startsWith(wanted)) {
     throw new UnsupportedBytesError(`the bytes of ${subject} are ${sniffed}, not the ${format} the scan reported`);
   }
+}
+
+/**
+ * The bytes a file carries itself, checked like fetched ones, or null when it has to be fetched. Only a font file does
+ * (`FontFile.inline`, a family declared as a `data:` URI), and both scan sources answer it the same way.
+ */
+export function inlineFileBytes(target: AssetSource | FontFile): Buffer | null {
+  const inline = "inline" in target ? target.inline : undefined;
+  if (!inline) return null;
+  const decoded = Buffer.from(inline.base64, "base64");
+  assertSupportedBytes(decoded, target.format, "this inline file");
+  return decoded;
 }

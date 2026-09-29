@@ -3,6 +3,7 @@ import { GET } from "@/app/api/v1/assets.zip/route";
 import { ApiError } from "@/lib/contract";
 import { readZip, type ZipEntry } from "../../../e2e/support/zip";
 import type { FixtureServer } from "../../fixtures/serve";
+import { MemoryBudgetStore, setBudgetStoreForTests } from "@/server/security/budget";
 import { serveAssetsFixture } from "../assets/harness";
 
 /**
@@ -27,10 +28,13 @@ beforeAll(async () => {
   env = { ...process.env };
   server = await serveAssetsFixture();
   process.env.AGENT_TOKENS = TOKEN;
+  // Budgets of this process alone, whatever store the environment would pick: a run must never spend real units.
+  setBudgetStoreForTests(new MemoryBudgetStore());
 }, 60_000);
 
 afterAll(async () => {
   await server?.close();
+  setBudgetStoreForTests(null);
   process.env = env;
 });
 

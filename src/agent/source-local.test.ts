@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { AssetSource, Diagnostics, PageInfo, ScanEvent, ScanStats } from "@/lib/contract";
 import { ScanFailure } from "@/server/errors";
 import type { SafeFetch, SafeResponse, ScanBackend } from "@/server/scan/types";
-import { createLocalScanSource, decodeDataUri, scanIdFor } from "./source-local";
+import { createLocalScanSource, scanIdFor } from "./source-local";
 import { testAsset, testFontFamily, testFontFile } from "./testing";
 
 /** A backend that replays `events` and records what it was asked, so the folding can be watched without a browser. */
@@ -152,13 +152,12 @@ const fakeFetch = (status: number, body: Buffer | string, contentType = "image/p
 };
 
 describe("createLocalScanSource().fetchBytes", () => {
-  it("reads inline bytes and a data URI without a request, and guards every other URL", async () => {
+  it("reads inline bytes without a request, and guards every other URL", async () => {
     const fetch = fakeFetch(200, PNG);
     const source = createLocalScanSource({ backend: fakeBackend([]), fetch });
 
     const woff2 = Buffer.concat([Buffer.from("wOF2", "latin1"), Buffer.from("compressed")]);
     expect(await source.fetchBytes(testFontFile({ inline: { base64: woff2.toString("base64"), mime: "font/woff2" } }))).toEqual(woff2);
-    expect((await source.fetchBytes(assetSource("data:image/svg+xml,%3Csvg%2F%3E", "svg"))).toString()).toBe("<svg/>");
     await expect(source.fetchBytes(assetSource(""))).rejects.toThrow(/no URL/);
     expect(fetch.calls).toBe(0);
 
@@ -205,9 +204,8 @@ describe("createLocalScanSource().fetchBytes", () => {
       );
     });
 
-    it("refuses a data URI or an inline file whose payload is not what it claims", async () => {
+    it("refuses an inline file whose payload is not what it claims", async () => {
       const source = createLocalScanSource({ backend: fakeBackend([]), fetch: fakeFetch(200, PNG) });
-      await expect(source.fetchBytes(assetSource("data:image/png;base64,PGh0bWw+", "png"))).rejects.toThrow(/not a supported image or font/);
       await expect(source.fetchBytes(testFontFile({ inline: { base64: "PGh0bWw+", mime: "font/woff2" } }))).rejects.toThrow(
         /not a supported image or font/,
       );
@@ -221,14 +219,5 @@ describe("scanIdFor", () => {
     expect(scanIdFor("127.0.0.1:8787")).toMatch(/^127\.0\.0\.1-8787-/);
     expect(scanIdFor("")).toMatch(/^site-/);
     expect(scanIdFor("a".repeat(400)).length).toBeLessThanOrEqual(120);
-  });
-});
-
-describe("decodeDataUri", () => {
-  it("reads base64 and percent encoded payloads", () => {
-    expect(decodeDataUri("data:font/woff2;base64,aGVsbG8=").toString("utf8")).toBe("hello");
-    expect(decodeDataUri("data:image/svg+xml,%3Csvg%2F%3E").toString("utf8")).toBe("<svg/>");
-    expect(decodeDataUri("data:,plain").toString("utf8")).toBe("plain");
-    expect(() => decodeDataUri("data:image/png;base64")).toThrow(/malformed/);
   });
 });

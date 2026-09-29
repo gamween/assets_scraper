@@ -13,7 +13,7 @@ export function SiteHeader({ host, loading = true }: { host: string; loading?: b
       </span>
       <div className="min-w-0">
         {title ? (
-          <h1 className="truncate text-title font-semibold text-text fade-in">{title}</h1>
+          <h1 className="truncate text-title font-semibold text-text appear">{title}</h1>
         ) : (
           <div className="flex h-6 items-center">
             <span className="h-3 w-56 rounded-sm bg-well" />

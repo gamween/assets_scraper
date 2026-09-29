@@ -4,11 +4,12 @@ import { CheckIcon, Copy, Download, ExternalLink } from "lucide-react";
 import { memo, useEffect, useRef, useState } from "react";
 import { Badge } from "@/components/common/badge";
 import { cn } from "@/components/common/cn";
-import { Button, buttonVariants } from "@/components/ui/button";
+import { Button } from "@/components/ui/button";
+import { buttonVariants } from "@/components/ui/button-variants";
 import type { FontFamily } from "@/lib/contract";
 import { getFontFileBlob } from "@/lib/client/asset-bytes";
 import { fontKey } from "@/lib/client/filters";
-import { specimenFile } from "@/lib/client/font-files";
+import { specimenAlias, specimenFile } from "@/lib/client/font-files";
 import { appStore, useApp } from "@/lib/client/store";
 import { copyWithToast } from "./asset-actions";
 import {
@@ -29,7 +30,7 @@ type LoadState = "loading" | "ready" | "failed";
 
 /**
  * Loads the family's most representative file as `new FontFace(alias, bytes)` once the row is near the viewport.
- * The alias is unique per family, so a scraped font never changes the app's own text.
+ * The alias is unique per family (see `specimenAlias`), so a scraped font never changes the app's own text.
  */
 function useSpecimenFont(family: FontFamily, alias: string) {
   const ref = useRef<HTMLDivElement>(null);
@@ -78,7 +79,7 @@ function useSpecimenFont(family: FontFamily, alias: string) {
 /** Spec 12.3 font row: live specimen, weights, formats and size, source and licence, selection and actions. */
 export const FontRow = memo(function FontRow({ font }: { font: FontFamily }) {
   const key = fontKey(font.id);
-  const alias = `as-specimen-${font.id.replace(/[^a-z0-9]/gi, "").slice(0, 16)}`;
+  const alias = specimenAlias(font.id);
   const specimenText = useApp((s) => s.page?.title?.trim()) || ALPHABET;
   const selected = useApp((s) => s.selection.has(key));
   const selecting = useApp((s) => s.selection.size > 0 || s.selectionMode);
@@ -140,7 +141,7 @@ export const FontRow = memo(function FontRow({ font }: { font: FontFamily }) {
               onClick={(event) => (event.shiftKey ? appStore.getState().selectRange(key) : appStore.getState().toggle(key))}
               className={cn(
                 "mt-[3px] grid size-5 shrink-0 place-items-center rounded-sm border-[1.5px] transition-[opacity,background-color,border-color] duration-100 focus-visible:opacity-100 focus-ring-tight",
-                selected ? "border-accent bg-accent text-accent-fg" : "border-border-strong bg-surface text-transparent hover:border-text-3",
+                selected ? "border-accent bg-accent text-accent-fg" : "border-control-edge bg-surface text-transparent hover:border-text-3",
                 selected || selecting ? "opacity-100" : "opacity-0 group-hover/font:opacity-100 pointer-coarse:opacity-100",
               )}
             >

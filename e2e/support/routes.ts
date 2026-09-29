@@ -1,10 +1,10 @@
 import { readFileSync } from "node:fs";
-import type { Page, Route } from "@playwright/test";
+import { expect, type Page, type Route } from "@playwright/test";
 import type { Asset, ScanEvent } from "../../src/lib/contract";
-import { assetsOf, fontFileFor, toNdjson } from "./fixtures";
+import { assetsOf, fontFileFor, loadFixture, toNdjson } from "./fixtures";
 import { standInPng } from "./png";
 
-export const ASSET_ORIGIN = "https://e2e.test";
+const ASSET_ORIGIN = "https://e2e.test";
 
 export interface AssetRouteOptions {
   /** Paths (no query) whose direct fetch answers 404, so the client falls back to the proxy. */
@@ -13,6 +13,7 @@ export interface AssetRouteOptions {
   failProxy?: string[];
 }
 
+/** Requests the routes answered: `direct` by path and query, `proxy` by the query of `/api/asset`. */
 export interface AssetRequestLog {
   direct: string[];
   proxy: string[];
@@ -78,6 +79,34 @@ export async function mockAssetRoutes(page: Page, events: ScanEvent[], options: 
   });
   return log;
 }
+
+export interface OpenResultsOptions {
+  /** The scan the page gets, linear.app by default. */
+  events?: ScanEvent[];
+  /** The address scanned. */
+  url?: string;
+  /** Appended to the address, like `&asset=<id>`. */
+  query?: string;
+  /** Files whose direct or proxy fetch fails. */
+  assets?: AssetRouteOptions;
+}
+
+/**
+ * Opens `/?url=` with the scan and its files served by the routes above, and waits for the results. Returns what the
+ * routes saw: the asset requests and the scan request bodies.
+ */
+export async function openResults(page: Page, options: OpenResultsOptions = {}) {
+  const events = options.events ?? loadFixture("linear");
+  const assets = await mockAssetRoutes(page, events, options.assets);
+  const scan = await mockScan(page, events);
+  await page.goto(`/?url=${encodeURIComponent(options.url ?? "https://linear.app/")}${options.query ?? ""}`);
+  await expect(page.getByTestId("results")).toBeVisible();
+  return { assets, scan };
+}
+
+/** Chrome has the File System Access API: without this, Download ZIP would open a native save dialog. */
+export const hideSavePicker = (page: Page) =>
+  page.addInitScript(() => Object.defineProperty(window, "showSaveFilePicker", { value: undefined, configurable: true }));
 
 export type ScanResponse = ScanEvent[] | { status: number; json: unknown } | { status: number; text: string };
 

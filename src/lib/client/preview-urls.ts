@@ -3,7 +3,8 @@ import { inlineToBlob } from "./asset-bytes";
 
 /**
  * Object URLs for inline previews (spec 11.4: scraped SVG markup only ever reaches the page as `<img src="blob:...">`).
- * One URL per asset object, created on first use and revoked together when a new scan replaces the results.
+ * One URL per asset object, created on first use and revoked together when the results go: a new scan, Home, Cancel
+ * or Back to the landing (see `leaveResults` in scan-session). Each URL pins its Blob in memory until then.
  */
 const urls = new WeakMap<Asset, string>();
 let created: string[] = [];

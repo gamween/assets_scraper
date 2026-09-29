@@ -25,8 +25,11 @@ Every request carries a bearer token:
 
 Tokens are configured on the server in AGENT_TOKENS, one per client, comma separated. Ask the owner of this
 deployment for one. A missing or unknown token is answered with 401 and {"error":{"code":"access-code", ...}}.
-A token replaces the bot check that keeps the browser endpoint private, and nothing else: the rate limit, the daily
-scan budget, the private address guards and every cap below still apply.
+A token replaces the bot check that keeps the browser endpoint private, and nothing else: the access code, the rate
+limit, the daily scan budget, the private address guards and every cap below still apply. When the owner has put the
+deployment behind an access code, send it with every request too:
+
+    x-access-code: <code>
 
 ## POST /api/v1/scan
 
@@ -50,7 +53,7 @@ assets answers hundreds of kilobytes, and the archive below is the way to get th
 
     ${origin}/api/v1/assets.zip
 
-Query: url, profile, kinds, roles, max, maxBytes, maxFileBytes, minLongSide, nameContains
+Query: url, profile, kinds, roles, max, maxBytes, maxFileBytes, minLongSide, nameContains, includeIcons
 
   profile        "deck" (default) keeps what is usable and drops icons, sprites, thumbnails and duplicates.
                  "all" keeps everything the explicit filters allow.
@@ -62,9 +65,10 @@ Query: url, profile, kinds, roles, max, maxBytes, maxFileBytes, minLongSide, nam
   maxFileBytes   bytes one file may take: ${mb(agentLimits.maxFileBytes)} under the deck profile when not given, no ceiling
                  under all unless given. 0 lifts it
   minLongSide    a raster under this many pixels on its longest side is dropped: ${agentLimits.minLongSide} px under the deck
-                 profile when not given, no gate under all unless given. A site logo, a logo and a favicon are
-                 never dropped for size, and SVG has no size gate.
+                 profile when not given, no gate under all unless given. A site logo, a logo, a favicon and an
+                 icon asked for are never dropped for size, and SVG has no size gate.
   nameContains   keeps the files whose name contains this text
+  includeIcons   true keeps the icons the deck profile drops, at any size. Asking for roles=icon does the same
 
 The archive holds svg/, images/ and a manifest.json listing, per file, its path inside the archive, source URL,
 dimensions, bytes, role and why it was kept, plus every drop counted by reason. It is the same document the
@@ -83,19 +87,21 @@ the note in manifest.json says which.
   ${mb(limits.proxyBytesPerIpPerDay)} of them per client address
   ${limits.maxAssets} assets in one scan
 
-Errors use the codes of the v1 contract with the matching HTTP status: 400 invalid-url, 401 access-code,
-422 blocked-address, unsupported-port, own-host or not-html, 429 budget, 502 dns, connect, http or blocked,
-503 busy or disabled, 504 timeout, 500 internal. The body is always {"error":{"code","message"}}.
+Errors use the codes of the v1 contract with the matching HTTP status: 400 invalid-url, 401 access-code (no
+token, an unknown one, or a missing access code), 422 blocked-address, unsupported-port, own-host or not-html,
+429 budget, 502 dns, connect, http or blocked, 503 busy or disabled, 504 timeout, 500 internal. The body of every
+error this app writes is {"error":{"code","message"}}.
 
 Two answers come from the edge, before the API runs, and are not that JSON. Past the rate limit: 429 with the header
 x-vercel-mitigated: deny. At times, on any path: 403 with an HTML challenge page and x-vercel-mitigated: challenge,
-which is Vercel's own protection. Read x-vercel-mitigated before parsing a body, and wait before trying again.
+which is Vercel's own protection and which only a browser can pass. Read x-vercel-mitigated before parsing a body,
+and wait a few minutes before trying again rather than retrying at once or changing the token.
 
 ## Examples
 
 Read what a page holds:
 
-    curl -sS -X POST ${origin}/api/v1/scan -H "Authorization: Bearer $ASSETS_SCRAPER_TOKEN" -H "content-type: application/json" -d '{"url":"stripe.com"}'
+    curl -sS --fail-with-body -X POST ${origin}/api/v1/scan -H "Authorization: Bearer $ASSETS_SCRAPER_TOKEN" -H "content-type: application/json" -d '{"url":"stripe.com"}'
 
 Take the logos and the large images into ./scrap/stripe.com:
 

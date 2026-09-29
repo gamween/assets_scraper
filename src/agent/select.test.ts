@@ -1,6 +1,7 @@
 import sharp from "sharp";
 import { beforeAll, describe, expect, it } from "vitest";
 import type { Asset, AssetFormat, AssetKind, AssetRole } from "@/lib/contract";
+import { fingerprint } from "./hash";
 import { normalizeAssetName, selectAssets } from "./select";
 import { TEMPLATE_CARD_HEIGHT, TEMPLATE_CARD_WIDTH, templateCardImage } from "./testing";
 
@@ -108,6 +109,24 @@ describe("selectAssets, deck profile", () => {
     expect(await kept(assets, { includeIcons: true })).toEqual(["icon.svg", "hero.svg"]);
   });
 
+  /**
+   * Regression: the role filter let the icons through and the deck rule then dropped them, so "download their icon set"
+   * wrote nothing, and `--include-icons` still lost every raster icon to the 600 px size gate.
+   */
+  it("keeps the icons and sprite symbols a caller names by role, raster icons of any size included", async () => {
+    const assets = [
+      make({ file: "menu.svg", role: "icon" }),
+      make({ file: "cart.png", role: "icon", width: 32, height: 32 }),
+      make({ file: "sprite.svg", role: "sprite-symbol" }),
+      make({ file: "hero.png", width: 1600, height: 900 }),
+    ];
+    expect(await kept(assets, { roles: ["icon"] })).toEqual(["menu.svg", "cart.png"]);
+    expect(await kept(assets, { roles: ["sprite-symbol"] })).toEqual(["sprite.svg"]);
+    expect(await kept(assets, { includeIcons: true })).toEqual(["menu.svg", "cart.png", "hero.png"]);
+    // Asked for nothing of the kind, a deck still leaves them out.
+    expect((await selectAssets(assets)).dropped).toEqual({ icon: 2, sprite: 1 });
+  });
+
   it("drops a small raster unless it is a logo", async () => {
     expect(await kept([make({ file: "photo.png", width: 320, height: 200 })])).toEqual([]);
     expect((await selectAssets([make({ file: "photo.png", width: 320, height: 200 })])).dropped).toEqual({ small: 1 });
@@ -206,6 +225,9 @@ describe("selectAssets, deck profile", () => {
     // returned one file and counted the other two as near duplicates.
     const marks = ["ACME", "GLOBEX", "INITECH"];
     const bytes = new Map(await Promise.all(marks.map(async (text, index) => [`logo-${index}.png`, await wordmark(text)] as const)));
+    // The marks are text drawn with the system fonts. On a host with none they come out blank, get no fingerprint, and
+    // all three are kept without the hash comparing anything, so the test would pass on nothing.
+    for (const mark of bytes.values()) expect(await fingerprint(mark)).not.toBeNull();
     const assets = marks.map((_, index) => make({ file: `logo-${index}.png`, role: "logo", width: 800, height: 200, score: 90 - index }));
     const selection = await selectAssets(assets, {}, bytes);
     expect(selection.keep.map((asset) => asset.id)).toEqual(["logo-0.png", "logo-1.png", "logo-2.png"]);
@@ -341,6 +363,16 @@ describe("selectAssets, explicit options", () => {
     expect((await selectAssets(assets, { kinds: ["svg"] })).dropped).toEqual({ filter: 2 });
     expect(await kept(assets, { roles: ["image"] })).toEqual(["hero-shot.png"]);
     expect(await kept(assets, { nameContains: "SHOT" })).toEqual(["hero-shot.png"]);
+  });
+
+  /** Regression: the needle matched the file name too, which starts with the site slug, so `stripe` took everything. */
+  it("matches nameContains against the name only, never the file name's site prefix", async () => {
+    const assets = [
+      { ...make({ file: "stripe-logo.svg", role: "logo" }), name: "Stripe logo" },
+      { ...make({ file: "stripe-hero-photo.png", width: 1600, height: 900 }), name: "Hero photo" },
+    ];
+    expect(await kept(assets, { nameContains: "stripe" })).toEqual(["stripe-logo.svg"]);
+    expect(await kept(assets, { nameContains: "hero" })).toEqual(["stripe-hero-photo.png"]);
   });
 
   it("keeps the role exemption when the caller names minLongSide itself", async () => {

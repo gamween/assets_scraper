@@ -19,7 +19,7 @@ const error = (description: string) => ({
  */
 const errorResponses = () => ({
   "400": error("invalid-url: the request or the URL could not be read."),
-  "401": error("access-code: the bearer token is missing or unknown."),
+  "401": error("access-code: the bearer token is missing or unknown, or the deployment's access code was not sent in x-access-code."),
   "403": {
     description:
       "Refused at the edge before the API ran: Vercel's own protection can answer any path with an HTML challenge and " +
@@ -40,6 +40,15 @@ const errorResponses = () => ({
   "503": error("busy or disabled: no browser was free, or scanning is paused."),
   "504": error("timeout: the scan did not finish in time."),
 });
+
+/** Required only by a deployment the owner put behind `ACCESS_CODE`, which asks a token holder for it too. */
+const accessCodeHeader = {
+  name: "x-access-code",
+  in: "header",
+  required: false,
+  description: "The deployment's access code, when it has one. A bearer token does not replace it.",
+  schema: { type: "string" },
+};
 
 const filter = (name: string, description: string, schema: Record<string, unknown>) => ({
   name,
@@ -68,6 +77,7 @@ export function openApiDocument(origin: string): Record<string, unknown> {
           operationId: "scanPage",
           summary: "Scan a page and return one JSON document.",
           security: [{ bearerAuth: [] }],
+          parameters: [accessCodeHeader],
           requestBody: {
             required: true,
             content: {
@@ -111,7 +121,7 @@ export function openApiDocument(origin: string): Record<string, unknown> {
             filter(
               "minLongSide",
               `Rasters under this many pixels on their longest side are dropped: ${agentLimits.minLongSide} under the deck profile ` +
-                "when not given, no gate under all unless given. A site logo, a logo and a favicon are never dropped for size.",
+                "when not given, no gate under all unless given. Site logos, logos, favicons and icons asked for are never dropped for size, and SVG has no size gate.",
               { type: "integer", minimum: 1 },
             ),
             filter("maxBytes", `Bytes to keep in total, best scoring files first, held to what one request serves. 0 means that ceiling.`, {
@@ -126,6 +136,11 @@ export function openApiDocument(origin: string): Record<string, unknown> {
               { type: "integer", minimum: 0 },
             ),
             filter("nameContains", "Keeps the files whose name contains this text.", { type: "string" }),
+            filter("includeIcons", "Keeps the icons the deck profile drops, raster icons under minLongSide included. Naming the icon role does the same.", {
+              type: "boolean",
+              default: false,
+            }),
+            accessCodeHeader,
           ],
           responses: {
             "200": {
@@ -216,7 +231,7 @@ export function openApiDocument(origin: string): Record<string, unknown> {
                   // An SVG's size is whatever its width, height or viewBox say, fractions included.
                   width: { type: "number" },
                   height: { type: "number" },
-                  bytes: { type: "integer" },
+                  bytes: { type: "integer", description: "When the scan measured it." },
                 },
               },
             },

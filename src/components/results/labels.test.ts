@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { makeAsset, remoteSource } from "@/lib/client/testing";
-import { assetMeta, foundInLabel, hiddenSummary, roleBadge, roleLabel } from "./labels";
+import { assetMetaParts, foundInLabel, hiddenSummary, roleBadge, roleLabel } from "./labels";
 
 describe("hiddenSummary", () => {
   it("names the reasons by count", () => {
@@ -30,6 +30,8 @@ describe("hiddenSummary", () => {
 
 describe("card labels", () => {
   it("builds the mono meta line", () => {
+    // The card prints the parts with a separator of its own, one span each.
+    const assetMeta = (asset: Parameters<typeof assetMetaParts>[0]) => assetMetaParts(asset).join(" · ");
     const svg = makeAsset({ id: "logo", kind: "svg", width: 88, height: 22, bytes: 3072, inline: { mime: "image/svg+xml", text: "<svg/>" } });
     expect(assetMeta(svg)).toBe("SVG · 88×22 · 3.0 KB · Inline");
     const file = makeAsset({ id: "file", kind: "svg", original: remoteSource("https://cdn.test/logo.svg", { format: "svg", bytes: 512 }) });

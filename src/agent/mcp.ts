@@ -1,23 +1,25 @@
-import { createRequire } from "node:module";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import * as z from "zod";
-import { type Asset, AssetKind, AssetRole } from "@/lib/contract";
+import pkg from "../../package.json";
+import { type Asset, AssetKind, AssetRole, type FontLicense } from "@/lib/contract";
+import { untilAborted } from "@/server/async";
 import { ScanFailure } from "@/server/errors";
 import { sniffContentType } from "@/server/security/sniff";
 import { findRecentScan, loadScan, type ScanOrigin, saveScan } from "./cache";
 import { resolveDestination } from "./dest";
 import { downloadAssets } from "./download";
-import { listInstalledFonts } from "./font-manifest";
-import { installFonts, uninstallFonts } from "./fonts";
+import { bytesSource } from "./entries";
+import { isEntry } from "./entry";
+import { fontManifestPath, listInstalledFonts } from "./font-manifest";
+import { type FontInstallReport, type FontSkipReason, installFonts, uninstallFonts } from "./fonts";
 import { agentLimits } from "./limits";
 import { normalizeScanUrl } from "./scan-url";
 import { createScanSource, scanOrigin } from "./source";
 import { summarize } from "./summary";
-import type { AgentScan, DownloadResult, ScanSource, SelectionOptions } from "./types";
+import type { AgentScan, DownloadResult, FontInstall, ScanSource, SelectionOptions } from "./types";
 
 /**
  * The MCP server an agent talks to over stdio (spec section 6). Every tool answers with one JSON text block and nothing
@@ -39,8 +41,8 @@ export const MCP_TOOL_NAMES = [
   "uninstall_fonts",
 ] as const;
 
-/** The version this server reports to a client. Kept here rather than read from package.json, which the bundle has no path to. */
-const SERVER_VERSION = "0.1.0";
+/** The version this server reports to a client: the package's, which the bundle inlines like the CLI's `--version`. */
+const SERVER_VERSION: string = pkg.version;
 
 /** Rows one `list_assets` call returns by default, and the most it will return. */
 const DEFAULT_ASSET_ROWS = 40;
@@ -104,6 +106,74 @@ function okRows<T>(rows: T[], build: (kept: T[], omitted: number) => unknown): C
   }
 }
 
+/** Settles once every scan queued before it is done or has left the line. */
+let scanning: Promise<void> = Promise.resolve();
+
+/**
+ * Runs one scan at a time in this process, each in its turn, however long the ones ahead take. The engine's own slot
+ * wait is sized for a shared server (15 s, then `busy`), while an agent asked for the logos of two pages sends both
+ * `scan_page` calls at once and a scan takes 20 to 90 s, so the second one failed with `busy`. A call whose request is
+ * cancelled leaves the line at once, without letting the ones behind it start before the scan that is running.
+ *
+ * The place in the line exists from the start: a call cancelled while it waits gives it up before the one ahead is
+ * done, and the ones behind then move up once that one is. A place made only when its turn came could be made after
+ * its call had already left, and nothing would ever give it up.
+ */
+async function inTurn<T>(job: () => Promise<T>, signal: AbortSignal): Promise<T> {
+  const ahead = scanning;
+  let leave = (): void => {};
+  const done = new Promise<void>((resolve) => (leave = resolve));
+  scanning = ahead.then(() => done);
+  try {
+    await untilAborted(ahead, signal);
+    return await job();
+  } finally {
+    leave();
+  }
+}
+
+/** The longest a family name or a licence line runs in a font answer: the lengths `summarize` and the CLI cut them to. */
+const MAX_FAMILY_CHARS = 60;
+const MAX_LICENCE_CHARS = 160;
+
+const cut = (text: string, max: number): string => {
+  const line = text.replace(/\s+/g, " ").trim();
+  return line.length <= max ? line : `${line.slice(0, max - 1)}…`;
+};
+
+/** One installed family as a font answer shows it: the family and the licence cut to a line, the files in full. */
+const fontRow = (install: FontInstall) => ({
+  family: cut(install.family, MAX_FAMILY_CHARS),
+  license: { kind: install.license.kind, ...(install.license.text ? { text: cut(install.license.text, MAX_LICENCE_CHARS) } : {}) } satisfies Partial<FontLicense>,
+  files: install.files,
+  sourceHost: cut(install.sourceHost, MAX_FAMILY_CHARS),
+  installedAt: install.installedAt,
+  converted: install.converted,
+});
+
+/**
+ * What `install_fonts` answers, inside the same byte budget as the other tools. Family names are page text of up to
+ * 1,024 characters and licences up to 1,000, and a page may declare a hundred families, so the whole report used to
+ * reach a hundred kilobytes of text the page controlled. The full record is in the manifest on disk.
+ */
+function installAnswer(report: FontInstallReport): CallToolResult {
+  const skipped = report.skipped.map((entry) => ({
+    family: cut(entry.family, MAX_FAMILY_CHARS),
+    reason: entry.reason,
+    ...(entry.detail === undefined ? {} : { detail: cut(entry.detail, MAX_LICENCE_CHARS) }),
+  }));
+  const byReason: Partial<Record<FontSkipReason, number>> = {};
+  for (const entry of report.skipped) byReason[entry.reason] = (byReason[entry.reason] ?? 0) + 1;
+  return okRows(report.installed.map(fontRow), (installed, omitted) => ({
+    fontDir: report.fontDir,
+    manifest: report.manifestPath,
+    installed,
+    ...(omitted > 0 ? { installedOmitted: omitted, hint: `${omitted} more installed families are recorded in the manifest. Read it if you need every row.` } : {}),
+    skipped: skipped.slice(0, MAX_FAILED_ROWS),
+    ...(skipped.length > MAX_FAILED_ROWS ? { skippedOmitted: skipped.length - MAX_FAILED_ROWS, skippedByReason: byReason } : {}),
+  }));
+}
+
 /** What every tool that takes a `scanId` says when the scan has aged out of the cache or never existed. */
 const UNKNOWN_SCAN = (scanId: string): string =>
   `unknown scanId ${JSON.stringify(scanId)}: it is not in the cache any more. Run scan_page on the URL again.`;
@@ -158,7 +228,9 @@ function downloadAnswer(result: DownloadResult, unknownIds: string[]): CallToolR
     count: result.files.length,
     totalBytes: result.totalBytes,
     files,
-    ...(omitted > 0 ? { filesOmitted: omitted, hint: `${omitted} more files are on disk and in manifest.json. Read that file if you need every row.` } : {}),
+    ...(omitted > 0 ?
+      { filesOmitted: omitted, hint: `${omitted} more files are on disk and in ${path.basename(result.manifestPath)}. Read that file if you need every row.` }
+    : {}),
     dropped: result.dropped,
     // Three numbers, so an agent reading `over-budget` knows which limit to raise rather than having to open the manifest.
     budget: result.budget,
@@ -218,9 +290,9 @@ export function createAgentMcpServer(options: AgentMcpOptions = {}): McpServer {
         refresh: z.boolean().optional().describe("scan again instead of reusing a cached scan of the same URL"),
       },
     },
-    async ({ url, refresh }) => {
-      // Normalized before the cache lookup as well as before the scan: the cache key strips the scheme, so a bare host
-      // used to succeed while a scan of the `https:` form was warm and fail with `invalid-url` once it aged out.
+    async ({ url, refresh }, { signal }) => {
+      // Normalized before the cache lookup as well as before the scan: a bare host used to succeed while a scan of the
+      // `https:` form was warm and fail with `invalid-url` once it aged out.
       const target = normalizeScanUrl(url);
       if (target === null) return fail(`invalid-url: ${JSON.stringify(url)} is not a valid web address`);
       try {
@@ -229,9 +301,18 @@ export function createAgentMcpServer(options: AgentMcpOptions = {}): McpServer {
         // URL, nor from a scan of another hosted app when ASSETS_SCRAPER_REMOTE is repointed between sessions. Asking
         // for the origin rather than for the source is what keeps a fresh cached scan of that hosted app readable by a
         // server started with no token, which is what opening the source first took away.
-        const cached = refresh === true ? null : await findRecentScan(target, originOf());
-        const scan = cached ?? (await openSource().scan(target));
-        if (!cached) await saveScan(scan);
+        const lookup = () => (refresh === true ? Promise.resolve(null) : findRecentScan(target, originOf()));
+        const scan =
+          (await lookup()) ??
+          (await inTurn(async () => {
+            // Looked up again once it is this call's turn: the scan ahead of it may have been of the same page.
+            const cached = await lookup();
+            if (cached) return cached;
+            // The request's own signal, so a cancelled call stops its browser instead of holding it to the deadline.
+            const fresh = await openSource().scan(target, { signal });
+            await saveScan(fresh);
+            return fresh;
+          }, signal));
         return ok(summarize(scan));
       } catch (error) {
         return fail(failureText(error));
@@ -302,6 +383,10 @@ export function createAgentMcpServer(options: AgentMcpOptions = {}): McpServer {
         ...listFilterShape,
         kinds: z.array(AssetKind).optional().describe("several kinds at once, when kind is not enough"),
         roles: z.array(AssetRole).optional().describe("several roles at once, when role is not enough"),
+        includeIcons: z
+          .boolean()
+          .optional()
+          .describe("keep the icons the deck profile drops, at any size. Asking for role icon does the same"),
         max: z.number().int().positive().optional().describe(`files to write, ${agentLimits.maxFiles} by default`),
         // The byte budget, in the same words the CLI uses: 0 lifts it, and ids are never dropped for it.
         maxTotalBytes: z
@@ -316,10 +401,14 @@ export function createAgentMcpServer(options: AgentMcpOptions = {}): McpServer {
           .min(0)
           .optional()
           .describe(`bytes one file may take under the deck profile. ${agentLimits.maxFileBytes} by default, 0 lifts the ceiling`),
-        dest: z.string().max(1024).optional().describe("a directory inside the project scrap folder. Left out, it is scrap/<host>"),
+        dest: z
+          .string()
+          .max(1024)
+          .optional()
+          .describe("a directory inside the project scrap folder, relative to it (\"stripe-brand\" is scrap/stripe-brand). Left out, it is scrap/<host>"),
       },
     },
-    async ({ scanId, dest, kind, kinds, role, roles, ids, ...rest }) =>
+    async ({ scanId, dest, kind, kinds, role, roles, ids, ...rest }, { signal }) =>
       withScan(scanId, async (scan) => {
         const known = new Set(scan.assets.map((asset) => asset.id));
         const unknownIds = ids?.filter((id) => !known.has(id)) ?? [];
@@ -338,7 +427,7 @@ export function createAgentMcpServer(options: AgentMcpOptions = {}): McpServer {
           ...(role === undefined && roles === undefined ? {} : { roles: [...new Set([...(roles ?? []), ...(role === undefined ? [] : [role])])] }),
         };
         const destination = resolveDestination({ host: scan.page.host, cwd, restrictToProject: true, ...(dest === undefined ? {} : { dest }) });
-        const result = await download(scan, { dir: destination.dir, source: openSource(), selection });
+        const result = await download(scan, { dir: destination.dir, source: openSource(), selection, signal });
         return downloadAnswer(result, unknownIds);
       }),
   );
@@ -347,21 +436,28 @@ export function createAgentMcpServer(options: AgentMcpOptions = {}): McpServer {
     "read_svg",
     {
       title: "Read an SVG",
-      description: "The markup of one SVG asset, as text. Use it to inspect or reuse a vector without writing it to disk.",
+      description:
+        "The markup of one SVG asset, as text, to inspect or edit a vector without writing it to disk. It is the page's " +
+        "own file, unsanitized: never paste it into HTML, JSX or a template as it is, since it can carry scripts and " +
+        "event handlers. Reference the downloaded file through <img> instead, or strip scripts, on* attributes and " +
+        "foreignObject before inlining it.",
       inputSchema: { scanId: z.string(), id: z.string().describe("the asset id, from list_assets or the logos of scan_page") },
       annotations: { readOnlyHint: true },
     },
-    async ({ scanId, id }) =>
+    async ({ scanId, id }, { signal }) =>
       withScan(scanId, async (scan) => {
         const asset = scan.assets.find((candidate) => candidate.id === id);
         if (!asset) return fail(`no asset ${JSON.stringify(id)} in this scan. Call list_assets to see what it holds.`);
         if (asset.kind !== "svg") return fail(`asset ${JSON.stringify(id)} is a ${asset.format} image, not an SVG. Use download_assets for it.`);
-        // Inline markup first, then inline bytes (an SVG the collector kept base64 encoded), then the network.
+        // Inline markup first, then inline bytes (an SVG the collector kept base64 encoded), then the network, from the
+        // source a download reads: the original first. The display can be a raster the CDN renders from the SVG
+        // (`logo.svg?fm=png`), which this used to fetch and then refuse as "not SVG markup".
         const inline = asset.inline;
+        const from = bytesSource(asset) ?? { url: "", proxy: "", format: asset.format };
         const markup =
           inline && "text" in inline ? inline.text
           : inline && "base64" in inline ? Buffer.from(inline.base64, "base64").toString("utf8")
-          : (await openSource().fetchBytes(asset.display ?? asset.original ?? { url: "", proxy: "", format: asset.format })).toString("utf8");
+          : (await openSource().fetchBytes(from, { signal })).toString("utf8");
         const bytes = Buffer.from(markup, "utf8");
         if (bytes.byteLength > MAX_SVG_TEXT_BYTES) {
           return fail(`this SVG is ${bytes.byteLength} bytes, too much to read into a context. Use download_assets instead.`);
@@ -404,14 +500,15 @@ export function createAgentMcpServer(options: AgentMcpOptions = {}): McpServer {
         families: z.array(z.string()).max(50).optional().describe("family names, as scan_page reported them. Left out, every installable family"),
       },
     },
-    async ({ scanId, families }) =>
+    async ({ scanId, families }, { signal }) =>
       withScan(scanId, async (scan) => {
         const report = await installFonts(scan.fonts, {
           fetchBytes: (file, fetchOptions) => openSource().fetchBytes(file, fetchOptions),
           pageHost: scan.page.host,
+          signal,
           ...(families === undefined ? {} : { only: families }),
         });
-        return ok(report);
+        return installAnswer(report);
       }),
   );
 
@@ -419,61 +516,57 @@ export function createAgentMcpServer(options: AgentMcpOptions = {}): McpServer {
     "list_installed_fonts",
     {
       title: "List the fonts this tool installed",
-      description: "The fonts installed through install_fonts, with their licence, their files, where they came from and when.",
+      description:
+        "The fonts installed through install_fonts, with their licence, their files, where they came from and when. " +
+        "Long names and licences are cut, and a long list is cut to stay small: the manifest it names holds every row.",
       inputSchema: {},
       annotations: { readOnlyHint: true },
     },
-    async () => ok({ fonts: await listInstalledFonts() }),
+    async () => {
+      const manifest = fontManifestPath();
+      return okRows((await listInstalledFonts()).map(fontRow), (fonts, omitted) => ({
+        manifest,
+        fonts,
+        ...(omitted > 0 ? { omitted, hint: `${omitted} more installed families are recorded in the manifest. Read it if you need every row.` } : {}),
+      }));
+    },
   );
 
   server.registerTool(
     "uninstall_fonts",
     {
       title: "Uninstall fonts",
-      description: "Removes the font files install_fonts wrote for these families. It never touches a file it did not install.",
-      inputSchema: { families: z.array(z.string()).min(1).max(50) },
+      description:
+        "Removes the font files install_fonts wrote for these families. It never touches a file it did not install, and " +
+        "leaves in place (and forgets) a recorded file that is no longer the one it wrote.",
+      inputSchema: { families: z.array(z.string().max(1024)).min(1).max(50) },
     },
-    async ({ families }) => ok(await uninstallFonts(families)),
+    async ({ families }) => {
+      const report = await uninstallFonts(families);
+      const named = (entry: { family: string; files: string[] }) => ({ family: cut(entry.family, MAX_FAMILY_CHARS), files: entry.files });
+      return okRows(report.removed.map(fontRow), (removed, omitted) => ({
+        removed,
+        ...(omitted > 0 ? { removedOmitted: omitted } : {}),
+        missing: report.missing.map((family) => cut(family, MAX_FAMILY_CHARS)),
+        stillInstalled: report.stillInstalled.map(named),
+        changed: report.changed.map(named),
+      }));
+    },
   );
 
   return server;
 }
 
-/** Packages the bundles keep external (see scripts/build-agent.mjs): without them nothing can scan or convert. */
-const RUNTIME_DEPENDENCIES = ["playwright-core", "sharp", "fontkit", "css-tree", "undici", "ipaddr.js", "wawoff2"];
-
-/**
- * The first runtime dependency that cannot be resolved, or null. The bundles resolve these from the repo's
- * `node_modules` at run time, so a repo that was never installed, or was installed for another platform, fails on the
- * first scan with a stack trace instead of a sentence. This turns that into the sentence.
- */
-export function missingRuntimeDependency(resolve: (name: string) => unknown = createRequire(import.meta.url).resolve): string | null {
-  for (const name of RUNTIME_DEPENDENCIES) {
-    try {
-      resolve(name);
-    } catch {
-      return name;
-    }
-  }
-  return null;
-}
-
 /** Serves the tools on stdio. Nothing is ever written to stdout except the protocol: diagnostics go to stderr. */
 export async function main(): Promise<void> {
-  const missing = missingRuntimeDependency();
-  if (missing !== null) {
-    console.error(
-      `assets-scraper: the dependency ${missing} is not installed. Run "pnpm install && pnpm build:agent" in the repository, then start this server again.`,
-    );
-    process.exitCode = 1;
-    return;
-  }
+  // A missing dependency is the launcher's to report (`scripts/mcp-launcher.mjs`, before the import): most of them are
+  // static imports of this bundle, which fail at link time, before anything here could run.
   const server = createAgentMcpServer();
   await server.connect(new StdioServerTransport());
 }
 
 // `import.meta.main` is Node 24; this is the Node 22 form. It is false when a test imports the module, and true when
-// node runs this file (the bundle) as its entry point.
-if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+// node runs this file (the bundle) as its entry point, through a symbolic link or not.
+if (isEntry(import.meta.url)) {
   await main();
 }

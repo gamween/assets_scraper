@@ -1,9 +1,10 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import type { Asset, AssetFormat, AssetKind, AssetRole } from "@/lib/contract";
-import { createFileInside, resolveDestination } from "./dest";
+import { createFileInside, FILE_MODE, resolveDestination } from "./dest";
+import { bytesSource, inlineAssetBytes, type ManifestFile, manifestRow, sourceUrl } from "./entries";
 import { agentLimits } from "./limits";
-import { safeFileName } from "./names";
+import { assetFileName, nameCandidates } from "./names";
 import { selectAssets } from "./select";
 import type {
   AgentScan,
@@ -18,7 +19,9 @@ import type {
 
 /**
  * Writing a selection to disk (spec 4, last paragraph): `svg/` and `images/` inside the destination, plus a
- * `manifest.json` saying what every file is and why it was kept.
+ * `manifest.json` saying what every file is and why it was kept. The hosted ZIP (`src/app/api/v1/zip.ts`) builds the
+ * same archive from the same helpers (`names.ts` for the file name, `entries.ts` for the bytes of an inline asset and
+ * the manifest row), so unzipping it into `scrap/<host>` gives what this writes.
  *
  * Selection runs twice. The name and size rules run before anything is fetched, so bytes are only spent on files that
  * could be kept, and the byte rules (exact and perceptual duplicates) run once the bytes are in hand. Files are written
@@ -28,38 +31,24 @@ import type {
  */
 
 export interface DownloadOptions extends SelectionOptions {
-  /** An explicit destination directory, used as is. Relative paths resolve against `cwd`. */
+  /**
+   * An explicit destination directory, used as is (a relative one resolves against `cwd`). A `dest` that came from an
+   * agent is resolved and confined by the caller first (`resolveDestination` with `restrictToProject`, as the MCP
+   * `download_assets` tool does), and arrives here as the absolute directory that produced.
+   */
   dest?: string;
   /** Working directory the project rule walks up from. Defaults to `process.cwd()`. */
   cwd?: string;
-  /** Confines an agent-supplied `dest` to the project's scrap directory (spec 10). */
-  restrictToProject?: boolean;
   /** Parallel fetches. Defaults to `agentLimits.downloadConcurrency`. */
   concurrency?: number;
-  /** Bytes this download may take before it stops. Defaults to `agentLimits.maxDownloadBytes`. */
-  maxBytes?: number;
   signal?: AbortSignal;
 }
 
-/** One row of `manifest.json`: what the file is, where it came from, and why the selection kept it. */
-export interface ManifestFile {
-  id: string;
-  name: string;
-  /** Path inside the destination directory, with forward slashes. */
-  file: string;
-  /** The URL the bytes came from, or "" for an asset the page carried inline. */
-  url: string;
-  kind: AssetKind;
-  role: AssetRole;
-  format: AssetFormat;
-  width?: number;
-  height?: number;
-  bytes: number;
-  keptBecause: string;
-  /** Ids of the assets this file won a duplicate group against. */
-  duplicatesDropped?: string[];
-}
-
+/**
+ * `manifest.json`. `files` lists every file this tool wrote into the folder that is still there, earlier downloads into
+ * the same folder included, so a second `get` with other filters extends the listing rather than hiding the first one's
+ * files. Everything else (the counts, the drops, the budget, the failures) describes this download.
+ */
 export interface DownloadManifest {
   tool: "assets-scraper";
   manifestVersion: 1;
@@ -77,38 +66,19 @@ export interface DownloadManifest {
 }
 
 export const MANIFEST_NAME = "manifest.json";
+/**
+ * Where the manifest goes when the folder already holds a `manifest.json` this tool did not write: a PWA's
+ * `public/manifest.json` or a browser extension's own, reached through a `--out` the user typed. Those are never touched.
+ */
+export const FALLBACK_MANIFEST_NAME = "assets-scraper-manifest.json";
 
 /** Candidate names one file tries before the download gives up on it. */
 const MAX_NAME_ATTEMPTS = 50;
-
-const FILE_MODE = 0o644;
-
-/** The bytes an asset carries itself (inline SVG markup or inline base64), or null when it has to be fetched. */
-function inlineBytes(asset: Asset): Buffer | null {
-  const inline = asset.inline;
-  if (!inline) return null;
-  return "text" in inline ? Buffer.from(inline.text, "utf8") : Buffer.from(inline.base64, "base64");
-}
-
-/** The best source of an asset's bytes: the CDN original when the scan found one, the served file otherwise. */
-const bytesSource = (asset: Asset) => asset.original ?? asset.display;
-
-const sourceUrl = (asset: Asset): string => bytesSource(asset)?.url ?? "";
+/** Bytes of an existing manifest this reads before deciding it is not one of ours. */
+const MAX_MANIFEST_BYTES = 16 * 1024 * 1024;
 
 const oneLine = (error: unknown): string =>
   (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ").trim().slice(0, 200) || "unknown error";
-
-/** Writes `data` to `target` even when it is already there, refusing a symlink at the final component. */
-function writeFileNoFollow(target: string, data: string | Buffer): void {
-  fs.mkdirSync(path.dirname(target), { recursive: true });
-  const flags = fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW;
-  const fd = fs.openSync(target, flags, FILE_MODE);
-  try {
-    fs.writeFileSync(fd, data);
-  } finally {
-    fs.closeSync(fd);
-  }
-}
 
 interface WrittenFile {
   path: string;
@@ -118,24 +88,24 @@ interface WrittenFile {
 
 /**
  * Writes `data` inside `root` as `folder/name`, never overwriting: identical bytes already on disk are left alone, and
- * different bytes get `-2`, `-3` and so on (spec 4, last paragraph). `taken` holds the paths this run already used, so
- * two assets that sanitize to one name get a file each.
+ * different bytes get `-2`, `-3` and so on (spec 4, last paragraph). `taken` holds the names this run already used,
+ * without case like the archive's rule (`nameCandidates`), so two assets that sanitize to one name get a file each on
+ * every file system.
  */
 function writeUnique(root: string, folder: string, name: string, data: Buffer, taken: Set<string>): WrittenFile {
-  const dot = name.lastIndexOf(".");
-  const base = dot > 0 ? name.slice(0, dot) : name;
-  const extension = dot > 0 ? name.slice(dot) : "";
-  for (let attempt = 1; attempt <= MAX_NAME_ATTEMPTS; attempt += 1) {
-    const candidate = `${folder}/${attempt === 1 ? name : `${base}-${attempt}${extension}`}`;
+  let attempts = 0;
+  for (const candidateName of nameCandidates(name)) {
+    if (++attempts > MAX_NAME_ATTEMPTS) break;
+    const candidate = `${folder}/${candidateName}`;
+    if (taken.has(candidate.toLowerCase())) continue;
     let file: { path: string; fd: number };
     try {
       file = createFileInside(root, candidate);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       const existing = path.resolve(root, candidate);
-      if (taken.has(existing)) continue;
       if (fs.readFileSync(existing).equals(data)) {
-        taken.add(existing);
+        taken.add(candidate.toLowerCase());
         return { path: existing, reused: true };
       }
       continue;
@@ -145,10 +115,77 @@ function writeUnique(root: string, folder: string, name: string, data: Buffer, t
     } finally {
       fs.closeSync(file.fd);
     }
-    taken.add(file.path);
+    taken.add(candidate.toLowerCase());
     return { path: file.path, reused: false };
   }
   throw new Error(`no free name for ${folder}/${name} after ${MAX_NAME_ATTEMPTS} attempts`);
+}
+
+/** Whether a manifest row names a file that is still on disk inside `dir`. */
+const stillThere = (dir: string, row: ManifestFile): boolean => {
+  const full = path.resolve(dir, row.file);
+  if (!full.startsWith(dir + path.sep)) return false;
+  try {
+    return fs.lstatSync(full).isFile();
+  } catch {
+    return false;
+  }
+};
+
+/** What sits at a manifest path: nothing, a manifest this tool wrote, or anything else, which is never touched. */
+function existingManifest(file: string): { kind: "none" } | { kind: "ours"; manifest: DownloadManifest } | { kind: "foreign" } {
+  let stats: fs.Stats;
+  try {
+    stats = fs.lstatSync(file);
+  } catch {
+    return { kind: "none" };
+  }
+  if (!stats.isFile() || stats.size > MAX_MANIFEST_BYTES) return { kind: "foreign" };
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as Partial<DownloadManifest>;
+    if (parsed.tool === "assets-scraper" && parsed.manifestVersion === 1 && Array.isArray(parsed.files)) return { kind: "ours", manifest: parsed as DownloadManifest };
+  } catch {
+    // Not JSON, so not ours.
+  }
+  return { kind: "foreign" };
+}
+
+/**
+ * Writes the manifest of this download into `dir` and returns where. It used to truncate whatever `manifest.json` was
+ * there, so `get stripe.com --out ./public` replaced a PWA's manifest and `--out .` a browser extension's, and a second
+ * download into the same folder dropped the first one's rows although its files were still on disk.
+ *
+ * A manifest this tool wrote is extended: its rows whose file is still there and that this download did not write again
+ * are kept after this download's own. Anything else under that name is left alone, and the manifest goes to
+ * `FALLBACK_MANIFEST_NAME` instead. The new document is written to a temporary name and renamed into place, so a
+ * reader never sees half of it, and the rename replaces a name rather than following it.
+ */
+function writeDownloadManifest(dir: string, manifest: DownloadManifest): string {
+  let target = path.join(dir, MANIFEST_NAME);
+  let existing = existingManifest(target);
+  if (existing.kind === "foreign") {
+    target = path.join(dir, FALLBACK_MANIFEST_NAME);
+    existing = existingManifest(target);
+    if (existing.kind === "foreign") throw new Error(`${dir} already holds a ${MANIFEST_NAME} and a ${FALLBACK_MANIFEST_NAME} this tool did not write`);
+  }
+  const written = new Set(manifest.files.map((row) => row.file));
+  const earlier = existing.kind === "ours" ? existing.manifest.files.filter((row) => !written.has(row.file) && stillThere(dir, row)) : [];
+  const document = { ...manifest, files: [...manifest.files, ...earlier] };
+
+  const temporary = path.join(dir, `.${path.basename(target)}.${process.pid}.${crypto.randomBytes(6).toString("hex")}.tmp`);
+  const fd = fs.openSync(temporary, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, FILE_MODE);
+  try {
+    try {
+      fs.writeFileSync(fd, `${JSON.stringify(document, null, 2)}\n`);
+    } finally {
+      fs.closeSync(fd);
+    }
+    fs.renameSync(temporary, target);
+  } catch (error) {
+    fs.rmSync(temporary, { force: true });
+    throw error;
+  }
+  return target;
 }
 
 export async function downloadAssets(scan: AgentScan, source: ScanSource, options: DownloadOptions = {}): Promise<DownloadResult> {
@@ -156,7 +193,6 @@ export async function downloadAssets(scan: AgentScan, source: ScanSource, option
     host: scan.page.host,
     ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
     ...(options.dest === undefined ? {} : { dest: options.dest }),
-    ...(options.restrictToProject === undefined ? {} : { restrictToProject: options.restrictToProject }),
   });
   // The destination is created and resolved once, so `dir` is the same real path the writes come back with: on a
   // machine where the destination sits behind a link (`/tmp` on macOS is `/private/tmp`) the two spellings differ, and
@@ -172,7 +208,7 @@ export async function downloadAssets(scan: AgentScan, source: ScanSource, option
 
   const bytes = new Map<string, Buffer>();
   const failed: DownloadResult["failed"] = [];
-  const maxBytes = options.maxBytes ?? agentLimits.maxDownloadBytes;
+  const maxBytes = agentLimits.maxDownloadBytes;
   const concurrency = Math.max(1, options.concurrency ?? agentLimits.downloadConcurrency);
   let taken = 0;
   let cursor = 0;
@@ -186,7 +222,13 @@ export async function downloadAssets(scan: AgentScan, source: ScanSource, option
         return;
       }
       const asset = planned.keep[cursor++];
-      const inline = inlineBytes(asset);
+      let inline: Buffer | null;
+      try {
+        inline = inlineAssetBytes(asset);
+      } catch (error) {
+        failed.push({ id: asset.id, name: asset.name, reason: oneLine(error) });
+        continue;
+      }
       if (inline) {
         bytes.set(asset.id, inline);
         taken += inline.length;
@@ -225,24 +267,18 @@ export async function downloadAssets(scan: AgentScan, source: ScanSource, option
   const winners = new Map(selected.duplicates.map((group) => [group.keptId, group.droppedIds]));
   const files: DownloadedFile[] = [];
   const rows: ManifestFile[] = [];
-  const takenPaths = new Set<string>();
+  const takenNames = new Set<string>();
   for (const asset of selected.keep) {
     const buffer = bytes.get(asset.id);
     if (!buffer) continue;
-    const fallback = `${asset.id}.${asset.format}`;
-    const name = safeFileName(asset.filename || asset.name || fallback, fallback);
     const folder = asset.kind === "svg" ? "svg" : "images";
     let written: WrittenFile;
     try {
-      written = writeUnique(dir, folder, name, buffer, takenPaths);
+      written = writeUnique(dir, folder, assetFileName(asset), buffer, takenNames);
     } catch (error) {
       failed.push({ id: asset.id, name: asset.name, reason: oneLine(error) });
       continue;
     }
-    const dimensions = {
-      ...(asset.width === undefined ? {} : { width: asset.width }),
-      ...(asset.height === undefined ? {} : { height: asset.height }),
-    };
     files.push({
       id: asset.id,
       name: asset.name,
@@ -250,22 +286,18 @@ export async function downloadAssets(scan: AgentScan, source: ScanSource, option
       bytes: buffer.length,
       kind: asset.kind,
       role: asset.role,
-      ...dimensions,
+      ...(asset.width === undefined ? {} : { width: asset.width }),
+      ...(asset.height === undefined ? {} : { height: asset.height }),
       url: sourceUrl(asset),
     });
-    rows.push({
-      id: asset.id,
-      name: asset.name,
-      file: path.relative(dir, written.path).split(path.sep).join("/"),
-      url: sourceUrl(asset),
-      kind: asset.kind,
-      role: asset.role,
-      format: asset.format,
-      ...dimensions,
-      bytes: buffer.length,
-      keptBecause: options.ids ? "explicit id" : `${profile} profile (role ${asset.role})`,
-      ...(winners.has(asset.id) ? { duplicatesDropped: winners.get(asset.id) } : {}),
-    });
+    const duplicatesDropped = winners.get(asset.id);
+    rows.push(
+      manifestRow(asset, path.relative(dir, written.path).split(path.sep).join("/"), buffer.length, {
+        profile,
+        explicit: options.ids !== undefined,
+        ...(duplicatesDropped === undefined ? {} : { duplicatesDropped }),
+      }),
+    );
   }
 
   const totalBytes = files.reduce((sum, file) => sum + file.bytes, 0);
@@ -283,8 +315,7 @@ export async function downloadAssets(scan: AgentScan, source: ScanSource, option
     budget: selected.budget,
     failed,
   };
-  const manifestPath = path.join(dir, MANIFEST_NAME);
-  writeFileNoFollow(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  const manifestPath = writeDownloadManifest(dir, manifest);
 
   return { dir, files, totalBytes, dropped, budget: selected.budget, failed, manifestPath };
 }

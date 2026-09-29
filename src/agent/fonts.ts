@@ -2,31 +2,41 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { FontFaceInfo, FontFamily, FontFile, FontFormat, FontLicense } from "@/lib/contract";
+import type { FontFaceInfo, FontFamily, FontFile, FontLicense } from "@/lib/contract";
 import { sniffFontFormat } from "@/server/scan/fonts/binary";
 import { parseFontBinary } from "@/server/scan/fonts/index";
 import { classifyLicense } from "@/server/scan/fonts/license";
-import { fontManifestPath, listInstalledFonts, removeRecordedFile, withFontStateLock, writeManifest } from "./font-manifest";
+import { type FontCandidate, fontCandidates, isItalic, type NoCandidateReason, WEIGHT_NAMES, weightOf } from "./font-candidates";
+import {
+  fontManifestPath,
+  type InstallRecord,
+  publicInstall,
+  readInstallRecords,
+  removeRecordedFile,
+  withFontStateLock,
+  type WrittenFile,
+  writeManifest,
+  writtenFile,
+} from "./font-manifest";
 import { agentLimits } from "./limits";
 import type { FontInstall } from "./types";
+import { woffToSfnt } from "./woff";
 
 /**
- * Installing the fonts a page uses, not just downloading them (spec section 5): one file per family, WOFF2 decompressed
- * to the sfnt it wraps, written into the user font directory under a predictable name, and recorded in a manifest so
+ * Installing the fonts a page uses, not just downloading them (spec section 5): one file per family, WOFF2 and WOFF
+ * decompressed to the sfnt they wrap, written into the user font directory under a predictable name, and recorded in a manifest so
  * `listInstalledFonts` and `uninstallFonts` can work.
  *
  * Two rules the implementation is built around. A file this tool did not write is never touched: the target is opened
- * with `O_EXCL | O_NOFOLLOW`, and a name is only replaced when the manifest says this same family wrote it. And the
- * licence always comes from the bytes that were installed, whatever the scan believed, because that is the notice the
+ * with `O_EXCL | O_NOFOLLOW`, and a name is only replaced or removed when the manifest says this same family wrote it
+ * and the file there is still the one it wrote (`removeRecordedFile`). And the licence always comes from the bytes that
+ * were installed, whatever the scan believed, because that is the notice the
  * user is agreeing to; a commercial font installs too, with its licence reported (spec 5.5).
  */
 
 /** Why a family was not installed. Every one of these is reported, never thrown. */
 export type FontSkipReason =
-  | "adobe-fonts"
-  | "not-downloadable"
-  | "no-latin-file"
-  | "unsupported-format"
+  | NoCandidateReason
   | "fetch-failed"
   | "too-large"
   | "conversion-failed"
@@ -63,11 +73,6 @@ export interface InstallFontsOptions {
 /** Families an `unknown-family` skip names back, so the detail stays one readable line on a page with dozens. */
 const MAX_NAMED_FAMILIES = 12;
 
-/** Formats the installer can write: a WOFF or WOFF2 is decompressed, a TTF or OTF is installed as it is (spec 5.2). */
-const INSTALLABLE_FORMATS = new Set<FontFormat>(["woff2", "woff", "ttf", "otf"]);
-/** Formats that need no conversion, best first: installing them costs nothing and cannot fail. */
-const NATIVE_FORMATS: FontFormat[] = ["ttf", "otf"];
-
 /**
  * Where a font is installed so the system picks it up: `~/Library/Fonts` on macOS, `~/.local/share/fonts` elsewhere
  * (spec 5.3). `ASSETS_SCRAPER_FONT_DIR` overrides it, which is how the tests keep out of the real one.
@@ -79,19 +84,26 @@ export function userFontDir(): string {
   return path.join(os.homedir(), ".local", "share", "fonts");
 }
 
-/** What an uninstall says: what went, what was never installed, and what is recorded but still on disk. */
+/** What an uninstall says: what went, what was never installed, what is recorded but still on disk, and what is not ours. */
 export interface FontUninstallReport {
   removed: FontInstall[];
   /** Families this tool never installed. */
   missing: string[];
   /** Families it records but could not remove a single file of, with the files still there. They stay in the manifest. */
   stillInstalled: { family: string; files: string[] }[];
+  /**
+   * Recorded files that no longer hold what this tool wrote, or that a version before this one recorded without the
+   * identity that would prove it: another font now sits at that path. They are left on disk and forgotten.
+   */
+  changed: { family: string; files: string[] }[];
 }
 
 /**
  * Deletes the files of `families` (matched case insensitively) and forgets them. It never touches a file it did not
- * record, and never one outside the font directory, so a manifest that was edited or restored from elsewhere cannot turn
- * an uninstall into a delete of something else. A file it refuses stays recorded, because it is still installed.
+ * record, never one outside the font directory, and never one that is no longer the file it wrote, so a manifest that
+ * was edited or restored from elsewhere, or a font the user installed under a name this tool once used, cannot turn an
+ * uninstall into a delete of something else. A file it refuses stays recorded, because it is still installed; a file
+ * that is not ours any more is forgotten and left where it is.
  *
  * A family none of whose files could be removed is reported under `stillInstalled` rather than as removed with an empty
  * file list: with `ASSETS_SCRAPER_FONT_DIR` pointing elsewhere, or a manifest restored from another machine, every path
@@ -101,33 +113,45 @@ export function uninstallFonts(families: string[]): Promise<FontUninstallReport>
   return withFontStateLock(() => removeFamilies(families));
 }
 
+/** The identity the record kept for `file`, if it kept one. */
+const writtenOf = (record: InstallRecord, file: string): WrittenFile | undefined => record.written.find((entry) => entry.path === file);
+
+/** A record narrowed to `files`, with only their identities. */
+const narrowed = (record: InstallRecord, files: string[]): InstallRecord => ({
+  ...record,
+  files,
+  written: record.written.filter((entry) => files.includes(entry.path)),
+});
+
 async function removeFamilies(families: string[]): Promise<FontUninstallReport> {
   const fontDir = userFontDir();
-  const installs = await listInstalledFonts();
+  const records = await readInstallRecords();
   const wanted = new Map(families.map((family) => [family.trim().toLowerCase(), family]));
-  const removed: FontInstall[] = [];
-  const stillInstalled: FontUninstallReport["stillInstalled"] = [];
-  const kept: FontInstall[] = [];
+  const report: FontUninstallReport = { removed: [], missing: [], stillInstalled: [], changed: [] };
+  const kept: InstallRecord[] = [];
 
-  for (const install of installs) {
-    if (!wanted.has(install.family.toLowerCase())) {
-      kept.push(install);
+  for (const record of records) {
+    if (!wanted.has(record.family.toLowerCase())) {
+      kept.push(record);
       continue;
     }
     const gone: string[] = [];
     const left: string[] = [];
-    for (const file of install.files) {
-      if (await removeRecordedFile(file, fontDir)) gone.push(file);
-      else left.push(file);
+    const changed: string[] = [];
+    for (const file of record.files) {
+      const outcome = await removeRecordedFile(file, fontDir, writtenOf(record, file));
+      (outcome === "removed" ? gone : outcome === "changed" ? changed : left).push(file);
     }
-    if (gone.length > 0) removed.push({ ...install, files: gone });
-    else if (left.length > 0) stillInstalled.push({ family: install.family, files: left });
-    if (left.length > 0) kept.push({ ...install, files: left });
-    wanted.delete(install.family.toLowerCase());
+    if (gone.length > 0) report.removed.push({ ...publicInstall(record), files: gone });
+    else if (left.length > 0) report.stillInstalled.push({ family: record.family, files: left });
+    if (changed.length > 0) report.changed.push({ family: record.family, files: changed });
+    if (left.length > 0) kept.push(narrowed(record, left));
+    wanted.delete(record.family.toLowerCase());
   }
 
-  if (removed.length > 0) await writeManifest(kept);
-  return { removed, missing: [...wanted.values()], stillInstalled };
+  report.missing = [...wanted.values()];
+  if (report.removed.length > 0 || report.changed.length > 0) await writeManifest(kept);
+  return report;
 }
 
 /**
@@ -143,24 +167,6 @@ export function fileSafeFamily(name: string): string {
   return folded.replace(/[^A-Za-z0-9]+/g, "").slice(0, MAX_FAMILY_FILE_CHARS) || "Font";
 }
 
-const WEIGHT_NAMES = new Map([
-  [100, "Thin"], [200, "ExtraLight"], [300, "Light"], [400, "Regular"], [500, "Medium"],
-  [600, "SemiBold"], [700, "Bold"], [800, "ExtraBold"], [900, "Black"],
-]);
-
-/** The numbers a `font-weight` names, or null for a range or a keyword this does not know. */
-function weightOf(weight: string): number | null {
-  const words = weight.trim().toLowerCase().split(/\s+/).filter(Boolean);
-  if (words.length !== 1) return null; // a variable range ("100 900"): the family installs as its regular face
-  const [word] = words;
-  if (word === "normal") return 400;
-  if (word === "bold") return 700;
-  const value = Number(word);
-  if (!Number.isFinite(value)) return null;
-  return [...WEIGHT_NAMES.keys()].reduce((best, step) => (Math.abs(step - value) < Math.abs(best - value) ? step : best), 400);
-}
-
-const isItalic = (style: string): boolean => /italic|oblique/i.test(style);
 
 /** `Inter-Regular.ttf`, `Inter-BoldItalic.ttf`: the style the file name carries, from the face the installer picked. */
 export function styleName(face: Pick<FontFaceInfo, "weight" | "style">): string {
@@ -170,60 +176,23 @@ export function styleName(face: Pick<FontFaceInfo, "weight" | "style">): string 
   return weight === "Regular" ? "Italic" : `${weight}Italic`;
 }
 
-/** Whether the bytes of a file can be had at all: they travel inline, or there is a URL to fetch them from. */
-const hasBytes = (file: FontFile): boolean => file.inline !== undefined || file.url !== "";
-
-interface Candidate {
-  face: FontFaceInfo;
-  file: FontFile;
-}
-
-/** The one file a family installs, or the reason there is none (spec 5.1). */
-function pickFile(family: FontFamily): { candidate: Candidate } | { reason: FontSkipReason } {
-  const latin: Candidate[] = family.faces.flatMap((face) =>
-    face.files.filter((file) => file.coversLatin).map((file) => ({ face, file })),
-  );
-  if (latin.length === 0) return { reason: "no-latin-file" };
-  const supported = latin.filter(({ file }) => INSTALLABLE_FORMATS.has(file.format));
-  if (supported.length === 0) return { reason: "unsupported-format" };
-  const reachable = supported.filter(({ file }) => hasBytes(file));
-  if (reachable.length === 0) return { reason: "not-downloadable" };
-
-  /** Best first: a loaded face, then the variable font, then upright, then the weight nearest regular, then no conversion. */
-  const rank = ({ face, file }: Candidate): number[] => [
-    face.loaded ? 0 : 1,
-    weightOf(face.weight) === null ? 0 : 1,
-    isItalic(face.style) ? 1 : 0,
-    Math.abs((weightOf(face.weight) ?? 400) - 400),
-    NATIVE_FORMATS.includes(file.format) ? 0 : 1,
-  ];
-  const sorted = [...reachable].sort((a, b) => {
-    const left = rank(a);
-    const right = rank(b);
-    for (let index = 0; index < left.length; index += 1) if (left[index] !== right[index]) return left[index] - right[index];
-    return 0;
-  });
-  return { candidate: sorted[0] };
-}
-
 /** Settles once the last decompression queued is done, without holding its output; see `toSfnt`. */
 let decompressing: Promise<void> = Promise.resolve();
 
 /**
- * The sfnt bytes a WOFF or WOFF2 file wraps, or null when they cannot be had. wawoff2 answers with a view of its
+ * The sfnt bytes a WOFF2 or WOFF file wraps, or null when they cannot be had. WOFF (version 1) is plain zlib per table
+ * and converts here (`woffToSfnt`), up to `maxBytes` of sfnt. WOFF2 goes to wawoff2, which answers with a view of its
  * WebAssembly heap, which the next decompression overwrites (or detaches when the heap grows), and hands it over through
  * an `await`, so two conversions that reach it in the same turn corrupt each other before either copies: the bytes of one
  * family would be written under another family's name, with another font's licence read from them. Decompressions
  * therefore run one at a time, each copied out before the next starts, the same chain as `decompressWoff2` in
  * `src/server/security/font-convert.ts`. They block the main thread anyway, so this costs no throughput.
  *
- * WOFF (version 1) goes through the same call and is simply refused by it, which is the documented behavior: that family
- * is reported as not installable rather than installed wrong.
- *
  * Exported so the chain itself is tested, the way `font-convert.test.ts` tests the one it mirrors: with installs already
  * serialized, nothing else would notice if it were dropped.
  */
-export function toSfnt(source: Buffer): Promise<Buffer | null> {
+export function toSfnt(source: Buffer, maxBytes: number = agentLimits.fontInstallMaxBytes): Promise<Buffer | null> {
+  if (sniffFontFormat(source) === "woff") return Promise.resolve(woffToSfnt(source, maxBytes));
   const run = decompressing.then(async () => {
     try {
       const { decompress } = await import("wawoff2");
@@ -256,20 +225,77 @@ const hostOf = (url: string): string => {
   }
 };
 
+/** A font file fetched and converted, ready to write: the face it came from names the file. */
+interface AcquiredFont extends FontCandidate {
+  bytes: Buffer;
+  format: "ttf" | "otf";
+  converted: boolean;
+}
+
+/**
+ * The first candidate whose bytes can be fetched and turned into an installable sfnt, or why none could. A family whose
+ * best file is broken, or served as a format that turns out not to convert, still installs from the next one; only when
+ * every candidate failed is the family skipped, with the reason its best candidate gave.
+ */
+async function acquireFont(candidates: FontCandidate[], options: InstallFontsOptions): Promise<AcquiredFont | { reason: FontSkipReason; detail: string }> {
+  const limit = agentLimits.fontInstallMaxBytes;
+  let first: { reason: FontSkipReason; detail: string } | null = null;
+  const failed = (reason: FontSkipReason, detail: string): void => {
+    first ??= { reason, detail };
+  };
+  for (const { face, file } of candidates) {
+    if (options.signal?.aborted === true) break;
+    let source: Buffer;
+    try {
+      source = await options.fetchBytes(file, options.signal ? { signal: options.signal } : undefined);
+    } catch (error) {
+      failed("fetch-failed", message(error));
+      continue;
+    }
+    if (source.length > limit) {
+      failed("too-large", `${source.length} bytes`);
+      continue;
+    }
+    const sniffed = sniffFontFormat(source);
+    let bytes = source;
+    const converted = sniffed === "woff2" || sniffed === "woff";
+    if (converted) {
+      const sfnt = await toSfnt(source, limit);
+      if (!sfnt) {
+        failed("conversion-failed", sniffed);
+        continue;
+      }
+      if (sfnt.length > limit) {
+        failed("too-large", `${sfnt.length} bytes after conversion`);
+        continue;
+      }
+      bytes = sfnt;
+    }
+    const format = sniffFontFormat(bytes);
+    if (format !== "ttf" && format !== "otf") {
+      failed("conversion-failed", format);
+      continue;
+    }
+    return { face, file, bytes, format, converted };
+  }
+  return first ?? { reason: "fetch-failed", detail: "cancelled" };
+}
+
 /**
  * Installs one file per family into the user font directory and records it (spec section 5). Nothing throws for a family
  * that cannot be installed: it lands in `skipped` with a reason, so an agent can report every family in one answer.
  *
- * One call runs at a time (`withFontStateLock`), which is what keeps the manifest whole when an agent installs the fonts
- * of two pages at once and what keeps the WOFF2 decompression safe (see `toSfnt`).
+ * One call runs at a time (`withFontStateLock`), across processes too, which is what keeps the manifest whole when an
+ * agent installs the fonts of two pages at once, or two sessions do, and what keeps the WOFF2 decompression safe (see
+ * `toSfnt`).
  */
 export function installFonts(families: FontFamily[], options: InstallFontsOptions): Promise<FontInstallReport> {
-  return withFontStateLock(() => installFamilies(families, options));
+  return withFontStateLock(() => installFamilies(families, options), options.signal);
 }
 
 async function installFamilies(families: FontFamily[], options: InstallFontsOptions): Promise<FontInstallReport> {
   const fontDir = userFontDir();
-  const installs = await listInstalledFonts();
+  const records = await readInstallRecords();
   const installed: FontInstall[] = [];
   const skipped: FontSkipped[] = [];
   const skip = (family: string, reason: FontSkipReason, detail?: string): void => {
@@ -287,70 +313,45 @@ async function installFamilies(families: FontFamily[], options: InstallFontsOpti
         return true;
       });
 
-  const limit = agentLimits.fontInstallMaxBytes;
   /**
    * The family each recorded file belongs to, lower cased. A name is only replaced for the family that holds it: a name
    * this tool never wrote is left alone (spec 5.3), and so is one another family folded to (`Sohne` and `Söhne` both
    * become `Sohne-Regular.ttf`), which would otherwise leave two manifest entries pointing at one file.
    */
   const ownerOf = new Map<string, string>();
-  for (const entry of installs) {
+  for (const entry of records) {
     for (const file of entry.files) if (!ownerOf.has(file)) ownerOf.set(file, entry.family.toLowerCase());
   }
   /** Files this call wrote, so two families that fold to the same file name do not silently overwrite each other. */
   const written = new Set<string>();
+  /** Whether the manifest has something to say that it did not: an install, or a recorded file found not to be ours. */
+  let dirty = false;
+  /** Drops a recorded path whose file is not the one this tool wrote any more: it is not ours to remove or to keep. */
+  const forget = (file: string): void => {
+    const remaining = records
+      .map((record) => (record.files.includes(file) ? narrowed(record, record.files.filter((entry) => entry !== file)) : record))
+      .filter((record) => record.files.length > 0);
+    records.splice(0, records.length, ...remaining);
+    ownerOf.delete(file);
+    dirty = true;
+  };
+  const recordOf = (familyKey: string): InstallRecord | undefined => records.find((entry) => entry.family.toLowerCase() === familyKey);
 
+  const cancelled = (): boolean => options.signal?.aborted === true;
   for (const family of chosen) {
-    if (options.signal?.aborted === true) break;
-    // Adobe Fonts kits are excluded before anything else: the scan never exposes their bytes (spec 5).
-    if (family.source === "adobe-fonts") {
-      skip(family.name, "adobe-fonts");
-      continue;
-    }
-    if (!family.downloadable) {
-      skip(family.name, "not-downloadable");
-      continue;
-    }
-    const picked = pickFile(family);
+    if (cancelled()) break;
+    const picked = fontCandidates(family);
     if ("reason" in picked) {
       skip(family.name, picked.reason);
       continue;
     }
-    const { face, file } = picked.candidate;
-
-    let source: Buffer;
-    try {
-      source = await options.fetchBytes(file, options.signal ? { signal: options.signal } : undefined);
-    } catch (error) {
-      skip(family.name, "fetch-failed", message(error));
+    const acquired = await acquireFont(picked.candidates, options);
+    if ("reason" in acquired) {
+      if (cancelled()) break;
+      skip(family.name, acquired.reason, acquired.detail);
       continue;
     }
-    if (source.length > limit) {
-      skip(family.name, "too-large", `${source.length} bytes`);
-      continue;
-    }
-
-    const sniffed = sniffFontFormat(source);
-    let bytes = source;
-    let converted = false;
-    if (sniffed === "woff2" || sniffed === "woff") {
-      const sfnt = await toSfnt(source);
-      if (!sfnt) {
-        skip(family.name, "conversion-failed", sniffed);
-        continue;
-      }
-      bytes = sfnt;
-      converted = true;
-      if (bytes.length > limit) {
-        skip(family.name, "too-large", `${bytes.length} bytes after conversion`);
-        continue;
-      }
-    }
-    const format = sniffFontFormat(bytes);
-    if (format !== "ttf" && format !== "otf") {
-      skip(family.name, "conversion-failed", format);
-      continue;
-    }
+    const { face, file, bytes, format, converted } = acquired;
 
     const familyKey = family.name.toLowerCase();
     const target = path.join(fontDir, `${fileSafeFamily(family.name)}-${styleName(face)}.${format}`);
@@ -367,16 +368,19 @@ async function installFamilies(families: FontFamily[], options: InstallFontsOpti
     const license: FontLicense = fromBinary.kind === "unknown" ? family.license : fromBinary;
 
     // The exclusive open is the whole guard on the directory: the name is only removed first when the manifest says this
-    // family wrote it, and anything else sitting there (a file, a directory, a symbolic link, a dangling one) refuses the
-    // open. Nothing checks the name for existence ahead of it on purpose, so a file that appears while the bytes are being
-    // fetched cannot slip through the window between a check and a write.
+    // family wrote it and the file there is still that one, and anything else sitting there (a file, a directory, a
+    // symbolic link, a dangling one) refuses the open. Nothing checks the name for existence ahead of it on purpose, so a
+    // file that appears while the bytes are being fetched cannot slip through the window between a check and a write.
+    let identity: WrittenFile;
     try {
       await fsp.mkdir(fontDir, { recursive: true });
-      if (owner === familyKey) await removeRecordedFile(target, fontDir);
+      const own = owner === familyKey ? recordOf(familyKey) : undefined;
+      if (own && (await removeRecordedFile(target, fontDir, writtenOf(own, target))) === "changed") forget(target);
       const flags = fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW;
       const handle = await fsp.open(target, flags, 0o644);
       try {
         await handle.writeFile(bytes);
+        identity = writtenFile(target, await handle.stat());
       } finally {
         await handle.close();
       }
@@ -390,28 +394,39 @@ async function installFamilies(families: FontFamily[], options: InstallFontsOpti
 
     // A family installed before may have written another name (another style, or another extension). That file is this
     // tool's and it is no longer part of the family's install, so it goes now: left behind it would be a font no uninstall
-    // can reach. One that cannot be removed stays recorded instead, so a later uninstall still knows about it.
-    const previous = installs.findIndex((entry) => entry.family.toLowerCase() === familyKey);
-    const orphans: string[] = [];
-    if (previous !== -1) {
-      for (const file of installs[previous].files) {
-        if (file === target) continue;
-        if (await removeRecordedFile(file, fontDir)) ownerOf.delete(file);
-        else orphans.push(file);
+    // can reach. One that cannot be removed stays recorded instead, so a later uninstall still knows about it, and one
+    // that is not the file this tool wrote any more is forgotten and left alone.
+    const orphans: WrittenFile[] = [];
+    const orphanPaths: string[] = [];
+    const before = recordOf(familyKey);
+    if (before) {
+      for (const recorded of before.files) {
+        if (recorded === target) continue;
+        const outcome = await removeRecordedFile(recorded, fontDir, writtenOf(before, recorded));
+        if (outcome === "kept") {
+          orphanPaths.push(recorded);
+          const kept = writtenOf(before, recorded);
+          if (kept) orphans.push(kept);
+        } else {
+          ownerOf.delete(recorded);
+        }
       }
     }
 
-    const install: FontInstall = {
+    const record: InstallRecord = {
       family: family.name,
-      files: [...new Set([target, ...orphans])],
+      files: [target, ...orphanPaths],
       license,
       sourceHost: family.sourceHost ?? options.pageHost ?? hostOf(file.url),
       installedAt: new Date().toISOString(),
       converted,
+      written: [identity, ...orphans],
     };
-    installed.push(install);
-    if (previous === -1) installs.push(install);
-    else installs[previous] = install;
+    installed.push(publicInstall(record));
+    const previous = before ? records.indexOf(before) : -1;
+    if (previous === -1) records.push(record);
+    else records[previous] = record;
+    dirty = true;
   }
 
   // Naming the families the scan does hold, so an agent that slipped on a diacritic can correct itself from the answer
@@ -422,5 +437,5 @@ async function installFamilies(families: FontFamily[], options: InstallFontsOpti
     : `this page has ${available}${families.length > MAX_NAMED_FAMILIES ? ` and ${families.length - MAX_NAMED_FAMILIES} more` : ""}`;
   for (const name of unknown.values()) skip(name, "unknown-family", detail);
 
-  return { fontDir, manifestPath: installed.length > 0 ? await writeManifest(installs) : fontManifestPath(), installed, skipped };
+  return { fontDir, manifestPath: dirty ? await writeManifest(records) : fontManifestPath(), installed, skipped };
 }

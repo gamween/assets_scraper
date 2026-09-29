@@ -1,6 +1,6 @@
 "use client";
 
-import { TriangleAlert } from "lucide-react";
+import { Info, TriangleAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { rescan } from "@/lib/client/scan-session";
 import { getSections, useApp } from "@/lib/client/store";
@@ -37,6 +37,19 @@ export function PartialBanner() {
   );
 }
 
+/**
+ * The scan stopped listing before the page ran out of files (the `truncated` warning): past the asset cap, or with the
+ * collector's output cut to size. Without this line such a scan looks complete.
+ */
+export function TruncatedNotice() {
+  return (
+    <div role="status" data-testid="truncated-notice" className="mt-6 flex items-center gap-2.5 rounded-lg border border-border bg-surface px-3.5 py-2.5 text-body text-text-2">
+      <Info className="size-4 shrink-0 text-text-3" aria-hidden="true" />
+      Some files are not listed. This page has more than one scan can collect.
+    </div>
+  );
+}
+
 function SectionsOrEmpty() {
   const sections = useApp(getSections);
   const query = useApp((s) => s.query);
@@ -60,6 +73,7 @@ function SectionsOrEmpty() {
 export function ResultsView() {
   const tab = useApp((s) => s.tab);
   const partial = useApp((s) => s.done?.partial ?? false);
+  const truncated = useApp((s) => s.warnings.includes("truncated"));
   const empty = useApp((s) => s.assets.length + s.fonts.length === 0);
   // The footer counts images the scan dropped, so it belongs where images are on screen: not on the Fonts tab, and not
   // under an empty state that a search produced, where it described a grid the user cannot see.
@@ -84,6 +98,7 @@ export function ResultsView() {
     <div data-testid="results">
       <div className="page-x">
         {partial ? <PartialBanner /> : null}
+        {truncated ? <TruncatedNotice /> : null}
         <ResultsHeader />
         <div className="mt-6 flex flex-wrap items-start justify-between gap-x-12 gap-y-5">
           <PaletteStrip />

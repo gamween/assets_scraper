@@ -7,8 +7,8 @@ import { normalizeInputUrl } from "@/lib/url";
  * It lives on its own because every entry point owes its caller the same reading: the CLI normalizes here, the hosted
  * endpoint normalizes in `gateAgentTarget`, and the MCP server used to hand the raw string to the engine, which threw
  * `invalid-url` on `new URL("example.com")`. That made `scan_page` cache-dependent as well as wrong, since the cache key
- * strips the scheme: a bare host worked while a scan of the `https:` form was still warm and failed once it aged out
- * (review issue 17).
+ * then stripped the scheme: a bare host worked while a scan of the `https:` form was still warm and failed once it aged
+ * out (review issue 17).
  *
  * A port outside 80 and 443 is not refused here: that policy belongs to the scan, which also knows the test allowlist, so
  * such a URL is passed through for the engine to answer with its own `unsupported-port`.

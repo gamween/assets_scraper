@@ -10,7 +10,7 @@ import { STEP_ORDER, useApp, type AppState } from "@/lib/client/store";
 
 const SLOW_SCAN_SECONDS = 20;
 
-function stepLabel(step: StepId, host: string): string {
+export function stepLabel(step: StepId, host: string): string {
   switch (step) {
     case "open":
       return `Opening ${host}`;
@@ -61,7 +61,8 @@ export function ScanStatus({ host }: { host: string }) {
   return (
     <section data-testid="scan-status" aria-label="Scan progress" className="mt-6 max-w-[640px] overflow-hidden rounded-lg border border-border bg-surface">
       <div className="flex flex-col gap-3 px-4 pt-3.5 pb-4 sm:flex-row sm:items-start sm:justify-between sm:gap-6">
-        <ol className="flex min-w-0 flex-col gap-2" aria-live="polite">
+        {/* Not a live region: step changes only restyle rows that are already there. The announcer says them. */}
+        <ol className="flex min-w-0 flex-col gap-2">
           {rows.map(({ step, state, current }) => (
             <li key={step} data-state={state} aria-current={current ? "step" : undefined} className="flex h-6 items-center gap-2.5 text-body">
               <span className="grid size-4 shrink-0 place-items-center" aria-hidden="true">
@@ -70,7 +71,7 @@ export function ScanStatus({ host }: { host: string }) {
                     <Spinner />
                   </span>
                 ) : state === "done" ? (
-                  <CheckIcon className="size-3.5 text-text-2 fade-in" strokeWidth={2.25} />
+                  <CheckIcon className="size-3.5 text-text-2 appear" strokeWidth={2.25} />
                 ) : state === "active" ? (
                   <span className="size-1.5 rounded-full bg-text-2" />
                 ) : (
@@ -93,7 +94,7 @@ export function ScanStatus({ host }: { host: string }) {
         </div>
       </div>
       {elapsed >= SLOW_SCAN_SECONDS ? (
-        <p className="border-t border-border bg-bg px-4 py-2.5 text-small text-text-2 fade-in">Large pages can take up to a minute.</p>
+        <p className="border-t border-border bg-bg px-4 py-2.5 text-small text-text-2 appear">Large pages can take up to a minute.</p>
       ) : null}
     </section>
   );

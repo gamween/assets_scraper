@@ -46,6 +46,29 @@ const PRESENTATIONAL_PARAMS = [
   "imwidth", "v", "ver", "version", "cache", "cb",
 ];
 
+/**
+ * The longest file name a rule reads, percent-encoded: file systems cap a name at 255 bytes, which encode to at most
+ * three times as many characters.
+ */
+const MAX_FILE_NAME_CHARS = 765;
+
+/**
+ * Cloudinary transformation parameters (`w_300`, `c_fill`, `f_auto`). A path segment is a transformation only when
+ * each of its comma-separated parts is one of these: a folder with an underscore in its name (`img_light`, `app_icons`)
+ * is part of the file's path, and reading it as a transformation dropped it from the variant key, which merged the
+ * light and dark logos of `img_light/logo.svg` and `img_dark/logo.svg` into one asset.
+ */
+const CLOUDINARY_PARAMS = new Set([
+  "a", "ac", "af", "ar", "b", "bo", "br", "c", "co", "cs", "d", "dl", "dn", "dpr", "du", "e", "eo", "f", "fl", "fn", "fps",
+  "g", "h", "if", "ki", "l", "o", "p", "pg", "q", "r", "so", "sp", "t", "u", "vc", "vs", "w", "x", "y", "z",
+]);
+
+const isCloudinaryTransform = (segment: string) =>
+  segment.split(",").every((part) => {
+    const underscore = part.indexOf("_");
+    return underscore > 0 && underscore < part.length - 1 && CLOUDINARY_PARAMS.has(part.slice(0, underscore));
+  });
+
 const tryUrl = (value: string | null | undefined, base?: string): URL | null => {
   if (value == null) return null;
   try {
@@ -168,9 +191,8 @@ function oneStep(u: URL, hints: CdnHints, depth: number): Rewrite[] {
     if (m && !/\/s--[A-Za-z0-9_-]{8}--\//.test(path)) {
       const prefix = `${m[1] ?? ""}/${m[2]}/${m[3]}/`;
       const segments = m[4].split("/");
-      const isTransform = (s: string) => /^(?:[a-z]{1,3}_[^,/]+)(?:,[a-z]{1,3}_[^,/]+)*$/.test(s) && !/^v\d+$/.test(s);
       let i = 0;
-      while (i < segments.length - 1 && isTransform(segments[i])) i++;
+      while (i < segments.length - 1 && isCloudinaryTransform(segments[i])) i++;
       if (m[3] === "fetch") {
         let rest: string | null = null;
         try {
@@ -233,10 +255,12 @@ function oneStep(u: URL, hints: CdnHints, depth: number): Rewrite[] {
     // Jetpack or VIP on the site's own domain: ?resize=668,445, ?w=668
     if (WORDPRESS_PARAMS.some((key) => sp.has(key))) push(withoutParams(u, [...WORDPRESS_PARAMS, "ssl"]));
   }
-  // Jetpack Photon: i0.wp.com/<host>/<path>
+  // Jetpack Photon: i0.wp.com/<host>/<path>. The first segment is the host, with a dot that neither starts nor ends
+  // it. Found with a plain look at the segment: `[^/]+\.[^/]+` tried every dot of a long segment against every way to
+  // split it, which was quadratic in its length.
   if (/^i[0-3]\.wp\.com$/.test(host)) {
-    const m = path.match(/^\/([^/]+\.[^/]+)(\/.*)$/);
-    if (m) push(`https://${m[1]}${m[2]}`, "medium");
+    const m = path.match(/^\/([^/]+)(\/.*)$/);
+    if (m && m[1].slice(1, -1).includes(".")) push(`https://${m[1]}${m[2]}`, "medium");
   }
   // WordPress.com hosted files
   if (/\.wordpress\.com$/.test(host) && ["w", "h", "resize", "fit", "crop"].some((key) => sp.has(key))) {
@@ -249,10 +273,14 @@ function oneStep(u: URL, hints: CdnHints, depth: number): Rewrite[] {
     if (m) push(`${u.origin}${m[1]}/${m[2]}`);
   }
 
-  // Hugo image processing: name_hu<hash>_<bytes>_<WxH>_<op>_<opts>.<ext>. The original extension is unknown.
+  // Hugo image processing: name_hu<hash>_<bytes>_<WxH>_<op>_<opts>.<ext>. The original extension is unknown. Only a
+  // file name of a length a file system allows is read: the pattern tries each `_hu` of the name against the rest of
+  // it, which grows with the square of a hostile name's length.
   {
-    const m = path.match(/^(.*\/[^/]+?)_hu[0-9a-f]{8,}_\d+_\d*x\d*_(?:resize|fit|fill|crop)[^/]*\.(\w+)$/i);
-    if (m) for (const extension of ["png", "jpg", "jpeg", "webp"]) push(`${u.origin}${m[1]}.${extension}`, "low");
+    const slash = path.lastIndexOf("/");
+    const name = path.slice(slash + 1);
+    const m = name.length <= MAX_FILE_NAME_CHARS ? name.match(/^(.+?)_hu[0-9a-f]{8,}_\d+_\d*x\d*_(?:resize|fit|fill|crop)[^/]*\.(\w+)$/i) : null;
+    if (m) for (const extension of ["png", "jpg", "jpeg", "webp"]) push(`${u.origin}${path.slice(0, slash + 1)}${m[1]}.${extension}`, "low");
   }
 
   // A query built only from size, quality and format parameters, on a path that already names an image file. Every

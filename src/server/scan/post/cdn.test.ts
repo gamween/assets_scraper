@@ -122,6 +122,28 @@ describe("originalCandidates", () => {
     expect(originalCandidates("https://example.com/logo.png", { pageUrl: "https://example.com/" })).toEqual([]);
   });
 
+  it("reads hostile paths in linear time", () => {
+    // Each of these took seconds to minutes: a Jetpack host segment of dots tried against every split of it, and a
+    // Hugo name repeating `_hu<hash>` read to its end from each of them.
+    expect(originalCandidates(`https://i0.wp.com/${"a.".repeat(200_000)}`, {})).toEqual([]);
+    expect(originalCandidates(`https://site.example/a${"_hu00000000_1_x_fit".repeat(20_000)}-`, {})).toEqual([]);
+    // A Hugo name past what a file system allows is not a Hugo name
+    expect(originalCandidates(`https://gohugo.io/images/${"h".repeat(800)}_hu3f9ab1c2e4a5b6c7_123456_300x0_resize_q75_box.webp`, {})).toEqual([]);
+    // A Jetpack host needs a dot inside it
+    expect(originalCandidates("https://i0.wp.com/.example/a.jpg", {})).toEqual([]);
+    expect(originalCandidates("https://i0.wp.com/example./a.jpg", {})).toEqual([]);
+  });
+
+  it("reads only Cloudinary parameters as transformations, never a folder with an underscore", () => {
+    expect(originalCandidates("https://res.cloudinary.com/acme/image/upload/img_light/logo.svg", {})).toEqual([]);
+    expect(originalCandidates("https://res.cloudinary.com/acme/image/upload/w_300,c_fill/img_light/logo.svg", {})).toEqual([
+      "https://res.cloudinary.com/acme/image/upload/img_light/logo.svg",
+    ]);
+    expect(originalCandidates("https://res.cloudinary.com/acme/image/upload/if_w_gt_400,c_scale,w_400/if_end/logo.png", {})).toEqual([
+      "https://res.cloudinary.com/acme/image/upload/logo.png",
+    ]);
+  });
+
   it("ignores URLs that are not http(s)", () => {
     expect(originalCandidates("data:image/png;base64,AAAA", {})).toEqual([]);
     expect(originalCandidates("blob:https://a.example/1", {})).toEqual([]);
@@ -150,6 +172,15 @@ describe("variantKey", () => {
     expect(sizes[0]).toBe("https://is1-ssl.mzstatic.com/image/thumb/x5JjmiSD75wN12-HmmZRcg");
     // Different assets behind the same requested size stay apart.
     expect(variantKey("https://is1-ssl.mzstatic.com/image/thumb/AAA/220x54.png")).not.toBe(variantKey("https://is1-ssl.mzstatic.com/image/thumb/BBB/220x54.png"));
+  });
+
+  it("keeps the light and dark logos of two Cloudinary folders apart", () => {
+    // Regression: `img_light` and `img_dark` looked like transformations, so both files had the same key and one of
+    // them was merged away without being counted anywhere.
+    const light = variantKey("https://res.cloudinary.com/acme/image/upload/img_light/logo.svg");
+    const dark = variantKey("https://res.cloudinary.com/acme/image/upload/img_dark/logo.svg");
+    expect(light).not.toBe(dark);
+    expect(variantKey("https://res.cloudinary.com/acme/image/upload/w_200/img_light/logo.svg")).toBe(light);
   });
 
   it("keeps different images apart", () => {

@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { POST } from "@/app/api/v1/scan/route";
 import { ApiError, Asset, FontFamily, Palette, ScanStats } from "@/lib/contract";
 import type { FixtureServer } from "../../fixtures/serve";
+import { MemoryBudgetStore, setBudgetStoreForTests } from "@/server/security/budget";
 import { serveAssetsFixture } from "../assets/harness";
 
 /**
@@ -25,10 +26,13 @@ beforeAll(async () => {
   env = { ...process.env };
   server = await serveAssetsFixture();
   process.env.AGENT_TOKENS = TOKEN;
+  // Budgets of this process alone, whatever store the environment would pick: a run must never spend real units.
+  setBudgetStoreForTests(new MemoryBudgetStore());
 }, 60_000);
 
 afterAll(async () => {
   await server?.close();
+  setBudgetStoreForTests(null);
   process.env = env;
 });
 

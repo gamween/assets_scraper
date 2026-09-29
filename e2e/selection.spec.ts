@@ -1,24 +1,14 @@
 import { readFileSync } from "node:fs";
 import { expect, test, type Page } from "@playwright/test";
-import type { ScanEvent } from "../src/lib/contract";
 import { formatBytes } from "../src/lib/format";
 import { findAsset, fontsOf, loadFixture, mapAssets } from "./support/fixtures";
-import { mockAssetRoutes, mockScan, type AssetRouteOptions } from "./support/routes";
+import { hideSavePicker, openResults } from "./support/routes";
 import { readZip } from "./support/zip";
 
 const linear = loadFixture("linear");
 const siteLogo = findAsset(linear, (a) => a.role === "site-logo" && a.width === 88);
 const photo = findAsset(linear, (a) => a.kind === "image" && a.role === "image" && a.visible && (a.renderedWidth ?? 0) > 100);
 const berkeley = fontsOf(linear)[1];
-
-async function openResults(page: Page, options: AssetRouteOptions = {}, events: ScanEvent[] = linear) {
-  // Chrome has the File System Access API: without this, Download ZIP would open a native save dialog.
-  await page.addInitScript(() => Object.defineProperty(window, "showSaveFilePicker", { value: undefined, configurable: true }));
-  await mockAssetRoutes(page, events, options);
-  await mockScan(page, events);
-  await page.goto(`/?url=${encodeURIComponent("https://linear.app/")}`);
-  await expect(page.getByTestId("results")).toBeVisible();
-}
 
 const cardOf = (page: Page, id: string) => page.locator(`[data-asset-id="${id}"]`);
 const selectionBar = (page: Page) => page.getByRole("region", { name: "Selection" });
@@ -31,6 +21,8 @@ async function zipEntries(page: Page, click: () => Promise<void>) {
 }
 
 test.describe("selection and ZIP", () => {
+  test.beforeEach(({ page }) => hideSavePicker(page));
+
   test("checkbox, Cmd+click, Shift+click, Cmd+A and Esc", async ({ page }) => {
     await openResults(page);
     const cards = page.getByTestId("asset-card");
@@ -100,7 +92,7 @@ test.describe("selection and ZIP", () => {
   test("the bar drops the size when the scan never sized one of the files", async ({ page }) => {
     // The scan records no size for plenty of CDN originals: summing the rest reported 3.2 KB for a 4.2 MB ZIP.
     const unsized = mapAssets(linear, (asset) => (asset.id === photo.id && asset.original ? { ...asset, original: { ...asset.original, bytes: undefined } } : asset));
-    await openResults(page, {}, unsized);
+    await openResults(page, { events: unsized });
     await cardOf(page, siteLogo.id).hover();
     await cardOf(page, siteLogo.id).getByRole("checkbox").click();
     await expect(selectionBar(page).getByTestId("selection-count")).toHaveText(`1 selected · ${formatBytes(siteLogo.bytes!)}`);
@@ -111,7 +103,7 @@ test.describe("selection and ZIP", () => {
 
   test("a file that fails ends in a toast with Show", async ({ page }) => {
     const path = new URL(photo.original!.url).pathname;
-    await openResults(page, { failDirect: [path], failProxy: [path] });
+    await openResults(page, { assets: { failDirect: [path], failProxy: [path] } });
     await cardOf(page, siteLogo.id).hover();
     await cardOf(page, siteLogo.id).getByRole("checkbox").click();
     await cardOf(page, photo.id).locator("[data-card-main]").click();
@@ -162,6 +154,62 @@ test.describe("selection and ZIP", () => {
     release();
     await page.waitForTimeout(300);
     expect(downloaded).toBe(false);
+  });
+
+  test("a ZIP in progress ends with the results it was built from", async ({ page }) => {
+    await openResults(page);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    await page.route(photo.original!.url, async (route) => {
+      await held;
+      await route.fallback().catch(() => {});
+    });
+    await cardOf(page, siteLogo.id).hover();
+    await cardOf(page, siteLogo.id).getByRole("checkbox").click();
+    await cardOf(page, photo.id).locator("[data-card-main]").click();
+    let downloaded = false;
+    page.on("download", () => {
+      downloaded = true;
+    });
+    await selectionBar(page).getByRole("button", { name: "Download ZIP" }).click();
+    await expect(selectionBar(page).getByRole("button", { name: /^Zipping \d of 2$/ })).toBeVisible();
+
+    // The job used to run on under the next scan: its progress brought the bar back over results with nothing
+    // selected, and its archive downloaded after all.
+    await page.getByRole("button", { name: "Rescan" }).click();
+    await expect(page.getByTestId("results")).toBeVisible();
+    await expect(page.getByTestId("toast")).toContainText("ZIP cancelled");
+    release();
+    await page.waitForTimeout(300);
+    await expect(selectionBar(page)).toHaveCount(0);
+    expect(downloaded).toBe(false);
+  });
+
+  test("keys and pastes stay inside the list of files that couldn't be downloaded", async ({ page }) => {
+    const path = new URL(photo.original!.url).pathname;
+    const { scan } = await openResults(page, { assets: { failDirect: [path], failProxy: [path] } });
+    await cardOf(page, siteLogo.id).hover();
+    await cardOf(page, siteLogo.id).getByRole("checkbox").click();
+    await cardOf(page, photo.id).locator("[data-card-main]").click();
+    await zipEntries(page, () => selectionBar(page).getByRole("button", { name: "Download ZIP" }).click());
+    // Base UI keeps an urgent toast out of the accessibility tree until its region has focus (see the test above).
+    await page.getByTestId("toast").locator("button", { hasText: "Show" }).click();
+    const failures = page.getByRole("dialog", { name: "Files that couldn't be downloaded" });
+    await expect(failures).toBeVisible();
+
+    // Cmd+A selects the list text, not every card behind the dialog; 2 is not the SVG tab; a URL pasted is no scan.
+    await page.keyboard.press("ControlOrMeta+a");
+    await page.keyboard.press("2");
+    await page.evaluate(() => {
+      const data = new DataTransfer();
+      data.setData("text/plain", "stripe.com");
+      document.activeElement!.dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }));
+    });
+    await expect(failures).toBeVisible();
+    await expect(page.locator("[data-testid=asset-card][data-selected]")).toHaveCount(2);
+    // The page behind a modal dialog is out of the accessibility tree, so the tab is found by its id.
+    await expect(page.locator("#tab-all")).toHaveAttribute("aria-selected", "true");
+    expect(scan.bodies).toHaveLength(1);
   });
 
   test("only one near-black button is on screen at a time", async ({ page }) => {

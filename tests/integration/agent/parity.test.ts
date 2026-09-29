@@ -9,11 +9,12 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { loadScan, saveScan } from "@/agent/cache";
 import { createAgentMcpServer } from "@/agent/mcp";
-import { createScanSource } from "@/agent/source";
+import { createLocalScanSource } from "@/agent/source-local";
 import type { AgentScan, DownloadResult, ScanSummary } from "@/agent/types";
 import { GET as zipRoute } from "@/app/api/v1/assets.zip/route";
 import { POST as scanRoute } from "@/app/api/v1/scan/route";
 import { setAgentScanSourceForTests } from "@/app/api/v1/source";
+import { MemoryBudgetStore, setBudgetStoreForTests } from "@/server/security/budget";
 import type { ZipManifest } from "@/app/api/v1/zip";
 import { readZip, type ZipEntry } from "../../../e2e/support/zip";
 import type { FixtureServer } from "../../fixtures/serve";
@@ -99,7 +100,7 @@ beforeAll(async () => {
   await execFileAsync(process.execPath, [path.join(ROOT, "scripts/build-agent.mjs")], { cwd: ROOT });
 
   // One scan, cached, then read back: every path works from the same bytes, the JSON round trip included.
-  const source = createScanSource();
+  const source = createLocalScanSource();
   const fresh = await source.scan(`${server.origin}/`);
   await saveScan(fresh);
   const cached = await loadScan(fresh.scanId);
@@ -108,6 +109,7 @@ beforeAll(async () => {
 
   // The hosted routes scan through this, so they answer from the same scan instead of driving Chromium again. The bytes
   // still come from the real local source, through safeFetch, as they do in production.
+  setBudgetStoreForTests(new MemoryBudgetStore());
   setAgentScanSourceForTests({
     kind: "local",
     scan: async () => scan,
@@ -123,6 +125,7 @@ afterAll(async () => {
   await client?.close();
   await server?.close();
   setAgentScanSourceForTests(null);
+  setBudgetStoreForTests(null);
   for (const [name, value] of previousEnv) {
     if (value === undefined) delete process.env[name];
     else process.env[name] = value;

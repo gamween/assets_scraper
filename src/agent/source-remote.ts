@@ -3,7 +3,7 @@ import { Asset, Diagnostics, FontFamily, Palette, ScanStats } from "@/lib/contra
 import { limits } from "@/server/config/limits";
 import { safeFetch } from "@/server/net/safe-fetch";
 import type { SafeFetch } from "@/server/scan/types";
-import { assertDeclaredType, assertSupportedBytes, declaredType } from "./bytes";
+import { assertDeclaredType, assertSupportedBytes, declaredType, inlineFileBytes } from "./bytes";
 import { scanIdFor } from "./source-local";
 import type { ScanSource, ScanSourceOptions } from "./types";
 
@@ -15,7 +15,9 @@ import type { ScanSource, ScanSourceOptions } from "./types";
  * Bytes of a URL the hosted scan reported go through `safeFetch` like every other URL that came from a scraped page
  * (spec 10): the CLI runs on a developer machine, and a page can name `127.0.0.1`. The two calls to the hosted app
  * itself are plain fetches: that origin is the user's own configuration, not scraped, and `safeFetch` refuses the
- * private addresses a self-hosted app may legitimately live on.
+ * private addresses a self-hosted app may legitimately live on. They carry the agent token, so that origin has to be
+ * https (plain http only on this machine), and a redirect is reported rather than followed: fetch drops the token on a
+ * cross-origin hop, which made a moved deployment read as a refused token.
  */
 
 export type RemoteErrorCode =
@@ -23,6 +25,8 @@ export type RemoteErrorCode =
   | "unauthorized"
   /** The WAF rate limit or the scan budget. */
   | "rate-limited"
+  /** The hosted app's firewall stopped the client: a challenge page, which a program cannot pass, or a deny. */
+  | "challenged"
   /** The hosted app failed. */
   | "server"
   /** The hosted app refused the request itself (an invalid URL, a blocked address). */
@@ -69,12 +73,6 @@ const RemoteAnswer = z.object({
   scan: RemoteScanBody,
 });
 
-/**
- * A scan id becomes a cache file name (`cache.ts`), so an id the hosted app made up is only taken when it reads as one.
- * Anything else gets a local id, which costs nothing: the id only has to name this scan on this machine.
- */
-const SCAN_ID = /^[A-Za-z0-9._-]{1,120}$/;
-
 /** Margin over the hosted scan deadline, so the request fails on the app's own error rather than on this timeout. */
 const RESPONSE_MARGIN_MS = 30_000;
 
@@ -82,6 +80,57 @@ export interface RemoteScanSourceDeps {
   /** Fetches the asset URLs the hosted scan reported. Overridden by the tests. */
   fetch?: SafeFetch;
 }
+
+/**
+ * The hosted app a remote scan runs against, with no trailing slash, or undefined for a local scan: `remote`, then
+ * `ASSETS_SCRAPER_REMOTE`. The one reading of that setting, for the source and for the cache lookup (`source.ts`).
+ */
+export function remoteBaseUrl(options: ScanSourceOptions = {}): string | undefined {
+  const remote = (options.remote ?? process.env.ASSETS_SCRAPER_REMOTE ?? "").trim();
+  return remote === "" ? undefined : remote.replace(/\/+$/, "");
+}
+
+/** Hosts a remote may be reached on over plain http: this machine, where a self-hosted app runs in development. */
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+/**
+ * Refuses a hosted app the token would reach in clear text. `http://assets-scraper.vercel.app`, one letter short, sent
+ * `Authorization: Bearer` across whatever network the user was on before Vercel's redirect to https, and the call then
+ * failed with a 401 that said nothing about why.
+ */
+function assertSecureRemote(remote: string): void {
+  let url: URL;
+  try {
+    url = new URL(remote);
+  } catch {
+    throw new RemoteScanError("request", 0, `${remote} is not a URL: set ASSETS_SCRAPER_REMOTE to the hosted app, like https://assets-scraper.vercel.app`);
+  }
+  if (url.protocol === "https:" || (url.protocol === "http:" && LOOPBACK_HOSTS.has(url.hostname))) return;
+  throw new RemoteScanError("request", 0, `refusing to send the agent token to ${remote}: the hosted app has to be an https URL (http only for localhost)`);
+}
+
+/**
+ * Vercel's firewall answers a client it challenges with 403 and an HTML page (`x-vercel-mitigated: challenge`), on every
+ * path of the deployment, and nothing but a browser can pass it. The app itself only ever answers JSON, so a 403 that is
+ * not JSON is that page too. It used to read as "answered HTTP 403", which sent the user after a token that was fine.
+ */
+function firewallVerdict(response: Response, body: string): string | null {
+  const mitigated = response.headers.get("x-vercel-mitigated");
+  if (mitigated !== null) return mitigated || "challenge";
+  return response.status === 403 && apiMessage(body) === null ? "challenge" : null;
+}
+
+/**
+ * The error for a firewall answer. Only a challenge is something a browser could pass; a firewall rate limit (429) is
+ * `rate-limited` like the app's own, and any other verdict (a deny) is still not the token's fault.
+ */
+const firewallError = (remote: string, status: number, verdict: string): RemoteScanError =>
+  new RemoteScanError(
+    status === 429 ? "rate-limited" : "challenged",
+    status,
+    `the firewall of ${remote} stopped this client (HTTP ${status}, ${verdict})${verdict === "challenge" ? ", which only a browser can get past" : ""}. ` +
+      "The token is not the problem: wait a few minutes before the next call, or scan locally by leaving ASSETS_SCRAPER_REMOTE unset",
+  );
 
 const codeFor = (status: number): RemoteErrorCode => {
   if (status === 401 || status === 403) return "unauthorized";
@@ -107,23 +156,37 @@ const withTimeout = (timeoutMs: number, signal?: AbortSignal): AbortSignal =>
   signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs);
 
 export function createRemoteScanSource(options: ScanSourceOptions = {}, deps: RemoteScanSourceDeps = {}): ScanSource {
-  const remote = (options.remote ?? process.env.ASSETS_SCRAPER_REMOTE ?? "").trim().replace(/\/+$/, "");
+  const remote = remoteBaseUrl(options);
   const token = (options.token ?? process.env.ASSETS_SCRAPER_TOKEN ?? "").trim();
-  if (remote === "") throw new RemoteScanError("request", 0, "a remote scan needs the hosted app URL: set ASSETS_SCRAPER_REMOTE");
+  if (remote === undefined) throw new RemoteScanError("request", 0, "a remote scan needs the hosted app URL: set ASSETS_SCRAPER_REMOTE");
+  assertSecureRemote(remote);
   if (token === "") {
     throw new RemoteScanError("unauthorized", 0, `a remote scan of ${remote} needs an agent token: set ASSETS_SCRAPER_TOKEN or pass --token`);
   }
+  // A deployment behind ACCESS_CODE asks every scan for it, a token holder's included (spec section 8: a token skips
+  // BotID and nothing else), so the code travels next to the token whenever the user configured one.
+  const accessCode = (options.accessCode ?? process.env.ASSETS_SCRAPER_ACCESS_CODE ?? "").trim();
+  const credentials: Record<string, string> = { authorization: `Bearer ${token}`, ...(accessCode === "" ? {} : { "x-access-code": accessCode }) };
   const fetchBytesDirect = deps.fetch ?? safeFetch;
-  const authorization = `Bearer ${token}`;
 
-  /** Reads the hosted app, which is the user's own configured origin, so this is a plain fetch. */
+  /**
+   * Reads the hosted app, which is the user's own configured origin, so this is a plain fetch. A redirect is an answer
+   * of its own rather than a hop to follow: the token must never be the thing a moved deployment quietly loses.
+   */
   const fromHost = async (path: string, init: RequestInit, timeoutMs: number, signal?: AbortSignal): Promise<Response> => {
+    let response: Response;
     try {
-      return await fetch(`${remote}${path}`, { ...init, headers: { ...init.headers, authorization }, signal: withTimeout(timeoutMs, signal) });
+      response = await fetch(`${remote}${path}`, { ...init, headers: { ...init.headers, ...credentials }, redirect: "manual", signal: withTimeout(timeoutMs, signal) });
     } catch (error) {
       if (signal?.aborted) throw error;
       throw new RemoteScanError("server", 0, `could not reach ${remote}: ${error instanceof Error ? error.message : String(error)}`);
     }
+    if (response.status >= 300 && response.status < 400) {
+      await response.body?.cancel();
+      const location = response.headers.get("location") ?? "somewhere else";
+      throw new RemoteScanError("request", response.status, `${remote} redirects to ${location}: set ASSETS_SCRAPER_REMOTE to the address the hosted app answers on`);
+    }
+    return response;
   };
 
   return {
@@ -141,6 +204,8 @@ export function createRemoteScanSource(options: ScanSourceOptions = {}, deps: Re
       );
       const body = await response.text();
       if (!response.ok) {
+        const verdict = firewallVerdict(response, body);
+        if (verdict !== null) throw firewallError(remote, response.status, verdict);
         throw new RemoteScanError(codeFor(response.status), response.status, apiMessage(body) ?? `${remote} answered HTTP ${response.status}`);
       }
       let parsed: unknown;
@@ -157,7 +222,9 @@ export function createRemoteScanSource(options: ScanSourceOptions = {}, deps: Re
       }
       const { page, assets, fonts, stats } = answer.data.scan;
       return {
-        scanId: answer.data.scanId && SCAN_ID.test(answer.data.scanId) ? answer.data.scanId : scanIdFor(page.host),
+        // Always minted here. The id names a cache file on this machine (`cache.ts`), and one the hosted app chose could
+        // be `..`, which the cache refuses, or the id of a local scan already on disk, which the save would replace.
+        scanId: scanIdFor(page.host),
         scannedAt: answer.data.scan.scannedAt ?? new Date().toISOString(),
         source: "remote",
         remote,
@@ -172,12 +239,8 @@ export function createRemoteScanSource(options: ScanSourceOptions = {}, deps: Re
     },
 
     async fetchBytes(target, fetchOptions) {
-      const inline = "inline" in target ? target.inline : undefined;
-      if (inline) {
-        const decoded = Buffer.from(inline.base64, "base64");
-        assertSupportedBytes(decoded, target.format, "this inline file");
-        return decoded;
-      }
+      const inline = inlineFileBytes(target);
+      if (inline) return inline;
 
       // An `http:` URL has no direct path worth trying: the hosted proxy is how the app itself reads those.
       if (target.url.startsWith("https:")) {
@@ -211,7 +274,13 @@ export function createRemoteScanSource(options: ScanSourceOptions = {}, deps: Re
       // fetch. Anything else is not a path this source knows how to call.
       if (!target.proxy.startsWith("/")) throw new Error(`no URL the hosted app can proxy for ${target.url || "this file"}`);
       const response = await fromHost(target.proxy, { method: "GET" }, limits.proxyTimeoutMs, fetchOptions?.signal);
-      if (!response.ok) throw new Error(`HTTP ${response.status} from the hosted proxy for ${target.url || target.proxy}`);
+      if (!response.ok) {
+        const body = await response.text();
+        const verdict = firewallVerdict(response, body);
+        if (verdict !== null) throw firewallError(remote, response.status, verdict);
+        const said = apiMessage(body);
+        throw new Error(`HTTP ${response.status} from the hosted proxy for ${target.url || target.proxy}${said === null ? "" : `: ${said}`}`);
+      }
       const bytes = Buffer.from(await response.arrayBuffer());
       if (bytes.length > limits.proxyMaxBytes) throw new Error(`the hosted proxy answered with more than ${limits.proxyMaxBytes} bytes`);
       assertSupportedBytes(bytes, target.format, target.url || target.proxy);

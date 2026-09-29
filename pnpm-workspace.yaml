@@ -5,3 +5,5 @@ allowBuilds:
 peerDependencyRules:
   allowedVersions:
     eslint: "10"
+# Refuse to install on a Node outside `engines` in package.json, instead of warning and failing later at runtime.
+engineStrict: true

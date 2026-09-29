@@ -28,7 +28,7 @@ function chunk(type: string, data: Uint8Array): Buffer {
   return out;
 }
 
-export function encodePng(width: number, height: number, rgba: Uint8Array): Buffer {
+function encodePng(width: number, height: number, rgba: Uint8Array): Buffer {
   const header = Buffer.alloc(13);
   header.writeUInt32BE(width, 0);
   header.writeUInt32BE(height, 4);

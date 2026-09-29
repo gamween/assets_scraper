@@ -5,7 +5,7 @@ import { ScanFailure } from "@/server/errors";
 import { safeFetch } from "@/server/net/safe-fetch";
 import { scanEngine } from "@/server/scan/engine";
 import type { SafeFetch, ScanBackend } from "@/server/scan/types";
-import { assertDeclaredType, assertSupportedBytes, declaredType } from "./bytes";
+import { assertDeclaredType, assertSupportedBytes, declaredType, inlineFileBytes } from "./bytes";
 import { sanitizeHost } from "./names";
 import type { AgentScan, ScanSource } from "./types";
 
@@ -101,21 +101,13 @@ export function createLocalScanSource(deps: LocalScanSourceDeps = {}): ScanSourc
     },
 
     async fetchBytes(target, options) {
-      const inline = "inline" in target ? target.inline : undefined;
-      if (inline) {
-        // Only a font file travels inline here (`FontFile.inline`), and it is checked like every other byte this returns:
-        // a caller of `fetchBytes` should never have to ask where the bytes came from to know what they are.
-        const decoded = Buffer.from(inline.base64, "base64");
-        assertSupportedBytes(decoded, target.format, "this inline file");
-        return decoded;
-      }
+      // A font file declared as a `data:` URI carries its bytes, checked like every other byte this returns: a caller of
+      // `fetchBytes` should never have to ask where the bytes came from to know what they are. No `data:` URL reaches
+      // this otherwise, since the scan turns every one into inline bytes or hides it (`assemble.ts`, `fonts/files.ts`).
+      const inline = inlineFileBytes(target);
+      if (inline) return inline;
       const url = target.url;
       if (!url) throw new Error("this file has no URL to fetch");
-      if (url.startsWith("data:")) {
-        const decoded = decodeDataUri(url);
-        assertSupportedBytes(decoded, target.format, "this data URI");
-        return decoded;
-      }
       const response = await fetch(url, {
         maxBytes: limits.proxyMaxBytes,
         timeoutMs: limits.proxyTimeoutMs,
@@ -139,13 +131,4 @@ export function createLocalScanSource(deps: LocalScanSourceDeps = {}): ScanSourc
       return bytes;
     },
   };
-}
-
-/** The bytes of a `data:` URI, base64 or percent encoded. A font family declared that way has no network path. */
-export function decodeDataUri(url: string): Buffer {
-  const comma = url.indexOf(",");
-  if (comma === -1) throw new Error("malformed data URI");
-  const meta = url.slice("data:".length, comma);
-  const payload = url.slice(comma + 1);
-  return /;base64$/i.test(meta) ? Buffer.from(payload, "base64") : Buffer.from(decodeURIComponent(payload), "utf8");
 }

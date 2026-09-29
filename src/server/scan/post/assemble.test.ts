@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { limits } from "@/server/config/limits";
 import { SignLimitError } from "@/server/security/sign";
 import type { CandidateContext, CapturedImage, CapturedSheet, PostInput, RawCandidate, RawCollectorOutput, SafeFetch, Signer } from "../types";
-import { assembleAssets, siteLabel, svgSize } from "./assemble";
+import { assembleAssets, siteLabel } from "./assemble";
 
 // Counts the image header reads of inline rasters, and how many run at once
 const metadataCalls = vi.hoisted(() => ({ total: 0, active: 0, peak: 0 }));
@@ -156,6 +156,57 @@ describe("assembleAssets hidden counts", () => {
     const { assets, hidden } = await run(collector);
     expect(assets).toEqual([]);
     expect(hidden).toEqual({ "probe-failed": 1 });
+  });
+});
+
+describe("assembleAssets icon sizes", () => {
+  it("sizes an icon it could not measure from its declared sizes, and reads only the start of a hostile one", async () => {
+    const unmeasured = { width: undefined, height: undefined };
+    const { assets } = await run(
+      collectorOutput({
+        candidates: [
+          candidate(`${PAGE}icon.png`, 1, 1, { foundIn: "icon-link", sizes: "16x16 48x48 any" }),
+          // Half a million digits took over a minute to read with the unbounded pattern
+          candidate(`${PAGE}apple.png`, 2, 2, { foundIn: "icon-link", sizes: `${"1".repeat(500_000)}x1 180x180` }),
+        ],
+      }),
+      [captured(`${PAGE}icon.png`, unmeasured), captured(`${PAGE}apple.png`, unmeasured)],
+    );
+    expect(Object.fromEntries(assets.map((asset) => [asset.original?.url, [asset.width, asset.height]]))).toEqual({
+      [`${PAGE}icon.png`]: [48, 48],
+      [`${PAGE}apple.png`]: [undefined, undefined],
+    });
+  });
+});
+
+describe("assembleAssets fragments", () => {
+  it("reads a URL with a fragment as the file the network loaded, once", async () => {
+    // Chrome reports responses without their fragment. `icons.svg#logo` used to miss the capture of `icons.svg`, spend
+    // a probe, and come back as a second asset beside an unlabelled network copy of the same file.
+    const probes: string[] = [];
+    const fetch: SafeFetch = async (url, options) => {
+      probes.push(url);
+      return notFound(url, options);
+    };
+    const sprite = `${PAGE}icons.svg`;
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 16"><view id="logo" viewBox="0 0 16 16"/><path d="M0 0h48v16H0z"/></svg>';
+    const collector = collectorOutput({
+      candidates: [candidate(`${sprite}#logo`, 1, 1, { visible: true, label: "Acme logo" }), candidate(`${sprite}#mark`, 2, 2)],
+    });
+    const sheet: CapturedSheet = { url: `${PAGE}site.css`, status: 200, cssText: ".a{background:url(icons.svg#arrow)}" };
+    const input: PostInput = {
+      collector,
+      network: { images: [captured(sprite, { contentType: "image/svg+xml", svgText: svg, width: 48, height: 16 })], fonts: [], sheets: [sheet], bodyTimeouts: 0, skippedBodies: 0 },
+      page: { requestedUrl: PAGE, finalUrl: PAGE, host: "shop.example", siteName: "Shop", title: "Shop" },
+      signer: { sign: proxyOf, count: 0 },
+      fetch,
+      signal: new AbortController().signal,
+      deadline: Date.now() + 60_000,
+    };
+    const { assets } = await assembleAssets(input);
+    const files = assets.filter((asset) => asset.original?.url.startsWith(sprite));
+    expect(files.map((asset) => [asset.name, asset.original?.url, asset.foundIn])).toEqual([["Acme logo", sprite, ["img", "stylesheet"]]]);
+    expect(probes.filter((url) => url.startsWith(sprite))).toEqual([]);
   });
 });
 
@@ -380,23 +431,5 @@ describe("assembleAssets inline rasters", () => {
     expect(hidden["tiny-data-uri"]).toBe(5_020);
     expect(metadataCalls.total).toBe(20);
     expect(metadataCalls.peak).toBeLessThanOrEqual(2);
-  });
-});
-
-describe("svgSize", () => {
-  it("reads the root attributes, then falls back to the viewBox", () => {
-    expect(svgSize(`<svg width="24" height="24"></svg>`)).toEqual({ width: 24, height: 24 });
-    expect(svgSize(`<svg width=" 24px " height='1.5'></svg>`)).toEqual({ width: 24, height: 1.5 });
-    expect(svgSize(`<svg WIDTH=".5" HEIGHT=".25"></svg>`)).toEqual({ width: 0.5, height: 0.25 });
-    expect(svgSize(`<svg viewBox="0 0 16 32"></svg>`)).toEqual({ width: 16, height: 32 });
-    expect(svgSize(`<svg width="0" height="0" viewBox="0 0 16 32"></svg>`)).toEqual({ width: 16, height: 32 });
-    expect(svgSize(`<svg width="24"></svg>`)).toEqual({});
-  });
-
-  it("stays fast on a root tag carrying a long digit run", () => {
-    // An unbounded digit run in the width pattern backtracks quadratically, which blocks the scan past every deadline.
-    const started = performance.now();
-    expect(svgSize(`<svg width='${"9".repeat(200_000)}x'><rect width="10" height="10"/></svg>`)).toEqual({});
-    expect(performance.now() - started).toBeLessThan(100);
   });
 });
