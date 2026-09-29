@@ -31,7 +31,7 @@ for the plugin), so looking for one exact prefix and finding nothing does not me
 | `install_fonts` | Installing the page fonts locally, with the licence of each family |
 | `list_installed_fonts`, `uninstall_fonts` | What this tool installed, and undoing it |
 
-A scan is cached for one hour, so `list_assets`, `download_assets` and `install_fonts` reuse it. Pass `refresh: true` to `scan_page` only when the page has changed.
+A scan is cached for one hour, so `list_assets`, `download_assets` and `install_fonts` reuse it. Pass `refresh: true` to `scan_page` only when the page has changed. Scans run one at a time: calls for two pages at once both succeed, the second after the first, so there is no need to retry one that is waiting.
 
 ## Workflow
 

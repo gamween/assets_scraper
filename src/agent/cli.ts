@@ -1,5 +1,3 @@
-import fs from "node:fs";
-import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import pkg from "../../package.json";
 import { AssetKind, AssetRole } from "@/lib/contract";
@@ -7,6 +5,7 @@ import { formatBytes, formatCount, formatDimensions, formatDuration } from "@/li
 import { ScanFailure } from "@/server/errors";
 import { findRecentScan, saveScan } from "./cache";
 import { downloadAssets } from "./download";
+import { isEntry } from "./entry";
 import { listInstalledFonts } from "./font-manifest";
 import { formatFontInstall, formatFontList, formatFontUninstall } from "./font-report";
 import { installFonts, uninstallFonts } from "./fonts";
@@ -394,18 +393,7 @@ export async function run(argv: string[] = process.argv.slice(2)): Promise<numbe
   }
 }
 
-/** True when this file is what node was asked to run, so importing it from a test runs nothing. */
-function isEntry(): boolean {
-  const argv = process.argv[1];
-  if (!argv) return false;
-  try {
-    return fs.realpathSync(argv) === fs.realpathSync(fileURLToPath(import.meta.url));
-  } catch {
-    return false;
-  }
-}
-
-if (isEntry()) {
+if (isEntry(import.meta.url)) {
   void run().then((code) => {
     process.exitCode = code;
     // Nothing should hold the loop open once a command is done, and a socket that does must not hang an agent.
