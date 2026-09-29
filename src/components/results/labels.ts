@@ -48,8 +48,6 @@ export function assetMetaParts(asset: Asset): string[] {
   return parts;
 }
 
-export const assetMeta = (asset: Asset) => assetMetaParts(asset).join(" · ");
-
 /** Each reason as `[one, many]`: a single hidden file reads `1 hidden: a tracking pixel`, not `1 hidden: tracking pixels`. */
 const HIDDEN_PHRASES: Record<HiddenReason, [string, string]> = {
   tracker: ["a tracking pixel", "tracking pixels"],

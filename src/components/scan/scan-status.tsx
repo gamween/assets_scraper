@@ -70,7 +70,7 @@ export function ScanStatus({ host }: { host: string }) {
                     <Spinner />
                   </span>
                 ) : state === "done" ? (
-                  <CheckIcon className="size-3.5 text-text-2 fade-in" strokeWidth={2.25} />
+                  <CheckIcon className="size-3.5 text-text-2 appear" strokeWidth={2.25} />
                 ) : state === "active" ? (
                   <span className="size-1.5 rounded-full bg-text-2" />
                 ) : (
@@ -93,7 +93,7 @@ export function ScanStatus({ host }: { host: string }) {
         </div>
       </div>
       {elapsed >= SLOW_SCAN_SECONDS ? (
-        <p className="border-t border-border bg-bg px-4 py-2.5 text-small text-text-2 fade-in">Large pages can take up to a minute.</p>
+        <p className="border-t border-border bg-bg px-4 py-2.5 text-small text-text-2 appear">Large pages can take up to a minute.</p>
       ) : null}
     </section>
   );

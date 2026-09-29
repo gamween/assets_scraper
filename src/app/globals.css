@@ -1,11 +1,10 @@
 @import "tailwindcss";
 @import "tw-animate-css";
-@import "shadcn/tailwind.css";
 
 /*
- * Light theme only. Without this line Tailwind v4 applies `dark:` utilities under `prefers-color-scheme: dark`,
- * so the shadcn components would switch to dark styles on a system in dark mode. No `.dark` class is ever set,
- * so `dark:` never matches.
+ * Light theme only. Without this line Tailwind v4 applies `dark:` utilities under `prefers-color-scheme: dark`, so a
+ * shadcn component added later with `dark:` classes would switch to dark styles on a system in dark mode. No `.dark`
+ * class is ever set, so `dark:` never matches.
  */
 @custom-variant dark (&:is(.dark *));
 
@@ -77,25 +76,9 @@
   --color-swatch-edge-strong: var(--swatch-edge-strong);
   --color-preview-light: var(--preview-light);
   --color-preview-dark: var(--preview-dark);
-  --color-grid-a: var(--grid-a);
-  --color-grid-b: var(--grid-b);
-
-  /* Names the shadcn primitives expect, mapped onto the tokens above. */
-  --color-background: var(--bg);
-  --color-foreground: var(--text);
-  --color-popover: var(--surface);
-  --color-popover-foreground: var(--text);
-  --color-primary: var(--ink);
-  --color-primary-foreground: var(--ink-fg);
-  --color-muted: var(--well);
-  --color-muted-foreground: var(--text-3);
-  --color-destructive: var(--danger);
-  --color-input: var(--border-strong);
-  --color-ring: var(--accent);
 
   --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
   --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
-  --font-heading: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
 
   /* Type scale (spec 12.6). */
   --text-display: 32px;
@@ -126,9 +109,8 @@
   --ease-enter: cubic-bezier(0.2, 0, 0, 1);
   --ease-exit: cubic-bezier(0.4, 0, 1, 1);
 
-  /* Grid breakpoints (spec 12.6): 2 columns, 3 from 480, 4 from 768, 5 from 1024, 6 from 1280, 7 from 1680. */
+  /* 480, the 3-column step of the grid (spec 12.6), below the stock `sm`. `.asset-grid` holds every step, 1680 included. */
   --breakpoint-xs: 30rem;
-  --breakpoint-3xl: 105rem;
 }
 
 @layer base {
@@ -272,8 +254,9 @@
     animation: spin 700ms linear infinite;
   }
 
-  .fade-in {
-    animation: fade-in 120ms var(--ease-enter) both;
+  /* Not `fade-in`: tw-animate-css already owns that name, as a utility for its `animate-in` keyframes. */
+  .appear {
+    animation: appear 120ms var(--ease-enter) both;
   }
 
   /* A scroll container whose overflow is not otherwise visible keeps a thin scrollbar as the hint that it has more. */
@@ -289,7 +272,7 @@
   }
 }
 
-@keyframes fade-in {
+@keyframes appear {
   from {
     opacity: 0;
   }
