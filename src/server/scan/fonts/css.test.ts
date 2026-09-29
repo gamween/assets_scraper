@@ -43,10 +43,10 @@ vi.mock("css-tree/tokenizer", async (importOriginal) => {
 });
 vi.mock("css-tree/parser", async (importOriginal) => {
   const actual = await importOriginal<typeof import("css-tree/parser")>();
-  const parse: typeof actual.default = (...args) => {
+  const parse = ((...args: Parameters<typeof actual.default>) => {
     parser.calls += 1;
     return actual.default(...args);
-  };
+  }) as typeof actual.default;
   return { ...actual, default: parse };
 });
 
