@@ -7,9 +7,8 @@ import { TRUNCATED_NOTE, buildAssetsZip, zipMaxBytes } from "./zip";
 
 /**
  * `buildAssetsZip` when it cannot fit the whole selection (plan Task G4.3: "stops cleanly when the budget runs out, the
- * ZIP ends with what it had plus a note in the manifest"). Nothing exercised that path: the three integration tests only
- * ever asserted `truncated === false`, so the header, the note and the `unavailable` arithmetic could all regress in
- * silence (review issue 21).
+ * ZIP ends with what it had plus a note in the manifest"): the note, `truncated` and the `unavailable` arithmetic, for
+ * each thing that can end an archive early. The route's own test covers the header that says so.
  */
 
 /** Four rasters of 1 KB each, all distinct, all large enough to survive the deck size gate. */

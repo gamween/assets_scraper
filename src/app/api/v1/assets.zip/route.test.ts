@@ -50,7 +50,8 @@ beforeEach(() => {
   process.env.AGENT_TOKENS = TOKEN;
   scan.mockReset();
   scan.mockResolvedValue(testScan({ assets, stats: { assets: assets.length, svg: 3, images: 6, fonts: 0, hidden: {}, durationMs: 100 } }));
-  fetchBytes.mockClear();
+  // A reset, not a clear: a test that swaps the implementation must not hand it to the tests after it.
+  fetchBytes.mockReset();
   setBudgetStoreForTests(new MemoryBudgetStore());
   setAgentScanSourceForTests({ kind: "local", scan, fetchBytes });
 });
@@ -122,6 +123,7 @@ describe("GET /api/v1/assets.zip", () => {
     const manifest = manifestOf(await entriesOf(response));
     expect(manifest.truncated).toBe(true);
     expect(manifest.note).toMatch(/front of the selection/);
+    expect(manifest.note).not.toMatch(/[\u2013\u2014]/);
     expect(manifest.files.map((file: { id: string }) => file.id)).toEqual(["site-logo", "logo-svg"]);
     expect(manifest.totalBytes).toBeLessThanOrEqual(1_500);
     expect(manifest.dropped.unavailable).toBe(4);
@@ -164,22 +166,6 @@ describe("GET /api/v1/assets.zip", () => {
     await GET(request("&profile=all"));
     expect(peak).toBeLessThanOrEqual(2);
     expect(peak).toBeGreaterThan(1);
-  });
-
-  it("stops cleanly when the request cap runs out, with a note in the manifest", async () => {
-    process.env.AGENT_ZIP_MAX_BYTES = "2048";
-    const response = await GET(request());
-    expect(response.status).toBe(200);
-    expect(response.headers.get("x-assets-truncated")).toBe("true");
-    const entries = await entriesOf(response);
-    const manifest = manifestOf(entries);
-    expect(response.headers.get("x-assets-truncated")).toBe("true");
-    expect(manifest.truncated).toBe(true);
-    expect(manifest.note).toMatch(/front of the selection/);
-    expect(manifest.note).not.toMatch(/[\u2013\u2014]/);
-    expect(manifest.files.length).toBeGreaterThan(0);
-    expect(manifest.files.length).toBeLessThan(4);
-    expect(pathsOf(entries)).toHaveLength(manifest.files.length);
   });
 
   /**
