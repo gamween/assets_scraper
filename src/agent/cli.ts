@@ -12,8 +12,7 @@ import { formatFontInstall, formatFontList, formatFontUninstall } from "./font-r
 import { installFonts, uninstallFonts } from "./fonts";
 import { agentLimits } from "./limits";
 import { normalizeScanUrl } from "./scan-url";
-import { createLocalScanSource } from "./source-local";
-import { createRemoteScanSource } from "./source-remote";
+import { createScanSource, remoteBaseUrl } from "./source";
 import { summarize } from "./summary";
 import type { AgentScan, DownloadResult, DropReason, ScanSource, ScanSummary, SelectionOptions, SelectionProfile } from "./types";
 
@@ -191,13 +190,14 @@ export function scanUrl(raw: string): string {
   return url;
 }
 
-/** Where the scan runs (spec 2): the hosted app when `--remote`, `--remote-url` or `ASSETS_SCRAPER_REMOTE` names one. */
+/**
+ * Where the scan runs (spec 2): the hosted app `--remote-url` or `ASSETS_SCRAPER_REMOTE` names, `DEFAULT_REMOTE` on a
+ * bare `--remote`, and this machine otherwise. The source itself comes from `createScanSource`, like the MCP server's.
+ */
 export function openSource(values: Values): ScanSource {
-  const named = asString(values, "remote-url")?.trim() || process.env.ASSETS_SCRAPER_REMOTE?.trim() || "";
-  const remote = named || (values.remote === true ? DEFAULT_REMOTE : "");
-  if (remote === "") return createLocalScanSource();
+  const remote = asString(values, "remote-url")?.trim() || remoteBaseUrl() || (values.remote === true ? DEFAULT_REMOTE : "");
   const token = asString(values, "token");
-  return createRemoteScanSource({ remote, ...(token === undefined ? {} : { token }) });
+  return createScanSource({ remote, ...(token === undefined ? {} : { token }) });
 }
 
 /**

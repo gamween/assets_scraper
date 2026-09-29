@@ -14,7 +14,8 @@
       "args": ["${CLAUDE_PLUGIN_ROOT}/../../scripts/mcp-launcher.mjs"],
       "env": {
         "ASSETS_SCRAPER_REMOTE": "${ASSETS_SCRAPER_REMOTE:-}",
-        "ASSETS_SCRAPER_TOKEN": "${ASSETS_SCRAPER_TOKEN:-}"
+        "ASSETS_SCRAPER_TOKEN": "${ASSETS_SCRAPER_TOKEN:-}",
+        "ASSETS_SCRAPER_ACCESS_CODE": "${ASSETS_SCRAPER_ACCESS_CODE:-}"
       }
     }
   }

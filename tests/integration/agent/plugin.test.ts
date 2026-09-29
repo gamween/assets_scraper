@@ -76,6 +76,7 @@ describe("the Claude Code plugin manifests", () => {
     expect(server.env).toEqual({
       ASSETS_SCRAPER_REMOTE: "${ASSETS_SCRAPER_REMOTE:-}",
       ASSETS_SCRAPER_TOKEN: "${ASSETS_SCRAPER_TOKEN:-}",
+      ASSETS_SCRAPER_ACCESS_CODE: "${ASSETS_SCRAPER_ACCESS_CODE:-}",
     });
   });
 

@@ -36,11 +36,20 @@ describe("GET /api/openapi.json", () => {
 
   it("describes the ZIP endpoint with its filters", async () => {
     const operation = (await document()).paths["/api/v1/assets.zip"].get;
-    const names = operation.parameters.map((parameter: { name: string }) => parameter.name);
+    const names = operation.parameters.filter((parameter: { in: string }) => parameter.in === "query").map((parameter: { name: string }) => parameter.name);
     expect(names).toEqual(["url", "profile", "kinds", "roles", "max", "minLongSide", "maxBytes", "maxFileBytes", "nameContains"]);
     expect(operation.parameters[0].required).toBe(true);
     expect(operation.parameters[1].schema.enum).toEqual(["deck", "all"]);
     expect(operation.responses["200"].content["application/zip"].schema.format).toBe("binary");
+  });
+
+  it("names the access code header a deployment behind one asks for, next to the token", async () => {
+    const doc = await document();
+    for (const operation of [doc.paths["/api/v1/scan"].post, doc.paths["/api/v1/assets.zip"].get]) {
+      const header = operation.parameters.find((parameter: { name: string }) => parameter.name === "x-access-code");
+      expect(header).toMatchObject({ in: "header", required: false });
+    }
+    expect(doc.paths["/api/v1/scan"].post.responses["401"].description).toContain("x-access-code");
   });
 
   it("documents the bearer scheme and every error code with its status", async () => {

@@ -88,7 +88,9 @@ curl -s -o assets.zip \
 - `GET /api/v1/assets.zip?url=...&profile=deck&kinds=svg,image&roles=logo&max=60` streams a ZIP with the same selection rules and a `manifest.json` inside.
 - `GET /llms.txt` and `GET /api/openapi.json` describe both endpoints for machines.
 
-A token skips the bot check and nothing else: the rate limit, the scan budget, the SSRF guards and every v1 cap still apply. Tokens live in the `AGENT_TOKENS` environment variable of the deployment, comma separated, and are never logged.
+A token skips the bot check and nothing else: the access code, the rate limit, the scan budget, the SSRF guards and every v1 cap still apply. On a deployment the owner put behind `ACCESS_CODE`, send the code in `x-access-code` next to the token; the CLI and the MCP server send `ASSETS_SCRAPER_ACCESS_CODE` when it is set. Tokens live in the `AGENT_TOKENS` environment variable of the deployment, comma separated, and are never logged.
+
+A client the hosting firewall challenges gets `403` with an HTML page and `x-vercel-mitigated: challenge` on every path until it expires, which only a browser can pass. The CLI and the MCP server say so in words (`the firewall of ... stopped this client`) rather than as a refused token: wait a few minutes, or scan locally.
 
 Running the deployment: `AGENT_TOKENS` is set for production and preview in the Vercel project, and adding a client means appending its token to that variable and redeploying. The owner's own token is kept out of the repo, in `~/.config/assets-scraper/agent.env` (mode 600, key `AGENT_TOKEN`), so a shell reads it with `set -a; . ~/.config/assets-scraper/agent.env; set +a` and then uses `$AGENT_TOKEN`. The CLI and the MCP server read a token from `ASSETS_SCRAPER_TOKEN`, not from that file.
 
@@ -151,6 +153,7 @@ Every v1 limit still applies to the scan itself: 90 s for the whole scan, at mos
 | --- | --- |
 | `ASSETS_SCRAPER_REMOTE` | Base URL of a hosted app to scan against instead of locally |
 | `ASSETS_SCRAPER_TOKEN` | Bearer token for that app |
+| `ASSETS_SCRAPER_ACCESS_CODE` | The access code of that app, when its owner set `ACCESS_CODE` |
 | `ASSETS_SCRAPER_OUT` | Destination root, host appended, overriding the project rule |
 | `CHROME_EXECUTABLE_PATH` | Chrome, when it is not in the default location |
 | `ASSETS_SCRAPER_NO_SANDBOX` | `1` runs Chrome without its sandbox, only for a host where it cannot start one |

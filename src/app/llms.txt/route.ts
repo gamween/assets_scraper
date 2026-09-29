@@ -27,8 +27,11 @@ Every request carries a bearer token:
 
 Tokens are configured on the server in AGENT_TOKENS, one per client, comma separated. Ask the owner of this
 deployment for one. A missing or unknown token is answered with 401 and {"error":{"code":"access-code", ...}}.
-A token replaces the bot check that keeps the browser endpoint private, and nothing else: the rate limit, the daily
-scan budget, the private address guards and every cap below still apply.
+A token replaces the bot check that keeps the browser endpoint private, and nothing else: the access code, the rate
+limit, the daily scan budget, the private address guards and every cap below still apply. When the owner has put the
+deployment behind an access code, send it with every request too:
+
+    x-access-code: <code>
 
 ## POST /api/v1/scan
 
@@ -78,9 +81,14 @@ The response headers x-assets-count, x-assets-bytes and x-assets-truncated say w
   ${agentLimits.maxFiles} files and ${mb(zipMaxBytes())} for one archive, out of ${mb(limits.proxyBytesPerDay)} of asset bytes a day
   ${limits.maxAssets} assets in one scan
 
-Errors use the codes of the v1 contract with the matching HTTP status: 400 invalid-url, 401 access-code,
-422 blocked-address, unsupported-port, own-host or not-html, 429 budget, 502 dns, connect, http or blocked,
-503 busy or disabled, 504 timeout, 500 internal. The body is always {"error":{"code","message"}}.
+Errors use the codes of the v1 contract with the matching HTTP status: 400 invalid-url, 401 access-code (no
+token, an unknown one, or a missing access code), 422 blocked-address, unsupported-port, own-host or not-html,
+429 budget, 502 dns, connect, http or blocked, 503 busy or disabled, 504 timeout, 500 internal. The body of every
+error this app writes is {"error":{"code","message"}}.
+
+One answer does not come from the app: a client the hosting firewall challenges gets 403 with an HTML page and the
+header x-vercel-mitigated: challenge, on every path, until the challenge expires. Only a browser can pass it, so wait
+a few minutes and slow down rather than retrying at once or changing the token.
 
 ## Examples
 

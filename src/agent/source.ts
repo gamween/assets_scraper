@@ -1,18 +1,14 @@
 import type { ScanOrigin } from "./cache";
 import { createLocalScanSource } from "./source-local";
-import { createRemoteScanSource } from "./source-remote";
+import { createRemoteScanSource, remoteBaseUrl } from "./source-remote";
 import type { ScanSource, ScanSourceOptions } from "./types";
 
 /**
  * Picks where a scan runs (spec 2): locally through the v1 engine by default, remotely against the hosted app when
- * `remote` or `ASSETS_SCRAPER_REMOTE` names one.
+ * `remote` or `ASSETS_SCRAPER_REMOTE` names one. The MCP server and the CLI both open their source here.
  */
 
-/** The hosted app a remote scan runs against, with no trailing slash, or undefined for a local scan. */
-export function remoteBaseUrl(options: ScanSourceOptions = {}): string | undefined {
-  const remote = (options.remote ?? process.env.ASSETS_SCRAPER_REMOTE ?? "").trim();
-  return remote === "" ? undefined : remote.replace(/\/+$/, "");
-}
+export { remoteBaseUrl };
 
 /**
  * Where a scan would run, without opening the source. `createScanSource` refuses to build a remote source that has no
@@ -30,5 +26,5 @@ export function createScanSource(options: ScanSourceOptions = {}): ScanSource {
   if (remote === undefined) return createLocalScanSource();
   // A remote with no token throws here, which is what the caller has to report: the MCP server says it on the first tool
   // call, and the CLI turns it into its one line on stderr.
-  return createRemoteScanSource({ remote, ...(options.token === undefined ? {} : { token: options.token }) });
+  return createRemoteScanSource({ ...options, remote });
 }

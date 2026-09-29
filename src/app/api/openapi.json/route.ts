@@ -18,7 +18,7 @@ const error = (description: string) => ({
 /** Every failure both endpoints share, as the v1 codes map onto HTTP (see `src/app/api/v1/errors.ts`). */
 const errorResponses = () => ({
   "400": error("invalid-url: the request or the URL could not be read."),
-  "401": error("access-code: the bearer token is missing or unknown."),
+  "401": error("access-code: the bearer token is missing or unknown, or the deployment's access code was not sent in x-access-code."),
   "422": error("blocked-address, unsupported-port, own-host or not-html: the URL cannot be scanned."),
   "429": error("budget: the daily scan limit is spent."),
   "500": error("internal: something went wrong on our side."),
@@ -26,6 +26,15 @@ const errorResponses = () => ({
   "503": error("busy or disabled: no browser was free, or scanning is paused."),
   "504": error("timeout: the scan did not finish in time."),
 });
+
+/** Required only by a deployment the owner put behind `ACCESS_CODE`, which asks a token holder for it too. */
+const accessCodeHeader = {
+  name: "x-access-code",
+  in: "header",
+  required: false,
+  description: "The deployment's access code, when it has one. A bearer token does not replace it.",
+  schema: { type: "string" },
+};
 
 const filter = (name: string, description: string, schema: Record<string, unknown>) => ({
   name,
@@ -54,6 +63,7 @@ export function openApiDocument(origin: string): Record<string, unknown> {
           operationId: "scanPage",
           summary: "Scan a page and return one JSON document.",
           security: [{ bearerAuth: [] }],
+          parameters: [accessCodeHeader],
           requestBody: {
             required: true,
             content: {
@@ -110,6 +120,7 @@ export function openApiDocument(origin: string): Record<string, unknown> {
               default: agentLimits.maxFileBytes,
             }),
             filter("nameContains", "Keeps the files whose name contains this text.", { type: "string" }),
+            accessCodeHeader,
           ],
           responses: {
             "200": {
