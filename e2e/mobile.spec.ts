@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
-import { openResults } from "./support/routes";
+import { loadFixture } from "./support/fixtures";
+import { mockAssetRoutes, mockScan, openResults } from "./support/routes";
 
 /** The 360 px toast and the bottom centre bar share the bottom edge on a narrow window, and the toast wins on z-index. */
 async function expectToastClearOfTheBar(page: Page) {
@@ -109,6 +110,42 @@ test.describe("phone toolbar", () => {
     const first = (await page.getByTestId("swatch-chip").first().boundingBox())!;
     expect(rule.y).toBeLessThan(first.y + first.height);
     expect(first.y).toBeLessThan(rule.y + rule.height);
+  });
+});
+
+test.describe("phone detail sheet", () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+
+  test("Back closes the sheet and keeps the results", async ({ page }) => {
+    const linear = loadFixture("linear");
+    await mockAssetRoutes(page, linear);
+    const scan = await mockScan(page, linear);
+    await page.goto("/");
+    await page.getByRole("textbox", { name: "Page URL" }).fill("linear.app");
+    await page.keyboard.press("Enter");
+    await expect(page.getByTestId("results")).toBeVisible();
+
+    const sheet = page.getByRole("dialog");
+    await page.locator("[data-card-main]").first().tap();
+    await expect(sheet).toBeVisible();
+    await expect(page).toHaveURL(/&asset=/);
+
+    // The sheet covers the screen like a page, so Back is how it is closed. It used to pop the scan's own entry: the
+    // landing came back, and Forward scanned the page again.
+    await page.goBack();
+    await expect(sheet).toHaveCount(0);
+    await expect(page.getByTestId("results")).toBeVisible();
+    await expect(page).toHaveURL(/\?url=https%3A%2F%2Flinear\.app%2F$/);
+    await page.goForward();
+    await expect(sheet).toBeVisible();
+
+    // Close goes back over the entry the sheet pushed: the next Back leaves the results, as it would have before.
+    await sheet.getByRole("button", { name: "Close" }).tap();
+    await expect(sheet).toHaveCount(0);
+    await expect(page).toHaveURL(/\?url=https%3A%2F%2Flinear\.app%2F$/);
+    await page.goBack();
+    await expect(page.getByRole("heading", { level: 1, name: "Every SVG, image and font on a page." })).toBeVisible();
+    expect(scan.bodies).toHaveLength(1);
   });
 });
 

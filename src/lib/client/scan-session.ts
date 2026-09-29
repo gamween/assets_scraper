@@ -138,7 +138,8 @@ export function forgetRecent(host: string): void {
 
 /**
  * Reads the address bar: `?url=` scans (after hydration), no param shows the landing. Runs on load and on back and
- * forward navigation, so history entries behave like pages.
+ * forward navigation, so history entries behave like pages: within the same results, `&asset=` opens the detail view
+ * and its absence closes it (see `syncDetailToLocation`).
  */
 export function syncFromLocation(): void {
   const params = new URLSearchParams(window.location.search);
@@ -164,6 +165,7 @@ export function syncFromLocation(): void {
   if (store.url === result.url && store.phase !== "idle") {
     if (store.phase === "scanning") pendingDetail = asset;
     else if (asset) store.openDetail(asset);
+    else if (store.detailId) store.closeDetail();
     return;
   }
   runScan(result.url, result.host, "none", asset);
@@ -182,12 +184,34 @@ export function bootstrap(): void {
   appStore.getState().setBooted();
 }
 
-/** Keeps `&asset=` in the address bar in step with the detail view, without adding history entries. */
+/**
+ * `history.state` of the entry the page pushes when it opens a detail view. Only an entry marked so is gone back over
+ * when the view closes: a detail opened from a shared `&asset=` link has none, and going back there would leave the
+ * app. Next keeps the keys of a state it is given and adds its own.
+ */
+const DETAIL_ENTRY = "detailEntry";
+
+const onDetailEntry = () => (window.history.state as Record<string, unknown> | null)?.[DETAIL_ENTRY] === true;
+
+/**
+ * Keeps `&asset=` in the address bar in step with the detail view. Opening one pushes an entry, so Back closes the view
+ * and keeps the results: on a phone the view is a full-screen sheet, and the Back gesture used to leave the results
+ * for the landing. Moving to another asset replaces the entry, and closing the view from the page goes back over it,
+ * so Close and Back leave the same history behind.
+ */
 export function syncDetailToLocation(detailId: string | null): void {
   const { url } = appStore.getState();
   if (!url || typeof window === "undefined") return;
   const params = new URLSearchParams(window.location.search);
   if (params.get("url") === null) return;
-  if ((params.get("asset") ?? null) === detailId) return;
-  window.history.replaceState(null, "", shareablePath(url, detailId));
+  const shown = params.get("asset");
+  if (shown === detailId) return;
+  if (detailId === null) {
+    if (onDetailEntry()) window.history.back();
+    else window.history.replaceState(null, "", shareablePath(url));
+  } else if (shown === null) {
+    window.history.pushState({ [DETAIL_ENTRY]: true }, "", shareablePath(url, detailId));
+  } else {
+    window.history.replaceState(onDetailEntry() ? { [DETAIL_ENTRY]: true } : null, "", shareablePath(url, detailId));
+  }
 }
