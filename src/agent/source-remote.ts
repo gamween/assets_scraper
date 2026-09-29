@@ -25,7 +25,7 @@ export type RemoteErrorCode =
   | "unauthorized"
   /** The WAF rate limit or the scan budget. */
   | "rate-limited"
-  /** The hosted app's firewall stopped the client (a challenge page, which a program cannot pass). */
+  /** The hosted app's firewall stopped the client: a challenge page, which a program cannot pass, or a deny. */
   | "challenged"
   /** The hosted app failed. */
   | "server"
@@ -120,12 +120,16 @@ function firewallVerdict(response: Response, body: string): string | null {
   return response.status === 403 && apiMessage(body) === null ? "challenge" : null;
 }
 
+/**
+ * The error for a firewall answer. Only a challenge is something a browser could pass; a firewall rate limit (429) is
+ * `rate-limited` like the app's own, and any other verdict (a deny) is still not the token's fault.
+ */
 const firewallError = (remote: string, status: number, verdict: string): RemoteScanError =>
   new RemoteScanError(
-    "challenged",
+    status === 429 ? "rate-limited" : "challenged",
     status,
-    `the firewall of ${remote} stopped this client (HTTP ${status}, ${verdict}), which only a browser can get past. The token is not the problem: ` +
-      "wait a few minutes before the next call, or scan locally by leaving ASSETS_SCRAPER_REMOTE unset",
+    `the firewall of ${remote} stopped this client (HTTP ${status}, ${verdict})${verdict === "challenge" ? ", which only a browser can get past" : ""}. ` +
+      "The token is not the problem: wait a few minutes before the next call, or scan locally by leaving ASSETS_SCRAPER_REMOTE unset",
   );
 
 const codeFor = (status: number): RemoteErrorCode => {

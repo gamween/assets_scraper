@@ -207,6 +207,23 @@ describe("createRemoteScanSource().scan", () => {
     expect(await failure(403, JSON.stringify({ error: { code: "access-code", message: "no" } }))).toMatchObject({ code: "unauthorized" });
   });
 
+  /** Only a challenge is a page a browser could pass: a firewall deny or rate limit must not send the user to one. */
+  it("names a firewall deny or rate limit for what it is", async () => {
+    const stopped = async (status: number, verdict: string) => {
+      answer = { status, body: "<!doctype html>", type: "text/html", headers: { "x-vercel-mitigated": verdict } };
+      return source().scan("stripe.com").then(() => null, (error: unknown) => error as RemoteScanError);
+    };
+
+    const denied = await stopped(403, "deny");
+    expect(denied).toMatchObject({ code: "challenged", status: 403 });
+    expect(denied?.message).toMatch(/token is not the problem/);
+    expect(denied?.message).not.toMatch(/browser/);
+
+    const limited = await stopped(429, "rate_limit");
+    expect(limited).toMatchObject({ code: "rate-limited", status: 429 });
+    expect(limited?.message).not.toMatch(/browser/);
+  });
+
   it("reports a redirect instead of following it without the token", async () => {
     answer = { status: 308, body: "", headers: { location: "https://moved.example/api/v1/scan" } };
     const error = await source().scan("stripe.com").then(() => null, (thrown: unknown) => thrown as RemoteScanError);
