@@ -302,6 +302,10 @@ export function createAgentMcpServer(options: AgentMcpOptions = {}): McpServer {
         ...listFilterShape,
         kinds: z.array(AssetKind).optional().describe("several kinds at once, when kind is not enough"),
         roles: z.array(AssetRole).optional().describe("several roles at once, when role is not enough"),
+        includeIcons: z
+          .boolean()
+          .optional()
+          .describe("keep the icons the deck profile drops, at any size. Asking for role icon does the same"),
         max: z.number().int().positive().optional().describe(`files to write, ${agentLimits.maxFiles} by default`),
         // The byte budget, in the same words the CLI uses: 0 lifts it, and ids are never dropped for it.
         maxTotalBytes: z

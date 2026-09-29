@@ -167,6 +167,12 @@ describe("parseSelectionParams", () => {
     }
   });
 
+  it("reads includeIcons as the CLI and the MCP tool take it", () => {
+    expect(parseSelectionParams(params("includeIcons=true"))).toEqual({ ok: true, options: { profile: "deck", includeIcons: true } });
+    expect(parseSelectionParams(params("includeIcons=false"))).toEqual({ ok: true, options: { profile: "deck" } });
+    expect(parseSelectionParams(params("includeIcons=yes")).ok).toBe(false);
+  });
+
   it("cuts a needle longer than any file name", () => {
     expect(parseSelectionParams(params(`nameContains=${"x".repeat(500)}`))).toEqual({ ok: true, options: { profile: "deck", nameContains: "x".repeat(200) } });
   });

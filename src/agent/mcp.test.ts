@@ -171,6 +171,21 @@ describe("download_assets", () => {
     await wired.close();
   });
 
+  /** Regression: only the CLI could say `--include-icons`; zod stripped the key here, so an agent could not ask for icons. */
+  it("passes includeIcons to the downloader", async () => {
+    const seen: SelectionOptions[] = [];
+    const wired = await connect({
+      downloadAssets: async (_scan, options) => {
+        seen.push(options.selection ?? {});
+        return { dir: options.dir, files: [], totalBytes: 0, dropped: {}, budget: noBudget, failed: [], manifestPath: "" };
+      },
+    });
+
+    await call(wired, "download_assets", { scanId, includeIcons: true });
+    expect(seen[0]).toMatchObject({ includeIcons: true });
+    await wired.close();
+  });
+
   /**
    * Regression: ids from an expired scan answered `{ files: [], dropped: { filter: 233 } }` with isError false, and left
    * an empty directory and manifest behind (review issue 10).

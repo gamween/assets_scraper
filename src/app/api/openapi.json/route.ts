@@ -120,6 +120,10 @@ export function openApiDocument(origin: string): Record<string, unknown> {
               default: agentLimits.maxFileBytes,
             }),
             filter("nameContains", "Keeps the files whose name contains this text.", { type: "string" }),
+            filter("includeIcons", "Keeps the icons the deck profile drops, raster icons under minLongSide included. Naming the icon role does the same.", {
+              type: "boolean",
+              default: false,
+            }),
             accessCodeHeader,
           ],
           responses: {
