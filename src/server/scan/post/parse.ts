@@ -194,15 +194,6 @@ export function forEachStylesheetUrl(cssText: string, baseUrl: string, visit: (i
   }
 }
 
-/** Every image URL `forEachStylesheetUrl` reads from a stylesheet's text. */
-export function extractStylesheetUrls(cssText: string, baseUrl: string): StylesheetUrl[] {
-  const out: StylesheetUrl[] = [];
-  forEachStylesheetUrl(cssText, baseUrl, (item) => {
-    out.push(item);
-  });
-  return out;
-}
-
 /**
  * Decodes a `data:` URI into its media type and bytes, or null when it is not a valid data URI. The payload is decoded
  * byte by byte the way a browser does, so a lone `%` is a literal byte rather than a reason to drop the whole URI: an

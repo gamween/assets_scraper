@@ -251,16 +251,3 @@ export function createLimiter(options: { concurrency: number; deadline: number; 
     },
   };
 }
-
-/** Runs tasks with `concurrency` slots until `deadline`; tasks that could not start give `verify-skipped`. */
-export async function runVerifications<T>(
-  tasks: ((signal: AbortSignal) => Promise<T>)[],
-  options: { concurrency: number; deadline: number; signal?: AbortSignal },
-): Promise<(T | VerifySkipped)[]> {
-  const limiter = createLimiter(options);
-  try {
-    return await Promise.all(tasks.map((task) => limiter.run(task)));
-  } finally {
-    limiter.close();
-  }
-}

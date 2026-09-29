@@ -1,6 +1,15 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { decodeDataUri, extractCssUrls, extractStylesheetUrls, forEachStylesheetUrl, parseSrcset } from "./parse";
+import { decodeDataUri, extractCssUrls, forEachStylesheetUrl, parseSrcset, type StylesheetUrl } from "./parse";
+
+/** Every image URL `forEachStylesheetUrl` reads from a stylesheet, in order. */
+const stylesheetUrls = (cssText: string, baseUrl: string) => {
+  const out: StylesheetUrl[] = [];
+  forEachStylesheetUrl(cssText, baseUrl, (item) => {
+    out.push(item);
+  });
+  return out;
+};
 
 describe("parseSrcset", () => {
   it("keeps commas inside URLs and reads descriptors", () => {
@@ -50,7 +59,7 @@ describe("extractCssUrls", () => {
   });
 });
 
-describe("extractStylesheetUrls", () => {
+describe("forEachStylesheetUrl", () => {
   it("reads url() declarations with their property, resolved against the sheet URL", () => {
     const css = `
       @font-face { font-family: X; src: url(x.woff2); }
@@ -58,7 +67,7 @@ describe("extractStylesheetUrls", () => {
       @media (max-width: 600px) { .b { --icon: url("/icons/b.svg"); mask-image: image-set("m.png" 1x, "m@2x.png" 2x); } }
       .c { filter: url(#blur); }
     `;
-    expect(extractStylesheetUrls(css, "https://cdn.example/css/site.css")).toEqual([
+    expect(stylesheetUrls(css, "https://cdn.example/css/site.css")).toEqual([
       { url: "https://cdn.example/css/img/a.png", property: "background-image", declaration: 0, imageSet: false },
       { url: "https://cdn.example/icons/b.svg", property: "--icon", declaration: 1, imageSet: false },
       { url: "https://cdn.example/css/m.png", property: "mask-image", declaration: 2, imageSet: true },
@@ -68,7 +77,7 @@ describe("extractStylesheetUrls", () => {
 
   it("tells image-set declarations of the same property apart", () => {
     const css = '.hero{background-image:image-set("a.png" 1x,"a2.png" 2x)} .card{background-image:image-set("c.png" 1x,"c2.png" 2x)}';
-    const urls = extractStylesheetUrls(css, "https://s.example/");
+    const urls = stylesheetUrls(css, "https://s.example/");
     expect(urls.map((u) => [u.url, u.declaration])).toEqual([
       ["https://s.example/a.png", 0], ["https://s.example/a2.png", 0], ["https://s.example/c.png", 1], ["https://s.example/c2.png", 1],
     ]);
@@ -76,7 +85,7 @@ describe("extractStylesheetUrls", () => {
 
   it("reads nested rules, unquoted data URIs with semicolons and comments, and skips invalid property names", () => {
     const css = `@supports (display:grid) { .a { .b:hover { /* c */ Background-Image: url(data:image/svg+xml;utf8,%3Csvg%3E) } --x: url(v.png); *zoom: url(z.png) } }`;
-    expect(extractStylesheetUrls(css, "https://s.example/").map((u) => [u.property, u.url])).toEqual([
+    expect(stylesheetUrls(css, "https://s.example/").map((u) => [u.property, u.url])).toEqual([
       ["background-image", "data:image/svg+xml;utf8,%3Csvg%3E"],
       ["--x", "https://s.example/v.png"],
     ]);
@@ -84,7 +93,7 @@ describe("extractStylesheetUrls", () => {
 
   it("reads a declaration after a comment that contains a colon", () => {
     const css = ".hero{color:#fff;\n /* retina: 2x */\n background-image:url(hero@2x.png)} .b{/* Hero: banner */ background-image:url(hero.jpg)} .c{/* a: */ /* b: */ --i/* x: */:url(i.svg)}";
-    expect(extractStylesheetUrls(css, "https://s.example/").map((u) => [u.property, u.url])).toEqual([
+    expect(stylesheetUrls(css, "https://s.example/").map((u) => [u.property, u.url])).toEqual([
       ["background-image", "https://s.example/hero@2x.png"],
       ["background-image", "https://s.example/hero.jpg"],
       ["--i", "https://s.example/i.svg"],
@@ -101,7 +110,7 @@ describe("extractStylesheetUrls", () => {
   });
 
   it("survives broken CSS", () => {
-    expect(extractStylesheetUrls(".a { background: url(ok.png) } }}} .b { color: ", "https://s.example/")).toEqual([
+    expect(stylesheetUrls(".a { background: url(ok.png) } }}} .b { color: ", "https://s.example/")).toEqual([
       { url: "https://s.example/ok.png", property: "background", declaration: 0, imageSet: false },
     ]);
   });
