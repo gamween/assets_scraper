@@ -19,7 +19,12 @@ const SFNT_ENTRY_BYTES = 16;
 /** More tables than any real font has, and a bound on the directory a hostile file can make this walk. */
 const MAX_TABLES = 1_024;
 
-const padded = (length: number): number => (length + 3) & ~3;
+/**
+ * `length` rounded up to the 4 byte boundary every sfnt table starts on. Plain arithmetic, not `(length + 3) & ~3`: a
+ * directory entry is a 32 bit unsigned length, and the bitwise form wraps a length near 4 GB to 0 or below, which let
+ * such a table past the bound and into an inflate with a 4 GB ceiling.
+ */
+const padded = (length: number): number => Math.ceil(length / 4) * 4;
 
 interface Table {
   tag: number;
