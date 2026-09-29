@@ -10,7 +10,7 @@ import { MAX_DESCRIPTOR_CHARS, MAX_UNICODE_RANGE_CHARS, normalizeStretch, normal
 import { MAX_INLINE_BYTES, MAX_INLINE_FONTS, MAX_URL_CHARS } from "./files";
 import { clearGoogleFontsCache } from "./google";
 import { buildFontFamilies, isConvertibleFont, signFontFiles } from "./index";
-import { fakeGoogleFetch, fastestMs, growthFactor, LINEAR_GROWTH_BOUND, LINEAR_OP_GROWTH_BOUND, opGrowth } from "./testing";
+import { benchmark, fakeGoogleFetch, fastestMs, growthFactor, LINEAR_GROWTH_BOUND, LINEAR_OP_GROWTH_BOUND, opGrowth } from "./testing";
 import { coversBasicLatin } from "./unicode";
 
 /**
@@ -21,6 +21,11 @@ import { coversBasicLatin } from "./unicode";
 const ops = vi.hoisted(() => ({ count: 0 }));
 /** Calls to `faceKey` alone, for the test that asserts the grouping hashes its keys instead of scanning a list. */
 const faceKeys = vi.hoisted(() => ({ count: 0 }));
+/**
+ * Reads of binary names (`binaryFamilyName`, which cleans every name record of a file) and the longest CSS family a
+ * binary name is matched against (`resolveFamilyNameOf`), for the test that pins how long names are read.
+ */
+const nameReads = vi.hoisted(() => ({ binary: 0, longestFamily: 0 }));
 const counted = vi.hoisted(
   () =>
     <T extends (...args: never[]) => unknown>(fn: T): T =>
@@ -62,11 +67,17 @@ vi.mock("./names", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./names")>();
   return {
     ...actual,
-    binaryFamilyName: counted(actual.binaryFamilyName),
+    binaryFamilyName: counted((...args: Parameters<typeof actual.binaryFamilyName>) => {
+      nameReads.binary += 1;
+      return actual.binaryFamilyName(...args);
+    }),
     cleanCssFamily: counted(actual.cleanCssFamily),
     isMangledCssFamily: counted(actual.isMangledCssFamily),
     resolveFamilyName: counted(actual.resolveFamilyName),
-    resolveFamilyNameOf: counted(actual.resolveFamilyNameOf),
+    resolveFamilyNameOf: counted((...args: Parameters<typeof actual.resolveFamilyNameOf>) => {
+      nameReads.longestFamily = Math.max(nameReads.longestFamily, args[1]?.length ?? 0);
+      return actual.resolveFamilyNameOf(...args);
+    }),
     splitFamilies: counted(actual.splitFamilies),
   };
 });
@@ -735,46 +746,62 @@ describe("buildFontFamilies", () => {
    * suite can gate on (it failed CI once at `LINEAR_GROWTH_BOUND`). Run it with `pnpm bench`. CI runs it too, in a job
    * that reports and does not block (`.github/workflows/ci.yml`), so a regression only this form can read is seen.
    */
-  it.runIf(process.env.FONTS_BENCH === "1")("benchmark: stays linear on hostile collector output, in wall time", async () => {
+  benchmark("benchmark: stays linear on hostile collector output, in wall time", async () => {
     for (const [name, parts] of Object.entries(hostile)) {
       const factor = await growthFactor((size) => buildFontFamilies(inputOf(parts(size))), hostileSize(name));
       expect.soft(factor, name).toBeLessThan(LINEAR_GROWTH_BOUND);
     }
   }, 120_000);
 
-  it("groups and names fonts in time that barely grows with the length of names", async () => {
-    // Each pair of a binary name and a registered family read the file's name records again, in time that also grew
-    // with the family's length: 128 names against 128 families of 50 KB took seconds, where no deadline can stop it
-    const inputs = (length: number) => {
-      const long = "x".repeat(length);
-      // typoFamily, wwsFamily and postscriptName are too long to be names, so each file is named by nameId1
-      const meta = (index: number, records: string): FontBinaryMeta => ({ format: "woff2", nameId1: `Name ${index} Sans`, typoFamily: records, wwsFamily: records, postscriptName: records });
-      const undeclared = (records: string) => Array.from({ length: 128 }, (_, index) => captured(`${PAGE}u${index}.woff2`, meta(index, records)));
-      const sheet = Array.from({ length: 5_000 }, (_, index) => `@font-face{font-family:Sheet${index};src:url(/one.woff2)}`).join("");
-      return [
-        // families registered without a rule
-        inputOf({ fonts: undeclared("x".repeat(60)), fontStatuses: Array.from({ length: 128 }, (_, index) => loaded(`${long}Registered ${index}`)) }),
-        // name records of files without a rule
-        inputOf({ fonts: undeclared(long), fontStatuses: Array.from({ length: 128 }, (_, index) => loaded(`Registered ${index}`)) }),
-        // name records of one file under 10,000 rules of distinct families, from the CSSOM and a captured sheet
-        inputOf({
-          fontFaces: Array.from({ length: 5_000 }, (_, index) => rule(`Face ${index}`, [`${PAGE}one.woff2`])),
-          sheets: [{ url: `${PAGE}a.css`, status: 200, cssText: sheet }],
-          fonts: [captured(`${PAGE}one.woff2`, meta(0, long))],
-        }),
-      ];
-    };
-    const short = inputs(60);
-    const long = inputs(60_000);
+  /**
+   * Collector output whose names are `length` characters long where the grouping once read them per pair: registered
+   * families, the name records of files without a rule, and the name records of one file under 10,000 rules.
+   */
+  const longNameInputs = (length: number) => {
+    const long = "x".repeat(length);
+    // typoFamily, wwsFamily and postscriptName are too long to be names, so each file is named by nameId1
+    const meta = (index: number, records: string): FontBinaryMeta => ({ format: "woff2", nameId1: `Name ${index} Sans`, typoFamily: records, wwsFamily: records, postscriptName: records });
+    const undeclared = (records: string) => Array.from({ length: 128 }, (_, index) => captured(`${PAGE}u${index}.woff2`, meta(index, records)));
+    const sheet = Array.from({ length: 5_000 }, (_, index) => `@font-face{font-family:Sheet${index};src:url(/one.woff2)}`).join("");
+    return [
+      // families registered without a rule
+      inputOf({ fonts: undeclared("x".repeat(60)), fontStatuses: Array.from({ length: 128 }, (_, index) => loaded(`${long}Registered ${index}`)) }),
+      // name records of files without a rule
+      inputOf({ fonts: undeclared(long), fontStatuses: Array.from({ length: 128 }, (_, index) => loaded(`Registered ${index}`)) }),
+      // name records of one file under 10,000 rules of distinct families, from the CSSOM and a captured sheet
+      inputOf({
+        fontFaces: Array.from({ length: 5_000 }, (_, index) => rule(`Face ${index}`, [`${PAGE}one.woff2`])),
+        sheets: [{ url: `${PAGE}a.css`, status: 200, cssText: sheet }],
+        fonts: [captured(`${PAGE}one.woff2`, meta(0, long))],
+      }),
+    ];
+  };
+
+  /**
+   * Regression: each pair of a binary name and a registered family read the file's name records again, in time that
+   * also grew with the family's length: 128 names against 128 families of 50 KB took seconds, where no deadline can
+   * stop it. Counted: the name records of each file are cleaned once however many pairs and rules meet it, and no
+   * family past the length cap is ever matched.
+   */
+  it("reads each file's name records once, and never matches a family past the length cap", async () => {
+    nameReads.binary = 0;
+    nameReads.longestFamily = 0;
     const results = [];
-    for (const input of long) results.push(await buildFontFamilies(input));
+    for (const input of longNameInputs(60_000)) results.push(await buildFontFamilies(input));
     expect(results.map(({ families }) => families.length)).toEqual([128, 128, 10_000]);
     // Registered families past the length cap are not matched
     expect(results[0].families.flatMap((family) => family.cssFamilies)).toEqual([]);
+    // One read per file of the three inputs, 257 in all, against 16,384 pairs and 10,000 rules
+    expect(nameReads.binary).toBeLessThanOrEqual(128 + 128 + 1);
+    expect(nameReads.longestFamily).toBeLessThanOrEqual(256);
+  }, 120_000);
 
+  benchmark("benchmark: groups and names fonts in time that barely grows with the length of names", async () => {
     const run = (batch: PostInput[]) => async () => {
       for (const input of batch) await buildFontFamilies(input);
     };
+    const short = longNameInputs(60);
+    const long = longNameInputs(60_000);
     await run(short)();
     // About 1.5 here, and 15 to 90 with any part of the fix undone: 1,000 times longer names cost the time of reading them
     expect((await fastestMs(run(long))) / (await fastestMs(run(short)))).toBeLessThan(5);

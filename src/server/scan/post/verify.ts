@@ -3,6 +3,8 @@ import type { AssetFormat } from "@/lib/contract";
 import { SafeFetchError, type SafeFetchErrorCode } from "@/server/net/safe-fetch";
 import type { SafeFetch } from "../types";
 import { formatFromContentType, sniffFormat } from "./format";
+import { svgSize } from "./parse";
+import { withRenderSlot } from "./render-slot";
 
 /**
  * Verification of CDN originals and probes of URLs the browser never requested (spec 8.4): a ranged GET that reads at
@@ -95,15 +97,19 @@ const headerDimensions = (b: Buffer, format: AssetFormat): { width: number; heig
   return undefined;
 };
 
-/** Image dimensions from the first bytes of a file, when they can be read. */
-export async function imageDimensions(body: Buffer, format: AssetFormat, complete: boolean): Promise<{ width?: number; height?: number }> {
-  if (format === "svg" && !complete) return {};
-  try {
-    const { width, height } = await sharp(body, { failOn: "none", limitInputPixels: false }).metadata();
-    if (width && height) return { width, height };
-  } catch {
-    // partial or unsupported: fall back to the header
-  }
+/**
+ * Image dimensions from the first bytes of a file, when they can be read. An SVG is sized from its root tag, as
+ * post-processing sizes SVG markup, rather than parsed whole by librsvg. A raster header is read through the render
+ * gate every sharp call shares (see `render-slot.ts`), since up to `verifyConcurrency` probes land at once.
+ */
+export async function imageDimensions(body: Buffer, format: AssetFormat, complete: boolean, signal?: AbortSignal): Promise<{ width?: number; height?: number }> {
+  if (format === "svg") return complete ? svgSize(body.toString("utf8")) : {};
+  const read = await withRenderSlot(
+    () => sharp(body, { failOn: "none", limitInputPixels: false }).metadata().catch(() => null), // partial or unsupported
+    null,
+    signal,
+  );
+  if (read?.width && read.height) return { width: read.width, height: read.height };
   const size = headerDimensions(body, format);
   return size && size.width > 0 && size.height > 0 ? size : {};
 }
@@ -162,7 +168,7 @@ async function attempt(url: string, options: VerifyOptions, ranged: boolean): Pr
       contentType,
       format,
       bytes,
-      ...(await imageDimensions(body, format, complete)),
+      ...(await imageDimensions(body, format, complete, options.signal)),
       complete,
       ...(complete ? { body } : {}),
     };
@@ -250,17 +256,4 @@ export function createLimiter(options: { concurrency: number; deadline: number; 
       options.signal?.removeEventListener("abort", stop);
     },
   };
-}
-
-/** Runs tasks with `concurrency` slots until `deadline`; tasks that could not start give `verify-skipped`. */
-export async function runVerifications<T>(
-  tasks: ((signal: AbortSignal) => Promise<T>)[],
-  options: { concurrency: number; deadline: number; signal?: AbortSignal },
-): Promise<(T | VerifySkipped)[]> {
-  const limiter = createLimiter(options);
-  try {
-    return await Promise.all(tasks.map((task) => limiter.run(task)));
-  } finally {
-    limiter.close();
-  }
 }

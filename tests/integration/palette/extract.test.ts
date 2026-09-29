@@ -257,14 +257,20 @@ describe("extractPalette", () => {
 
   it("builds the palette from the walk when a later step outlasts the budget", async () => {
     await page.goto(`${server.origin}/slow-icon.html`, { waitUntil: "domcontentloaded" });
-    // The page blocks its main thread from well after the walk has returned its signals until well past the budget, so
-    // the screenshot cannot render and the icon decode never answers. That used to throw the signals away with them.
-    await page.evaluate(() =>
-      setTimeout(() => {
-        const end = performance.now() + 6000;
-        while (performance.now() < end);
-      }, 800),
-    );
+    // The page blocks its main thread from the moment the walk has returned its signals, when the screenshot is asked
+    // for, until well past the budget, so the screenshot cannot render and the icon decode never answers. That used to
+    // throw the signals away with them. Started by the screenshot rather than by a timer, so a slow walk on a busy
+    // runner can never be caught in the block itself.
+    const screenshot = page.screenshot.bind(page);
+    page.screenshot = (async (options) => {
+      await page.evaluate(() =>
+        setTimeout(() => {
+          const end = performance.now() + 6000;
+          while (performance.now() < end);
+        }, 0),
+      );
+      return screenshot(options);
+    }) as typeof page.screenshot;
     const timeBudgetMs = 4000;
 
     const started = performance.now();

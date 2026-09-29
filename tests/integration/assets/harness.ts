@@ -1,13 +1,11 @@
-import { createHash } from "node:crypto";
 import type http from "node:http";
 import { chromium, type Browser, type Page } from "playwright-core";
-import sharp from "sharp";
 import { limits } from "@/server/config/limits";
 import { safeFetch } from "@/server/net/safe-fetch";
+import { startCapture } from "@/server/scan/capture";
 import { COLLECTOR_SOURCE } from "@/server/scan/inpage/generated/collector";
 import { MAX_TITLE_CHARS } from "@/server/scan/navigate";
 import { MAX_SITE_NAME_CHARS } from "@/server/scan/preflight";
-import { toneFromBytes } from "@/server/scan/post/tone";
 import type {
   CapturedNetwork,
   CollectorOptions,
@@ -18,9 +16,12 @@ import { serveFixture, type FixtureServer } from "../../fixtures/serve";
 
 /**
  * Test helpers for the assets tests. They run the collector without the engine, with the same contracts: the collector
- * runs in a CDP isolated world like `runInPage` does (spec 7.5), and the network listener keeps what `startCapture`
- * keeps (spec 7.4).
+ * runs in a CDP isolated world like `runInPage` does (spec 7.5), and the network is read by the engine's own capture
+ * (spec 7.4).
  */
+
+/** How long `capture.settle()` waits for the bodies still being read: a fixture page lands them in milliseconds. */
+const SETTLE_MS = 30_000;
 
 const CHROME = process.env.CHROME_EXECUTABLE_PATH ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 
@@ -37,6 +38,7 @@ export function collectorOptions(host: string, siteName: string, patch: Partial<
     host,
     siteName,
     timeBudgetMs: limits.collectMs,
+    deadline: Date.now() + limits.collectMs,
     maxElements: limits.collectorMaxElements,
     maxSvgNormalizations: limits.svgMaxNormalizations,
     maxSvgBytes: limits.svgMaxBytes,
@@ -84,67 +86,18 @@ export async function runCollector(page: Page, options: CollectorOptions, world:
   }
 }
 
-/** Minimal network capture: image bodies hashed, measured and toned, SVG text, font hashes, stylesheet text. */
-export function captureNetwork(page: Page): { settle(): Promise<CapturedNetwork> } {
-  const network: CapturedNetwork = { images: [], fonts: [], sheets: [], bodyTimeouts: 0, skippedBodies: 0 };
-  const pending: Promise<void>[] = [];
-  page.on("response", (response) => {
-    const url = response.url();
-    const status = response.status();
-    if (url.startsWith("data:") || (status >= 300 && status < 400)) return;
-    const type = response.request().resourceType();
-    const headers = response.headers();
-    const contentType = headers["content-type"] ?? "";
-    const isFont = type === "font" || /font|woff|opentype|truetype|sfnt/i.test(contentType) || /\.(?:woff2?|ttf|otf|eot)(?:\?|$)/i.test(url);
-    const isImage = !isFont && (type === "image" || /^image\//i.test(contentType));
-    const isSheet = type === "stylesheet" || /text\/css/i.test(contentType);
-    if (!isFont && !isImage && !isSheet) return;
-    pending.push(
-      (async () => {
-        const body = await response.body().catch(() => null);
-        if (!body?.length) {
-          network.bodyTimeouts++;
-          return;
-        }
-        const sha1 = createHash("sha1").update(body).digest("hex");
-        if (isSheet) network.sheets.push({ url, status, cssText: body.toString("utf8") });
-        else if (isFont) network.fonts.push({ url, status, contentType, bytes: body.length, sha1, meta: null });
-        else {
-          const svg = /svg/i.test(contentType);
-          const meta = svg ? null : await sharp(body).metadata().catch(() => null);
-          network.images.push({
-            url,
-            status,
-            contentType,
-            server: headers.server,
-            bytes: body.length,
-            sha1,
-            width: meta?.width,
-            height: meta?.height,
-            tone: status < 400 ? await toneFromBytes(body, contentType) : "unknown",
-            ...(svg ? { svgText: body.toString("utf8") } : {}),
-            ...(url.startsWith("blob:") ? { blobBase64: body.toString("base64") } : {}),
-          });
-        }
-      })(),
-    );
-  });
-  return {
-    async settle() {
-      await Promise.allSettled(pending);
-      return network;
-    },
-  };
-}
-
-/** Opens `url` in a fresh 1440x900 context with network capture, waits for load and fonts. */
+/**
+ * Opens `url` in a fresh 1440x900 context with the engine's network capture (`startCapture`, spec 7.4), waits for load
+ * and fonts. `capture.settle()` stops it and gives what it read.
+ */
 export async function openPage(browser: Browser, url: string) {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 });
   const page = await context.newPage();
-  const capture = captureNetwork(page);
+  const handle = startCapture(page, { signal: new AbortController().signal });
   await page.goto(url, { waitUntil: "load" });
   await page.waitForLoadState("networkidle", { timeout: 3_000 }).catch(() => {});
   await page.evaluate(() => document.fonts.ready.then(() => undefined));
+  const capture = { settle: (): Promise<CapturedNetwork> => handle.settle(SETTLE_MS) };
   return { context, page, capture };
 }
 
