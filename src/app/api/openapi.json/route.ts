@@ -7,9 +7,6 @@ import { AssetKind, AssetRole, ErrorCode } from "@/lib/contract";
  * one source of truth is `src/lib/contract.ts`, and duplicating it here would be a second one.
  */
 
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
-
 const error = (description: string) => ({
   description,
   content: { "application/json": { schema: { $ref: "#/components/schemas/ApiError" } } },

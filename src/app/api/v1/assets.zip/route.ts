@@ -12,10 +12,6 @@ import { buildAssetsZip } from "../zip";
  * archive carries the same `manifest.json`, so unzipping it into a project gives what a local download would.
  */
 
-export const runtime = "nodejs";
-export const maxDuration = 120;
-export const dynamic = "force-dynamic";
-
 export async function GET(request: Request): Promise<Response> {
   const started = Date.now();
   const authorized = authorizeAgent(request);

@@ -4,10 +4,6 @@ import { eventsToResponse } from "@/server/scan/stream";
 import { refundScanBudget } from "@/server/security/budget";
 import { gateScanRequest, refuseScanMethod, type GateResult } from "@/server/security/gate";
 
-export const runtime = "nodejs";
-export const maxDuration = 120;
-export const dynamic = "force-dynamic";
-
 export async function POST(request: Request): Promise<Response> {
   let gate: GateResult;
   try {

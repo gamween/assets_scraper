@@ -1,5 +1,3 @@
-export const runtime = "nodejs";
-
 /** Build SHA and switches, never URLs or secrets (spec 16). */
 export function GET(): Response {
   return Response.json(

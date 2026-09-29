@@ -7,7 +7,7 @@ vi.mock("botid/server", () => ({ checkBotId: vi.fn(async () => ({ isBot: true })
 
 const { MemoryBudgetStore, setBudgetStoreForTests } = await import("@/server/security/budget");
 const { setAgentScanSourceForTests } = await import("../source");
-const { DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT, maxDuration, runtime } = await import("./route");
+const { DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT } = await import("./route");
 
 const TOKEN = "agent-token-one-with-enough-characters";
 const scan = vi.fn();
@@ -37,11 +37,6 @@ afterEach(() => {
 });
 
 describe("POST /api/v1/scan", () => {
-  it("runs on Node with room for the 90 s scan deadline", () => {
-    expect(runtime).toBe("nodejs");
-    expect(maxDuration).toBe(120);
-  });
-
   it("returns the summary view by default, as one JSON document", async () => {
     const response = await POST(request());
     expect(response.status).toBe(200);

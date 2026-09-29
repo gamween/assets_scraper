@@ -7,7 +7,7 @@ const refuseScanMethod = () => Response.json({ error: { code: "invalid-url", mes
 vi.mock("@/server/security/gate", () => ({ gateScanRequest, refuseScanMethod }));
 vi.mock("@/server/scan/engine", () => ({ scanEngine: { scan } }));
 
-const { DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT, maxDuration, runtime } = await import("./route");
+const { DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT } = await import("./route");
 
 const request = () => new Request("http://localhost/api/scan", { method: "POST", body: JSON.stringify({ url: "example.com" }), headers: { "content-type": "application/json" } });
 
@@ -15,11 +15,6 @@ describe("POST /api/scan", () => {
   beforeEach(() => {
     gateScanRequest.mockReset();
     scan.mockReset();
-  });
-
-  it("runs on Node with room for the 90 s scan deadline", () => {
-    expect(runtime).toBe("nodejs");
-    expect(maxDuration).toBe(120);
   });
 
   it("returns the gate response when the gate refuses", async () => {

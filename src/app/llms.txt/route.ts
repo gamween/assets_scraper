@@ -7,9 +7,6 @@ import { limits } from "@/server/config/limits";
  * this URL. `robots.txt` still disallows everything: this page is for agents that are told about it, not for crawlers.
  */
 
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
-
 const seconds = (ms: number): string => `${Math.round(ms / 1000)} s`;
 const mb = (bytes: number): string => `${Math.round(bytes / (1024 * 1024))} MB`;
 

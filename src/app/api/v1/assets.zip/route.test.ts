@@ -8,7 +8,7 @@ vi.mock("botid/server", () => ({ checkBotId: vi.fn(async () => ({ isBot: true })
 
 const { MemoryBudgetStore, setBudgetStoreForTests } = await import("@/server/security/budget");
 const { setAgentScanSourceForTests } = await import("../source");
-const { DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT, maxDuration, runtime } = await import("./route");
+const { DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT } = await import("./route");
 
 const TOKEN = "agent-token-one-with-enough-characters";
 const DUPLICATE = Buffer.from("the same bytes twice over");
@@ -63,11 +63,6 @@ afterEach(() => {
 });
 
 describe("GET /api/v1/assets.zip", () => {
-  it("runs on Node with room for the 90 s scan deadline", () => {
-    expect(runtime).toBe("nodejs");
-    expect(maxDuration).toBe(120);
-  });
-
   it("streams a ZIP of the deck selection with a manifest", async () => {
     const response = await GET(request());
     expect(response.status).toBe(200);
