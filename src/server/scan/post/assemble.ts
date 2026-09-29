@@ -8,9 +8,8 @@ import { originalCandidates, variantKey } from "./cdn";
 import { extensionFor, formatFromContentType, formatFromUrl, sniffFormat } from "./format";
 import { createFilenamer, displayName } from "./naming";
 import { noiseReason, svgNoiseReason, TINY_DATA_URI_BYTES } from "./noise";
-import { decodeDataUri, forEachStylesheetUrl, largestIconSize, withoutFragment } from "./parse";
+import { decodeDataUri, forEachStylesheetUrl, largestIconSize, svgSize, withoutFragment } from "./parse";
 import { assignRole, isSpriteSheet, logoScore, relevanceScore } from "./roles";
-import { searchFrom } from "./search";
 import { createToneBudget } from "./tone";
 import { groupVariants, pickBest, sizeScore, type SizeHints, type VariantMember } from "./variants";
 import { BROWSER_USER_AGENT, createLimiter, verifyUrl, type Limiter } from "./verify";
@@ -81,29 +80,6 @@ const sha1 = (value: string | Buffer) => createHash("sha1").update(value).digest
 const area = (size?: { width?: number; height?: number }) => (size?.width ?? 0) * (size?.height ?? 0);
 const defined = <T extends object>(value: T): T =>
   Object.fromEntries(Object.entries(value).filter(([, v]) => v !== undefined)) as T;
-
-/** The start of an `<svg>` tag, and the end of any tag. */
-const SVG_TAG = /<svg\b/gi;
-const TAG_END = />/g;
-/** The longest root tag read: a real one is never near this, and a scraped one can be megabytes of junk. */
-const MAX_ROOT_TAG_CHARS = 4096;
-
-/** Width and height of an SVG from its root attributes, else from its viewBox. */
-export function svgSize(markup: string): { width?: number; height?: number } {
-  // Two forward searches find the root tag, and the cut bounds every regex below, the way preflight caps a tag. One
-  // pattern for the whole tag (`<svg\b[^>]*>`) read from every `<svg` to the end of the markup when no `>` followed.
-  const open = searchFrom(markup, SVG_TAG, 0);
-  const close = open && searchFrom(markup, TAG_END, open.index + open[0].length);
-  const root = open && close ? markup.slice(open.index, Math.min(close.index + 1, open.index + MAX_ROOT_TAG_CHARS)) : "";
-  // The digit runs are bounded so the alternatives at each start position stay constant: an unbounded `\d*\.?\d+`
-  // backtracks quadratically over a long digit run that never reaches the closing quote.
-  const attribute = (name: string) => Number(new RegExp(`\\s${name}\\s*=\\s*["']\\s*(\\d{1,10}(?:\\.\\d{1,10})?|\\.\\d{1,10})(?:px)?\\s*["']`, "i").exec(root)?.[1]) || undefined;
-  const width = attribute("width");
-  const height = attribute("height");
-  if (width && height) return { width, height };
-  const box = /\sviewBox\s*=\s*["']([^"']+)["']/i.exec(root)?.[1]?.trim().split(/[\s,]+/).map(Number);
-  return box?.length === 4 && box[2] > 0 && box[3] > 0 ? { width: box[2], height: box[3] } : {};
-}
 
 /** Second-level labels under a two-letter country code that are public suffixes: shop.co.uk, shop.com.au. */
 const SECOND_LEVEL_LABELS = /^(?:ac|co|com|edu|go|gov|ne|net|or|org)$/;

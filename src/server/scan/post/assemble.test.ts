@@ -1,23 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { limits } from "@/server/config/limits";
 import { SignLimitError } from "@/server/security/sign";
-import { LINEAR_OP_GROWTH_BOUND, opGrowth } from "../fonts/testing";
 import type { CandidateContext, CapturedImage, CapturedSheet, PostInput, RawCandidate, RawCollectorOutput, SafeFetch, Signer } from "../types";
-import { assembleAssets, siteLabel, svgSize } from "./assemble";
-
-/** The characters each `searchFrom` steps over, counted for `opGrowth`. */
-const ops = vi.hoisted(() => ({ count: 0 }));
-vi.mock("./search", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./search")>();
-  return {
-    ...actual,
-    searchFrom: (text: string, pattern: RegExp, from: number) => {
-      const match = actual.searchFrom(text, pattern, from);
-      ops.count += (match ? match.index + match[0].length : text.length) - from;
-      return match;
-    },
-  };
-});
+import { assembleAssets, siteLabel } from "./assemble";
 
 // Counts the image header reads of inline rasters, and how many run at once
 const metadataCalls = vi.hoisted(() => ({ total: 0, active: 0, peak: 0 }));
@@ -446,41 +431,5 @@ describe("assembleAssets inline rasters", () => {
     expect(hidden["tiny-data-uri"]).toBe(5_020);
     expect(metadataCalls.total).toBe(20);
     expect(metadataCalls.peak).toBeLessThanOrEqual(2);
-  });
-});
-
-describe("svgSize", () => {
-  it("reads the root attributes, then falls back to the viewBox", () => {
-    expect(svgSize(`<svg width="24" height="24"></svg>`)).toEqual({ width: 24, height: 24 });
-    expect(svgSize(`<svg width=" 24px " height='1.5'></svg>`)).toEqual({ width: 24, height: 1.5 });
-    expect(svgSize(`<svg WIDTH=".5" HEIGHT=".25"></svg>`)).toEqual({ width: 0.5, height: 0.25 });
-    expect(svgSize(`<svg viewBox="0 0 16 32"></svg>`)).toEqual({ width: 16, height: 32 });
-    expect(svgSize(`<svg width="0" height="0" viewBox="0 0 16 32"></svg>`)).toEqual({ width: 16, height: 32 });
-    expect(svgSize(`<svg width="24"></svg>`)).toEqual({});
-  });
-
-  it("finds the root tag in linear time", async () => {
-    // Regression: `<svg\b[^>]*>` over the whole markup read from every `<svg` to the end when no `>` followed. A 1 MB
-    // captured SVG that sharp could not measure took minutes, three times per asset.
-    const hostile: Record<string, (size: number) => string> = {
-      open: (size) => "<svg".repeat(size / 4),
-      late: (size) => `${"<svg ".repeat(size / 5)}width="4" height="2">`,
-    };
-    for (const [kind, markup] of Object.entries(hostile)) {
-      const { small, large, factor } = await opGrowth((size) => svgSize(markup(size)), 32_000, ops);
-      expect.soft(small, kind).toBeGreaterThan(0);
-      expect.soft(factor, kind).toBeLessThan(LINEAR_OP_GROWTH_BOUND);
-      expect.soft(large, kind).toBeLessThanOrEqual(markup(32_000 * 8).length);
-    }
-    expect(svgSize("<svg".repeat(250_000))).toEqual({});
-    // A root tag past the cut is read from its first 4 KB, as before
-    expect(svgSize(`<svg width="4" height="2" data-x="${"x".repeat(8_000)}"><rect/></svg>`)).toEqual({ width: 4, height: 2 });
-  });
-
-  it("stays fast on a root tag carrying a long digit run", () => {
-    // An unbounded digit run in the width pattern backtracks quadratically, which blocks the scan past every deadline.
-    const started = performance.now();
-    expect(svgSize(`<svg width='${"9".repeat(200_000)}x'><rect width="10" height="10"/></svg>`)).toEqual({});
-    expect(performance.now() - started).toBeLessThan(100);
   });
 });

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { LINEAR_OP_GROWTH_BOUND, opGrowth } from "../fonts/testing";
-import { decodeDataUri, forEachStylesheetUrl, largestIconSize, MAX_ICON_SIZES_CHARS, type StylesheetUrl } from "./parse";
+import { decodeDataUri, forEachStylesheetUrl, largestIconSize, MAX_ICON_SIZES_CHARS, svgSize, type StylesheetUrl } from "./parse";
 
 /**
  * The characters the text readers step over, counted, so `opGrowth` sees how their work grows with the input: the CSS
@@ -145,6 +145,42 @@ describe("largestIconSize", () => {
       expect.soft(large, kind).toBeLessThanOrEqual(MAX_ICON_SIZES_CHARS);
     }
     expect(largestIconSize(`${"1".repeat(1_000_000)}x1`)).toBeUndefined();
+  });
+});
+
+describe("svgSize", () => {
+  it("reads the root attributes, then falls back to the viewBox", () => {
+    expect(svgSize(`<svg width="24" height="24"></svg>`)).toEqual({ width: 24, height: 24 });
+    expect(svgSize(`<svg width=" 24px " height='1.5'></svg>`)).toEqual({ width: 24, height: 1.5 });
+    expect(svgSize(`<svg WIDTH=".5" HEIGHT=".25"></svg>`)).toEqual({ width: 0.5, height: 0.25 });
+    expect(svgSize(`<svg viewBox="0 0 16 32"></svg>`)).toEqual({ width: 16, height: 32 });
+    expect(svgSize(`<svg width="0" height="0" viewBox="0 0 16 32"></svg>`)).toEqual({ width: 16, height: 32 });
+    expect(svgSize(`<svg width="24"></svg>`)).toEqual({});
+  });
+
+  it("finds the root tag in linear time", async () => {
+    // Regression: `<svg\b[^>]*>` over the whole markup read from every `<svg` to the end when no `>` followed. A 1 MB
+    // captured SVG that sharp could not measure took minutes, three times per asset.
+    const hostile: Record<string, (size: number) => string> = {
+      open: (size) => "<svg".repeat(size / 4),
+      late: (size) => `${"<svg ".repeat(size / 5)}width="4" height="2">`,
+    };
+    for (const [kind, markup] of Object.entries(hostile)) {
+      const { small, large, factor } = await opGrowth((size) => svgSize(markup(size)), 32_000, ops);
+      expect.soft(small, kind).toBeGreaterThan(0);
+      expect.soft(factor, kind).toBeLessThan(LINEAR_OP_GROWTH_BOUND);
+      expect.soft(large, kind).toBeLessThanOrEqual(markup(32_000 * 8).length);
+    }
+    expect(svgSize("<svg".repeat(250_000))).toEqual({});
+    // A root tag past the cut is read from its first 4 KB, as before
+    expect(svgSize(`<svg width="4" height="2" data-x="${"x".repeat(8_000)}"><rect/></svg>`)).toEqual({ width: 4, height: 2 });
+  });
+
+  it("stays fast on a root tag carrying a long digit run", () => {
+    // An unbounded digit run in the width pattern backtracks quadratically, which blocks the scan past every deadline.
+    const started = performance.now();
+    expect(svgSize(`<svg width='${"9".repeat(200_000)}x'><rect width="10" height="10"/></svg>`)).toEqual({});
+    expect(performance.now() - started).toBeLessThan(100);
   });
 });
 

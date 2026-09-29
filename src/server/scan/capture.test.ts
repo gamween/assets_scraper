@@ -1,7 +1,46 @@
 import { EventEmitter } from "node:events";
 import type { Page, Response } from "playwright-core";
+import sharp from "sharp";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { startCapture } from "./capture";
+import { LINEAR_OP_GROWTH_BOUND, opGrowth } from "./fonts/testing";
+
+/**
+ * Reads of a limit, counted. Each one parses the environment, which is why the capture reads them once per step rather
+ * than once per queued read, and `opGrowth` checks that it still does.
+ */
+const limitReads = vi.hoisted(() => ({ count: 0 }));
+vi.mock("@/server/config/limits", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/server/config/limits")>();
+  const limits = new Proxy(actual.limits, {
+    get(target, key, receiver) {
+      limitReads.count += 1;
+      return Reflect.get(target, key, receiver) as unknown;
+    },
+  });
+  return { ...actual, limits };
+});
+
+// Counts the image header reads, and how many run at once
+const metadataCalls = vi.hoisted(() => ({ total: 0, active: 0, peak: 0 }));
+vi.mock("sharp", async (importOriginal) => {
+  const actual = (await importOriginal<typeof import("sharp")>()).default;
+  const wrapped = (...args: Parameters<typeof actual>) => {
+    const instance = actual(...args);
+    const metadata = instance.metadata.bind(instance);
+    instance.metadata = (async () => {
+      metadataCalls.total++;
+      metadataCalls.peak = Math.max(metadataCalls.peak, ++metadataCalls.active);
+      try {
+        return await metadata();
+      } finally {
+        metadataCalls.active--;
+      }
+    }) as typeof instance.metadata;
+    return instance;
+  };
+  return { default: Object.assign(wrapped, actual) };
+});
 
 /** A response the way the capture sees it, for an image served without a declared length. */
 function imageResponse(url: string, onRead: () => void): Response {
@@ -138,21 +177,60 @@ describe("startCapture", () => {
     expect(reads).toEqual([`200 ${image}`, `200 ${font}`, `200 ${sheet}`]);
   });
 
-  it("keeps scheduling cheap with thousands of reads waiting for the total cap", async () => {
+  it("reads raster headers through the render gate and sizes SVG markup without parsing it", async () => {
+    // sharp works on the thread pool the egress proxy's DNS lookups share: up to 24 bodies land at once, and an SVG
+    // header read is a whole librsvg parse, about 50 ms for a 1 MB illustration.
+    const png = await sharp({ create: { width: 40, height: 30, channels: 4, background: "#123456" } }).png().toBuffer();
+    const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="64" height="16"><rect width="64" height="16"/></svg>');
     const page = new EventEmitter();
-    const capture = startCapture(page as unknown as Page, { signal: new AbortController().signal, toneFromBytes: async () => "unknown", bodyReadMs: 60_000 });
-    const count = 4_000;
-    let reads = 0;
-    let allStarted = () => {};
-    const started = new Promise<void>((resolve) => (allStarted = resolve));
-    const began = performance.now();
-    // Without a declared length each read reserves the 15 MB body cap, so 16 fit in the 250 MB total: every completion
-    // walks the rest of the queue.
-    for (let i = 0; i < count; i += 1) page.emit("response", imageResponse(`https://example.com/${i}.png`, () => ++reads === count && setImmediate(allStarted)));
-    await started;
-    const network = await capture.settle(60_000);
-    expect(network.images.filter((image) => image.sha1)).toHaveLength(count);
-    // About 150 ms here; reading the limits on every step of the walk took about 10 s.
-    expect(performance.now() - began).toBeLessThan(2_000);
+    const capture = startCapture(page as unknown as Page, { signal: new AbortController().signal, toneFromBytes: async () => "unknown" });
+    const bodies: Promise<Buffer>[] = [];
+    const respond = (url: string, contentType: string, body: Buffer) =>
+      page.emit("response", {
+        url: () => url,
+        status: () => 200,
+        headers: () => ({ "content-type": contentType, "content-length": String(body.length) }),
+        request: () => ({ resourceType: () => "image" }),
+        body: () => {
+          const read = Promise.resolve(body);
+          bodies.push(read);
+          return read;
+        },
+      } as unknown as Response);
+    metadataCalls.total = metadataCalls.peak = 0;
+    for (let i = 0; i < 20; i++) respond(`https://example.com/${i}.png`, "image/png", png);
+    for (let i = 0; i < 4; i++) respond(`https://example.com/${i}.svg`, "image/svg+xml", svg);
+    await new Promise((resolve) => setImmediate(resolve));
+    await Promise.all(bodies);
+    const network = await capture.settle(10_000);
+
+    expect(network.images.filter((image) => image.url.endsWith(".png")).every((image) => image.width === 40 && image.height === 30)).toBe(true);
+    expect(network.images.filter((image) => image.url.endsWith(".svg")).map(({ width, height }) => [width, height])).toEqual(Array(4).fill([64, 16]));
+    expect(metadataCalls.total).toBe(20);
+    expect(metadataCalls.peak).toBeLessThanOrEqual(2);
+  });
+
+  /**
+   * Regression: the queue walk read the limits on every step, and each read parses the environment, so thousands of
+   * reads waiting for the total cap took about 10 seconds to schedule. Counted rather than timed: eight times the
+   * responses have to read the limits about eight times as often, not sixty four.
+   */
+  it("keeps scheduling cheap with thousands of reads waiting for the total cap", async () => {
+    const run = async (count: number) => {
+      const page = new EventEmitter();
+      const capture = startCapture(page as unknown as Page, { signal: new AbortController().signal, toneFromBytes: async () => "unknown", bodyReadMs: 60_000 });
+      let reads = 0;
+      let allStarted = () => {};
+      const started = new Promise<void>((resolve) => (allStarted = resolve));
+      // Without a declared length each read reserves the 15 MB body cap, so 16 fit in the 250 MB total: every completion
+      // walks the rest of the queue.
+      for (let i = 0; i < count; i += 1) page.emit("response", imageResponse(`https://example.com/${i}.png`, () => ++reads === count && setImmediate(allStarted)));
+      await started;
+      const network = await capture.settle(60_000);
+      expect(network.images.filter((image) => image.sha1)).toHaveLength(count);
+    };
+    const { small, factor } = await opGrowth(run, 500, limitReads);
+    expect(small).toBeGreaterThan(0);
+    expect(factor).toBeLessThan(LINEAR_OP_GROWTH_BOUND);
   }, 60_000);
 });

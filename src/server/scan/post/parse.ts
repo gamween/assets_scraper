@@ -163,6 +163,29 @@ export function largestIconSize(sizes: string | undefined): { width: number; hei
   return largest;
 }
 
+/** The start of an `<svg>` tag, and the end of any tag. */
+const SVG_TAG = /<svg\b/gi;
+const TAG_END = />/g;
+/** The longest root tag read: a real one is never near this, and a scraped one can be megabytes of junk. */
+const MAX_ROOT_TAG_CHARS = 4096;
+
+/** Width and height of an SVG from its root attributes, else from its viewBox. */
+export function svgSize(markup: string): { width?: number; height?: number } {
+  // Two forward searches find the root tag, and the cut bounds every regex below, the way preflight caps a tag. One
+  // pattern for the whole tag (`<svg\b[^>]*>`) read from every `<svg` to the end of the markup when no `>` followed.
+  const open = searchFrom(markup, SVG_TAG, 0);
+  const close = open && searchFrom(markup, TAG_END, open.index + open[0].length);
+  const root = open && close ? markup.slice(open.index, Math.min(close.index + 1, open.index + MAX_ROOT_TAG_CHARS)) : "";
+  // The digit runs are bounded so the alternatives at each start position stay constant: an unbounded `\d*\.?\d+`
+  // backtracks quadratically over a long digit run that never reaches the closing quote.
+  const attribute = (name: string) => Number(new RegExp(`\\s${name}\\s*=\\s*["']\\s*(\\d{1,10}(?:\\.\\d{1,10})?|\\.\\d{1,10})(?:px)?\\s*["']`, "i").exec(root)?.[1]) || undefined;
+  const width = attribute("width");
+  const height = attribute("height");
+  if (width && height) return { width, height };
+  const box = /\sviewBox\s*=\s*["']([^"']+)["']/i.exec(root)?.[1]?.trim().split(/[\s,]+/).map(Number);
+  return box?.length === 4 && box[2] > 0 && box[3] > 0 ? { width: box[2], height: box[3] } : {};
+}
+
 /**
  * Decodes a `data:` URI into its media type and bytes, or null when it is not a valid data URI. The payload is decoded
  * byte by byte the way a browser does, so a lone `%` is a literal byte rather than a reason to drop the whole URI: an

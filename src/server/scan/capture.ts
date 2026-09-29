@@ -5,6 +5,8 @@ import type { Tone } from "@/lib/contract";
 import { timeoutAfter } from "@/server/async";
 import { limits } from "@/server/config/limits";
 import { parseFontBinary } from "./fonts";
+import { svgSize } from "./post/parse";
+import { withRenderSlot } from "./post/render-slot";
 import { createToneBudget } from "./post/tone";
 import type { CapturedFont, CapturedImage, CapturedNetwork, CapturedSheet, FontBinaryMeta } from "./types";
 
@@ -198,23 +200,35 @@ export function startCapture(page: Page, options: CaptureOptions): CaptureHandle
     record.bytes = body.length;
     record.sha1 = createHash("sha1").update(body).digest("hex");
     const svg = SVG(record.url, record.contentType);
-    // An SVG over the markup cap is dropped as noise (spec 8.2), so its size is never used: no need to parse it.
-    if (!svg || body.length <= limits.svgMaxBytes) {
-      try {
-        const { width, height } = await sharp(body).metadata();
-        if (width && height) Object.assign(record, { width, height });
-      } catch {
-        // Not a format sharp reads (ico, broken bytes): no dimensions.
-      }
-    }
+    // An SVG over the markup cap is dropped as noise (spec 8.2), so its size is never used: no need to read it. One
+    // within the cap is sized from its root tag, as post-processing sizes SVG markup: sharp would parse the whole
+    // document with librsvg on the thread pool the proxy's DNS lookups share, about 50 ms for a 1 MB illustration.
+    const text = svg && body.length <= limits.svgMaxBytes ? body.toString("utf8") : undefined;
+    const { width, height } = text !== undefined ? svgSize(text) : svg ? {} : await rasterSize(body);
+    if (width && height) Object.assign(record, { width, height });
     // The budget gives an SVG over the markup cap no tone either.
     record.tone = await toneBudget.raster(body, record.contentType);
-    if (svg && body.length <= limits.svgMaxBytes) record.svgText = body.toString("utf8");
+    if (text !== undefined) record.svgText = text;
     if (record.url.startsWith("blob:") && body.length <= limits.blobMaxBytes && blobBytes + body.length <= limits.blobTotalBytes) {
       blobBytes += body.length;
       record.blobBase64 = body.toString("base64");
     }
   };
+
+  /**
+   * A raster's dimensions from its header, through the process-wide render gate every sharp call shares (see
+   * `render-slot.ts`): up to `bodyConcurrency` bodies land at once, and the thread pool they would queue on also
+   * resolves the names of the hosts the page connects to.
+   */
+  const rasterSize = (body: Buffer) =>
+    withRenderSlot(
+      () =>
+        sharp(body)
+          .metadata()
+          .catch(() => ({ width: undefined, height: undefined })), // not a format sharp reads (ico, broken bytes)
+      { width: undefined, height: undefined },
+      options.signal,
+    );
 
   const captureFont = (record: CapturedFont, body: Buffer) => {
     record.bytes = body.length;
