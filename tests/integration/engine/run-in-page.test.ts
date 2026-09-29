@@ -178,6 +178,14 @@ describe("runInPage", () => {
     });
   });
 
+  /** Kills every renderer process of the page's browser, as a crash or the out-of-memory killer would. */
+  const killRenderers = async (page: Page): Promise<void> => {
+    const browser = page.context().browser();
+    if (!browser) throw new Error("the page has no browser");
+    const { processInfo } = await (await browser.newBrowserCDPSession()).send("SystemInfo.getProcessInfo");
+    for (const info of processInfo) if (info.type === "renderer") process.kill(info.id, "SIGKILL");
+  };
+
   it("rejects at once when the renderer crashes or the browser dies, which leave a CDP call unanswered", async () => {
     /** Code that marks the page once it runs, then never ends: the test acts once the evaluation is in flight. */
     const hang = "(document.documentElement.dataset.running = 'yes', new Promise(() => {}))";
@@ -186,7 +194,10 @@ describe("runInPage", () => {
       const evaluation = runInPage(page, "", hang, { timeoutMs: 20_000 });
       await running(page);
       const crashedAt = Date.now();
-      void page.context().newCDPSession(page).then((cdp) => cdp.send("Page.crash")).catch(() => {});
+      // The renderer's process goes, which is what a crash is to the browser. `Page.crash` made the renderer crash
+      // itself instead, and a sandboxed renderer on Linux reports that through its crash handler, which on ubuntu-latest
+      // did not reach the browser inside the 20 s this test waits once the local launch kept Chrome's sandbox on.
+      void killRenderers(page).catch(() => {});
       await expect(evaluation).rejects.toBeInstanceOf(PageGoneError);
       expect(Date.now() - crashedAt).toBeLessThan(5000);
     });
