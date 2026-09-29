@@ -434,5 +434,16 @@ test.describe("results", () => {
     const partial = withDone(loadFixture("framer"), (done) => ({ ...done, partial: true }));
     await openResults(page, { events: partial, url: "https://framer.com/" });
     await expect(page.getByText("Partial results. The page didn't finish loading.")).toBeVisible();
+    await expect(page.getByTestId("truncated-notice")).toHaveCount(0);
+  });
+
+  test("a scan that stopped listing says some files are not listed", async ({ page }) => {
+    // The `truncated` warning (past the asset cap, or the collector's output cut to size) was stored and never shown,
+    // so such a scan looked complete.
+    const events = loadFixture("linear");
+    const done = events.findIndex((event) => event.type === "done");
+    const truncated: ScanEvent[] = [...events.slice(0, done), { type: "warning", code: "truncated" }, ...events.slice(done)];
+    await openResults(page, { events: truncated });
+    await expect(page.getByTestId("truncated-notice")).toHaveText("Some files are not listed. This page has more than one scan can collect.");
   });
 });
