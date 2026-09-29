@@ -67,6 +67,10 @@ export function formatFontUninstall(result: FontUninstallReport): string {
     rows.push(`${still.family}: still installed, none of its files could be removed`);
     for (const file of still.files) rows.push(`  ${file}`);
   }
+  for (const changed of result.changed) {
+    rows.push(`${changed.family}: left in place, these files are no longer the ones this tool installed`);
+    for (const file of changed.files) rows.push(`  ${file}`);
+  }
   if (rows.length === 0) rows.push("nothing to remove");
   return rows.join("\n");
 }

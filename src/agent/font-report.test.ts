@@ -65,7 +65,7 @@ describe("formatFontList", () => {
 
 describe("formatFontUninstall", () => {
   it("names what it removed and what it never installed", () => {
-    const report = formatFontUninstall({ removed: [inter], missing: ["Nope"], stillInstalled: [] });
+    const report = formatFontUninstall({ removed: [inter], missing: ["Nope"], stillInstalled: [], changed: [] });
     expect(report).toContain("removed Inter");
     expect(report).toContain("/tmp/fonts/Inter-Regular.ttf");
     expect(report).toContain("Nope: this tool did not install it, nothing removed");
@@ -73,9 +73,16 @@ describe("formatFontUninstall", () => {
 
   /** Regression: a family none of whose files could be removed printed as `removed`, with no file lines and no warning. */
   it("says a family is still installed rather than claiming it was removed", () => {
-    const report = formatFontUninstall({ removed: [], missing: [], stillInstalled: [{ family: "Inter", files: ["/elsewhere/Inter-Regular.ttf"] }] });
+    const report = formatFontUninstall({ removed: [], missing: [], stillInstalled: [{ family: "Inter", files: ["/elsewhere/Inter-Regular.ttf"] }], changed: [] });
     expect(report).toContain("Inter: still installed, none of its files could be removed");
     expect(report).toContain("/elsewhere/Inter-Regular.ttf");
     expect(report).not.toContain("removed Inter");
+  });
+
+  it("says which recorded files it left because they are not the ones it installed", () => {
+    const report = formatFontUninstall({ removed: [], missing: [], stillInstalled: [], changed: [{ family: "Inter", files: ["/tmp/fonts/Inter-Regular.ttf"] }] });
+    expect(report).toContain("Inter: left in place, these files are no longer the ones this tool installed");
+    expect(report).toContain("/tmp/fonts/Inter-Regular.ttf");
+    expect(report).not.toContain("nothing to remove");
   });
 });

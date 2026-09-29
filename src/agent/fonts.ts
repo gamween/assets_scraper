@@ -7,7 +7,17 @@ import { sniffFontFormat } from "@/server/scan/fonts/binary";
 import { parseFontBinary } from "@/server/scan/fonts/index";
 import { classifyLicense } from "@/server/scan/fonts/license";
 import { type FontCandidate, fontCandidates, isItalic, type NoCandidateReason, WEIGHT_NAMES, weightOf } from "./font-candidates";
-import { fontManifestPath, listInstalledFonts, removeRecordedFile, withFontStateLock, writeManifest } from "./font-manifest";
+import {
+  fontManifestPath,
+  type InstallRecord,
+  publicInstall,
+  readInstallRecords,
+  removeRecordedFile,
+  withFontStateLock,
+  type WrittenFile,
+  writeManifest,
+  writtenFile,
+} from "./font-manifest";
 import { agentLimits } from "./limits";
 import type { FontInstall } from "./types";
 import { woffToSfnt } from "./woff";
@@ -18,8 +28,9 @@ import { woffToSfnt } from "./woff";
  * `listInstalledFonts` and `uninstallFonts` can work.
  *
  * Two rules the implementation is built around. A file this tool did not write is never touched: the target is opened
- * with `O_EXCL | O_NOFOLLOW`, and a name is only replaced when the manifest says this same family wrote it. And the
- * licence always comes from the bytes that were installed, whatever the scan believed, because that is the notice the
+ * with `O_EXCL | O_NOFOLLOW`, and a name is only replaced or removed when the manifest says this same family wrote it
+ * and the file there is still the one it wrote (`removeRecordedFile`). And the licence always comes from the bytes that
+ * were installed, whatever the scan believed, because that is the notice the
  * user is agreeing to; a commercial font installs too, with its licence reported (spec 5.5).
  */
 
@@ -73,19 +84,26 @@ export function userFontDir(): string {
   return path.join(os.homedir(), ".local", "share", "fonts");
 }
 
-/** What an uninstall says: what went, what was never installed, and what is recorded but still on disk. */
+/** What an uninstall says: what went, what was never installed, what is recorded but still on disk, and what is not ours. */
 export interface FontUninstallReport {
   removed: FontInstall[];
   /** Families this tool never installed. */
   missing: string[];
   /** Families it records but could not remove a single file of, with the files still there. They stay in the manifest. */
   stillInstalled: { family: string; files: string[] }[];
+  /**
+   * Recorded files that no longer hold what this tool wrote, or that a version before this one recorded without the
+   * identity that would prove it: another font now sits at that path. They are left on disk and forgotten.
+   */
+  changed: { family: string; files: string[] }[];
 }
 
 /**
  * Deletes the files of `families` (matched case insensitively) and forgets them. It never touches a file it did not
- * record, and never one outside the font directory, so a manifest that was edited or restored from elsewhere cannot turn
- * an uninstall into a delete of something else. A file it refuses stays recorded, because it is still installed.
+ * record, never one outside the font directory, and never one that is no longer the file it wrote, so a manifest that
+ * was edited or restored from elsewhere, or a font the user installed under a name this tool once used, cannot turn an
+ * uninstall into a delete of something else. A file it refuses stays recorded, because it is still installed; a file
+ * that is not ours any more is forgotten and left where it is.
  *
  * A family none of whose files could be removed is reported under `stillInstalled` rather than as removed with an empty
  * file list: with `ASSETS_SCRAPER_FONT_DIR` pointing elsewhere, or a manifest restored from another machine, every path
@@ -95,33 +113,45 @@ export function uninstallFonts(families: string[]): Promise<FontUninstallReport>
   return withFontStateLock(() => removeFamilies(families));
 }
 
+/** The identity the record kept for `file`, if it kept one. */
+const writtenOf = (record: InstallRecord, file: string): WrittenFile | undefined => record.written.find((entry) => entry.path === file);
+
+/** A record narrowed to `files`, with only their identities. */
+const narrowed = (record: InstallRecord, files: string[]): InstallRecord => ({
+  ...record,
+  files,
+  written: record.written.filter((entry) => files.includes(entry.path)),
+});
+
 async function removeFamilies(families: string[]): Promise<FontUninstallReport> {
   const fontDir = userFontDir();
-  const installs = await listInstalledFonts();
+  const records = await readInstallRecords();
   const wanted = new Map(families.map((family) => [family.trim().toLowerCase(), family]));
-  const removed: FontInstall[] = [];
-  const stillInstalled: FontUninstallReport["stillInstalled"] = [];
-  const kept: FontInstall[] = [];
+  const report: FontUninstallReport = { removed: [], missing: [], stillInstalled: [], changed: [] };
+  const kept: InstallRecord[] = [];
 
-  for (const install of installs) {
-    if (!wanted.has(install.family.toLowerCase())) {
-      kept.push(install);
+  for (const record of records) {
+    if (!wanted.has(record.family.toLowerCase())) {
+      kept.push(record);
       continue;
     }
     const gone: string[] = [];
     const left: string[] = [];
-    for (const file of install.files) {
-      if (await removeRecordedFile(file, fontDir)) gone.push(file);
-      else left.push(file);
+    const changed: string[] = [];
+    for (const file of record.files) {
+      const outcome = await removeRecordedFile(file, fontDir, writtenOf(record, file));
+      (outcome === "removed" ? gone : outcome === "changed" ? changed : left).push(file);
     }
-    if (gone.length > 0) removed.push({ ...install, files: gone });
-    else if (left.length > 0) stillInstalled.push({ family: install.family, files: left });
-    if (left.length > 0) kept.push({ ...install, files: left });
-    wanted.delete(install.family.toLowerCase());
+    if (gone.length > 0) report.removed.push({ ...publicInstall(record), files: gone });
+    else if (left.length > 0) report.stillInstalled.push({ family: record.family, files: left });
+    if (changed.length > 0) report.changed.push({ family: record.family, files: changed });
+    if (left.length > 0) kept.push(narrowed(record, left));
+    wanted.delete(record.family.toLowerCase());
   }
 
-  if (removed.length > 0) await writeManifest(kept);
-  return { removed, missing: [...wanted.values()], stillInstalled };
+  report.missing = [...wanted.values()];
+  if (report.removed.length > 0 || report.changed.length > 0) await writeManifest(kept);
+  return report;
 }
 
 /**
@@ -255,16 +285,17 @@ async function acquireFont(candidates: FontCandidate[], options: InstallFontsOpt
  * Installs one file per family into the user font directory and records it (spec section 5). Nothing throws for a family
  * that cannot be installed: it lands in `skipped` with a reason, so an agent can report every family in one answer.
  *
- * One call runs at a time (`withFontStateLock`), which is what keeps the manifest whole when an agent installs the fonts
- * of two pages at once and what keeps the WOFF2 decompression safe (see `toSfnt`).
+ * One call runs at a time (`withFontStateLock`), across processes too, which is what keeps the manifest whole when an
+ * agent installs the fonts of two pages at once, or two sessions do, and what keeps the WOFF2 decompression safe (see
+ * `toSfnt`).
  */
 export function installFonts(families: FontFamily[], options: InstallFontsOptions): Promise<FontInstallReport> {
-  return withFontStateLock(() => installFamilies(families, options));
+  return withFontStateLock(() => installFamilies(families, options), options.signal);
 }
 
 async function installFamilies(families: FontFamily[], options: InstallFontsOptions): Promise<FontInstallReport> {
   const fontDir = userFontDir();
-  const installs = await listInstalledFonts();
+  const records = await readInstallRecords();
   const installed: FontInstall[] = [];
   const skipped: FontSkipped[] = [];
   const skip = (family: string, reason: FontSkipReason, detail?: string): void => {
@@ -288,11 +319,23 @@ async function installFamilies(families: FontFamily[], options: InstallFontsOpti
    * become `Sohne-Regular.ttf`), which would otherwise leave two manifest entries pointing at one file.
    */
   const ownerOf = new Map<string, string>();
-  for (const entry of installs) {
+  for (const entry of records) {
     for (const file of entry.files) if (!ownerOf.has(file)) ownerOf.set(file, entry.family.toLowerCase());
   }
   /** Files this call wrote, so two families that fold to the same file name do not silently overwrite each other. */
   const written = new Set<string>();
+  /** Whether the manifest has something to say that it did not: an install, or a recorded file found not to be ours. */
+  let dirty = false;
+  /** Drops a recorded path whose file is not the one this tool wrote any more: it is not ours to remove or to keep. */
+  const forget = (file: string): void => {
+    const remaining = records
+      .map((record) => (record.files.includes(file) ? narrowed(record, record.files.filter((entry) => entry !== file)) : record))
+      .filter((record) => record.files.length > 0);
+    records.splice(0, records.length, ...remaining);
+    ownerOf.delete(file);
+    dirty = true;
+  };
+  const recordOf = (familyKey: string): InstallRecord | undefined => records.find((entry) => entry.family.toLowerCase() === familyKey);
 
   const cancelled = (): boolean => options.signal?.aborted === true;
   for (const family of chosen) {
@@ -325,16 +368,19 @@ async function installFamilies(families: FontFamily[], options: InstallFontsOpti
     const license: FontLicense = fromBinary.kind === "unknown" ? family.license : fromBinary;
 
     // The exclusive open is the whole guard on the directory: the name is only removed first when the manifest says this
-    // family wrote it, and anything else sitting there (a file, a directory, a symbolic link, a dangling one) refuses the
-    // open. Nothing checks the name for existence ahead of it on purpose, so a file that appears while the bytes are being
-    // fetched cannot slip through the window between a check and a write.
+    // family wrote it and the file there is still that one, and anything else sitting there (a file, a directory, a
+    // symbolic link, a dangling one) refuses the open. Nothing checks the name for existence ahead of it on purpose, so a
+    // file that appears while the bytes are being fetched cannot slip through the window between a check and a write.
+    let identity: WrittenFile;
     try {
       await fsp.mkdir(fontDir, { recursive: true });
-      if (owner === familyKey) await removeRecordedFile(target, fontDir);
+      const own = owner === familyKey ? recordOf(familyKey) : undefined;
+      if (own && (await removeRecordedFile(target, fontDir, writtenOf(own, target))) === "changed") forget(target);
       const flags = fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW;
       const handle = await fsp.open(target, flags, 0o644);
       try {
         await handle.writeFile(bytes);
+        identity = writtenFile(target, await handle.stat());
       } finally {
         await handle.close();
       }
@@ -348,28 +394,39 @@ async function installFamilies(families: FontFamily[], options: InstallFontsOpti
 
     // A family installed before may have written another name (another style, or another extension). That file is this
     // tool's and it is no longer part of the family's install, so it goes now: left behind it would be a font no uninstall
-    // can reach. One that cannot be removed stays recorded instead, so a later uninstall still knows about it.
-    const previous = installs.findIndex((entry) => entry.family.toLowerCase() === familyKey);
-    const orphans: string[] = [];
-    if (previous !== -1) {
-      for (const file of installs[previous].files) {
-        if (file === target) continue;
-        if (await removeRecordedFile(file, fontDir)) ownerOf.delete(file);
-        else orphans.push(file);
+    // can reach. One that cannot be removed stays recorded instead, so a later uninstall still knows about it, and one
+    // that is not the file this tool wrote any more is forgotten and left alone.
+    const orphans: WrittenFile[] = [];
+    const orphanPaths: string[] = [];
+    const before = recordOf(familyKey);
+    if (before) {
+      for (const recorded of before.files) {
+        if (recorded === target) continue;
+        const outcome = await removeRecordedFile(recorded, fontDir, writtenOf(before, recorded));
+        if (outcome === "kept") {
+          orphanPaths.push(recorded);
+          const kept = writtenOf(before, recorded);
+          if (kept) orphans.push(kept);
+        } else {
+          ownerOf.delete(recorded);
+        }
       }
     }
 
-    const install: FontInstall = {
+    const record: InstallRecord = {
       family: family.name,
-      files: [...new Set([target, ...orphans])],
+      files: [target, ...orphanPaths],
       license,
       sourceHost: family.sourceHost ?? options.pageHost ?? hostOf(file.url),
       installedAt: new Date().toISOString(),
       converted,
+      written: [identity, ...orphans],
     };
-    installed.push(install);
-    if (previous === -1) installs.push(install);
-    else installs[previous] = install;
+    installed.push(publicInstall(record));
+    const previous = before ? records.indexOf(before) : -1;
+    if (previous === -1) records.push(record);
+    else records[previous] = record;
+    dirty = true;
   }
 
   // Naming the families the scan does hold, so an agent that slipped on a diacritic can correct itself from the answer
@@ -380,5 +437,5 @@ async function installFamilies(families: FontFamily[], options: InstallFontsOpti
     : `this page has ${available}${families.length > MAX_NAMED_FAMILIES ? ` and ${families.length - MAX_NAMED_FAMILIES} more` : ""}`;
   for (const name of unknown.values()) skip(name, "unknown-family", detail);
 
-  return { fontDir, manifestPath: installed.length > 0 ? await writeManifest(installs) : fontManifestPath(), installed, skipped };
+  return { fontDir, manifestPath: dirty ? await writeManifest(records) : fontManifestPath(), installed, skipped };
 }

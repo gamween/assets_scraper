@@ -1,3 +1,4 @@
+import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -7,7 +8,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { decompress } from "wawoff2";
 import type { FontFamily, FontFile } from "@/lib/contract";
 import { agentLimitEnvName } from "./limits";
-import { fontManifestPath, listInstalledFonts } from "./font-manifest";
+import { fontLockPath, fontManifestPath, listInstalledFonts, LOCK_STALE_MS } from "./font-manifest";
 import { installFonts, toSfnt, uninstallFonts, userFontDir } from "./fonts";
 import { testFontFamily, testFontFile, woffFromSfnt } from "./testing";
 
@@ -393,7 +394,7 @@ describe("listInstalledFonts and uninstallFonts", () => {
   });
 
   it("reports an unknown family as missing instead of throwing", async () => {
-    expect(await uninstallFonts(["Nope"])).toEqual({ removed: [], missing: ["Nope"], stillInstalled: [] });
+    expect(await uninstallFonts(["Nope"])).toEqual({ removed: [], missing: ["Nope"], stillInstalled: [], changed: [] });
   });
 
   it("reads an empty list when nothing was ever installed, and ignores a corrupt manifest", async () => {
@@ -425,18 +426,151 @@ describe("listInstalledFonts and uninstallFonts", () => {
     expect(await listInstalledFonts()).toMatchObject([{ family: "Inter", files: [outside] }]);
   });
 
-  it("removes the files it can when a recorded path is a directory", async () => {
-    const directory = path.join(fontDir, "Inter-Regular.ttf");
-    const file = path.join(fontDir, "Inter-Bold.ttf");
-    fs.mkdirSync(directory, { recursive: true });
-    fs.writeFileSync(file, "ours");
-    recordInstall("Inter", [directory, file]);
+  it("never removes a directory that sits where a recorded file was, and forgets it", async () => {
+    await installFonts([interWoff2()], { fetchBytes });
+    const file = path.join(fontDir, "Inter-Regular.ttf");
+    fs.rmSync(file);
+    fs.mkdirSync(path.join(file, "inside"), { recursive: true });
 
     const removal = await uninstallFonts(["Inter"]);
 
-    expect(removal.removed).toMatchObject([{ family: "Inter", files: [file] }]);
-    expect(fs.existsSync(file)).toBe(false);
-    expect(fs.existsSync(directory)).toBe(true);
+    expect(removal.removed).toEqual([]);
+    expect(removal.changed).toEqual([{ family: "Inter", files: [file] }]);
+    expect(fs.existsSync(path.join(file, "inside"))).toBe(true);
+    expect(await listInstalledFonts()).toEqual([]);
+  });
+
+  /**
+   * Regression: the manifest kept paths only, so the user removing the font in Font Book (which moves it to the Trash)
+   * and installing the official release under the same name left a record that deleted their font on the next
+   * uninstall, or replaced it on the next install of any page using the family.
+   */
+  describe("a font the user put where one this tool installed was", () => {
+    const replaceWithTheirs = (file: string): void => {
+      fs.rmSync(file);
+      fs.writeFileSync(file, ttf);
+    };
+
+    it("is left alone by an uninstall, which forgets the record", async () => {
+      await installFonts([interWoff2()], { fetchBytes });
+      const file = path.join(fontDir, "Inter-Regular.ttf");
+      replaceWithTheirs(file);
+
+      const removal = await uninstallFonts(["Inter"]);
+
+      expect(removal).toEqual({ removed: [], missing: [], stillInstalled: [], changed: [{ family: "Inter", files: [file] }] });
+      expect(fs.readFileSync(file).equals(ttf)).toBe(true);
+      expect(await listInstalledFonts()).toEqual([]);
+    });
+
+    it("is not replaced by an install of the same family", async () => {
+      await installFonts([interWoff2()], { fetchBytes });
+      const file = path.join(fontDir, "Inter-Regular.ttf");
+      replaceWithTheirs(file);
+      const theirs = fs.statSync(file).ino;
+
+      const report = await installFonts([interWoff2()], { fetchBytes });
+
+      expect(report.installed).toEqual([]);
+      expect(report.skipped).toEqual([{ family: "Inter", reason: "exists", detail: file }]);
+      expect(fs.statSync(file).ino).toBe(theirs);
+      expect(await listInstalledFonts()).toEqual([]);
+    });
+
+    it("is not removed as the leftover of another style", async () => {
+      served.set("https://cdn.example.com/inter.ttf", ttf);
+      const bold = oneFile("Inter", { url: "https://cdn.example.com/inter.ttf", format: "ttf" });
+      bold.faces[0].weight = "700";
+      await installFonts([bold], { fetchBytes });
+      const boldFile = path.join(fontDir, "Inter-Bold.ttf");
+      replaceWithTheirs(boldFile);
+
+      const report = await installFonts([oneFile("Inter", { url: "https://cdn.example.com/inter.ttf", format: "ttf" })], { fetchBytes });
+
+      expect(report.installed).toMatchObject([{ family: "Inter", files: [path.join(fontDir, "Inter-Regular.ttf")] }]);
+      expect(fs.existsSync(boldFile)).toBe(true);
+      expect((await listInstalledFonts())[0].files).toEqual([path.join(fontDir, "Inter-Regular.ttf")]);
+    });
+  });
+
+  it("leaves the files of a manifest that recorded no identity, which cannot prove they are still its own", async () => {
+    const file = path.join(fontDir, "Inter-Regular.ttf");
+    fs.mkdirSync(fontDir, { recursive: true });
+    fs.writeFileSync(file, ttf);
+    recordInstall("Inter", [file]);
+
+    const removal = await uninstallFonts(["Inter"]);
+
+    expect(removal.changed).toEqual([{ family: "Inter", files: [file] }]);
+    expect(fs.existsSync(file)).toBe(true);
+    expect(await listInstalledFonts()).toEqual([]);
+  });
+});
+
+/**
+ * Two Claude Code sessions run two MCP servers, and the in-process queue does not reach across them. Each install read
+ * the manifest, wrote its fonts and wrote the manifest back, so two at once dropped one side's entries: that font stayed
+ * in the font directory with nothing able to list or uninstall it.
+ */
+describe("the manifest lock across processes", () => {
+  let holder: ChildProcess | undefined;
+
+  afterEach(() => {
+    holder?.kill("SIGKILL");
+    holder = undefined;
+  });
+
+  /** A lock file as another live process holds it. */
+  const holdLock = (pid: number): void => {
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(fontLockPath(), JSON.stringify({ pid, token: "other-process" }));
+  };
+
+  const liveProcess = (): number => {
+    holder = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60_000)"], { stdio: "ignore" });
+    if (holder.pid === undefined) throw new Error("could not start a process to hold the lock");
+    return holder.pid;
+  };
+
+  it("waits for another process to finish its install and keeps what that one recorded", async () => {
+    holdLock(liveProcess());
+    let finished = false;
+    const install = installFonts([interWoff2()], { fetchBytes }).then((report) => {
+      finished = true;
+      return report;
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(finished).toBe(false);
+    // What the other process writes before it lets go.
+    const other = { family: "Roboto", files: [path.join(fontDir, "Roboto-Regular.ttf")], license: { kind: "open" }, sourceHost: "fonts.example.com", installedAt: new Date().toISOString(), converted: true, written: [] };
+    fs.writeFileSync(fontManifestPath(), JSON.stringify({ version: 2, installs: [other] }));
+    fs.rmSync(fontLockPath());
+
+    expect((await install).installed.map((entry) => entry.family)).toEqual(["Inter"]);
+    expect((await listInstalledFonts()).map((entry) => entry.family)).toEqual(["Roboto", "Inter"]);
+    expect(fs.existsSync(fontLockPath())).toBe(false);
+  });
+
+  it("takes over a lock left by a process that no longer exists, or one nobody touched for too long", async () => {
+    holdLock(spawnSync(process.execPath, ["-e", ""]).pid);
+    expect((await installFonts([interWoff2()], { fetchBytes })).installed).toHaveLength(1);
+
+    holdLock(liveProcess());
+    const old = new Date(Date.now() - LOCK_STALE_MS - 5_000);
+    fs.utimesSync(fontLockPath(), old, old);
+    expect((await uninstallFonts(["Inter"])).removed).toHaveLength(1);
+    expect(fs.existsSync(fontLockPath())).toBe(false);
+  });
+
+  it("stops waiting when the install is cancelled", async () => {
+    holdLock(liveProcess());
+    const controller = new AbortController();
+    const install = installFonts([interWoff2()], { fetchBytes, signal: controller.signal });
+    controller.abort(new Error("cancelled by the client"));
+
+    await expect(install).rejects.toThrow("cancelled by the client");
+    expect(JSON.parse(fs.readFileSync(fontLockPath(), "utf8"))).toMatchObject({ token: "other-process" });
   });
 });
 
