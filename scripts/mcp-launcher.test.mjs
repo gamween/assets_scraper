@@ -6,10 +6,12 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { ensureBundle, GENERATED_DIRS, LauncherError, missingPackage, newestSource, RUNTIME_PACKAGES, staleness } from "./mcp-launcher.mjs";
+import { AGENT_EXTERNALS } from "./agent-externals.mjs";
+import { BUILD_PACKAGES, ensureBundle, GENERATED_DIRS, LauncherError, missingPackage, newestSource, RUNTIME_PACKAGES, SOURCE_FILES, staleness } from "./mcp-launcher.mjs";
 
 const run = promisify(execFile);
 const launcher = fileURLToPath(new URL("./mcp-launcher.mjs", import.meta.url));
+const externals = fileURLToPath(new URL("./agent-externals.mjs", import.meta.url));
 
 /** A stand-in for dist/mcp.mjs: it only speaks when node was started on it, which is the guard the real bundle uses. */
 const BUNDLE_SOURCE = [
@@ -32,7 +34,7 @@ async function fakeRepo({ bundle = true, packages = true, bundleAt = 2_000_000, 
   await writeFile(source, "export const version = 1;\n");
   await utimes(source, sourceAt / 1000, sourceAt / 1000);
   if (packages) {
-    for (const name of ["esbuild", "@modelcontextprotocol/sdk"]) await mkdir(path.join(root, "node_modules", name), { recursive: true });
+    for (const name of [...BUILD_PACKAGES, ...RUNTIME_PACKAGES]) await mkdir(path.join(root, "node_modules", name), { recursive: true });
   }
   if (bundle) {
     await mkdir(path.join(root, "dist"), { recursive: true });
@@ -102,6 +104,21 @@ describe("staleness", () => {
     await writeFile(src, "export const x = 1;\n");
     await utimes(src, 2_000, 2_000);
     expect(await staleness(root)).toBe("dist/mcp.mjs is older than src/server/scan/inpage/collector.src.ts");
+  });
+
+  /**
+   * Regression: only the source directories were compared, so a pull that bumped a bundled dependency (package.json and
+   * the lockfile), the `@/` alias or the build scripts left the bundle looking current and the old build was served.
+   */
+  it("counts the package, the lockfile, the tsconfig and the build scripts as inputs", async () => {
+    expect(SOURCE_FILES).toEqual(expect.arrayContaining(["package.json", "pnpm-lock.yaml", "tsconfig.json", "scripts/build-agent.mjs", "scripts/agent-externals.mjs"]));
+    for (const input of SOURCE_FILES) {
+      const root = await fakeRepo({ bundleAt: 1_500_000, sourceAt: 1_000_000 });
+      await mkdir(path.dirname(path.join(root, input)), { recursive: true });
+      await writeFile(path.join(root, input), "{}\n");
+      await utimes(path.join(root, input), 2_000, 2_000);
+      expect(await staleness(root), input).toBe(`dist/mcp.mjs is older than ${input}`);
+    }
   });
 
   /**
@@ -179,16 +196,27 @@ describe("ensureBundle", () => {
     await mkdir(path.join(root, "node_modules/esbuild"), { recursive: true });
     const build = fakeBuild(root);
 
-    expect(await missingPackage(root, RUNTIME_PACKAGES)).toBe("@modelcontextprotocol/sdk");
+    expect(await missingPackage(root, RUNTIME_PACKAGES)).toBe(RUNTIME_PACKAGES[0]);
     await expect(ensureBundle({ root, run: build, log: () => {} })).rejects.toThrow(LauncherError);
-    await expect(ensureBundle({ root, run: build, log: () => {} })).rejects.toThrow(/@modelcontextprotocol\/sdk is not installed/);
+    await expect(ensureBundle({ root, run: build, log: () => {} })).rejects.toThrow(`${RUNTIME_PACKAGES[0]} is not installed`);
     await expect(ensureBundle({ root, run: build, log: () => {} })).rejects.toThrow(/pnpm install/);
     expect(build.steps).toEqual([]);
   });
 
+  /**
+   * Every package the build keeps external is one the bundle loads at run time: sharp, fontkit and the rest are static
+   * imports, which failed at link time with node's own error before the server could say anything.
+   */
+  it("requires every package the build keeps out of the bundle, and names the one that is missing", async () => {
+    expect(RUNTIME_PACKAGES).toEqual(AGENT_EXTERNALS);
+    const root = await fakeRepo({ bundleAt: 2_000_000, sourceAt: 1_000_000 });
+    await rm(path.join(root, "node_modules/sharp"), { recursive: true });
+    await expect(ensureBundle({ root, run: fakeBuild(root), log: () => {} })).rejects.toThrow(/sharp is not installed/);
+  });
+
   it("starts a current bundle without esbuild, which only a rebuild needs", async () => {
     const root = await fakeRepo({ bundleAt: 2_000_000, sourceAt: 1_000_000, packages: false });
-    await mkdir(path.join(root, "node_modules/@modelcontextprotocol/sdk"), { recursive: true });
+    for (const name of RUNTIME_PACKAGES) await mkdir(path.join(root, "node_modules", name), { recursive: true });
     const build = fakeBuild(root);
 
     expect(await ensureBundle({ root, run: build, log: () => {} })).toEqual({ bundle: path.join(root, "dist/mcp.mjs"), rebuilt: false, reason: null });
@@ -208,6 +236,7 @@ describe("the launcher process", () => {
     const root = await fakeRepo(options);
     await mkdir(path.join(root, "scripts"), { recursive: true });
     await copyFile(launcher, path.join(root, "scripts/mcp-launcher.mjs"));
+    await copyFile(externals, path.join(root, "scripts/agent-externals.mjs"));
     return root;
   }
 

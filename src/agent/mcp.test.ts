@@ -7,7 +7,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import pkg from "../../package.json";
 import { fontManifestPath } from "./font-manifest";
-import { createAgentMcpServer, MAX_TOOL_RESULT_BYTES, MCP_TOOL_NAMES, missingRuntimeDependency } from "./mcp";
+import { createAgentMcpServer, MAX_TOOL_RESULT_BYTES, MCP_TOOL_NAMES } from "./mcp";
 import { noBudget, testAsset, testFontFamily, testScan } from "./testing";
 import type { AgentScan, ScanSource, SelectionOptions } from "./types";
 
@@ -682,19 +682,5 @@ describe("the scan source", () => {
     expect(text(await call(tokenless, "scan_page", { url, refresh: true }))).toContain("ASSETS_SCRAPER_TOKEN");
     await tokenless.close();
     delete process.env.ASSETS_SCRAPER_REMOTE;
-  });
-});
-
-describe("missingRuntimeDependency", () => {
-  it("is null when every runtime dependency resolves", () => {
-    expect(missingRuntimeDependency()).toBeNull();
-  });
-
-  it("names the first dependency that does not resolve", () => {
-    const missing = missingRuntimeDependency((name) => {
-      if (name === "sharp") throw new Error("Cannot find module 'sharp'");
-      return name;
-    });
-    expect(missing).toBe("sharp");
   });
 });

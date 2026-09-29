@@ -1,4 +1,3 @@
-import { createRequire } from "node:module";
 import path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -540,35 +539,10 @@ export function createAgentMcpServer(options: AgentMcpOptions = {}): McpServer {
   return server;
 }
 
-/** Packages the bundles keep external (see scripts/build-agent.mjs): without them nothing can scan or convert. */
-const RUNTIME_DEPENDENCIES = ["playwright-core", "sharp", "fontkit", "css-tree", "undici", "ipaddr.js", "wawoff2"];
-
-/**
- * The first runtime dependency that cannot be resolved, or null. The bundles resolve these from the repo's
- * `node_modules` at run time, so a repo that was never installed, or was installed for another platform, fails on the
- * first scan with a stack trace instead of a sentence. This turns that into the sentence.
- */
-export function missingRuntimeDependency(resolve: (name: string) => unknown = createRequire(import.meta.url).resolve): string | null {
-  for (const name of RUNTIME_DEPENDENCIES) {
-    try {
-      resolve(name);
-    } catch {
-      return name;
-    }
-  }
-  return null;
-}
-
 /** Serves the tools on stdio. Nothing is ever written to stdout except the protocol: diagnostics go to stderr. */
 export async function main(): Promise<void> {
-  const missing = missingRuntimeDependency();
-  if (missing !== null) {
-    console.error(
-      `assets-scraper: the dependency ${missing} is not installed. Run "pnpm install && pnpm build:agent" in the repository, then start this server again.`,
-    );
-    process.exitCode = 1;
-    return;
-  }
+  // A missing dependency is the launcher's to report (`scripts/mcp-launcher.mjs`, before the import): most of them are
+  // static imports of this bundle, which fail at link time, before anything here could run.
   const server = createAgentMcpServer();
   await server.connect(new StdioServerTransport());
 }
