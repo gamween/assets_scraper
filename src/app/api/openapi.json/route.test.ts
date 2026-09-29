@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { summarize } from "@/agent/summary";
+import { testAsset, testScan } from "@/agent/testing";
 import { ErrorCode } from "@/lib/contract";
 import { GET } from "./route";
 
@@ -6,6 +8,34 @@ const ORIGIN = "https://assets.example.com";
 
 /** `Response.json()` is untyped, which is what lets the test read the document by path. */
 const document = async () => (await GET(new Request(`${ORIGIN}/api/openapi.json`))).json();
+
+type Schema = { $ref?: string; type?: string | string[]; enum?: unknown[]; required?: string[]; properties?: Record<string, Schema>; items?: Schema };
+
+const typeOf = (value: unknown): string =>
+  value === null ? "null" : Array.isArray(value) ? "array" : Number.isInteger(value) ? "integer" : typeof value;
+
+/**
+ * What in `value` the schema does not describe, for the part of JSON Schema this document uses. Stricter than the
+ * document itself on one point: a field the schema does not list counts, since a generated client would drop it.
+ */
+function schemaErrors(value: unknown, schema: Schema, schemas: Record<string, Schema>, at = "$"): string[] {
+  if (schema.$ref) return schemaErrors(value, schemas[schema.$ref.split("/").pop()!], schemas, at);
+  const types = schema.type === undefined ? [] : [schema.type].flat();
+  const actual = typeOf(value);
+  if (types.length > 0 && !types.includes(actual) && !(actual === "integer" && types.includes("number"))) return [`${at} is ${actual}, not ${types.join(" or ")}`];
+  if (schema.enum && !schema.enum.includes(value)) return [`${at} is ${String(value)}, not one of the enum`];
+  const errors: string[] = [];
+  if (actual === "object" && schema.properties) {
+    const record = value as Record<string, unknown>;
+    for (const key of schema.required ?? []) if (!(key in record)) errors.push(`${at}.${key} is missing`);
+    for (const [key, field] of Object.entries(record)) {
+      const property = schema.properties[key];
+      errors.push(...(property ? schemaErrors(field, property, schemas, `${at}.${key}`) : [`${at}.${key} is not in the schema`]));
+    }
+  }
+  if (actual === "array" && schema.items) (value as unknown[]).forEach((item, index) => errors.push(...schemaErrors(item, schema.items!, schemas, `${at}[${index}]`)));
+  return errors;
+}
 
 describe("GET /api/openapi.json", () => {
   it("is a JSON document an agent may cache", async () => {
@@ -52,6 +82,32 @@ describe("GET /api/openapi.json", () => {
         expect(operation.responses[status].content["application/json"].schema.$ref).toBe("#/components/schemas/ApiError");
       }
     }
+  });
+
+  it("documents what the edge answers before the API runs", async () => {
+    const doc = await document();
+    for (const operation of [doc.paths["/api/v1/scan"].post, doc.paths["/api/v1/assets.zip"].get]) {
+      // Vercel's own protection can challenge any path with an HTML page, which a client must not parse as an ApiError.
+      expect(Object.keys(operation.responses["403"].content)).toEqual(["text/html"]);
+      expect(operation.responses["403"].headers["x-vercel-mitigated"]).toBeDefined();
+      expect(operation.responses["429"].headers["x-vercel-mitigated"]).toBeDefined();
+      expect(operation.responses["429"].description).toMatch(/20 requests per 10 minutes/);
+    }
+  });
+
+  /**
+   * A client generated from this document drops what the schema does not list and rejects what it types wrongly. The
+   * summary grew `format` and `bytes` on its logo rows without the schema, which also typed an SVG's fractional width as
+   * an integer: this validates a real summary, so the next field added to `summarize` fails here first.
+   */
+  it("describes every field a summary carries, with its type", async () => {
+    const doc = await document();
+    const wordmark = testAsset({ id: "wordmark", kind: "svg", format: "svg", role: "site-logo", width: 79.5, height: 24.25, bytes: 1_234, score: 100 });
+    const scan = testScan();
+    const summary = summarize({ ...scan, assets: [wordmark, ...scan.assets], warnings: ["The page stopped the scan early"] });
+    expect(summary.logos[0]).toMatchObject({ id: "wordmark", format: "svg", width: 79.5, bytes: 1_234 });
+    expect(summary.fonts.length).toBeGreaterThan(0);
+    expect(schemaErrors({ view: "summary", scanId: summary.scanId, summary }, { $ref: "#/components/schemas/ScanResponse" }, doc.components.schemas)).toEqual([]);
   });
 
   it("keeps the copy rules: no em dash, no en dash, no emoji", async () => {
