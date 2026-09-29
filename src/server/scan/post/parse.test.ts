@@ -1,6 +1,23 @@
-import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
-import { decodeDataUri, extractCssUrls, forEachStylesheetUrl, parseSrcset, type StylesheetUrl } from "./parse";
+import { describe, expect, it, vi } from "vitest";
+import { LINEAR_OP_GROWTH_BOUND, opGrowth } from "../fonts/testing";
+import { decodeDataUri, forEachStylesheetUrl, type StylesheetUrl } from "./parse";
+
+/**
+ * The characters the CSS value reader steps over (`readCssToken`), counted, so `opGrowth` sees how the work on the
+ * values of a captured stylesheet grows with it. css-tree splits the sheet into declarations first, in linear time.
+ */
+const ops = vi.hoisted(() => ({ count: 0 }));
+vi.mock("../inpage/css-tokens", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../inpage/css-tokens")>();
+  return {
+    ...actual,
+    readCssToken: (text: string, start: number) => {
+      const token = actual.readCssToken(text, start);
+      ops.count += token.end - start;
+      return token;
+    },
+  };
+});
 
 /** Every image URL `forEachStylesheetUrl` reads from a stylesheet, in order. */
 const stylesheetUrls = (cssText: string, baseUrl: string) => {
@@ -10,54 +27,6 @@ const stylesheetUrls = (cssText: string, baseUrl: string) => {
   });
   return out;
 };
-
-describe("parseSrcset", () => {
-  it("keeps commas inside URLs and reads descriptors", () => {
-    expect(parseSrcset("https://res.cloudinary.com/x/image/upload/w_500,c_fill/a.jpg 500w, /b.jpg 1000w")).toEqual([
-      { url: "https://res.cloudinary.com/x/image/upload/w_500,c_fill/a.jpg", w: 500 },
-      { url: "/b.jpg", w: 1000 },
-    ]);
-    expect(parseSrcset("a.png, b.png 2x")).toEqual([{ url: "a.png", x: 1 }, { url: "b.png", x: 2 }]);
-    expect(parseSrcset("")).toEqual([]);
-  });
-
-  it("reads fractional densities, trailing commas and extra whitespace", () => {
-    expect(parseSrcset("  a.png 1.5x ,b.png,  ")).toEqual([{ url: "a.png", x: 1.5 }, { url: "b.png", x: 1 }]);
-    expect(parseSrcset("a.png 100w 50h, b.png")).toEqual([{ url: "a.png", w: 100 }, { url: "b.png", x: 1 }]);
-  });
-
-  it("keeps the in-page copy of the descriptor patterns in sync", () => {
-    // collector.src.ts cannot import this module, so its parseSrcset is a copy. The bounded digit runs are what keep
-    // both copies linear, so a drift here is the cubic blowup coming back in the renderer.
-    const descriptors = (source: string) => source.match(/descriptor\.match\(\/.+?\/\);/g);
-    const inPage = readFileSync(new URL("../inpage/collector.src.ts", import.meta.url), "utf8");
-    expect(descriptors(inPage)).toEqual(descriptors(readFileSync(new URL("./parse.ts", import.meta.url), "utf8")));
-    expect(descriptors(inPage)).toHaveLength(2);
-  });
-
-  it("stays fast on a long digit run in a descriptor", () => {
-    // An unbounded `\d*\.?\d+` in the x descriptor is cubic in the descriptor length: 4000 digits took 8 seconds.
-    const started = performance.now();
-    expect(parseSrcset(`a.png ${"9".repeat(4_000)}y`)).toEqual([{ url: "a.png", x: 1 }]);
-    expect(performance.now() - started).toBeLessThan(200);
-  });
-});
-
-describe("extractCssUrls", () => {
-  it("reads url() and image-set strings without garbage", () => {
-    expect(extractCssUrls('url("a.png"), url(b.png)')).toEqual(["a.png", "b.png"]);
-    expect(extractCssUrls('image-set("imgset-1x.png" 1x, "imgset-2x.png" 2x)')).toEqual(["imgset-1x.png", "imgset-2x.png"]);
-    expect(extractCssUrls('image-set(url("a.png") 1dppx, url("b.png") 2dppx)')).toEqual(["a.png", "b.png"]);
-    expect(extractCssUrls("none")).toEqual([]);
-    expect(extractCssUrls("url(#grad1)")).toEqual([]);
-  });
-
-  it("unescapes quoted URLs, dedupes and reads -webkit-image-set", () => {
-    expect(extractCssUrls("url('a\\'b.png') url('a\\'b.png')")).toEqual(["a'b.png"]);
-    expect(extractCssUrls('-webkit-image-set("x.png" 1x)')).toEqual(["x.png"]);
-    expect(extractCssUrls("linear-gradient(red, blue)")).toEqual([]);
-  });
-});
 
 describe("forEachStylesheetUrl", () => {
   it("reads url() declarations with their property, resolved against the sheet URL", () => {
@@ -113,6 +82,25 @@ describe("forEachStylesheetUrl", () => {
     expect(stylesheetUrls(".a { background: url(ok.png) } }}} .b { color: ", "https://s.example/")).toEqual([
       { url: "https://s.example/ok.png", property: "background", declaration: 0, imageSet: false },
     ]);
+  });
+
+  /**
+   * Regression: the declaration left open at the end of a sheet is the rest of the sheet, and the regular expressions
+   * that read its URLs backtracked from every `url(` to the end of it. A captured 1 MB sheet of `url(url(url(` held the
+   * event loop for minutes, past the scan's own deadline, with every other request on the instance waiting behind it.
+   */
+  it("reads the values of a hostile stylesheet in linear time", async () => {
+    const hostile: Record<string, (size: number) => string> = {
+      urls: (size) => `a{background:${"url(".repeat(size / 4)}`,
+      spaces: (size) => `a{background:url(${" ".repeat(size)}`,
+      quotes: (size) => `a{b:image-set("${'\\"'.repeat(size / 2)}`,
+    };
+    for (const [kind, sheet] of Object.entries(hostile)) {
+      const { small, factor } = await opGrowth((size) => stylesheetUrls(sheet(size), "https://s.example/"), 16_000, ops);
+      expect.soft(small, kind).toBeGreaterThan(0);
+      expect.soft(factor, kind).toBeLessThan(LINEAR_OP_GROWTH_BOUND);
+    }
+    expect(stylesheetUrls(`a{background:${"url(".repeat(250_000)}`, "https://s.example/")).toEqual([]);
   });
 });
 

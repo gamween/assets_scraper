@@ -1,5 +1,7 @@
 import type { FoundIn, HiddenReason } from "@/lib/contract";
+import { extractCssUrls, readCssUrls, readFontFaceSrc } from "./css-values";
 import { OUTPUT_LISTS } from "./lists";
+import { parseSrcset } from "./srcset";
 import type {
   CandidateContext,
   CollectorOptions,
@@ -17,7 +19,8 @@ import type {
  * In-page asset collector and SVG normalizer (spec 7.5, 8.1, 8.6), ported from the discovery lab (`lib/inpage.js`).
  *
  * Runs inside the scanned page, normally in a CDP isolated world where `customElements` is null, so it never uses it.
- * It cannot import app code: `parseSrcset` and `extractCssUrls` are copies of `post/parse.ts`, keep them in sync.
+ * It cannot import app code, only the other files of this folder: the `srcset` and CSS readers it shares with Node
+ * (`srcset.ts`, `css-values.ts`) are bundled in.
  * Returns plain JSON. Caps: `maxElements` walked, `timeBudgetMs`, `maxSvgNormalizations`, `maxSvgBytes` per SVG,
  * `maxSvgTotalBytes` for all SVG markup, blob byte caps, `maxOutputChars` of JSON for the whole output. Hitting one sets
  * `stats.truncated`.
@@ -82,64 +85,6 @@ const CSS_PROPS: [string, FoundIn][] = [
   ["content", "css-other"],           // an element replaced by an image; on ::before and ::after it is css-pseudo
 ];
 const NON_IMAGE_DECLARATION = /^(?:cursor|behavior|clip-path|filter|marker(?:-start|-mid|-end)?|mask|src)$/;
-
-// ---------------------------------------------------------------- parsers (copies of post/parse.ts)
-
-function parseSrcset(value: string | null | undefined): { url: string; w?: number; x?: number }[] {
-  const out: { url: string; w?: number; x?: number }[] = [];
-  if (!value) return out;
-  const s = value;
-  const n = s.length;
-  const space = /\s/;
-  let i = 0;
-  while (i < n) {
-    while (i < n && (s[i] === "," || space.test(s[i]))) i++;
-    if (i >= n) break;
-    const start = i;
-    while (i < n && !space.test(s[i])) i++;
-    let url = s.slice(start, i);
-    let descriptor = "";
-    if (/,+$/.test(url)) {
-      url = url.replace(/,+$/, "");
-    } else {
-      let depth = 0;
-      const descriptorStart = i;
-      while (i < n) {
-        const c = s[i];
-        if (c === "(") depth++;
-        else if (c === ")") depth--;
-        else if (c === "," && depth <= 0) break;
-        i++;
-      }
-      descriptor = s.slice(descriptorStart, i).trim();
-      i++;
-    }
-    if (!url) continue;
-    // The digit runs are bounded and the alternation removes the `\d*`/`\d+` overlap: the unbounded form is cubic in
-    // the descriptor length, so one long digit run blocks the caller for minutes. Nine digits is far beyond any real
-    // descriptor, and a longer run is not a number `Number()` could use.
-    const w = descriptor.match(/(\d{1,9})w\b/);
-    const x = descriptor.match(/(\d{1,9}(?:\.\d{1,9})?|\.\d{1,9})x\b/);
-    if (w) out.push({ url, w: Number(w[1]) });
-    else out.push({ url, x: x ? Number(x[1]) : 1 });
-  }
-  return out;
-}
-
-const URL_TOKEN = /url\(\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|([^)\s]*))\s*\)/g;
-const QUOTED = /"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'/g;
-const unescapeCss = (text: string) => text.replace(/\\(.)/g, "$1");
-
-function extractCssUrls(value: string | null | undefined): string[] {
-  const out: string[] = [];
-  if (!value || value === "none") return out;
-  for (const match of value.matchAll(URL_TOKEN)) out.push(unescapeCss(match[1] ?? match[2] ?? match[3] ?? ""));
-  if (/image-set\(/i.test(value)) {
-    const rest = value.replace(URL_TOKEN, " ");
-    for (const match of rest.matchAll(QUOTED)) out.push(unescapeCss(match[1] ?? match[2] ?? ""));
-  }
-  return [...new Set(out)].filter((url) => url && !url.startsWith("#"));
-}
 
 // ---------------------------------------------------------------- small helpers
 
@@ -755,7 +700,7 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
             const style = (rule as CSSFontFaceRule).style;
             fontFaces.push({
               family: style.getPropertyValue("font-family").trim().replace(/^["']|["']$/g, ""),
-              src: parseFontSrc(style.getPropertyValue("src"), base),
+              src: readFontFaceSrc(style.getPropertyValue("src"), base),
               weight: style.getPropertyValue("font-weight") || "normal",
               style: style.getPropertyValue("font-style") || "normal",
               ...(style.getPropertyValue("font-stretch") ? { stretch: style.getPropertyValue("font-stretch") } : {}),
@@ -928,7 +873,7 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
     const ids = new Set<string>();
     const scan = (value: string | null) => {
       if (!value) return;
-      for (const match of value.matchAll(/url\(\s*["']?#([^"')\s]+)["']?\s*\)/g)) ids.add(match[1]);
+      for (const url of readCssUrls(value)) if (url.length > 1 && url.startsWith("#")) ids.add(url.slice(1));
     };
     for (const node of [el, ...el.querySelectorAll("*")]) {
       for (const attribute of node.attributes) {
@@ -1427,26 +1372,6 @@ function decodeURIComponentSafe(text: string): string {
   } catch {
     return text;
   }
-}
-
-/** `@font-face` `src` descriptors: `url()` with its `format()` hint, or `local()`. */
-function parseFontSrc(src: string, base: string): RawFontFaceRule["src"] {
-  const out: RawFontFaceRule["src"] = [];
-  const pattern = /(url|local)\(\s*(?:"([^"]*)"|'([^']*)'|([^)]*?))\s*\)(?:\s*format\(\s*["']?([^"')]+)["']?\s*\))?(?:\s*tech\([^)]*\))?/g;
-  for (const match of src.matchAll(pattern)) {
-    const value = (match[2] ?? match[3] ?? match[4] ?? "").trim();
-    if (match[1] === "local") {
-      if (value) out.push({ local: value });
-      continue;
-    }
-    try {
-      const url = new URL(value, base).href;
-      out.push(match[5] ? { url, format: match[5].trim().toLowerCase() } : { url });
-    } catch {
-      // not a URL
-    }
-  }
-  return out;
 }
 
 globalThis.__assetsScraper = { collect };

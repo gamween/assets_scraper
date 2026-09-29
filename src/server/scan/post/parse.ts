@@ -1,75 +1,12 @@
 import { tokenize, tokenTypes as T } from "css-tree/tokenizer";
 import { ByteStack } from "../byte-stack";
+import { extractCssUrls } from "../inpage/css-values";
 import { percentDecode } from "../percent";
 
 /**
- * Parsers shared by post-processing. The in-page collector (`inpage/collector.src.ts`) cannot import app code, so it
- * carries its own copies of `parseSrcset` and `extractCssUrls`: keep both in sync.
+ * Parsers of post-processing. The URLs of one CSS value are read by `extractCssUrls`, which the in-page collector
+ * bundles too (`inpage/css-values.ts`), so the page and Node read `url()` and `image-set()` the same way.
  */
-
-export interface SrcsetCandidate {
-  url: string;
-  w?: number;
-  x?: number;
-}
-
-/** HTML-style srcset parser: a URL runs until whitespace, so commas inside URLs (Cloudinary `w_500,c_fill`) are kept. */
-export function parseSrcset(value: string | null | undefined): SrcsetCandidate[] {
-  const out: SrcsetCandidate[] = [];
-  if (!value) return out;
-  const s = value;
-  const n = s.length;
-  const space = /\s/;
-  let i = 0;
-  while (i < n) {
-    while (i < n && (s[i] === "," || space.test(s[i]))) i++;
-    if (i >= n) break;
-    const start = i;
-    while (i < n && !space.test(s[i])) i++;
-    let url = s.slice(start, i);
-    let descriptor = "";
-    if (/,+$/.test(url)) {
-      url = url.replace(/,+$/, "");
-    } else {
-      let depth = 0;
-      const descriptorStart = i;
-      while (i < n) {
-        const c = s[i];
-        if (c === "(") depth++;
-        else if (c === ")") depth--;
-        else if (c === "," && depth <= 0) break;
-        i++;
-      }
-      descriptor = s.slice(descriptorStart, i).trim();
-      i++;
-    }
-    if (!url) continue;
-    // The digit runs are bounded and the alternation removes the `\d*`/`\d+` overlap: the unbounded form is cubic in
-    // the descriptor length, so one long digit run blocks the caller for minutes. Nine digits is far beyond any real
-    // descriptor, and a longer run is not a number `Number()` could use.
-    const w = descriptor.match(/(\d{1,9})w\b/);
-    const x = descriptor.match(/(\d{1,9}(?:\.\d{1,9})?|\.\d{1,9})x\b/);
-    if (w) out.push({ url, w: Number(w[1]) });
-    else out.push({ url, x: x ? Number(x[1]) : 1 });
-  }
-  return out;
-}
-
-const URL_TOKEN = /url\(\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|([^)\s]*))\s*\)/g;
-const QUOTED = /"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'/g;
-const unescapeCss = (text: string) => text.replace(/\\(.)/g, "$1");
-
-/** URLs in a CSS value: every `url()`, plus the bare strings of `image-set()`. Fragment-only references are skipped. */
-export function extractCssUrls(value: string | null | undefined): string[] {
-  const out: string[] = [];
-  if (!value || value === "none") return out;
-  for (const match of value.matchAll(URL_TOKEN)) out.push(unescapeCss(match[1] ?? match[2] ?? match[3] ?? ""));
-  if (/image-set\(/i.test(value)) {
-    const rest = value.replace(URL_TOKEN, " ");
-    for (const match of rest.matchAll(QUOTED)) out.push(unescapeCss(match[1] ?? match[2] ?? ""));
-  }
-  return [...new Set(out)].filter((url) => url && !url.startsWith("#"));
-}
 
 export interface StylesheetUrl {
   url: string;
