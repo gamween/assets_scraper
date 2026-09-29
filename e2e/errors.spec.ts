@@ -54,6 +54,22 @@ test.describe("error states", () => {
     });
   }
 
+  test("an error code from a newer deploy shows the internal panel instead of breaking the page", async ({ page }) => {
+    // Production passes stream events through unchecked, for a tab older than the deploy that answers it.
+    const future = stream("internal").map((event) => (event.type === "error" ? { ...event, code: "quota" as ErrorCode, message: "Monthly quota reached" } : event));
+    await scan(page, future);
+    await expectPanel(page, "Something went wrong on our side", null, ["Try again", "Copy debug info"]);
+    await expect(page.getByTestId("top-bar-url")).toBeVisible();
+  });
+
+  test("a scan that fails offline blames the connection, not the service", async ({ page, context }) => {
+    await page.goto("/");
+    await context.setOffline(true);
+    await page.getByRole("textbox", { name: "Page URL" }).fill("linear.app");
+    await page.keyboard.press("Enter");
+    await expectPanel(page, "You're offline", "Check your connection and try again.", ["Try again"]);
+  });
+
   test("busy shows its panel after one automatic retry", async ({ page }) => {
     const record = await scan(page, stream("busy"));
     await expectPanel(page, "All browsers are busy", "Try again in a moment.", ["Try again"]);

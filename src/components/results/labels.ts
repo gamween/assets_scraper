@@ -1,4 +1,4 @@
-import { HiddenReason, type Asset, type FoundIn } from "@/lib/contract";
+import type { Asset, FoundIn, HiddenReason } from "@/lib/contract";
 import { formatBytes, formatCount, formatDimensions } from "@/lib/format";
 import { assetBytes, type SectionId } from "@/lib/client/filters";
 
@@ -83,12 +83,12 @@ export function hiddenSummary(hidden: Record<string, number>): string | null {
   for (const [reason, count] of Object.entries(hidden)) {
     if (!Number.isFinite(count) || count <= 0) continue;
     total += count;
-    const parsed = HiddenReason.safeParse(reason);
-    if (!parsed.success) {
+    // The table has every contract reason (it is a Record of them), so it tells a known one without loading zod.
+    if (!Object.hasOwn(HIDDEN_PHRASES, reason)) {
       unknown += count;
       continue;
     }
-    const [one, many] = HIDDEN_PHRASES[parsed.data];
+    const [one, many] = HIDDEN_PHRASES[reason as HiddenReason];
     byPhrase.set(many, { one, count: (byPhrase.get(many)?.count ?? 0) + count });
   }
   if (!total) return null;
