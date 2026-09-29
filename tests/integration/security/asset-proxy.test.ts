@@ -385,7 +385,7 @@ describe("handleAssetRequest", () => {
     expect(emoji.headers.get("content-disposition")).toBe(`attachment; filename*=UTF-8''${"a".repeat(199)}%F0%9F%98%80.svg`);
   });
 
-  it("names a download after the served type, whatever extension the unsigned name asks for", async () => {
+  it("names a download after the served type, whatever extension the name asks for", async () => {
     // a signed image URL shared as an app link must not save its bytes as an executable
     const response = await handleAssetRequest(proxied("/not-a-png", "&dl=Invoice.exe", "none"));
     expect(response.status).toBe(200);
