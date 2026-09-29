@@ -299,7 +299,7 @@ test.describe("results", () => {
 
   test("GIF tiles show their first frame and play only while hovered", async ({ page }) => {
     const { events, remoteGif, inlineGif } = withGifs();
-    await openResults(page, { events: events });
+    await openResults(page, { events });
     await page.getByRole("tab", { name: /^Images/ }).click();
 
     for (const id of [remoteGif.id, inlineGif.id]) {
@@ -336,7 +336,7 @@ test.describe("results", () => {
       HTMLCanvasElement.prototype.getContext = () => null;
     });
     const { events, remoteGif, inlineGif } = withGifs();
-    await openResults(page, { events: events });
+    await openResults(page, { events });
     await page.getByRole("tab", { name: /^Images/ }).click();
 
     for (const id of [remoteGif.id, inlineGif.id]) {
@@ -387,7 +387,7 @@ test.describe("results", () => {
   test("brand resources keep to one line, with the rest behind a +N", async ({ page }) => {
     const many = ["/brand", "/press", "/media-kit", "/logos", "/identity", "/newsroom"].map((path) => ({ href: `https://linear.app${path}`, text: path.slice(1) }));
     const events = linear.map((event) => (event.type === "page" ? { ...event, page: { ...event.page, brandLinks: many } } : event));
-    await openResults(page, { events: events });
+    await openResults(page, { events });
     const group = page.getByRole("group", { name: "Brand resources on this site" });
     await expect(group.getByRole("button")).toHaveText(["brand", "press", "media-kit", "+3"]);
 
@@ -401,7 +401,7 @@ test.describe("results", () => {
     test("brand resources are one closed disclosure", async ({ page }) => {
       const many = ["/brand", "/press", "/media-kit", "/logos", "/identity", "/newsroom"].map((path) => ({ href: `https://linear.app${path}`, text: path.slice(1) }));
       const events = linear.map((event) => (event.type === "page" ? { ...event, page: { ...event.page, brandLinks: many } } : event));
-      await openResults(page, { events: events });
+      await openResults(page, { events });
       const group = page.getByRole("group", { name: "Brand resources on this site" });
       const toggle = group.getByRole("button", { name: /^Brand resources/ });
       await expect(toggle).toHaveAttribute("aria-expanded", "false");
