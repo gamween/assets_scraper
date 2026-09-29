@@ -8,7 +8,7 @@ vi.mock("botid/server", () => ({ checkBotId: vi.fn(async () => ({ isBot: true })
 
 const { MemoryBudgetStore, setBudgetStoreForTests } = await import("@/server/security/budget");
 const { setAgentScanSourceForTests } = await import("../source");
-const { DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT, maxDuration, runtime } = await import("./route");
+const { DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT } = await import("./route");
 
 const TOKEN = "agent-token-one-with-enough-characters";
 const DUPLICATE = Buffer.from("the same bytes twice over");
@@ -50,7 +50,8 @@ beforeEach(() => {
   process.env.AGENT_TOKENS = TOKEN;
   scan.mockReset();
   scan.mockResolvedValue(testScan({ assets, stats: { assets: assets.length, svg: 3, images: 6, fonts: 0, hidden: {}, durationMs: 100 } }));
-  fetchBytes.mockClear();
+  // A reset, not a clear: a test that swaps the implementation must not hand it to the tests after it.
+  fetchBytes.mockReset();
   setBudgetStoreForTests(new MemoryBudgetStore());
   setAgentScanSourceForTests({ kind: "local", scan, fetchBytes });
 });
@@ -62,11 +63,6 @@ afterEach(() => {
 });
 
 describe("GET /api/v1/assets.zip", () => {
-  it("runs on Node with room for the 90 s scan deadline", () => {
-    expect(runtime).toBe("nodejs");
-    expect(maxDuration).toBe(120);
-  });
-
   it("streams a ZIP of the deck selection with a manifest", async () => {
     const response = await GET(request());
     expect(response.status).toBe(200);
@@ -122,6 +118,7 @@ describe("GET /api/v1/assets.zip", () => {
     const manifest = manifestOf(await entriesOf(response));
     expect(manifest.truncated).toBe(true);
     expect(manifest.note).toMatch(/front of the selection/);
+    expect(manifest.note).not.toMatch(/[\u2013\u2014]/);
     expect(manifest.files.map((file: { id: string }) => file.id)).toEqual(["site-logo", "logo-svg"]);
     expect(manifest.totalBytes).toBeLessThanOrEqual(1_500);
     expect(manifest.dropped.unavailable).toBe(4);
@@ -166,29 +163,13 @@ describe("GET /api/v1/assets.zip", () => {
     expect(peak).toBeGreaterThan(1);
   });
 
-  it("stops cleanly when the request cap runs out, with a note in the manifest", async () => {
-    process.env.AGENT_ZIP_MAX_BYTES = "2048";
-    const response = await GET(request());
-    expect(response.status).toBe(200);
-    expect(response.headers.get("x-assets-truncated")).toBe("true");
-    const entries = await entriesOf(response);
-    const manifest = manifestOf(entries);
-    expect(response.headers.get("x-assets-truncated")).toBe("true");
-    expect(manifest.truncated).toBe(true);
-    expect(manifest.note).toMatch(/front of the selection/);
-    expect(manifest.note).not.toMatch(/[\u2013\u2014]/);
-    expect(manifest.files.length).toBeGreaterThan(0);
-    expect(manifest.files.length).toBeLessThan(4);
-    expect(pathsOf(entries)).toHaveLength(manifest.files.length);
-  });
-
   /**
    * The archive and a local download name one asset one way, which is what makes unzipping it into a project the same
    * operation as `assets-scraper get` (plan Task G6.2). The rule lives in `safeFileName`, so a name that tries to climb
    * out of the folder loses its path here exactly as it does on disk.
    */
   it("names files the way a local download does", async () => {
-    const { safeFileName } = await import("@/agent/download");
+    const { safeFileName } = await import("@/agent/names");
     scan.mockResolvedValue(
       testScan({
         assets: [
@@ -212,12 +193,50 @@ describe("GET /api/v1/assets.zip", () => {
     expect(paths).toEqual(["svg/evil.svg"]);
   });
 
+  it("streams what it has when its time runs out, instead of running past the function's limit", async () => {
+    process.env.AGENT_ZIP_DEADLINE_MS = "300";
+    fetchBytes.mockImplementation((target: AssetSource, options?: { signal?: AbortSignal }) =>
+      target.url.endsWith("/hero.png")
+        ? new Promise<Buffer>((_, reject) => options?.signal?.addEventListener("abort", () => reject(options.signal?.reason), { once: true }))
+        : Promise.resolve(bytesFor(/\/([^/]+)\.[a-z0-9]+$/.exec(target.url)?.[1] ?? "")),
+    );
+
+    const response = await GET(request());
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-assets-truncated")).toBe("true");
+    const manifest = manifestOf(await entriesOf(response));
+    expect(manifest.note).toMatch(/time limit/);
+    expect(manifest.files.map((file: { id: string }) => file.id)).not.toContain("hero");
+    expect(manifest.failed.map((file: { id: string }) => file.id)).not.toContain("hero");
+  });
+
   it("counts the bytes it serves against the daily proxy budget", async () => {
     process.env.PROXY_BYTES_PER_DAY = "1500";
     const manifest = manifestOf(await entriesOf(await GET(request())));
     expect(manifest.truncated).toBe(true);
     expect(manifest.totalBytes).toBeLessThanOrEqual(1500);
     expect(manifest.dropped.unavailable).toBeGreaterThan(0);
+  });
+
+  it("counts them against the caller's own daily share too, so one address cannot spend the day", async () => {
+    // One block: the meter takes a megabyte ahead of the first file, so the first archive fits and hands the rest
+    // back, and the same address's next one no longer does.
+    process.env.VERCEL = "1";
+    process.env.PROXY_BYTES_PER_IP_PER_DAY = String(1024 * 1024);
+    const from = (address: string) =>
+      new Request("https://assets.example.com/api/v1/assets.zip?url=stripe.com", { headers: { authorization: `Bearer ${TOKEN}`, "x-real-ip": address } });
+
+    const first = manifestOf(await entriesOf(await GET(from("203.0.113.7"))));
+    expect(first.truncated).toBe(false);
+    expect(first.files).toHaveLength(4);
+    const again = manifestOf(await entriesOf(await GET(from("203.0.113.7"))));
+    expect(again.truncated).toBe(true);
+    expect(again.files).toEqual([]);
+    // Another address still has its own share of a day the first one did not empty.
+    const other = manifestOf(await entriesOf(await GET(from("203.0.113.8"))));
+    expect(other.truncated).toBe(false);
+    expect(other.files).toHaveLength(4);
   });
 
   it("refuses a request without a bearer token, before it scans anything", async () => {
@@ -228,7 +247,8 @@ describe("GET /api/v1/assets.zip", () => {
   });
 
   it("refuses an unknown filter value and a missing URL", async () => {
-    for (const query of ["&profile=everything", "&kinds=pdf", "&roles=mascot", "&max=0"]) {
+    // An empty kinds or roles would select nothing: it is refused before the scan, so it spends no unit of the budget.
+    for (const query of ["&profile=everything", "&kinds=pdf", "&roles=mascot", "&max=0", "&kinds=", "&roles="]) {
       const response = await GET(request(query));
       expect(response.status).toBe(400);
       expect(ApiError.parse(await response.json()).error.code).toBe("invalid-url");

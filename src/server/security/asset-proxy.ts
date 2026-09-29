@@ -7,8 +7,9 @@ import { authenticateAgent } from "./agent-auth";
 import { meterProxyBytes, PROXY_BYTES_BLOCK, takeProxyBytes } from "./budget";
 import { contentDisposition } from "./download-name";
 import { convertWoff2, takeConversionSlot, WOFF2_MAX_OUTPUT_BYTES, WOFF2_MAX_SOURCE_BYTES } from "./font-convert";
+import { clientAddress } from "./request";
 import { verifyAssetParams } from "./sign";
-import { SNIFF_BYTES, sniffContentType } from "./sniff";
+import { declaredType, isAllowedDeclaredType, SNIFF_BYTES, sniffContentType, UNTYPED } from "./sniff";
 
 export interface AssetProxyOptions {
   maxBytes?: number;
@@ -19,19 +20,34 @@ const SAFETY_HEADERS = {
   "content-security-policy": "default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; sandbox",
   "x-content-type-options": "nosniff",
   "cross-origin-resource-policy": "same-origin",
-  // Authorization is in here because an agent token is a second way past the Fetch Metadata check below: the CDN must
-  // never answer an unauthenticated caller from a response a token earned, or the other way round.
-  vary: "Sec-Fetch-Site, Authorization",
+  // Not Authorization, though an agent token is a second way past the Fetch Metadata check below: a response a token
+  // earned is never stored at the CDN (`cacheHeaders`), so no cached answer can reach a caller that check refuses, and
+  // an arbitrary Authorization value cannot split one signed link into endless cache keys.
+  vary: "Sec-Fetch-Site",
 } as const;
 
-const RESPONSE_HEADERS = {
-  ...SAFETY_HEADERS,
-  "cache-control": "private, max-age=3600",
-  "vercel-cdn-cache-control": "public, s-maxage=86400",
-} as const;
+/** What a verified request says about how its answer may be cached. */
+interface Link {
+  url: string;
+  dl?: string;
+  /** When the signature stops being valid, in seconds. */
+  expiry: number;
+  /** An agent token, not Fetch Metadata, let the request in. */
+  viaToken: boolean;
+}
 
-const MEDIA_TYPE = /^[a-z0-9][a-z0-9.+-]*\/[a-z0-9][a-z0-9.+-]*$/;
-const UNTYPED = new Set(["", "application/octet-stream", "binary/octet-stream"]);
+/**
+ * Cache headers of a served asset. The browser keeps it an hour. The CDN keeps it for what is left of its link's life
+ * and no longer, since a hit never reaches the expiry check, and only when it is a body of a known length up to
+ * `PROXY_CDN_MAX_BYTES`, since a hit never reaches the byte budget either. An answer an agent token earned is never
+ * stored there, because the CDN keys on `Sec-Fetch-Site` alone.
+ */
+function cacheHeaders(link: Link, length: number | undefined): Record<string, string> {
+  const lifetime = link.expiry - Math.floor(Date.now() / 1000);
+  const cdn = !link.viaToken && lifetime > 0 && length !== undefined && length <= limits.proxyCdnMaxBytes;
+  return { "cache-control": "private, max-age=3600", "vercel-cdn-cache-control": cdn ? `public, s-maxage=${lifetime}` : "no-store" };
+}
+
 const WOFF2_SIGNATURE_BYTES = 4;
 const FETCH_STATUS: Record<SafeFetchErrorCode, number> = {
   "invalid-url": 403, "blocked-address": 403, "own-host": 403, "unsupported-port": 403,
@@ -43,8 +59,8 @@ const FETCH_STATUS: Record<SafeFetchErrorCode, number> = {
  * handle proxy failures by HTTP status (403, 400, 413, 415, 429, 5xx) and must not parse these bodies with `ApiError`.
  */
 export type AssetProxyErrorCode =
-  | "method" | "cross-site" | "invalid-params" | "bad-signature" | "expired" | "budget" | "upstream-status" | "too-large"
-  | "unsupported-type" | "not-convertible" | "license" | "busy" | "internal" | SafeFetchErrorCode;
+  | "method" | "disabled" | "cross-site" | "invalid-params" | "bad-signature" | "expired" | "budget" | "upstream-status"
+  | "too-large" | "unsupported-type" | "not-convertible" | "license" | "busy" | "internal" | SafeFetchErrorCode;
 
 function errorResponse(status: number, code: AssetProxyErrorCode, message: string, headers: Record<string, string> = {}): Response {
   return Response.json({ error: { code, message } }, { status, headers: { ...SAFETY_HEADERS, "cache-control": "no-store", ...headers } });
@@ -65,10 +81,6 @@ async function fetchAsset(url: string, signal: AbortSignal, maxBytes: number, ti
   if (upstream.status >= 200 && upstream.status <= 299) return upstream;
   await upstream.cancel();
   return errorResponse(502, "upstream-status", `The asset host answered ${upstream.status}.`);
-}
-
-function allowedDeclaredType(mediaType: string): boolean {
-  return MEDIA_TYPE.test(mediaType) && /^(?:image\/|font\/|application\/font-|application\/x-font-)/.test(mediaType);
 }
 
 /** Reads at least `minBytes` (or the whole body when shorter) and returns them with the rest of the stream. */
@@ -92,8 +104,8 @@ async function peek(
  * `head` and the rest of the body in one buffer. Every byte read is taken from the budget before it is kept, in blocks,
  * and stays counted when the download then fails; a block the budget refuses stops the download with 429.
  */
-async function readBudgeted(reader: ReadableStreamDefaultReader<Uint8Array>, head: Uint8Array): Promise<Buffer> {
-  const budget = meterProxyBytes();
+async function readBudgeted(reader: ReadableStreamDefaultReader<Uint8Array>, head: Uint8Array, client: string | null): Promise<Buffer> {
+  const budget = meterProxyBytes(client);
   const chunks: Uint8Array[] = [];
   try {
     for (let chunk = head; ; ) {
@@ -122,71 +134,69 @@ async function readBudgeted(reader: ReadableStreamDefaultReader<Uint8Array>, hea
  * return (`WOFF2_MAX_OUTPUT_BYTES`) is reserved, and the part not served is handed back, so the work is never done for
  * an output the budget then refuses.
  *
- * The whole exchange, waiting for a conversion slot and the licence check included, stays within `timeoutMs` (504 past
- * it), so a slot is never held longer; no free slot in time gives 503.
+ * A conversion slot (`CONVERSION_SLOTS` per instance) is taken once the source is in, for the conversion alone: an
+ * upstream that trickles its bytes ties up its own request and nobody else's, where a slot held through the download let
+ * two slow sources stop every conversion on the instance. What downloads buffer at once is bounded by the budget
+ * instead, which every source byte is taken from before it is kept. The whole exchange, the download, the wait for a
+ * slot and the licence check included, stays within `timeoutMs` (504 past it), so a slot is never held longer; no free
+ * slot in time gives 503.
  */
 async function convertFont(
-  url: string,
-  dl: string | undefined,
+  link: Link,
   signal: AbortSignal,
-  { maxBytes, timeoutMs }: { maxBytes: number; timeoutMs: number },
+  { maxBytes, timeoutMs, client }: { maxBytes: number; timeoutMs: number; client: string | null },
 ): Promise<Response> {
-  const busy = () => errorResponse(503, "busy", "Too many fonts are being converted. Try again in a moment.", { "retry-after": "5" });
-  const started = Date.now();
   const deadline = AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]);
-  const release = await takeConversionSlot(deadline);
-  if (!release) return busy();
-  try {
-    const remainingMs = timeoutMs - (Date.now() - started);
-    if (remainingMs <= 0) return busy();
-    const upstream = await fetchAsset(url, signal, Math.min(maxBytes, WOFF2_MAX_SOURCE_BYTES), remainingMs);
-    if (upstream instanceof Response) return upstream;
-    const { head, rest } = await peek(upstream.stream(), WOFF2_SIGNATURE_BYTES);
-    if (sniffContentType(head) !== "font/woff2") {
-      await rest.cancel().catch(() => {});
-      return errorResponse(415, "not-convertible", "Only WOFF2 fonts can be converted.");
-    }
-    const source = await readBudgeted(rest, head);
+  const upstream = await fetchAsset(link.url, signal, Math.min(maxBytes, WOFF2_MAX_SOURCE_BYTES), timeoutMs);
+  if (upstream instanceof Response) return upstream;
+  const { head, rest } = await peek(upstream.stream(), WOFF2_SIGNATURE_BYTES);
+  if (sniffContentType(head) !== "font/woff2") {
+    await rest.cancel().catch(() => {});
+    return errorResponse(415, "not-convertible", "Only WOFF2 fonts can be converted.");
+  }
+  const source = await readBudgeted(rest, head, client);
 
-    const output = meterProxyBytes();
-    try {
-      if (!(await output.reserve(WOFF2_MAX_OUTPUT_BYTES))) return budgetExhausted();
-      const converted = await convertWoff2(source, deadline);
-      if (!converted.ok) {
-        return converted.reason === "license"
-          ? errorResponse(403, "license", "This font's licence does not allow conversion.")
-          : errorResponse(415, "not-convertible", "The font could not be converted.");
-      }
-      const { bytes, contentType } = converted;
-      if (!(await output.take(bytes.byteLength))) return budgetExhausted();
-      // one chunk of a stream, because Response copies a typed array body: the converted bytes are never copied again
-      const body = new ReadableStream<Uint8Array>({
-        start(controller) {
-          controller.enqueue(bytes);
-          controller.close();
-        },
-      });
-      return new Response(body, {
-        headers: {
-          ...RESPONSE_HEADERS,
-          "content-type": contentType,
-          "content-length": String(bytes.byteLength),
-          "content-disposition": contentDisposition(dl, contentType),
-        },
-      });
-    } finally {
-      await output.settle();
+  const release = await takeConversionSlot(deadline);
+  if (!release) return errorResponse(503, "busy", "Too many fonts are being converted. Try again in a moment.", { "retry-after": "5" });
+  const output = meterProxyBytes(client);
+  try {
+    if (!(await output.reserve(WOFF2_MAX_OUTPUT_BYTES))) return budgetExhausted();
+    const converted = await convertWoff2(source, deadline);
+    if (!converted.ok) {
+      return converted.reason === "license"
+        ? errorResponse(403, "license", "This font's licence does not allow conversion.")
+        : errorResponse(415, "not-convertible", "The font could not be converted.");
     }
+    const { bytes, contentType } = converted;
+    if (!(await output.take(bytes.byteLength))) return budgetExhausted();
+    // one chunk of a stream, because Response copies a typed array body: the converted bytes are never copied again
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(bytes);
+        controller.close();
+      },
+    });
+    return new Response(body, {
+      headers: {
+        ...SAFETY_HEADERS,
+        ...cacheHeaders(link, bytes.byteLength),
+        "content-type": contentType,
+        "content-length": String(bytes.byteLength),
+        "content-disposition": contentDisposition(link.dl, contentType),
+      },
+    });
   } finally {
     release();
+    await output.settle();
   }
 }
 
 /**
  * Signed byte proxy behind `GET /api/asset` (spec 11.2): GET only, same-origin callers only, HMAC-checked URL, SSRF-safe
  * fetch with size and time caps, image and font types only (untyped bytes by magic number), sandboxed and not
- * sniffable, cached on the CDN, and taken from the daily proxied bytes budget before it is served. `fmt=ttf`
- * decompresses an open-licence WOFF2.
+ * sniffable, cached on the CDN within its link's life when small, and taken from the caller's and the day's proxied
+ * bytes budgets before it is served. `fmt=ttf` decompresses an open-licence WOFF2. `PROXY_DISABLED=1` turns it off, for
+ * an operator stopping abuse without stopping scans.
  *
  * Budget: a body with a known length takes it before its status, a body of unknown length takes `PROXY_BYTES_BLOCK`
  * (429 when that does not fit, so the last block of a day serves known lengths only), then another block whenever the
@@ -199,6 +209,7 @@ export async function handleAssetRequest(request: Request, options: AssetProxyOp
   try {
     // A HEAD would fetch the upstream for headers alone and leave a body of unknown length unread and uncounted.
     if (request.method !== "GET") return errorResponse(405, "method", "Use GET.", { allow: "GET" });
+    if (process.env.PROXY_DISABLED === "1") return errorResponse(503, "disabled", "Downloads are paused.");
 
     // Spec 11.2: only this app's pages (same-origin) or a link opened directly (none). A missing header is refused
     // too, so every browser with Fetch Metadata is covered. A script can forge the header, and nothing in the function
@@ -210,18 +221,19 @@ export async function handleAssetRequest(request: Request, options: AssetProxyOp
     // fallback could never succeed. A configured token is stronger evidence than the header it stands in for, and it
     // buys nothing else: the signature, the type allowlist, the caps and the byte budget all still apply.
     const site = request.headers.get("sec-fetch-site");
-    if (site !== "same-origin" && site !== "none" && !authenticateAgent(request).ok) {
-      return errorResponse(403, "cross-site", "Only this app can load proxied assets.");
-    }
+    const viaToken = site !== "same-origin" && site !== "none";
+    if (viaToken && !authenticateAgent(request).ok) return errorResponse(403, "cross-site", "Only this app can load proxied assets.");
 
-    const { url, dl, fmt } = verifyAssetParams(new URL(request.url).searchParams);
-    if (!(await takeProxyBytes(0))) return budgetExhausted();
-    if (fmt === "ttf") return await convertFont(url, dl, request.signal, { maxBytes, timeoutMs });
+    const { url, dl, fmt, expiry } = verifyAssetParams(new URL(request.url).search);
+    const link: Link = { url, ...(dl !== undefined && { dl }), expiry, viaToken };
+    const client = clientAddress(request);
+    if (!(await takeProxyBytes(0, client))) return budgetExhausted();
+    if (fmt === "ttf") return await convertFont(link, request.signal, { maxBytes, timeoutMs, client });
 
     const upstream = await fetchAsset(url, request.signal, maxBytes, timeoutMs);
     if (upstream instanceof Response) return upstream;
 
-    const declared = (upstream.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
+    const declared = declaredType(upstream.headers.get("content-type"));
     const encoded = upstream.headers.has("content-encoding");
     const length = Number(upstream.headers.get("content-length") ?? Number.NaN);
     const knownLength = !encoded && Number.isSafeInteger(length) && length >= 0 ? length : undefined;
@@ -229,7 +241,7 @@ export async function handleAssetRequest(request: Request, options: AssetProxyOp
       await upstream.cancel();
       return errorResponse(413, "too-large", "The asset is too large.");
     }
-    if (!allowedDeclaredType(declared) && !UNTYPED.has(declared)) {
+    if (!isAllowedDeclaredType(declared) && !UNTYPED.has(declared)) {
       await upstream.cancel();
       return errorResponse(415, "unsupported-type", "Only images and fonts can be downloaded.");
     }
@@ -243,7 +255,7 @@ export async function handleAssetRequest(request: Request, options: AssetProxyOp
       return errorResponse(415, "unsupported-type", "Only images and fonts can be downloaded.");
     }
 
-    const budget = meterProxyBytes();
+    const budget = meterProxyBytes(client);
     if (!(await budget.reserve(knownLength ?? PROXY_BYTES_BLOCK)) || !(await budget.take(head.byteLength))) {
       await rest.cancel().catch(() => {});
       await budget.settle();
@@ -290,7 +302,8 @@ export async function handleAssetRequest(request: Request, options: AssetProxyOp
     );
     return new Response(body, {
       headers: {
-        ...RESPONSE_HEADERS,
+        ...SAFETY_HEADERS,
+        ...cacheHeaders(link, knownLength),
         "content-type": contentType,
         "content-disposition": contentDisposition(dl, contentType),
         ...(knownLength !== undefined && { "content-length": String(knownLength) }),

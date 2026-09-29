@@ -53,9 +53,12 @@ Every value in the table below is optional in development; copy `.env.example` t
 | `OPS_TOKEN` | Operator token, at least 32 characters, sent as `x-ops-token` to skip BotID and the scan budget. |
 | `AGENT_TOKENS` | Bearer tokens for `/api/v1`, one per client, comma separated, each at least 24 characters (a shorter one is ignored). Without one, every `/api/v1` call answers 401. |
 | `AGENT_ZIP_MAX_BYTES` | Bytes one `/api/v1/assets.zip` response may serve (64 MB). |
+| `AGENT_ZIP_DEADLINE_MS` | Time from the request by which `/api/v1/assets.zip` must have its archive, after the scan's own deadline and well before the function's (100 s). |
 | `SCANS_PER_DAY`, `SCANS_PER_MONTH` | Shared scan budget (80 and 800). |
 | `SCANS_PER_IP_PER_DAY` | Scans one client address may take per day (20). Raise it for a shared NAT. |
-| `PROXY_BYTES_PER_DAY` | Bytes the asset proxy may serve per day (300 MB). |
+| `PROXY_BYTES_PER_DAY` | Bytes the asset proxy and the ZIP endpoint may serve per day (300 MB). |
+| `PROXY_BYTES_PER_IP_PER_DAY` | Of those, bytes one client address may take per day (75 MB). Raise it with `SCANS_PER_IP_PER_DAY` for a shared NAT. |
+| `PROXY_DISABLED` | `1` turns the asset proxy off, without stopping scans. |
 | `APP_HOSTS` | Extra hosts of this app that scans and fetches refuse. |
 | `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` | Shared budget store with atomic counters. Without them: the Vercel Runtime Cache on Vercel, shared but not atomic, so concurrent scans on several instances can undercount, though no single instance goes past a limit; in-memory counters elsewhere. |
 | `CHROME_EXECUTABLE_PATH` | Chrome for local scans (the dev server, the CLI, the MCP server and the integration tests), when it is not where Google Chrome installs itself. Ignored on Vercel, which runs `@sparticuz/chromium`. |
@@ -69,9 +72,9 @@ The platform sets the rest itself: `NODE_ENV` (Next), `VERCEL`, `VERCEL_ENV`, `V
 
 - One scan per instance, 15 s in the queue, then `busy`. 90 s for the whole scan, 120 s of function time.
 - 8 s preflight, 20 s to launch Chromium, 25 s to navigate, 8 s of scrolling, 15 s of collection.
-- At most 1,500 assets and 2,000 signed URLs per scan; 1 MB per SVG; 25 MB per proxied file.
-- The scan budget above, and the per-day proxy byte budget, shared across the deployment.
-- 20 requests per 10 minutes per client address to `/api/scan`, `/api/v1/scan` and `/api/v1/assets.zip`, counted at the edge before the app runs (see Deploy).
+- At most 1,500 assets and 2,000 signed URLs per scan; 1 MB per SVG; 25 MB per proxied file, kept at the CDN only up to 4 MB and never past its link's expiry.
+- The scan budget above, and the per-day proxy byte budget, shared across the deployment, each with a per-client share.
+- 20 requests per 10 minutes per client address to `/api/scan`, `/api/v1/scan` and `/api/v1/assets.zip`, counted at the edge before the app runs (see Deploy). The asset proxy is not under it: a results page loads many files through it, so the byte budgets bound it instead.
 - A page that stops the scan early still returns what is ready, with `partial: true`.
 
 ## Deploy

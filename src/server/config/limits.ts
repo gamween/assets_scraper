@@ -131,6 +131,12 @@ const defaults = {
   proxyMaxBytes: 25 * MB,
   proxyTimeoutMs: 20_000,
   proxyMaxRedirects: 5,
+  /**
+   * The largest proxied body the CDN may keep. A CDN hit costs no invocation and no byte of the budget, so a large file
+   * cached there could be pulled again and again for nothing but the deployment's bandwidth. Past this size, and for a
+   * body whose size is not known up front, every read goes through the function and is counted.
+   */
+  proxyCdnMaxBytes: 4 * MB,
 
   // Budgets (spec 11.3)
   scansPerDay: 80,
@@ -138,6 +144,12 @@ const defaults = {
   // Raise SCANS_PER_IP_PER_DAY when a shared NAT (a school, an office) has to share one address.
   scansPerIpPerDay: 20,
   proxyBytesPerDay: 300 * MB,
+  /**
+   * Proxied bytes one client address may take in a day, out of `proxyBytesPerDay`, so a single caller cannot spend the
+   * day's downloads for everyone: a quarter of the day, the share `scansPerIpPerDay` is of the scans, and more than one
+   * whole archive of the ZIP endpoint. Raise it with `SCANS_PER_IP_PER_DAY` for a shared NAT.
+   */
+  proxyBytesPerIpPerDay: 75 * MB,
 };
 
 export type LimitName = keyof typeof defaults;

@@ -163,6 +163,14 @@ describe("gateScanRequest", () => {
     await expectFailure(await gateScanRequest(scanRequest({ url: "linear.app" }, { headers: { origin: null, "x-ops-token": "" } })), 403, "bot");
   });
 
+  it("keys the per-address quota on the address Vercel's edge sets, and on nothing a client could choose", async () => {
+    const fromClient = { "x-real-ip": "203.0.113.7" };
+    vi.stubEnv("VERCEL", "");
+    expect(await gateScanRequest(scanRequest({ url: "linear.app" }, { headers: fromClient }))).toMatchObject({ ok: true, client: null });
+    vi.stubEnv("VERCEL", "1");
+    expect(await gateScanRequest(scanRequest({ url: "linear.app" }, { headers: fromClient }))).toMatchObject({ ok: true, client: "203.0.113.7" });
+  });
+
   it("accepts a valid request", async () => {
     expect(await gateScanRequest(scanRequest({ url: "https://linear.app" }))).toEqual({ ok: true, url: "https://linear.app/", host: "linear.app", ops: false, client: null });
     expect(botid.checkBotId).toHaveBeenCalledTimes(1);

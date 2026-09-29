@@ -1,19 +1,13 @@
 import { makeZip } from "client-zip";
-import { sanitizeHost } from "@/agent/dest";
-import {
-  assetFileName,
-  bytesSource,
-  type DownloadManifest,
-  inlineAssetBytes,
-  type ManifestFile,
-  manifestRow,
-  uniqueName,
-} from "@/agent/download";
+import type { DownloadManifest } from "@/agent/download";
+import { bytesSource, inlineAssetBytes, type ManifestFile, manifestRow } from "@/agent/entries";
 import { agentLimits } from "@/agent/limits";
+import { assetFileName, sanitizeHost, uniqueName } from "@/agent/names";
 import { selectAssets } from "@/agent/select";
 import type { AgentScan, DropReason, ScanSource, SelectionOptions } from "@/agent/types";
 import type { Asset } from "@/lib/contract";
 import { meterProxyBytes, type ProxyBytesMeter } from "@/server/security/budget";
+import { zipMaxBytes } from "./limits";
 
 /**
  * The ZIP of a selection, built on the server (spec section 8). It is the same selection the CLI writes into `scrap/`,
@@ -21,17 +15,9 @@ import { meterProxyBytes, type ProxyBytesMeter } from "@/server/security/budget"
  * and perceptual duplicates) once the bytes are in, so a duplicate discovered from bytes never reaches the archive.
  *
  * The bytes are held in memory before the archive streams, because the byte rules decide which entries exist: the
- * per request cap and the daily proxy budget are what bound that, and reaching either ends the archive cleanly with a
- * note in the manifest rather than an error.
+ * per request cap and the daily proxy budget are what bound that, the time the request has left bounds how long it
+ * takes, and reaching any of them ends the archive cleanly with a note in the manifest rather than an error.
  */
-
-/** Bytes one ZIP request serves, whatever the daily budget still allows: it is also what one function holds in memory. */
-const DEFAULT_MAX_BYTES = 64 * 1024 * 1024;
-
-export const zipMaxBytes = (): number => {
-  const value = Number(process.env.AGENT_ZIP_MAX_BYTES);
-  return Number.isSafeInteger(value) && value > 0 ? value : DEFAULT_MAX_BYTES;
-};
 
 /**
  * The archive's `manifest.json` is the document `assets-scraper get` writes, field for field, plus what only an archive
@@ -43,7 +29,7 @@ export interface ZipManifest extends DownloadManifest {
   /** The selection the query asked for, which a local download has in the command line instead. */
   selection: SelectionOptions;
   duplicates: { keptId: string; droppedIds: string[] }[];
-  /** True when the request cap or the daily byte budget ended the archive early; `note` then says so in words. */
+  /** True when the request cap, the byte budget or the time limit ended the archive early; `note` then says so in words. */
   truncated: boolean;
   note?: string;
 }
@@ -55,7 +41,10 @@ export interface BuiltZip {
 }
 
 export interface BuildZipOptions {
+  /** The caller leaving, or the time the archive has: past it, what is not fetched and compared is left out. */
   signal?: AbortSignal;
+  /** The caller's address, whose own daily share of the proxy budget the fetched bytes come out of too. */
+  client?: string | null;
   meter?: ProxyBytesMeter;
   maxBytes?: number;
   concurrency?: number;
@@ -78,8 +67,9 @@ const reasonOf = (error: unknown): string => (error instanceof Error ? error.mes
 
 /**
  * Fetches the selection in relevance order, `concurrency` at a time, counting every byte against the daily proxy budget
- * before it is served. It stops at the first refusal of the budget or of the per request cap, so an archive is either
- * whole or the front of the selection with `truncated` set.
+ * before it is served. It stops at the first refusal of the budget or of the per request cap, or when `signal` aborts,
+ * so an archive is either whole or the front of the selection with `truncated` set. A fetch the signal cut short is
+ * that ending, not a file that failed.
  */
 async function fetchSelection(
   keep: Asset[],
@@ -94,18 +84,27 @@ async function fetchSelection(
 
   const worker = async (): Promise<void> => {
     for (;;) {
-      if (truncated || options.signal?.aborted) return;
+      if (truncated) return;
       const asset = keep[cursor++];
       if (asset === undefined) return;
+      if (options.signal?.aborted) {
+        truncated = true;
+        return;
+      }
       let buffer: Buffer;
       try {
         buffer = await assetBytes(asset, source, options.signal);
       } catch (error) {
+        if (options.signal?.aborted) {
+          truncated = true;
+          return;
+        }
         failed.push({ id: asset.id, name: asset.name, reason: reasonOf(error) });
         continue;
       }
       // `total` is read between awaits, so the request cap can be passed by what the other workers hold in flight, by
-      // at most `concurrency` files. The budget is the exact one: `take` is atomic and counts nothing when it refuses.
+      // at most `concurrency` files. The budget is the exact one: the meter runs takes one at a time, so workers taking
+      // at once never share one reservation, and a refused take counts nothing.
       if (total + buffer.byteLength > options.maxBytes || !(await options.meter.take(buffer.byteLength))) {
         truncated = true;
         return;
@@ -128,7 +127,10 @@ const sum = (into: Partial<Record<DropReason, number>>, from: Partial<Record<Dro
 };
 
 export const TRUNCATED_NOTE =
-  "This archive holds the front of the selection only: the request limit or the daily byte budget was reached. Ask for fewer files with max, kinds or roles.";
+  "This archive holds the front of the selection only: the request limit, the daily byte budget or the time limit was reached. Ask for fewer files with max, kinds or roles.";
+
+/** The deck profile's near duplicate pass stopped at the time limit: the images it did not compare are all kept. */
+export const UNCOMPARED_NOTE = "Some near duplicates may be left in: the time limit was reached before every image was compared.";
 
 /** Builds the archive for `scan` and returns its stream, its manifest and the file name to offer it under. */
 export async function buildAssetsZip(
@@ -137,7 +139,7 @@ export async function buildAssetsZip(
   selection: SelectionOptions,
   options: BuildZipOptions = {},
 ): Promise<BuiltZip> {
-  const meter = options.meter ?? meterProxyBytes();
+  const meter = options.meter ?? meterProxyBytes(options.client ?? null);
   const byName = await selectAssets(scan.assets, selection);
   let fetched: Awaited<ReturnType<typeof fetchSelection>>;
   try {
@@ -151,11 +153,12 @@ export async function buildAssetsZip(
     await meter.settle();
   }
 
-  const byBytes = await selectAssets(
-    byName.keep.filter((asset) => fetched.bytes.has(asset.id)),
-    selection,
-    fetched.bytes,
-  );
+  const fetchedAssets = byName.keep.filter((asset) => fetched.bytes.has(asset.id));
+  const byBytes = await selectAssets(fetchedAssets, selection, fetched.bytes, options.signal);
+  // Only a comparison that had two images to compare can have been cut short.
+  const uncompared =
+    options.signal?.aborted === true && (selection.profile ?? "deck") === "deck" && fetchedAssets.filter((asset) => asset.kind === "image").length > 1;
+  const notes = [...(fetched.truncated ? [TRUNCATED_NOTE] : []), ...(uncompared ? [UNCOMPARED_NOTE] : [])];
 
   const used = new Set<string>();
   const profile = selection.profile ?? "deck";
@@ -198,7 +201,7 @@ export async function buildAssetsZip(
     failed: fetched.failed,
     totalBytes: files.reduce((total, file) => total + file.bytes, 0),
     truncated: fetched.truncated,
-    ...(fetched.truncated ? { note: TRUNCATED_NOTE } : {}),
+    ...(notes.length > 0 ? { note: notes.join(" ") } : {}),
   };
 
   return {

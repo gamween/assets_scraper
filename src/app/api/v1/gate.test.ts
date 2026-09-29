@@ -6,7 +6,8 @@ const ipAddress = vi.fn(() => undefined as string | undefined);
 vi.mock("@vercel/functions", () => ({ ipAddress }));
 
 const { MemoryBudgetStore, setBudgetStoreForTests } = await import("@/server/security/budget");
-const { AGENT_MAX_BODY_BYTES, authorizeAgent, gateAgentTarget, parseSelectionParams, readAgentJson } = await import("./gate");
+const { authorizeAgent, gateAgentTarget, parseSelectionParams, readAgentJson } = await import("./gate");
+const { MAX_BODY_BYTES } = await import("@/server/security/request");
 
 const TOKEN = "agent-token-one-with-enough-characters";
 const ORIGIN = "https://assets.example.com";
@@ -85,7 +86,7 @@ describe("readAgentJson", () => {
   });
 
   it("refuses a body past the cap, whatever content-length claims", async () => {
-    const long = JSON.stringify({ url: "x".repeat(AGENT_MAX_BODY_BYTES) });
+    const long = JSON.stringify({ url: "x".repeat(MAX_BODY_BYTES) });
     expect(await readAgentJson(post(long, { "content-length": "20" }))).toBeNull();
   });
 });
@@ -97,9 +98,17 @@ describe("gateAgentTarget", () => {
   });
 
   it("keys the per-address quota on the caller's address like the browser gate does", async () => {
+    process.env.VERCEL = "1";
     ipAddress.mockReturnValue("203.0.113.7");
     const result = await gateAgentTarget("linear.app", post({ url: "linear.app" }));
     expect(result).toMatchObject({ ok: true, client: "203.0.113.7" });
+  });
+
+  it("keys nothing on an address off Vercel, where the client writes x-real-ip itself", async () => {
+    delete process.env.VERCEL;
+    ipAddress.mockReturnValue("203.0.113.7");
+    const result = await gateAgentTarget("linear.app", post({ url: "linear.app" }));
+    expect(result).toMatchObject({ ok: true, client: null });
   });
 
   it("refuses a missing or unusable URL", async () => {
@@ -160,7 +169,7 @@ describe("parseSelectionParams", () => {
   });
 
   it("refuses an unknown profile, kind, role or number", () => {
-    for (const query of ["profile=everything", "kinds=svg,pdf", "roles=mascot", "max=0", "max=-4", "max=lots", "minLongSide=1.5"]) {
+    for (const query of ["profile=everything", "kinds=svg,pdf", "roles=mascot", "max=0", "max=-4", "max=lots", "minLongSide=1.5", "kinds=", "roles=", "kinds=,", "roles=+,+"]) {
       const result = parseSelectionParams(params(query));
       expect(result.ok).toBe(false);
       if (!result.ok) expect(result.message).not.toMatch(/[\u2013\u2014]/);

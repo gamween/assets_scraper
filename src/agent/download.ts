@@ -1,11 +1,10 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import type { Asset, AssetFormat, AssetKind, AssetRole, AssetSource } from "@/lib/contract";
-import { extensionFor } from "@/server/scan/post/format";
-import { assertSupportedBytes } from "./bytes";
 import { createFileInside, FILE_MODE, resolveDestination } from "./dest";
+import { bytesSource, inlineAssetBytes, type ManifestFile, manifestRow, sourceUrl } from "./entries";
 import { agentLimits } from "./limits";
+import { assetFileName, nameCandidates } from "./names";
 import { selectAssets } from "./select";
 import type {
   AgentScan,
@@ -21,8 +20,8 @@ import type {
 /**
  * Writing a selection to disk (spec 4, last paragraph): `svg/` and `images/` inside the destination, plus a
  * `manifest.json` saying what every file is and why it was kept. The hosted ZIP (`src/app/api/v1/zip.ts`) builds the
- * same archive from the same helpers below (the file name, the bytes of an inline asset, the manifest row), so
- * unzipping it into `scrap/<host>` gives what this writes.
+ * same archive from the same helpers (`names.ts` for the file name, `entries.ts` for the bytes of an inline asset and
+ * the manifest row), so unzipping it into `scrap/<host>` gives what this writes.
  *
  * Selection runs twice. The name and size rules run before anything is fetched, so bytes are only spent on files that
  * could be kept, and the byte rules (exact and perceptual duplicates) run once the bytes are in hand. Files are written
@@ -43,25 +42,6 @@ export interface DownloadOptions extends SelectionOptions {
   /** Parallel fetches. Defaults to `agentLimits.downloadConcurrency`. */
   concurrency?: number;
   signal?: AbortSignal;
-}
-
-/** One row of `manifest.json`: what the file is, where it came from, and why the selection kept it. */
-export interface ManifestFile {
-  id: string;
-  name: string;
-  /** Path inside the destination directory, with forward slashes. */
-  file: string;
-  /** The URL the bytes came from, or "" for an asset the page carried inline. */
-  url: string;
-  kind: AssetKind;
-  role: AssetRole;
-  format: AssetFormat;
-  width?: number;
-  height?: number;
-  bytes: number;
-  keptBecause: string;
-  /** Ids of the assets this file won a duplicate group against. */
-  duplicatesDropped?: string[];
 }
 
 /**
@@ -96,103 +76,6 @@ export const FALLBACK_MANIFEST_NAME = "assets-scraper-manifest.json";
 const MAX_NAME_ATTEMPTS = 50;
 /** Bytes of an existing manifest this reads before deciding it is not one of ours. */
 const MAX_MANIFEST_BYTES = 16 * 1024 * 1024;
-
-/**
- * One file name from an asset: the last path segment only, so a name like `../../evil.svg` cannot walk anywhere, and
- * nothing a file system reads as special. `createFileInside` checks the result again, this only keeps names readable.
- */
-export function safeFileName(value: string, fallback: string): string {
-  const last = value.split(/[\\/]/).pop() ?? "";
-  const cleaned = last
-    .replace(/[\x00-\x1f\x7f:*?"<>|]+/g, "-")
-    .replace(/^[\s.]+|[\s.]+$/g, "")
-    .slice(0, 120);
-  return cleaned || fallback;
-}
-
-/**
- * The file name an asset is written under, in the archive as on disk: the scan's name for it, cleaned by
- * `safeFileName`, with the extension of its format. The extension is never the one the scan's file name carries: a
- * remote answer names the file, and `Open me.terminal` holding a PNG must not land as something the system would open
- * as a program. A local scan names files `<slug>.<format>` anyway, so this changes nothing for it.
- */
-export function assetFileName(asset: Asset): string {
-  const extension = extensionFor(asset.format);
-  const fallback = `${asset.id}.${extension}`;
-  const name = safeFileName(asset.filename || asset.name || fallback, fallback);
-  const dot = name.lastIndexOf(".");
-  return `${dot > 0 ? name.slice(0, dot) : name}.${extension}`;
-}
-
-/**
- * `name`, then `stem-2.ext`, `stem-3.ext` and so on: the names one file tries in turn, compared without case (spec 4).
- * macOS and Windows file systems do not tell `Logo.svg` from `logo.svg`, so neither does the rule, whether the files go
- * to a disk or into an archive that will be unzipped on one.
- */
-export function* nameCandidates(name: string): Generator<string> {
-  const dot = name.lastIndexOf(".");
-  const stem = dot > 0 ? name.slice(0, dot) : name;
-  const extension = dot > 0 ? name.slice(dot) : "";
-  yield name;
-  for (let attempt = 2; ; attempt += 1) yield `${stem}-${attempt}${extension}`;
-}
-
-/** The first candidate of `name` that `used` does not hold yet, which it then does. The archive's side of the rule. */
-export function uniqueName(name: string, used: Set<string>): string {
-  for (const candidate of nameCandidates(name)) {
-    if (used.has(candidate.toLowerCase())) continue;
-    used.add(candidate.toLowerCase());
-    return candidate;
-  }
-  throw new Error("unreachable: the candidates never end");
-}
-
-/**
- * The bytes an asset carries itself, or null when they have to be fetched. They are checked like the bytes a fetch
- * returns (`bytes.ts`): an asset the scan found as a `data:` URI, or one a remote answer shipped inline, is only as
- * trustworthy as whatever wrote it, and a PNG that is not a PNG must not be written as one.
- */
-export function inlineAssetBytes(asset: Asset): Buffer | null {
-  const inline = asset.inline;
-  if (!inline) return null;
-  const bytes = "text" in inline ? Buffer.from(inline.text, "utf8") : Buffer.from(inline.base64, "base64");
-  // Markup the scan kept inline is an SVG document whatever the asset says, so it is held to being one.
-  assertSupportedBytes(bytes, "text" in inline ? "svg" : asset.format, "this inline asset");
-  return bytes;
-}
-
-/** The best source of an asset's bytes: the CDN original when the scan found one, the served file otherwise. */
-export const bytesSource = (asset: Asset): AssetSource | null => asset.original ?? asset.display;
-
-/** The URL the bytes came from, or "" for an asset the page carried inline. */
-export const sourceUrl = (asset: Asset): string => bytesSource(asset)?.url ?? "";
-
-/** Why a file is in the selection, and what it won against: the part of a manifest row the selection decides. */
-export interface KeptFor {
-  profile: SelectionProfile;
-  /** True when the caller named the assets by id. */
-  explicit: boolean;
-  /** Ids of the assets this file won a duplicate group against. */
-  duplicatesDropped?: string[];
-}
-
-/** One row of `manifest.json`, the same whether the file went to a disk or into the hosted archive. */
-export function manifestRow(asset: Asset, file: string, bytes: number, kept: KeptFor): ManifestFile {
-  return {
-    id: asset.id,
-    name: asset.name,
-    file,
-    url: sourceUrl(asset),
-    kind: asset.kind,
-    role: asset.role,
-    format: asset.format,
-    ...(asset.width === undefined ? {} : { width: asset.width }),
-    ...(asset.height === undefined ? {} : { height: asset.height }),
-    bytes,
-    keptBecause: kept.explicit ? "explicit id" : `${kept.profile} profile (role ${asset.role})`,
-    ...(kept.duplicatesDropped === undefined ? {} : { duplicatesDropped: kept.duplicatesDropped }),
-  };
-}
 
 const oneLine = (error: unknown): string =>
   (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ").trim().slice(0, 200) || "unknown error";

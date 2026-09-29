@@ -1,5 +1,5 @@
 import { agentLimits } from "@/agent/limits";
-import { AssetFormat, AssetKind, AssetRole, ErrorCode } from "@/lib/contract";
+import { AssetFormat, AssetKind, AssetRole, ErrorCode, FontLicense } from "@/lib/contract";
 
 /**
  * `GET /api/openapi.json` (spec section 8): the same two endpoints `llms.txt` describes in prose, as OpenAPI 3.1, for
@@ -7,20 +7,34 @@ import { AssetFormat, AssetKind, AssetRole, ErrorCode } from "@/lib/contract";
  * one source of truth is `src/lib/contract.ts`, and duplicating it here would be a second one.
  */
 
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
-
 const error = (description: string) => ({
   description,
   content: { "application/json": { schema: { $ref: "#/components/schemas/ApiError" } } },
 });
 
-/** Every failure both endpoints share, as the v1 codes map onto HTTP (see `src/app/api/v1/errors.ts`). */
+/**
+ * Every failure both endpoints share, as the v1 codes map onto HTTP (see `src/app/api/v1/errors.ts`), plus what the edge
+ * answers before the API runs: Vercel's own mitigation can challenge any path with an HTML page, and the rate limit
+ * refuses with a body of its own. Neither is an `ApiError`, and `x-vercel-mitigated` tells them from the API's answers.
+ */
 const errorResponses = () => ({
   "400": error("invalid-url: the request or the URL could not be read."),
   "401": error("access-code: the bearer token is missing or unknown, or the deployment's access code was not sent in x-access-code."),
+  "403": {
+    description:
+      "Refused at the edge before the API ran: Vercel's own protection can answer any path with an HTML challenge and " +
+      "x-vercel-mitigated: challenge. It is not an ApiError. Wait, then try again.",
+    headers: { "x-vercel-mitigated": { description: "challenge", schema: { type: "string" } } },
+    content: { "text/html": { schema: { type: "string" } } },
+  },
   "422": error("blocked-address, unsupported-port, own-host or not-html: the URL cannot be scanned."),
-  "429": error("budget: the daily scan limit is spent."),
+  "429": {
+    ...error(
+      "budget: the daily scan limit is spent. The edge rate limit (20 requests per 10 minutes per address) answers 429 " +
+        "too, before the API runs, with x-vercel-mitigated: deny and a body that is not an ApiError.",
+    ),
+    headers: { "x-vercel-mitigated": { description: "deny, when the edge rate limit refused the request", schema: { type: "string" } } },
+  },
   "500": error("internal: something went wrong on our side."),
   "502": error("dns, connect, http or blocked: the page could not be read."),
   "503": error("busy or disabled: no browser was free, or scanning is paused."),
@@ -106,8 +120,8 @@ export function openApiDocument(origin: string): Record<string, unknown> {
             filter("max", `Files to keep, held to ${agentLimits.maxFiles}.`, { type: "integer", minimum: 1, default: agentLimits.maxFiles }),
             filter(
               "minLongSide",
-              `Rasters under this many pixels on their longest side are dropped, ${agentLimits.minLongSide} by default under the deck profile and ` +
-                "none under all unless given. Site logos, logos, favicons and icons asked for are never dropped for size, and SVG has no size gate.",
+              `Rasters under this many pixels on their longest side are dropped: ${agentLimits.minLongSide} under the deck profile ` +
+                "when not given, no gate under all unless given. Site logos, logos, favicons and icons asked for are never dropped for size, and SVG has no size gate.",
               { type: "integer", minimum: 1 },
             ),
             filter("maxBytes", `Bytes to keep in total, best scoring files first, held to what one request serves. 0 means that ceiling.`, {
@@ -115,11 +129,12 @@ export function openApiDocument(origin: string): Record<string, unknown> {
               minimum: 0,
               default: agentLimits.maxTotalBytes,
             }),
-            filter("maxFileBytes", "Bytes one file may take under the deck profile. 0 lifts the ceiling.", {
-              type: "integer",
-              minimum: 0,
-              default: agentLimits.maxFileBytes,
-            }),
+            filter(
+              "maxFileBytes",
+              `Bytes one file may take: ${agentLimits.maxFileBytes} under the deck profile when not given, no ceiling under all ` +
+                "unless given. 0 lifts it.",
+              { type: "integer", minimum: 0 },
+            ),
             filter("nameContains", "Keeps the files whose name contains this text.", { type: "string" }),
             filter("includeIcons", "Keeps the icons the deck profile drops, raster icons under minLongSide included. Naming the icon role does the same.", {
               type: "boolean",
@@ -196,7 +211,7 @@ export function openApiDocument(origin: string): Record<string, unknown> {
                 required: ["family", "license", "usedOnPage", "installable"],
                 properties: {
                   family: { type: "string" },
-                  license: { type: "string", enum: ["open", "commercial", "unknown"] },
+                  license: { type: "string", enum: FontLicense.shape.kind.options },
                   usedOnPage: { type: "boolean" },
                   installable: { type: "boolean" },
                 },
@@ -204,17 +219,18 @@ export function openApiDocument(origin: string): Record<string, unknown> {
             },
             logos: {
               type: "array",
+              description: "format and bytes tell a wordmark from a large photograph the scan also called a logo.",
               items: {
                 type: "object",
-                description: "The format and the size tell a wordmark from a photograph the scan also called a logo.",
                 required: ["id", "name", "kind", "format"],
                 properties: {
                   id: { type: "string" },
                   name: { type: "string" },
                   kind: { type: "string", enum: AssetKind.options },
                   format: { type: "string", enum: AssetFormat.options },
-                  width: { type: "integer" },
-                  height: { type: "integer" },
+                  // An SVG's size is whatever its width, height or viewBox say, fractions included.
+                  width: { type: "number" },
+                  height: { type: "number" },
                   bytes: { type: "integer", description: "When the scan measured it." },
                 },
               },

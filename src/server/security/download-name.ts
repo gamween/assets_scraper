@@ -44,10 +44,10 @@ const MAX_STEM_CODE_POINTS = 200;
 const UNSAFE_CHARACTERS = /[\u0000-\u001f\u007f\u061C\u200E\u200F\u2028\u2029\u202A-\u202E\u2066-\u2069<>:"|?*]/g;
 
 /**
- * File name for a download of `contentType`, from the unsigned `dl` param: the last path segment without control,
- * bidi or reserved characters and dot runs, at most 200 code points before the extension, and an extension that
- * matches the served type. `dl` is not signed, so without that last rule anyone could hand out an app link that
- * saves the bytes of any signed image URL as `Invoice.exe`.
+ * File name for a download of `contentType`, from the `dl` param: the last path segment without control, bidi or
+ * reserved characters and dot runs, at most 200 code points before the extension, and an extension that matches the
+ * served type. `dl` is covered by the link's signature (`sign.ts`), so only a signer names a download; the rules here
+ * are defense in depth for whatever name a signer is given, so an image link never saves its bytes as `Invoice.exe`.
  */
 export function downloadName(dl: string, contentType: string): string {
   const cleaned = (dl.split(/[\\/]/).pop() ?? "")

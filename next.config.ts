@@ -32,10 +32,12 @@ const CSP = [
 ].join("; ");
 
 /**
- * Every path except the asset proxy. Next only copies a route handler header when the config did not set it
- * already, so an app-wide CSP would replace the proxy's own sandbox CSP (spec 11.2).
+ * Every path except the asset proxy itself. Next only copies a route handler header when the config did not set it
+ * already, so an app-wide CSP would replace the proxy's own sandbox CSP (spec 11.2). Only the exact path: the proxy has
+ * no subpaths, and any `/api/asset/...` is the HTML 404 page, which needs the app CSP (and its `frame-ancestors`) like
+ * every other page.
  */
-const APP_CSP_SOURCE = "/((?!api/asset(?:/|$)).*)";
+const APP_CSP_SOURCE = "/((?!api/asset$).*)";
 
 const nextConfig: NextConfig = {
   typedRoutes: true,

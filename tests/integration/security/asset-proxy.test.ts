@@ -11,6 +11,12 @@ const fonts = vi.hoisted(() => ({
 vi.mock("@/server/scan/fonts/index", () => fonts);
 const functions = vi.hoisted(() => ({ waitUntil: vi.fn() }));
 vi.mock("@vercel/functions", async (importOriginal) => ({ ...(await importOriginal<typeof import("@vercel/functions")>()), waitUntil: functions.waitUntil }));
+/** The caller's address as the platform reports it: off Vercel there is none, which is what most of these tests want. */
+const caller = vi.hoisted(() => ({ address: null as string | null }));
+vi.mock("@/server/security/request", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/server/security/request")>()),
+  clientAddress: () => caller.address,
+}));
 
 import { handleAssetRequest } from "@/server/security/asset-proxy";
 import { MemoryBudgetStore, setBudgetStoreForTests, takeProxyBytes } from "@/server/security/budget";
@@ -91,7 +97,11 @@ beforeAll(async () => {
       for (let i = 0; i < 11; i++) s.write(Buffer.alloc(1024 * 1024));
       s.end();
     },
-    "/woff2-stall": (_q, s) => { s.writeHead(200, { "content-type": "font/woff2" }); s.write(woff2.subarray(0, 64)); },
+    "/woff2-stall": (_q, s) => {
+      hits.set("/woff2-stall", (hits.get("/woff2-stall") ?? 0) + 1);
+      s.writeHead(200, { "content-type": "font/woff2" });
+      s.write(woff2.subarray(0, 64));
+    },
     "/woff2-truncated": (_q, s) => { s.writeHead(200, { "content-type": "font/woff2" }); s.end(woff2.subarray(0, 64)); },
     "/chunked-late": (_q, s) => {
       s.writeHead(200, { "content-type": "image/png" });
@@ -122,6 +132,7 @@ afterAll(async () => {
 });
 
 beforeEach(() => {
+  caller.address = null;
   setBudgetStoreForTests(new MemoryBudgetStore());
   functions.waitUntil.mockClear();
   fonts.parseFontBinary.mockClear();
@@ -188,16 +199,49 @@ describe("handleAssetRequest", () => {
     expect(response.headers.get("x-content-type-options")).toBe("nosniff");
     expect(response.headers.get("cross-origin-resource-policy")).toBe("same-origin");
     expect(response.headers.get("content-security-policy")).toBe(CSP);
-    expect(response.headers.get("vercel-cdn-cache-control")).toBe("public, s-maxage=86400");
+    // no content-length: the CDN only keeps a body whose size was counted up front
+    expect(response.headers.get("vercel-cdn-cache-control")).toBe("no-store");
     expect(response.headers.get("cache-control")).toBe("private, max-age=3600");
-    expect(response.headers.get("vary")).toBe("Sec-Fetch-Site, Authorization");
+    expect(response.headers.get("vary")).toBe("Sec-Fetch-Site");
     expect(response.headers.get("content-disposition")).toBe("inline");
     expect(Buffer.from(await response.arrayBuffer())).toEqual(readFileSync(path.join(SITE, "assets/logo.svg")));
 
     const sized = await handleAssetRequest(proxied("/sized.png", "", "none"));
     expect(sized.status).toBe(200);
     expect(sized.headers.get("content-length")).toBe(String(png.length));
+    expect(sized.headers.get("vercel-cdn-cache-control")).toMatch(/^public, s-maxage=\d+$/);
     expect(Buffer.from(await sized.arrayBuffer())).toEqual(png);
+  });
+
+  /**
+   * A CDN hit reaches neither the expiry check nor the byte budget. Kept a day, a link signed for six hours was served
+   * for up to a day after it expired, and a large file there could be pulled again and again without ever being counted.
+   */
+  it("keeps an asset at the CDN no longer than its link lives, and never a large or unsized one", async () => {
+    const lifetime = (response: Response) => Number(/^public, s-maxage=(\d+)$/.exec(response.headers.get("vercel-cdn-cache-control") ?? "")?.[1]);
+    const signedAt = (hoursAgo: number, assetPath: string) =>
+      new Request(`https://app.local${createSigner({ now: Date.now() - hoursAgo * 3_600_000 }).sign(`${upstream.origin}${assetPath}`)}`, { headers: SAME_ORIGIN });
+    const expiryOf = (request: Request) => Number(new URL(request.url).searchParams.get("e"));
+
+    const fresh = signedAt(0, "/sized.png");
+    const freshLife = lifetime(await handleAssetRequest(fresh));
+    expect(freshLife).toBeGreaterThan(6 * 3_600 - 60);
+    expect(freshLife).toBeLessThanOrEqual(expiryOf(fresh) - Math.floor(Date.now() / 1000));
+    // links are bucketed by hour and live 6 to 7 hours, so one signed 6 hours ago has at most an hour left
+    const old = signedAt(6, "/sized.png");
+    const oldLife = lifetime(await handleAssetRequest(old));
+    expect(oldLife).toBeGreaterThan(0);
+    expect(oldLife).toBeLessThanOrEqual(expiryOf(old) - Math.floor(Date.now() / 1000));
+    expect(oldLife).toBeLessThanOrEqual(3_600);
+
+    // a converted font has its length once it is converted, and falls under the same rule
+    expect(lifetime(await handleAssetRequest(proxied("/assets/__inter.woff2", "&fmt=ttf")))).toBeGreaterThan(6 * 3_600 - 60);
+
+    vi.stubEnv("PROXY_CDN_MAX_BYTES", String(png.length - 1));
+    const large = await handleAssetRequest(proxied("/sized.png"));
+    expect(large.status).toBe(200);
+    expect(large.headers.get("vercel-cdn-cache-control")).toBe("no-store");
+    await large.arrayBuffer();
   });
 
   it("refuses HEAD and other methods without fetching the upstream", async () => {
@@ -228,7 +272,7 @@ describe("handleAssetRequest", () => {
     expect(await errorOf(await handleAssetRequest(proxied("/assets/logo.svg", "", "cross-site")))).toMatchObject({ status: 403 });
     const sameSite = await handleAssetRequest(proxied("/assets/logo.svg", "", "same-site"));
     expect(sameSite.status).toBe(403);
-    expect(sameSite.headers.get("vary")).toBe("Sec-Fetch-Site, Authorization");
+    expect(sameSite.headers.get("vary")).toBe("Sec-Fetch-Site");
     // spec 11.2: same-origin or none only, so scripts and old clients without Fetch Metadata are refused too
     expect(await errorOf(await handleAssetRequest(proxied("/assets/logo.svg", "", null)))).toMatchObject({ status: 403, code: "cross-site" });
     expect(await errorOf(await handleAssetRequest(proxied("/assets/logo.svg", "", "")))).toMatchObject({ status: 403 });
@@ -246,6 +290,9 @@ describe("handleAssetRequest", () => {
     const response = await handleAssetRequest(new Request(signed.url, { headers: { authorization: `Bearer ${token}` } }));
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toBe("image/svg+xml");
+    // Never stored at the CDN, which keys on Sec-Fetch-Site alone: a cached token answer would reach callers without one.
+    expect(response.headers.get("vercel-cdn-cache-control")).toBe("no-store");
+    expect(response.headers.get("vary")).toBe("Sec-Fetch-Site");
     expect(Buffer.from(await response.arrayBuffer())).toEqual(readFileSync(path.join(SITE, "assets/logo.svg")));
 
     // A wrong token is no better than no token, and the signature still decides the rest.
@@ -300,6 +347,18 @@ describe("handleAssetRequest", () => {
     }
   });
 
+  it("answers only the signer's own spelling of a signed query, so one link is one cache key", async () => {
+    const signed = new URL(proxied("/counted.png?spelling").url);
+    const { u, e, s } = Object.fromEntries(signed.searchParams);
+    for (const spelling of [`?s=${s}&e=${e}&u=${u}`, `?u=%${u.charCodeAt(0).toString(16)}${u.slice(1)}&e=${e}&s=${s}`, `?u=${u}&e=0${e}&s=${s}`]) {
+      const response = await handleAssetRequest(new Request(`https://app.local/api/asset${spelling}`, { headers: SAME_ORIGIN }));
+      expect(await errorOf(response), spelling).toMatchObject({ status: 400, code: "invalid-params" });
+    }
+    expect(hits.get("/counted.png?spelling")).toBeUndefined();
+    expect((await handleAssetRequest(new Request(signed, { headers: SAME_ORIGIN }))).status).toBe(200);
+    expect(hits.get("/counted.png?spelling")).toBe(1);
+  });
+
   it("refuses a swapped download name, so dl cannot bust the CDN cache", async () => {
     // dl is part of the request URL and therefore part of the cache key: unsigned, every name is a fresh miss, a
     // fresh invocation and a fresh upstream fetch on one signature.
@@ -326,7 +385,7 @@ describe("handleAssetRequest", () => {
     expect(emoji.headers.get("content-disposition")).toBe(`attachment; filename*=UTF-8''${"a".repeat(199)}%F0%9F%98%80.svg`);
   });
 
-  it("names a download after the served type, whatever extension the unsigned name asks for", async () => {
+  it("names a download after the served type, whatever extension the name asks for", async () => {
     // a signed image URL shared as an app link must not save its bytes as an executable
     const response = await handleAssetRequest(proxied("/not-a-png", "&dl=Invoice.exe", "none"));
     expect(response.status).toBe(200);
@@ -377,27 +436,42 @@ describe("handleAssetRequest", () => {
   });
 
   it("runs at most two conversions at once and answers 503 when no slot frees in time", async () => {
-    const holders = [new AbortController(), new AbortController()];
-    const held = holders.map((controller) => {
+    // Two conversions held inside their licence check, which runs with the slot taken.
+    const answers: ((convertible: boolean) => void)[] = [];
+    fonts.isConvertibleFont.mockImplementation(() => new Promise((resolve) => answers.push(resolve)));
+    const held = [0, 1].map(() => handleAssetRequest(proxied("/assets/__inter.woff2", "&fmt=ttf"), { timeoutMs: 60_000 }));
+    try {
+      await vi.waitFor(() => expect(answers).toHaveLength(2), { timeout: 10_000 });
+      const refused = await handleAssetRequest(proxied("/assets/__inter.woff2", "&fmt=ttf"), { timeoutMs: 1_000 });
+      expect(await errorOf(refused)).toMatchObject({ status: 503, code: "busy" });
+      expect(refused.headers.get("retry-after")).toBe("5");
+      // a waiter takes the first slot that frees
+      fonts.isConvertibleFont.mockResolvedValue(true);
+      const waiting = handleAssetRequest(proxied("/assets/__inter.woff2", "&fmt=ttf"), { timeoutMs: 10_000 });
+      answers[0](true);
+      expect((await waiting).status).toBe(200);
+    } finally {
+      for (const answer of answers) answer(true);
+      await Promise.all(held);
+    }
+    expect((await handleAssetRequest(proxied("/assets/__inter.woff2", "&fmt=ttf"))).status).toBe(200);
+  });
+
+  it("holds no conversion slot while a source downloads, so slow upstreams stop nobody else", async () => {
+    // Before, each request below took a slot before its download and kept it for as long as the upstream trickled.
+    const stalls = [new AbortController(), new AbortController(), new AbortController()];
+    const stalled = stalls.map((controller) => {
       const request = proxied("/woff2-stall", "&fmt=ttf");
       return handleAssetRequest(new Request(request.url, { headers: SAME_ORIGIN, signal: controller.signal }), { timeoutMs: 60_000 });
     });
     try {
-      // a conversion that gets a slot before both holders do still succeeds, so retry until both slots are taken
-      await vi.waitFor(async () => {
-        const response = await handleAssetRequest(proxied("/assets/__inter.woff2", "&fmt=ttf"), { timeoutMs: 300 });
-        expect(await errorOf(response)).toMatchObject({ status: 503, code: "busy" });
-        expect(response.headers.get("retry-after")).toBe("5");
-      }, { timeout: 10_000, interval: 50 });
-      // a waiter takes the first slot that frees
-      const waiting = handleAssetRequest(proxied("/assets/__inter.woff2", "&fmt=ttf"), { timeoutMs: 10_000 });
-      holders[0].abort();
-      expect((await waiting).status).toBe(200);
+      // every one of them is downloading: with a slot taken first, the third would still be waiting for one
+      await vi.waitFor(() => expect(hits.get("/woff2-stall")).toBe(3), { timeout: 5_000 });
+      expect((await handleAssetRequest(proxied("/assets/__inter.woff2", "&fmt=ttf"), { timeoutMs: 2_000 })).status).toBe(200);
     } finally {
-      for (const controller of holders) controller.abort();
-      await Promise.all(held);
+      for (const controller of stalls) controller.abort();
+      await Promise.all(stalled);
     }
-    expect((await handleAssetRequest(proxied("/assets/__inter.woff2", "&fmt=ttf"))).status).toBe(200);
   });
 
   it("frees conversion slots when the licence check outlasts the proxy timeout", async () => {
@@ -428,6 +502,21 @@ describe("handleAssetRequest", () => {
     expect(await errorOf(await handleAssetRequest(proxied("/assets/logo.svg")))).toMatchObject({ status: 429, code: "budget" });
     expect((await handleAssetRequest(proxied("/sized.png"))).status).toBe(200);
     expect(await takeProxyBytes(0)).toBe(true);
+  });
+
+  it("holds one caller to its own share of the day's bytes, so it cannot spend the day for everyone", async () => {
+    vi.stubEnv("PROXY_BYTES_PER_IP_PER_DAY", String(png.length + 10));
+    caller.address = "203.0.113.7";
+    expect(Buffer.from(await (await handleAssetRequest(proxied("/sized.png"))).arrayBuffer())).toEqual(png);
+    expect(await errorOf(await handleAssetRequest(proxied("/sized.png")))).toMatchObject({ status: 429, code: "budget" });
+    caller.address = "203.0.113.8";
+    expect(Buffer.from(await (await handleAssetRequest(proxied("/sized.png"))).arrayBuffer())).toEqual(png);
+  });
+
+  it("refuses every download while PROXY_DISABLED is set, before it fetches anything", async () => {
+    vi.stubEnv("PROXY_DISABLED", "1");
+    expect(await errorOf(await handleAssetRequest(proxied("/counted.png?disabled")))).toMatchObject({ status: 503, code: "disabled" });
+    expect(hits.get("/counted.png?disabled")).toBeUndefined();
   });
 
   it("keeps concurrent bodies of unknown length within the daily budget plus one block each", async () => {

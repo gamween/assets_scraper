@@ -6,7 +6,7 @@ import { safeFetch } from "@/server/net/safe-fetch";
 import { scanEngine } from "@/server/scan/engine";
 import type { SafeFetch, ScanBackend } from "@/server/scan/types";
 import { assertDeclaredType, assertSupportedBytes, declaredType, inlineFileBytes } from "./bytes";
-import { sanitizeHost } from "./dest";
+import { sanitizeHost } from "./names";
 import type { AgentScan, ScanSource } from "./types";
 
 /**

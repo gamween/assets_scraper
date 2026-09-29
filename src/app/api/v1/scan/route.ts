@@ -13,10 +13,6 @@ import { agentScanSource } from "../source";
  * the summary it can read without spending its context, or the whole thing on request.
  */
 
-export const runtime = "nodejs";
-export const maxDuration = 120;
-export const dynamic = "force-dynamic";
-
 const AgentScanRequest = ScanRequest.extend({ view: z.enum(["summary", "full"]).default("summary") });
 
 /** The `full` view is everything the agent core's `AgentScan` holds, minus where the scan ran, which the client knows. */

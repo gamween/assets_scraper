@@ -32,15 +32,38 @@ describe("GET /llms.txt", () => {
     expect(text).toContain("401");
   });
 
-  it("states the limits that decide what a request gets back", async () => {
-    process.env.SCANS_PER_DAY = "80";
-    process.env.AGENT_MAX_FILES = "60";
-    process.env.AGENT_MIN_LONG_SIDE = "600";
+  it("states the limits that decide what a request gets back, as this deployment configures them", async () => {
+    // None of these is a default, so a page that printed fixed numbers instead of reading the limits would fail.
+    process.env.SCANS_PER_DAY = "37";
+    process.env.SCANS_PER_IP_PER_DAY = "9";
+    process.env.SCAN_DEADLINE_MS = "73000";
+    process.env.AGENT_MAX_FILES = "41";
+    process.env.AGENT_MIN_LONG_SIDE = "777";
+    process.env.AGENT_ZIP_DEADLINE_MS = "61000";
+    process.env.PROXY_BYTES_PER_DAY = String(333 * 1024 * 1024);
+    process.env.PROXY_BYTES_PER_IP_PER_DAY = String(44 * 1024 * 1024);
     const text = await textOf();
-    expect(text).toContain("80 scans");
-    expect(text).toContain("60 files");
-    expect(text).toContain("600 px");
-    expect(text).toContain("90 s");
+    expect(text).toContain("37 scans a day for this deployment, 9 a day per client address");
+    expect(text).toContain("73 s for one scan");
+    expect(text).toContain("41 files");
+    expect(text).toContain("777 px");
+    expect(text).toContain("built within 61 s");
+    // One daily byte budget for the deployment: archives share it with the app's own downloads.
+    expect(text).toContain("333 MB of asset bytes a day for this deployment, archives and the app's downloads together");
+    expect(text).toContain("44 MB of them per client address");
+  });
+
+  it("says what the edge answers before the API runs, and which paths its rate limit covers", async () => {
+    const text = await textOf();
+    expect(text).toContain("20 requests per 10 minutes per client address");
+    expect(text).toContain("x-vercel-mitigated: deny");
+    expect(text).toContain("x-vercel-mitigated: challenge");
+  });
+
+  it("stops its archive example on a refusal instead of unzipping the error", async () => {
+    const zip = (await textOf()).split("\n").find((line) => line.includes("/api/v1/assets.zip?"));
+    expect(zip).toMatch(/curl -sS --fail-with-body /);
+    expect(zip).toMatch(/&& mkdir -p scrap\/stripe\.com && unzip/);
   });
 
   it("carries two examples runnable against the host that served it", async () => {

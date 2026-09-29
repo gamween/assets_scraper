@@ -119,10 +119,10 @@ Human output by default, `--json` for agents, exit code 1 on failure, every path
 
 - Auth: `Authorization: Bearer <token>` against `AGENT_TOKENS` (comma-separated). An agent token skips BotID, and nothing else: the WAF rate limit, the scan budget, the SSRF guards and every cap from v1 still apply. It is not the ops token, which keeps its own bypass.
 - `POST /api/v1/scan` with `{ "url": "stripe.com", "view": "summary" | "full" }` returns one JSON document. `summary` (default) is the same shape the MCP `scan_page` returns; `full` adds every asset and font. Errors use the v1 error codes with the right HTTP status.
-- `GET /api/v1/assets.zip?url=…&profile=deck&kinds=svg,image&roles=logo&max=60` streams a ZIP built on the server, with the same selection rules as section 4 and a `manifest.json` inside. Bytes count against the proxy daily budget.
+- `GET /api/v1/assets.zip?url=…&profile=deck&kinds=svg,image&roles=logo&max=60` streams a ZIP built on the server, with the same selection rules as section 4 and a `manifest.json` inside. Bytes count against the proxy daily budget and the caller's share of it, and the archive is built within 100 s of the request (`AGENT_ZIP_DEADLINE_MS`), scan included, so it goes out before the function's limit; what is left out then is reported as truncated.
 - `GET /llms.txt` describes the tool, the endpoints, the auth, the limits and two copy-paste examples.
 - `GET /api/openapi.json` is the OpenAPI 3.1 document for the same endpoints.
-- `robots.txt` keeps disallowing everything; `llms.txt` is for agents that are told the URL, not for crawlers.
+- `robots.txt` keeps disallowing everything but `llms.txt` and `openapi.json`: those two are for agents that are told the URL, not for crawlers, and a fetcher acting for a person honours robots.txt too. `X-Robots-Tag: noindex` keeps them out of search results.
 
 ## 9. Claude Code plugin
 

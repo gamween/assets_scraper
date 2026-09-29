@@ -1,5 +1,5 @@
-import { createHash, timingSafeEqual } from "node:crypto";
 import { apiError } from "./gate";
+import { safeEqual } from "./request";
 
 /**
  * Bearer authentication for the agent API (spec `2026-09-27-agent-access-design.md` section 8). A token listed in
@@ -25,11 +25,6 @@ export function agentTokens(): string[] {
     .split(",")
     .map((token) => token.trim())
     .filter((token) => token.length >= MIN_AGENT_TOKEN_LENGTH);
-}
-
-/** Constant-time comparison over digests, so neither the length nor the first differing byte shows in the timing. */
-export function safeEqual(a: string, b: string): boolean {
-  return timingSafeEqual(createHash("sha256").update(a).digest(), createHash("sha256").update(b).digest());
 }
 
 const refuse = (): AgentAuth => ({

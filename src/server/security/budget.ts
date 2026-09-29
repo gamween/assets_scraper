@@ -141,20 +141,40 @@ export async function refundScanBudget(client: string | null = null, now: Date =
   await incr(`scan:m:${iso.slice(0, 7)}`, -1, SCAN_MONTH_TTL);
 }
 
-const proxyKey = (now: Date) => `proxy:d:${now.toISOString().slice(0, 10)}`;
 const byteCount = (bytes: number) => (Number.isFinite(bytes) && bytes > 0 ? Math.ceil(bytes) : 0);
 
 /**
- * Takes bytes about to be served from today's `PROXY_BYTES_PER_DAY`. A take that would go past the limit is refused
- * and handed back, so bytes never served do not spend the budget (two concurrent takes near the limit can both be
- * refused). Taking 0 bytes asks whether any budget is left.
+ * The daily counters a proxied byte moves, each with its limit: the client's own first, when there is a client, then
+ * the day's shared one.
  */
-export async function takeProxyBytes(bytes: number, now: Date = new Date()): Promise<boolean> {
+function proxyCounters(client: string | null, now: Date): { key: string; limit: number }[] {
+  const day = now.toISOString().slice(0, 10);
+  const shared = { key: `proxy:d:${day}`, limit: limits.proxyBytesPerDay };
+  return client ? [{ key: `proxy:d:${day}:${client}`, limit: limits.proxyBytesPerIpPerDay }, shared] : [shared];
+}
+
+/**
+ * Takes bytes about to be served from the client's `PROXY_BYTES_PER_IP_PER_DAY`, then from today's shared
+ * `PROXY_BYTES_PER_DAY`, the way `takeScanBudget` takes a scan: a client over its own allowance is refused before the
+ * shared counter moves, so one address cannot spend the day's bytes for everyone. A take that would go past either
+ * limit is refused and handed back to every counter it moved, so bytes never served do not spend the budget (two
+ * concurrent takes near a limit can both be refused). Taking 0 bytes asks whether any budget is left; it only reads, so
+ * both counters are read at once. A null client (local dev, tests, any host with no trusted address) skips the
+ * per-client allowance.
+ */
+export async function takeProxyBytes(bytes: number, client: string | null = null, now: Date = new Date()): Promise<boolean> {
   const amount = byteCount(bytes);
-  const total = await incr(proxyKey(now), amount, PROXY_DAY_TTL);
-  if (amount > 0 ? total <= limits.proxyBytesPerDay : total < limits.proxyBytesPerDay) return true;
-  if (amount > 0) await incr(proxyKey(now), -amount, PROXY_DAY_TTL);
-  return false;
+  const counters = proxyCounters(client, now);
+  if (amount === 0) {
+    const totals = await Promise.all(counters.map(({ key }) => incr(key, 0, PROXY_DAY_TTL)));
+    return counters.every(({ limit }, index) => totals[index] < limit);
+  }
+  for (const [index, { key, limit }] of counters.entries()) {
+    if ((await incr(key, amount, PROXY_DAY_TTL)) <= limit) continue;
+    for (const moved of counters.slice(0, index + 1)) await incr(moved.key, -amount, PROXY_DAY_TTL);
+    return false;
+  }
+  return true;
 }
 
 /**
@@ -178,20 +198,22 @@ export interface ProxyBytesMeter {
 }
 
 /**
- * Meters bytes against today's `PROXY_BYTES_PER_DAY` (the day of `now`, also for what is handed back later): bytes are
- * reserved before they are used, refusals go through `takeProxyBytes` (nothing counted), and `settle` hands back the
- * unused part. A reservation granted after `settle` is handed back at once.
+ * Meters bytes against the client's and today's proxy budgets (the day of `now`, also for what is handed back later):
+ * bytes are reserved before they are used, refusals go through `takeProxyBytes` (nothing counted), and `settle` hands
+ * back the unused part to every counter it was taken from. A reservation granted after `settle` is handed back at once.
  */
-export function meterProxyBytes(now: Date = new Date()): ProxyBytesMeter {
+export function meterProxyBytes(client: string | null = null, now: Date = new Date()): ProxyBytesMeter {
   let reserved = 0;
   let used = 0;
   let settled = false;
+  /** The take in progress: the next one starts once it has counted its bytes. */
+  let turn: Promise<unknown> = Promise.resolve();
   const handBack = async (bytes: number) => {
-    if (bytes > 0) await incr(proxyKey(now), -bytes, PROXY_DAY_TTL);
+    if (bytes > 0) for (const { key } of proxyCounters(client, now)) await incr(key, -bytes, PROXY_DAY_TTL);
   };
   const reserve = async (bytes: number) => {
     const amount = byteCount(bytes);
-    if (settled || !(await takeProxyBytes(amount, now))) return false;
+    if (settled || !(await takeProxyBytes(amount, client, now))) return false;
     if (settled) {
       await handBack(amount);
       return false;
@@ -199,16 +221,23 @@ export function meterProxyBytes(now: Date = new Date()): ProxyBytesMeter {
     reserved += amount;
     return true;
   };
+  const takeInTurn = async (amount: number) => {
+    const shortfall = used + amount - reserved;
+    if (shortfall > 0 && !(await reserve(Math.max(PROXY_BYTES_BLOCK, shortfall)))) return false;
+    // a settle that ran while the block was being granted already handed it back
+    if (settled) return false;
+    used += amount;
+    return true;
+  };
   return {
     reserve,
-    async take(bytes) {
-      const amount = byteCount(bytes);
-      const shortfall = used + amount - reserved;
-      if (shortfall > 0 && !(await reserve(Math.max(PROXY_BYTES_BLOCK, shortfall)))) return false;
-      // a settle that ran while the block was being granted already handed it back
-      if (settled) return false;
-      used += amount;
-      return true;
+    take(bytes) {
+      // One at a time, each after the one before it has counted: the ZIP endpoint's workers share a meter, and a take
+      // that started while another waited on its reservation found the block covering it, so the two served bytes the
+      // budget was never charged for. In turn, the second sees the first one's bytes and reserves its own if it must.
+      const result = turn.then(() => takeInTurn(byteCount(bytes)));
+      turn = result.catch(() => {});
+      return result;
     },
     async settle() {
       if (settled) return;

@@ -3,11 +3,15 @@ import net from "node:net";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { serveFixture, type FixtureServer } from "../../fixtures/serve";
 
-/** Fixed answers for chosen names; every other name goes to the real resolver. */
+/**
+ * Fixed answers for chosen names, and no answer at all for `.invalid` ones, so no case here needs a public resolver
+ * (which may be slow or absent on a runner); every other name goes to the real resolver.
+ */
 const dns = vi.hoisted(() => ({ answers: new Map<string, string | string[]>(), lookup: vi.fn() }));
 vi.mock("node:dns/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:dns/promises")>();
   dns.lookup.mockImplementation(async (hostname: string, options: LookupAllOptions) => {
+    if (hostname.endsWith(".invalid")) throw Object.assign(new Error(`getaddrinfo ENOTFOUND ${hostname}`), { code: "ENOTFOUND", hostname });
     const answer = dns.answers.get(hostname);
     return answer === undefined ? actual.lookup(hostname, options) : [answer].flat().map((address) => ({ address, family: net.isIP(address) }));
   });
@@ -85,10 +89,9 @@ describe("safeFetch", () => {
   it("blocks private addresses directly and through redirects", async () => {
     await expect(safeFetch(`${victim.origin}/secret`)).rejects.toMatchObject({ code: "blocked-address" });
     await expect(safeFetch(`${allowed.origin}/redirect-victim`)).rejects.toMatchObject({ code: "blocked-address" });
-    // public DNS may be unreachable from CI: either way the request must never go out
-    const nip = await safeFetch("http://127.0.0.1.nip.io/").then(() => null, (error: unknown) => error);
-    expect(nip).toBeInstanceOf(SafeFetchError);
-    expect(["blocked-address", "dns"]).toContain((nip as SafeFetchError).code);
+    // a public name that resolves to loopback, the way 127.0.0.1.nip.io does, without asking a public resolver
+    dns.answers.set("loopback.test", "127.0.0.1");
+    await expect(safeFetch("http://loopback.test/")).rejects.toMatchObject({ code: "blocked-address" });
     expect(victimHits).toBe(0);
   });
 

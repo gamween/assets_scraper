@@ -28,7 +28,7 @@ const google = fakeGoogleFetch(["Inter", "Source Sans 3"]);
 const fetch: SafeFetch = (url, options) => (url.startsWith("https://fonts.googleapis.com/") ? google(url, options) : safeFetch(url, options));
 
 /** The URL a signed `/api/asset` path points to, after checking its signature. */
-const signedUrl = (proxy: string) => verifyAssetParams(new URLSearchParams(proxy.slice(proxy.indexOf("?") + 1))).url;
+const signedUrl = (proxy: string) => verifyAssetParams(proxy.slice(proxy.indexOf("?"))).url;
 
 beforeAll(async () => {
   server = await serveAssetsFixture();

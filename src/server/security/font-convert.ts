@@ -7,7 +7,8 @@ import { sniffContentType } from "./sniff";
 /**
  * `fmt=ttf` buffers the source and decompresses it on the main thread into a WebAssembly heap that never shrinks, so
  * sources are capped well below the proxy cap (web fonts are rarely over a few MB) and at most `CONVERSION_SLOTS`
- * conversions, download included, run at once per instance.
+ * conversions run at once per instance. A slot covers the conversion, not the download: the proxy takes one once the
+ * source is in, so an upstream that sends its bytes slowly holds no slot another request is waiting for.
  */
 export const WOFF2_MAX_SOURCE_BYTES = 10 * 1024 * 1024;
 /**

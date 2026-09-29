@@ -162,6 +162,21 @@ describe("selectAssets, deck profile", () => {
     expect(selection.duplicates).toEqual([{ keptId: "brand.svg", droppedIds: ["mark.png"] }]);
   });
 
+  it("stops comparing once its signal aborts, and keeps the images it did not get to", async () => {
+    // The hosted archive has a deadline: fingerprinting sixty rasters must not run it past the function's limit.
+    const assets = [
+      make({ file: "hero-a.png", width: 800, height: 600 }),
+      make({ file: "hero-b.png", width: 1200, height: 900 }),
+    ];
+    const bytes = new Map([
+      ["hero-a.png", resized],
+      ["hero-b.png", big],
+    ]);
+    const selection = await selectAssets(assets, {}, bytes, AbortSignal.abort());
+    expect(selection.keep.map((asset) => asset.id).sort()).toEqual(["hero-a.png", "hero-b.png"]);
+    expect(selection.dropped).toEqual({});
+  });
+
   it("keeps the larger of two rasters that look the same", async () => {
     const assets = [
       make({ file: "hero-a.png", width: 800, height: 600 }),
