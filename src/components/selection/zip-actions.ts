@@ -6,10 +6,9 @@ import { formatBytes, formatCount } from "@/lib/format";
 import { assetBytes, assetKey, fontBytes, fontKey } from "@/lib/client/filters";
 import { appStore, getDownloadAllItems, type AppState, type ZipProgress } from "@/lib/client/store";
 import { planZip, saveZip, type ZipFailure, type ZipItem } from "@/lib/client/zip";
+import { beginZipJob, cancelZipJob, isCurrentZipJob, settleZipJob, type ZipAbortReason } from "@/lib/client/zip-job";
 
 const LARGE_ZIP_BYTES = 300 * 1024 * 1024;
-
-let controller: AbortController | null = null;
 
 const toZipItem = (item: ReturnType<typeof getDownloadAllItems>[number]): ZipItem =>
   item.kind === "asset" ? { type: "asset", asset: item.asset } : { type: "font", font: item.font };
@@ -51,7 +50,8 @@ function showFailures(failed: ZipFailure[]) {
 
 /**
  * Spec 12.4: builds the ZIP in the browser. Call from the click handler itself: the save picker needs the gesture.
- * Progress goes to the store (`Zipping 18 of 48`), failures to a toast with `Show`.
+ * Progress goes to the store (`Zipping 18 of 48`), failures to a toast with `Show`, both only while the job is still
+ * the current one: leaving the results drops it (see zip-job), and the next scan's state is not its to write.
  */
 function startZip(items: ZipItem[], source: ZipProgress["source"]) {
   const state = appStore.getState();
@@ -74,26 +74,27 @@ function startZip(items: ZipItem[], source: ZipProgress["source"]) {
   };
   if (buffered && bytes !== null && bytes > LARGE_ZIP_BYTES) warnLarge(bytes);
 
-  const current = new AbortController();
-  controller = current;
+  const job = beginZipJob();
   state.setZip({ source, done: 0, total });
   void saveZip(items, host, {
-    signal: current.signal,
+    signal: job.signal,
     onProgress: (done, count, loaded) => {
+      if (!isCurrentZipJob(job)) return;
       appStore.getState().setZip({ source, done, total: count });
       if (buffered && !warned && loaded > LARGE_ZIP_BYTES) warnLarge(loaded);
     },
   })
     .then(({ failed }) => {
-      if (failed.length) showFailures(failed);
+      if (isCurrentZipJob(job) && failed.length) showFailures(failed);
     })
     .catch((error: unknown) => {
-      if (current.signal.aborted || (error instanceof DOMException && error.name === "AbortError")) return;
-      notify("The ZIP couldn't be created", { error: true });
+      // Leaving the results is not a click on Cancel: say where the ZIP went. A picker save is discarded, not cut.
+      if ((job.signal.reason as ZipAbortReason | undefined) === "left") return notify("ZIP cancelled", { description: "It stopped when the results were closed." });
+      if (job.signal.aborted || (error instanceof DOMException && error.name === "AbortError")) return;
+      if (isCurrentZipJob(job)) notify("The ZIP couldn't be created", { error: true });
     })
     .finally(() => {
-      if (controller === current) controller = null;
-      appStore.getState().setZip(null);
+      if (settleZipJob(job)) appStore.getState().setZip(null);
     });
 }
 
@@ -107,5 +108,5 @@ export function downloadSelection() {
 }
 
 export function cancelZip() {
-  controller?.abort();
+  cancelZipJob();
 }

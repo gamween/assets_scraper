@@ -156,6 +156,35 @@ test.describe("selection and ZIP", () => {
     expect(downloaded).toBe(false);
   });
 
+  test("a ZIP in progress ends with the results it was built from", async ({ page }) => {
+    await openResults(page);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    await page.route(photo.original!.url, async (route) => {
+      await held;
+      await route.fallback().catch(() => {});
+    });
+    await cardOf(page, siteLogo.id).hover();
+    await cardOf(page, siteLogo.id).getByRole("checkbox").click();
+    await cardOf(page, photo.id).locator("[data-card-main]").click();
+    let downloaded = false;
+    page.on("download", () => {
+      downloaded = true;
+    });
+    await selectionBar(page).getByRole("button", { name: "Download ZIP" }).click();
+    await expect(selectionBar(page).getByRole("button", { name: /^Zipping \d of 2$/ })).toBeVisible();
+
+    // The job used to run on under the next scan: its progress brought the bar back over results with nothing
+    // selected, and its archive downloaded after all.
+    await page.getByRole("button", { name: "Rescan" }).click();
+    await expect(page.getByTestId("results")).toBeVisible();
+    await expect(page.getByTestId("toast")).toContainText("ZIP cancelled");
+    release();
+    await page.waitForTimeout(300);
+    await expect(selectionBar(page)).toHaveCount(0);
+    expect(downloaded).toBe(false);
+  });
+
   test("only one near-black button is on screen at a time", async ({ page }) => {
     await openResults(page);
     const nearBlack = async () =>

@@ -3,6 +3,7 @@ import { revokePreviewUrls } from "./preview-urls";
 import { addRecent, readRecent, removeRecent } from "./recent";
 import { startScan, type ScanHandle } from "./scan-client";
 import { appStore } from "./store";
+import { dropZipJob } from "./zip-job";
 
 /** Spec 13: the inline message under the input for `invalid-url`. */
 export const INVALID_URL_MESSAGE = "Enter a web address, like linear.app";
@@ -18,6 +19,19 @@ function openPendingDetail() {
   pendingDetail = null;
   // Does nothing when the scan has no such asset; the detail view then drops `&asset` from the address bar.
   if (id) appStore.getState().openDetail(id);
+}
+
+/**
+ * Ends what belongs to the results on screen, before a new scan or the landing replaces them: the scan in flight, the
+ * `&asset=` waiting for it, a ZIP being built from them, and the object URLs of their inline previews. The store
+ * resets itself; this is everything it holds no reference to.
+ */
+function leaveResults() {
+  current?.abort();
+  current = null;
+  pendingDetail = null;
+  dropZipJob();
+  revokePreviewUrls();
 }
 
 type HistoryMode = "push" | "replace" | "none";
@@ -41,8 +55,7 @@ function writeHistory(path: string, mode: HistoryMode) {
  * address bar to open when the scan ends.
  */
 export function runScan(url: string, host: string, history: HistoryMode = "push", detail: string | null = null): void {
-  current?.abort();
-  revokePreviewUrls();
+  leaveResults();
   pendingDetail = detail;
   const store = appStore.getState();
   store.beginScan({ url, host });
@@ -102,18 +115,14 @@ export function rescan(): void {
 
 /** Cancel returns to the landing with the URL kept in the input (spec 12.2). */
 export function cancelScan(): void {
-  current?.abort();
-  current = null;
-  pendingDetail = null;
+  leaveResults();
   const { url, input } = appStore.getState();
   appStore.getState().reset(url ?? input);
   writeHistory("/", "push");
 }
 
 export function goHome(): void {
-  current?.abort();
-  current = null;
-  pendingDetail = null;
+  leaveResults();
   appStore.getState().reset("");
   writeHistory("/", "push");
 }
@@ -132,9 +141,7 @@ export function syncFromLocation(): void {
   const store = appStore.getState();
   if (!raw) {
     if (store.phase !== "idle") {
-      current?.abort();
-      current = null;
-      pendingDetail = null;
+      leaveResults();
       store.reset(store.url ?? store.input);
     }
     return;
@@ -142,9 +149,7 @@ export function syncFromLocation(): void {
   const result = normalizeInputUrl(raw);
   if (!result.ok) {
     // `/?url=` with something that is not a URL: the landing with the inline message, at `/` like any landing.
-    current?.abort();
-    current = null;
-    pendingDetail = null;
+    leaveResults();
     store.reset(raw);
     appStore.getState().setInputError(INVALID_URL_MESSAGE);
     writeHistory("/", "replace");
