@@ -245,6 +245,25 @@ describe("collector noise and edge cases", () => {
   });
 });
 
+describe("collector references", () => {
+  it("copies the definitions a style attribute or a <style> rule references", async () => {
+    // The shape SVG exports write: `style="fill:url(#a)"` and `.cls-1{clip-path:url(#b)}`, with the definitions kept in
+    // another SVG of the page. Left behind, the downloaded file paints black and unclipped.
+    const { context, page } = await openPage(browser, `${server.origin}/`);
+    await page.evaluate(() => {
+      const holder = document.createElement("div");
+      holder.innerHTML = `<svg width="0" height="0" style="position:absolute"><defs><linearGradient id="styled-grad"><stop offset="0" stop-color="#f00"/><stop offset="1" stop-color="#00f"/></linearGradient><clipPath id="ruled-clip"><rect width="10" height="10"/></clipPath></defs></svg>
+        <svg width="26" height="26"><style>.ruled-rect{clip-path:url(#ruled-clip)}</style><rect width="26" height="26" style="fill:url(#styled-grad)"/><rect class="ruled-rect" width="20" height="20"/></svg>`;
+      document.body.prepend(holder);
+    });
+    const referenced = await runCollector(page, collectorOptions(server.host, "Fixture"));
+    await context.close();
+    const styled = referenced.svgs.find((s) => s.markup.includes("ruled-rect"))!;
+    expect(styled.markup).toContain('linearGradient id="styled-grad"');
+    expect(styled.markup).toContain('clipPath id="ruled-clip"');
+  });
+});
+
 describe("collector sources", () => {
   it("reads content: url() on an element, itemprop=image links and msapplication meta icons", async () => {
     const { context, page } = await openPage(browser, `${server.origin}/sources.html`);

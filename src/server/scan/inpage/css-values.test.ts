@@ -35,6 +35,13 @@ describe("readCssToken", () => {
     expect(readCssToken(`/* x */y`, 0)).toEqual({ type: "comment", end: 7, value: "" });
     expect(readCssToken(`/* open`, 0)).toEqual({ type: "comment", end: 7, value: "" });
   });
+
+  it("ends a name at a colon, a semicolon, a bracket or a brace, which are tokens of their own", () => {
+    expect(readCssToken(`fill:url(#a)`, 0)).toEqual({ type: "word", end: 4, value: "fill" });
+    for (const delimiter of ":;[]{}") expect(readCssToken(`${delimiter}url(a)`, 0)).toEqual({ type: "delimiter", end: 1, value: "" });
+    // Inside an unquoted url() they are part of the URL, as React's `:r1:` ids are
+    expect(readCssToken(`url(#:r1:)`, 0)).toEqual({ type: "url", end: 10, value: "#:r1:" });
+  });
 });
 
 describe("extractCssUrls", () => {
@@ -99,6 +106,14 @@ describe("readCssUrls", () => {
   it("keeps fragment references, for the SVG code that follows them", () => {
     expect(readCssUrls(`url(#a) url("#b") url( '#c' ) url(#d e)`)).toEqual(["#a", "#b", "#c"]);
     expect(readCssUrls(`.x { fill: url(#g1) } /* url(#no) */ .y { clip-path: url("#c2") }`)).toEqual(["#g1", "#c2"]);
+  });
+
+  it("reads the url() of a style attribute or a minified rule, right after a colon, a semicolon or a brace", () => {
+    // The shape of an SVG export's `style` attributes and `<style>` rules: reading `fill:url` as one function name lost
+    // the gradients and clip paths a sprite keeps outside its symbols.
+    expect(readCssUrls("fill:url(#a);clip-path:url('#b')")).toEqual(["#a", "#b"]);
+    expect(readCssUrls(".cls-1{fill:url(#linear-gradient);}.cls-2{mask:url(#m)}")).toEqual(["#linear-gradient", "#m"]);
+    expect(extractCssUrls("background-image:image-set(url(a.png) 1x,'b.png' 2x)!important")).toEqual(["a.png", "b.png"]);
   });
 });
 

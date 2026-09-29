@@ -1,7 +1,8 @@
 /**
  * A forward-only CSS tokenizer for what the scan reads out of CSS values: `url()`, strings and function arguments.
- * Strings, `url()` and escapes follow CSS Syntax Level 3 (section 4.3), the way a browser reads them; everything else is
- * a run of other characters, which is all a caller needs to skip it.
+ * Strings, `url()` and escapes follow CSS Syntax Level 3 (section 4.3), the way a browser reads them, and so do the
+ * colons, semicolons, brackets and braces that end a name; everything else is a run of other characters, which is all
+ * a caller needs to skip it.
  *
  * One copy for both sides, like `lists.ts`: the in-page collector bundles it and post-processing imports it. It exists
  * because the regular expressions it replaced were quadratic on page CSS: an unterminated `url(url(url(` or a long run
@@ -12,7 +13,7 @@
  */
 
 export interface CssToken {
-  type: "space" | "comment" | "string" | "bad-string" | "url" | "bad-url" | "function" | "(" | ")" | "," | "word";
+  type: "space" | "comment" | "string" | "bad-string" | "url" | "bad-url" | "function" | "(" | ")" | "," | "delimiter" | "word";
   /** Where the token ends, which is where the next one starts. */
   end: number;
   /** The decoded string, the decoded URL of an unquoted `url()`, a function's name in lowercase, a word. Else empty. */
@@ -27,8 +28,13 @@ const isHex = (code: number) => (code >= 0x30 && code <= 0x39) || (code >= 0x41 
 /** Characters an unquoted `url()` may not hold (section 4.3.6): they make it a bad URL. */
 const breaksUrl = (code: number) =>
   code === 0x22 || code === 0x27 || code === 0x28 || code <= 0x08 || code === 0x0b || (code >= 0x0e && code <= 0x1f) || code === 0x7f;
-/** Characters that end a word: whitespace, quotes, parentheses and commas. A comment start is checked apart. */
-const endsWord = (code: number) => isSpace(code) || code === 0x22 || code === 0x27 || code === 0x28 || code === 0x29 || code === 0x2c;
+/**
+ * `:`, `;`, `[`, `]`, `{` and `}`, which CSS reads as tokens of their own (section 4.3.1). A style attribute or a
+ * `<style>` element puts them right before a `url(`: in `fill:url(#a)` the function is `url`, not `fill:url`.
+ */
+const isDelimiter = (code: number) => code === 0x3a || code === 0x3b || code === 0x5b || code === 0x5d || code === 0x7b || code === 0x7d;
+/** Characters that end a word: whitespace, quotes, parentheses, commas and delimiters. A comment start is checked apart. */
+const endsWord = (code: number) => isSpace(code) || code === 0x22 || code === 0x27 || code === 0x28 || code === 0x29 || code === 0x2c || isDelimiter(code);
 
 /** Whether `text[at]` starts a valid escape: a backslash followed by anything but a newline or the end. */
 const isEscape = (text: string, at: number) => text.charCodeAt(at) === BACKSLASH && at + 1 < text.length && !isNewline(text.charCodeAt(at + 1));
@@ -146,7 +152,8 @@ function readUrl(text: string, start: number): CssToken {
 
 /**
  * The token of `text` that starts at `start`, which must be inside the text. Whitespace, comments, strings, `url()`,
- * function names with their `(`, single `(`, `)` and `,`, and words: runs of any other characters, escapes decoded.
+ * function names with their `(`, single `(`, `)`, `,` and delimiters (`:`, `;`, brackets, braces), and words: runs of
+ * any other characters, escapes decoded.
  * A word directly followed by `(` is a function. A `url(` whose argument is not quoted is read whole as a URL token;
  * with a quoted argument it is a function like any other, and its string is the next token but one.
  */
@@ -165,6 +172,7 @@ export function readCssToken(text: string, start: number): CssToken {
   if (code === 0x28) return { type: "(", end: start + 1, value: "" };
   if (code === 0x29) return { type: ")", end: start + 1, value: "" };
   if (code === 0x2c) return { type: ",", end: start + 1, value: "" };
+  if (isDelimiter(code)) return { type: "delimiter", end: start + 1, value: "" };
 
   const decoded = new Decoded(text, start);
   let at = start;

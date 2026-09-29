@@ -4,7 +4,7 @@ import { readCssToken } from "./css-tokens";
 /**
  * The URLs in CSS values, read the same way in the page and in Node: the collector bundles this module for computed
  * styles, lazy attributes, CSSOM rules and inline `<style>` text, and post-processing imports it for the stylesheets
- * the page could not read. Both used to carry their own copy of two regular expressions, which drifted apart and were
+ * the page could not read. Both used to carry their own copy of two regular expressions, kept in sync by hand and
  * quadratic on page CSS. Each reader here walks the value once with `readCssToken`, starting each token where the
  * previous one ended.
  */
@@ -24,7 +24,8 @@ interface OpenFunction {
 /**
  * Every URL a CSS value names, in order and unescaped: the argument of each `url()`, and each string `image-set()` or
  * `-webkit-image-set()` takes as an image. Fragment references (`url(#clip)`) are kept, for the SVG code that follows
- * them. A `url()` a browser would reject (`url(a b)`, `url(url(a))`, `url("a" b)`) names nothing, and neither do
+ * them, which also reads whole declaration lists and rules this way (`fill:url(#a)`, `.a{fill:url(#b)}`). A `url()` a
+ * browser would reject (`url(a b)`, `url(url(a))`, `url("a" b)`) names nothing, and neither do
  * `url(` inside a string or a comment or the strings of other functions (`type("image/avif")`).
  */
 export function readCssUrls(value: string): string[] {
