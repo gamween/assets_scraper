@@ -1,29 +1,27 @@
 import { ipAddress } from "@vercel/functions";
 import { AssetKind, AssetRole, type ErrorCode } from "@/lib/contract";
-import { normalizeInputUrl, type UrlInputResult } from "@/lib/url";
 import { agentLimits } from "@/agent/limits";
 import type { SelectionOptions, SelectionProfile } from "@/agent/types";
 import { zipMaxBytes } from "./zip";
-import { isOwnHost, isTestAllowed, privateHostReason } from "@/server/net/ip";
-import { authenticateAgent, safeEqual } from "@/server/security/agent-auth";
+import { authenticateAgent } from "@/server/security/agent-auth";
 import { takeScanBudget } from "@/server/security/budget";
-import { apiError } from "@/server/security/gate";
+import { apiError, checkScanTarget, refuseWhenClosed, type GateRefusal } from "@/server/security/gate";
+import { readCappedBody, requestMediaType } from "@/server/security/request";
 
 /**
  * The request gate of the agent API (spec section 8): the order of v1 spec 7.1 minus BotID, which the bearer token
  * replaces, and minus the same Origin rule, which a token client has no Origin for. Everything else v1 applies still
- * applies here: the kill switch, the access code, the URL policy (SSRF guards included) and the daily scan budget.
+ * applies here, through the very functions `/api/scan` runs: the kill switch, the access code, the URL policy (SSRF
+ * guards included) and the daily scan budget.
  *
  * It is split in two so a route can authorize before it reads anything: an unauthenticated caller gets a 401 without
  * the endpoint parsing its body or telling it which of its parameters were wrong.
  */
 
-export type AgentRefusal = { ok: false; response: Response };
-
 /** `client` is the caller's address, the key of its own daily quota; null off Vercel. */
-export type AgentTarget = { ok: true; url: string; host: string; client: string | null } | AgentRefusal;
+export type AgentTarget = { ok: true; url: string; host: string; client: string | null } | GateRefusal;
 
-const fail = (status: number, code: ErrorCode, message: string): AgentRefusal => ({ ok: false, response: apiError(status, code, message) });
+const fail = (status: number, code: ErrorCode, message: string): GateRefusal => ({ ok: false, response: apiError(status, code, message) });
 
 const INVALID_URL = "Pass a web address, like linear.app";
 
@@ -31,69 +29,25 @@ const INVALID_URL = "Pass a web address, like linear.app";
  * Steps 5 and 6 of v1 spec 7.1 after the bearer token: a paused scanner refuses everyone, and an app behind an access
  * code stays behind it (spec section 8: an agent token skips BotID and nothing else).
  */
-export function authorizeAgent(request: Request): { ok: true; tokenIndex: number } | AgentRefusal {
+export function authorizeAgent(request: Request): { ok: true; tokenIndex: number } | GateRefusal {
   const auth = authenticateAgent(request);
   if (!auth.ok) return auth;
-  if (process.env.SCAN_DISABLED === "1") return fail(503, "disabled", "Scanning is paused.");
-  const accessCode = process.env.ACCESS_CODE;
-  if (accessCode && !safeEqual(request.headers.get("x-access-code") ?? "", accessCode)) {
-    return fail(401, "access-code", "Send the access code in x-access-code.");
-  }
-  return auth;
+  return refuseWhenClosed(request, "Send the access code in x-access-code.") ?? auth;
 }
-
-/** Bytes of a request body the agent API reads, as in v1's gate: a scan request is one short URL. */
-export const AGENT_MAX_BODY_BYTES = 16 * 1024;
 
 /**
  * The JSON body of an agent request, or null when the media type is wrong, the body is not JSON, or it is larger than
- * `AGENT_MAX_BODY_BYTES`. The size is enforced while reading, so a body that lies in `content-length` is still capped.
+ * v1's gate reads (`MAX_BODY_BYTES`, enforced while reading, so a body that lies in `content-length` is still capped).
  */
 export async function readAgentJson(request: Request): Promise<unknown | null> {
-  const mediaType = (request.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
-  if (mediaType !== "application/json") return null;
-  if (Number(request.headers.get("content-length")) > AGENT_MAX_BODY_BYTES) return null;
-  if (!request.body) return null;
-  const reader = request.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
+  if (requestMediaType(request) !== "application/json") return null;
+  const body = await readCappedBody(request);
+  if (body === null) return null;
   try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      size += value.byteLength;
-      if (size > AGENT_MAX_BODY_BYTES) {
-        await reader.cancel().catch(() => {});
-        return null;
-      }
-      chunks.push(value);
-    }
-    return JSON.parse(new TextDecoder().decode(Buffer.concat(chunks)));
+    return JSON.parse(new TextDecoder().decode(body));
   } catch {
     return null;
   }
-}
-
-/**
- * The same exception v1's gate makes for its own integration tests: `normalizeInputUrl` refuses every port but 80 and
- * 443, which would keep an allowlisted test origin (`SCAN_TEST_ALLOW_HOSTS`) out even though `safeFetch` and the egress
- * proxy accept it. Null everywhere `isTestAllowed` is off, so production and Vercel never see it.
- */
-function normalizeTestUrl(input: string): UrlInputResult | null {
-  let parsed: URL;
-  try {
-    parsed = new URL(input.trim());
-  } catch {
-    return null;
-  }
-  const port = Number(parsed.port);
-  if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || !parsed.port || !isTestAllowed(parsed.hostname, port)) return null;
-  parsed.port = "";
-  const normalized = normalizeInputUrl(parsed.href);
-  if (!normalized.ok) return null;
-  const url = new URL(normalized.url);
-  url.port = String(port);
-  return { ok: true, url: url.href, host: normalized.host };
 }
 
 /**
@@ -102,23 +56,11 @@ function normalizeTestUrl(input: string): UrlInputResult | null {
  */
 export async function gateAgentTarget(input: string | null | undefined, request: Request): Promise<AgentTarget> {
   if (!input) return fail(400, "invalid-url", INVALID_URL);
-  let normalized = normalizeInputUrl(input);
-  if (!normalized.ok && normalized.code === "unsupported-port") normalized = normalizeTestUrl(input) ?? normalized;
-  if (!normalized.ok) {
-    return normalized.code === "unsupported-port"
-      ? fail(422, "unsupported-port", "Only ports 80 and 443 are supported.")
-      : fail(400, "invalid-url", INVALID_URL);
-  }
-  const url = new URL(normalized.url);
-  const hostname = normalized.host.replace(/^\[(.*)\]$/, "$1");
-  if (isOwnHost(hostname)) return fail(422, "own-host", "Assets Scraper can't scan itself.");
-  const port = Number(url.port || (url.protocol === "https:" ? 443 : 80));
-  if (privateHostReason(hostname) && !isTestAllowed(hostname, port)) {
-    return fail(422, "blocked-address", "Local and private network addresses are blocked.");
-  }
+  const target = checkScanTarget(input, INVALID_URL);
+  if (!target.ok) return target;
   const client = ipAddress(request) ?? null;
   if (!(await takeScanBudget(client))) return fail(429, "budget", "Daily scan limit reached.");
-  return { ok: true, url: normalized.url, host: normalized.host, client };
+  return { ok: true, url: target.url, host: target.host, client };
 }
 
 const PROFILES = new Set<SelectionProfile>(["deck", "all"]);

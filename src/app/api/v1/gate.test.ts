@@ -6,7 +6,8 @@ const ipAddress = vi.fn(() => undefined as string | undefined);
 vi.mock("@vercel/functions", () => ({ ipAddress }));
 
 const { MemoryBudgetStore, setBudgetStoreForTests } = await import("@/server/security/budget");
-const { AGENT_MAX_BODY_BYTES, authorizeAgent, gateAgentTarget, parseSelectionParams, readAgentJson } = await import("./gate");
+const { authorizeAgent, gateAgentTarget, parseSelectionParams, readAgentJson } = await import("./gate");
+const { MAX_BODY_BYTES } = await import("@/server/security/request");
 
 const TOKEN = "agent-token-one-with-enough-characters";
 const ORIGIN = "https://assets.example.com";
@@ -85,7 +86,7 @@ describe("readAgentJson", () => {
   });
 
   it("refuses a body past the cap, whatever content-length claims", async () => {
-    const long = JSON.stringify({ url: "x".repeat(AGENT_MAX_BODY_BYTES) });
+    const long = JSON.stringify({ url: "x".repeat(MAX_BODY_BYTES) });
     expect(await readAgentJson(post(long, { "content-length": "20" }))).toBeNull();
   });
 });
