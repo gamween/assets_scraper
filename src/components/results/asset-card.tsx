@@ -147,6 +147,8 @@ export const AssetCard = memo(function AssetCard({ asset, section }: { asset: As
               {part}
             </span>
           ))}
+          {/* The card's button describes itself with this line: it is also where a screen reader learns the card is selected. */}
+          {selected ? <span className="sr-only">, selected</span> : null}
         </span>
       </div>
 

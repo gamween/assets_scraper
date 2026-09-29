@@ -43,7 +43,7 @@ export function SelectionBar() {
           "animate-in fade-in-0 slide-in-from-bottom-2 duration-200 ease-enter",
         )}
       >
-        <span data-testid="selection-count" className="mr-auto inline-flex h-8 min-w-0 items-center truncate rounded-md bg-accent-soft px-2.5 font-mono text-mono whitespace-nowrap text-text tabular-nums sm:mr-3" aria-live="polite">
+        <span data-testid="selection-count" className="mr-auto inline-flex h-8 min-w-0 items-center truncate rounded-md bg-accent-soft px-2.5 font-mono text-mono whitespace-nowrap text-text tabular-nums sm:mr-3">
           {formatCount(count)} selected{bytes ? ` · ${formatBytes(bytes)}` : ""}
         </span>
         {zipping ? (

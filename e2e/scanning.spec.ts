@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { loadFixture } from "./support/fixtures";
 import { installControlledScan } from "./support/routes";
 
 async function startScan(page: Page, host: string) {
@@ -39,6 +40,33 @@ test.describe("scanning", () => {
     await expect(steps.nth(2)).toHaveAttribute("data-state", "done");
 
     await expect(page.getByTestId("scan-elapsed")).toHaveText(/^\d+s$/);
+  });
+
+  test("tells a screen reader where the scan is, when it ends, and what is selected", async ({ page }) => {
+    // One status region for the life of the page: the step list only restyled rows that were already there, and the
+    // selection count arrived with its bar, so a screen reader heard neither.
+    const scan = await installControlledScan(page);
+    await startScan(page, "linear.app");
+    const status = page.getByRole("status").and(page.getByTestId("announcer"));
+    await expect(status).toHaveText("Opening linear.app");
+    await expect(page.getByTestId("scan-status").getByRole("list")).not.toHaveAttribute("aria-live");
+
+    await scan.push({ type: "step", step: "open", state: "done" }, { type: "step", step: "load", state: "start" });
+    await expect(status).toHaveText("Waiting for the page to load");
+
+    const linear = loadFixture("linear").filter((event) => event.type !== "accepted" && event.type !== "step");
+    const assets = linear.flatMap((event) => (event.type === "assets" ? event.items : [])).length;
+    const fonts = linear.flatMap((event) => (event.type === "fonts" ? event.families : [])).length;
+    await scan.push(...linear);
+    await expect(page.getByTestId("results")).toBeVisible();
+    await expect(status).toHaveText(`Scan finished, ${assets} assets and ${fonts} fonts`);
+
+    const card = page.getByTestId("asset-card").first();
+    await card.locator("[data-card-main]").focus();
+    await page.keyboard.press("Space");
+    await expect(status).toHaveText("1 selected");
+    // The card itself says it is selected, in the description of its button.
+    await expect(card.locator("[data-card-main]")).toHaveAccessibleDescription(/, selected$/);
   });
 
   test("shows the queue step only after a queue event", async ({ page }) => {
