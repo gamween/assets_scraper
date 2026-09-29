@@ -48,6 +48,15 @@ function colonOutsideComments(text: string): number {
 class Stop extends Error {}
 
 /**
+ * The URL of a file as the network sees it: an http(s) URL without its fragment, which no request carries, so that
+ * `icons.svg#home` meets the capture of `icons.svg`. A fragment is part of the payload of a `data:` URI and stays.
+ */
+export function withoutFragment(url: URL): string {
+  if (url.protocol === "http:" || url.protocol === "https:") url.hash = "";
+  return url.href;
+}
+
+/**
  * Image URLs declared in a stylesheet's text, for sheets the page could not read through CSSOM (spec 8.1), passed to
  * `visit` in sheet order; `visit` returns `"stop"` to end the scan. `@font-face` rules are left to the fonts module.
  *
@@ -83,7 +92,7 @@ export function forEachStylesheetUrl(cssText: string, baseUrl: string, visit: (i
     for (const raw of extractCssUrls(value)) {
       let url: string;
       try {
-        url = new URL(raw, baseUrl).href;
+        url = withoutFragment(new URL(raw, baseUrl));
       } catch {
         continue; // not a URL
       }

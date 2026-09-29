@@ -8,7 +8,7 @@ import { originalCandidates, variantKey } from "./cdn";
 import { extensionFor, formatFromContentType, formatFromUrl, sniffFormat } from "./format";
 import { createFilenamer, displayName } from "./naming";
 import { noiseReason, svgNoiseReason, TINY_DATA_URI_BYTES } from "./noise";
-import { decodeDataUri, forEachStylesheetUrl, largestIconSize } from "./parse";
+import { decodeDataUri, forEachStylesheetUrl, largestIconSize, withoutFragment } from "./parse";
 import { assignRole, isSpriteSheet, logoScore, relevanceScore } from "./roles";
 import { searchFrom } from "./search";
 import { createToneBudget } from "./tone";
@@ -276,7 +276,9 @@ async function buildRecords(input: PostInput, baseUrl: string, limiter: Limiter,
       try {
         const parsed = new URL(url, baseUrl);
         if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return;
-        url = parsed.href;
+        // Keyed like the capture: Chrome reports responses without the fragment, so `icons.svg#logo` kept its own
+        // record, missed the body the page loaded, spent a probe and came back as a second, unlabelled asset.
+        url = withoutFragment(parsed);
       } catch {
         return;
       }

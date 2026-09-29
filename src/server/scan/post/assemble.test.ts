@@ -194,6 +194,37 @@ describe("assembleAssets icon sizes", () => {
   });
 });
 
+describe("assembleAssets fragments", () => {
+  it("reads a URL with a fragment as the file the network loaded, once", async () => {
+    // Chrome reports responses without their fragment. `icons.svg#logo` used to miss the capture of `icons.svg`, spend
+    // a probe, and come back as a second asset beside an unlabelled network copy of the same file.
+    const probes: string[] = [];
+    const fetch: SafeFetch = async (url, options) => {
+      probes.push(url);
+      return notFound(url, options);
+    };
+    const sprite = `${PAGE}icons.svg`;
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 16"><view id="logo" viewBox="0 0 16 16"/><path d="M0 0h48v16H0z"/></svg>';
+    const collector = collectorOutput({
+      candidates: [candidate(`${sprite}#logo`, 1, 1, { visible: true, label: "Acme logo" }), candidate(`${sprite}#mark`, 2, 2)],
+    });
+    const sheet: CapturedSheet = { url: `${PAGE}site.css`, status: 200, cssText: ".a{background:url(icons.svg#arrow)}" };
+    const input: PostInput = {
+      collector,
+      network: { images: [captured(sprite, { contentType: "image/svg+xml", svgText: svg, width: 48, height: 16 })], fonts: [], sheets: [sheet], bodyTimeouts: 0, skippedBodies: 0 },
+      page: { requestedUrl: PAGE, finalUrl: PAGE, host: "shop.example", siteName: "Shop", title: "Shop" },
+      signer: { sign: proxyOf, count: 0 },
+      fetch,
+      signal: new AbortController().signal,
+      deadline: Date.now() + 60_000,
+    };
+    const { assets } = await assembleAssets(input);
+    const files = assets.filter((asset) => asset.original?.url.startsWith(sprite));
+    expect(files.map((asset) => [asset.name, asset.original?.url, asset.foundIn])).toEqual([["Acme logo", sprite, ["img", "stylesheet"]]]);
+    expect(probes.filter((url) => url.startsWith(sprite))).toEqual([]);
+  });
+});
+
 describe("assembleAssets CDN original probes", () => {
   const transformed = `${PAGE}media/photo.png?w=400&q=80`;
 

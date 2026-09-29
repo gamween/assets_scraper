@@ -90,6 +90,13 @@ describe("forEachStylesheetUrl", () => {
     expect(seen).toEqual(["https://s.example/1.png", "https://s.example/2.png"]);
   });
 
+  it("drops the fragment of an http(s) URL, the way the network reports it, and keeps the one of a data: URI", () => {
+    const data = "data:image/svg+xml,<svg><use href='#i'/></svg>";
+    const css = `.a{background:url(icons.svg#arrow)} .b{mask-image:url("${data}")}`;
+    expect(stylesheetUrls(css, "https://s.example/css/site.css").map((u) => u.url)).toEqual(["https://s.example/css/icons.svg", new URL(data).href]);
+    expect(new URL(data).hash).not.toBe("");
+  });
+
   it("survives broken CSS", () => {
     expect(stylesheetUrls(".a { background: url(ok.png) } }}} .b { color: ", "https://s.example/")).toEqual([
       { url: "https://s.example/ok.png", property: "background", declaration: 0, imageSet: false },
