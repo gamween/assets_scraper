@@ -42,7 +42,7 @@ Tools, all returning compact JSON, never bytes:
 | `list_installed_fonts` | | What this tool installed, with dates and sources, cut to stay small, and the manifest that holds every row |
 | `uninstall_fonts` | `families` | What was removed, and what was left in place because it is no longer the file the tool installed |
 
-Every answer stays under 8 KB: long lists are cut, and the answer says how many rows it left out and where the rest is. Scans run one at a time in a server: a second `scan_page` waits for the first rather than failing, and a call the client cancels stops its scan.
+Every answer but the markup `read_svg` returns stays under 8 KB: long lists are cut, and the answer says how many rows it left out and where the rest is. Scans run one at a time in a server: a second `scan_page` waits for the first rather than failing, and a call the client cancels stops its scan.
 
 A cached scan is stamped with the build that produced it, the package version plus a digest of the bundles in `dist/`, and only that build reads it back. A rebuild or an upgrade therefore starts from a cold cache rather than serving an hour of results from the code you just replaced. `ASSETS_SCRAPER_BUILD_ID` names the identity yourself when you need two runs to share, or not share, a cache.
 

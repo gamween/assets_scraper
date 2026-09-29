@@ -593,6 +593,17 @@ describe("the font answers", () => {
     await wired.close();
   });
 
+  it("keeps uninstall_fonts inside the budget whatever names it is given", async () => {
+    const families = Array.from({ length: 50 }, (_, index) => `Unknown ${index} ${"y".repeat(1_000)}`);
+
+    const answer = await call(client, "uninstall_fonts", { families });
+
+    expect(Buffer.byteLength(text(answer))).toBeLessThanOrEqual(MAX_TOOL_RESULT_BYTES);
+    const parsed = JSON.parse(text(answer)) as { missing: string[]; removed: unknown[] };
+    expect(parsed.missing).toHaveLength(50);
+    expect(parsed.missing.every((family) => family.length <= 60)).toBe(true);
+  });
+
   it("keeps list_installed_fonts inside the budget however much was installed, and names the manifest", async () => {
     const installs = Array.from({ length: 200 }, (_, index) => ({
       family: `Family ${index} ${"x".repeat(900)}`,

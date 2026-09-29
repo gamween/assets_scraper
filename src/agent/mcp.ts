@@ -530,10 +530,22 @@ export function createAgentMcpServer(options: AgentMcpOptions = {}): McpServer {
     "uninstall_fonts",
     {
       title: "Uninstall fonts",
-      description: "Removes the font files install_fonts wrote for these families. It never touches a file it did not install.",
-      inputSchema: { families: z.array(z.string()).min(1).max(50) },
+      description:
+        "Removes the font files install_fonts wrote for these families. It never touches a file it did not install, and " +
+        "leaves in place (and forgets) a recorded file that is no longer the one it wrote.",
+      inputSchema: { families: z.array(z.string().max(1024)).min(1).max(50) },
     },
-    async ({ families }) => ok(await uninstallFonts(families)),
+    async ({ families }) => {
+      const report = await uninstallFonts(families);
+      const named = (entry: { family: string; files: string[] }) => ({ family: cut(entry.family, MAX_FAMILY_CHARS), files: entry.files });
+      return okRows(report.removed.map(fontRow), (removed, omitted) => ({
+        removed,
+        ...(omitted > 0 ? { removedOmitted: omitted } : {}),
+        missing: report.missing.map((family) => cut(family, MAX_FAMILY_CHARS)),
+        stillInstalled: report.stillInstalled.map(named),
+        changed: report.changed.map(named),
+      }));
+    },
   );
 
   return server;
