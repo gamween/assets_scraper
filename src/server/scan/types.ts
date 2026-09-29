@@ -94,6 +94,7 @@ export interface CollectorOptions {
   host: string;
   siteName: string;
   timeBudgetMs: number;
+  deadline: number;                         // epoch ms (Node's Date.now()) the collector stops starting work at, time to start it included
   maxElements: number;
   maxSvgNormalizations: number;
   maxSvgBytes: number;

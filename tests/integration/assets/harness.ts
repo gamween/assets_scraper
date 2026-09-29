@@ -37,6 +37,7 @@ export function collectorOptions(host: string, siteName: string, patch: Partial<
     host,
     siteName,
     timeBudgetMs: limits.collectMs,
+    deadline: Date.now() + limits.collectMs,
     maxElements: limits.collectorMaxElements,
     maxSvgNormalizations: limits.svgMaxNormalizations,
     maxSvgBytes: limits.svgMaxBytes,

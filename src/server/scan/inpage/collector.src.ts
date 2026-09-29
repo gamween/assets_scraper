@@ -22,7 +22,7 @@ import type {
  * Runs inside the scanned page, normally in a CDP isolated world where `customElements` is null, so it never uses it.
  * It cannot import app code, only the other files of this folder: the `srcset` and CSS readers it shares with Node
  * (`srcset.ts`, `css-values.ts`) are bundled in.
- * Returns plain JSON. Caps: `maxElements` walked, `timeBudgetMs`, `maxSvgNormalizations`, `maxSvgBytes` per SVG,
+ * Returns plain JSON. Caps: `maxElements` walked, `timeBudgetMs` and `deadline`, `maxSvgNormalizations`, `maxSvgBytes` per SVG,
  * `maxSvgTotalBytes` for all SVG markup, blob byte caps, `maxOutputChars` of JSON for the whole output. Hitting one sets
  * `stats.truncated`.
  */
@@ -37,6 +37,13 @@ const MAX_SAME_MARKUP_NORMALIZATIONS = 3;
 const MAX_STYLED_SVG_ELEMENTS = 4_000;
 /** `page.baseUrl` and `manifestUrl` longer than this are left out, so they cannot push the lists out of the budget. */
 const MAX_PAGE_URL_CHARS = 8_192;
+/**
+ * The largest revoked `blob:` image re-encoded through a canvas, in pixels. The PNG encode of a larger one takes
+ * seconds on the page's thread and rarely fits `maxBlobBytes` anyway.
+ */
+const MAX_CANVAS_PIXELS = 4_000_000;
+/** The time a canvas re-encode needs left before it starts. */
+const CANVAS_MIN_MS = 500;
 
 const LAZY_ATTR =
   /^data-(?:lazy-?)?(?:src|srcset|original|original-set|hi-?res(?:-src)?|full(?:-src)?|large(?:-src)?|zoom(?:-src)?|fallback(?:-src)?|bg|background|background-image|image|img|echo|flickity-lazyload|lazy|srcset-lazy|pin-media|retina|2x)$/i;
@@ -151,6 +158,9 @@ const noContext = (): CandidateContext => ({
   shadowRoot: false, iframe: false,
 });
 
+/** Bytes that `base64` decodes to. */
+const base64Bytes = (base64: string) => Math.floor((base64.length * 3) / 4) - (base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0);
+
 const bytesToBase64 = (bytes: Uint8Array) => {
   let binary = "";
   for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
@@ -178,7 +188,18 @@ interface ElementInfo {
 
 async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
   const T0 = performance.now();
-  const outOfTime = () => performance.now() - T0 > options.timeBudgetMs;
+  /**
+   * Milliseconds left: the in-page budget, and the engine's deadline, which also counts the time the collector took to
+   * start (a CDP session, an isolated world on a busy page, compiling this bundle) that its own clock cannot see. A
+   * collector that returns after the engine gave up on it loses its whole output. In the main-world fallback the page
+   * can replace `Date`, so a deadline that reads as no number is left out and the budget alone applies.
+   */
+  const remaining = () => {
+    const budget = options.timeBudgetMs - (performance.now() - T0);
+    const deadline = options.deadline - Date.now();
+    return Number.isFinite(deadline) ? Math.min(budget, deadline) : budget;
+  };
+  const outOfTime = () => !(remaining() > 0);
   let truncated = false;
   const noise: Partial<Record<HiddenReason, number>> = {};
   const countNoise = (reason: HiddenReason) => {
@@ -856,10 +877,10 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
     let pending = spriteCache.get(url);
     if (!pending) {
       pending = (async () => {
-        const remaining = options.timeBudgetMs - (performance.now() - T0);
-        if (remaining <= 0) return null;
+        const left = remaining();
+        if (!(left > 0)) return null;
         try {
-          const response = await fetch(url, { credentials: "omit", signal: AbortSignal.timeout(Math.min(options.spriteFetchMs, remaining)) });
+          const response = await fetch(url, { credentials: "omit", signal: AbortSignal.timeout(Math.min(options.spriteFetchMs, left)) });
           if (!response.ok) return null;
           return new DOMParser().parseFromString(await response.text(), "image/svg+xml");
         } catch {
@@ -1214,21 +1235,24 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
       }
       let entry: { mime: string; bytes: Uint8Array } | null = null;
       try {
-        const response = await fetch(url, { signal: AbortSignal.timeout(options.blobFetchMs) });
+        // Bounded by the time left too: a fetch started near the end must not run past the engine's deadline
+        const response = await fetch(url, { signal: AbortSignal.timeout(Math.max(1, Math.min(options.blobFetchMs, remaining()))) });
         const blob = await response.blob();
         if (blob.size <= options.maxBlobBytes) entry = { mime: blob.type || "application/octet-stream", bytes: new Uint8Array(await blob.arrayBuffer()) };
       } catch {
-        // revoked: re-encode the decoded image through a canvas (a same-origin blob does not taint it)
+        // Revoked: re-encode the decoded image through a canvas (a same-origin blob does not taint it). The PNG encode
+        // is synchronous on the page's thread and nothing can stop it, so only an image small enough to encode quickly,
+        // with the time for it left, gets one.
         const img = elements.find((el) => el.localName === "img" && (el as HTMLImageElement).currentSrc === url) as HTMLImageElement | undefined;
-        if (img?.complete && img.naturalWidth > 0) {
+        if (img?.complete && img.naturalWidth > 0 && img.naturalWidth * img.naturalHeight <= MAX_CANVAS_PIXELS && remaining() > CANVAS_MIN_MS) {
           try {
             const canvas = img.ownerDocument.createElement("canvas");
             canvas.width = img.naturalWidth;
             canvas.height = img.naturalHeight;
             canvas.getContext("2d")?.drawImage(img, 0, 0);
             const base64 = canvas.toDataURL("image/png").split(",")[1] ?? "";
-            const bytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
-            if (bytes.length <= options.maxBlobBytes) entry = { mime: "image/png", bytes };
+            // Sized from the base64 first, so an encode over the cap is never decoded
+            if (base64Bytes(base64) <= options.maxBlobBytes) entry = { mime: "image/png", bytes: Uint8Array.from(atob(base64), (char) => char.charCodeAt(0)) };
           } catch {
             // tainted or too large for a canvas
           }

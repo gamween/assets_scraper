@@ -388,6 +388,45 @@ describe("collector limits and hostile pages", () => {
     expect(tampered.blobs).toHaveLength(1);
   });
 
+  it("stops at the engine's deadline, which counts the time the collector took to start", async () => {
+    // The collector's own budget starts with its first line. A deadline already past when it starts, as after a slow
+    // isolated world on a busy page, has to stop it there: an answer after the engine's timeout loses everything.
+    const { context, page } = await openPage(browser, `${server.origin}/`);
+    const late = await runCollector(page, collectorOptions(server.host, "Fixture", { deadline: Date.now() - 1 }));
+    await context.close();
+    expect(late.stats.truncated).toBe(true);
+    // Only the cheap passes that read the head and the style sheets once still run
+    expect(late.candidates.filter((c) => !["stylesheet", "icon-link", "og-image", "twitter-image", "meta-icon", "json-ld"].includes(c.foundIn))).toEqual([]);
+    expect(output.candidates.filter((c) => c.foundIn === "img").length).toBeGreaterThan(0);
+    expect(late.svgs).toEqual([]);
+    expect(late.blobs).toEqual([]);
+  });
+
+  it("re-encodes only a revoked blob: image small enough to encode quickly", async () => {
+    const { context, page } = await openPage(browser, `${server.origin}/`);
+    const huge = await page.evaluate(async () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = 2_200;
+      canvas.height = 2_000;
+      const blob = await new Promise<Blob>((resolve) => canvas.toBlob((result) => resolve(result!), "image/png"));
+      const url = URL.createObjectURL(blob);
+      const img = document.createElement("img");
+      await new Promise((resolve) => {
+        img.onload = resolve;
+        img.src = url;
+        document.body.prepend(img);
+      });
+      URL.revokeObjectURL(url);
+      return url;
+    });
+    const collected = await runCollector(page, collectorOptions(server.host, "Fixture"));
+    await context.close();
+    // 4.4 megapixels encode for seconds on the page's thread; the fixture's small revoked blob is still read
+    expect(collected.candidates.some((c) => c.url === huge)).toBe(true);
+    expect(collected.blobs.map((b) => b.url)).not.toContain(huge);
+    expect(collected.blobs).toHaveLength(1);
+  });
+
   it("stops at the element cap and the SVG caps and says so", async () => {
     const { context, page } = await openPage(browser, `${server.origin}/`);
     const capped = await runCollector(page, collectorOptions(server.host, "Fixture", { maxElements: 20 }));
