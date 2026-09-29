@@ -101,7 +101,7 @@ The route handler is a thin adapter that runs the gate and writes events as NDJS
 | `src/server/scan/inpage/palette.src.ts` | In-page palette signal collector (browser code) | none (bundled) |
 | `src/server/scan/inpage/run.ts` | Runs a bundled collector in a CDP isolated world, main-world fallback | playwright-core, generated bundles |
 | `scripts/build-inpage.mjs` | Bundles the two `.src.ts` files with esbuild into IIFE strings in `src/server/scan/inpage/generated/` | esbuild |
-| `src/server/scan/inpage/{css-tokens,css-values,srcset}.ts` | CSS tokenizer, `url()` and `image-set()` readers, srcset parser, bundled into the collector and imported by post-processing | none |
+| `src/server/scan/inpage/{css-tokens,css-values,srcset}.ts` | CSS tokenizer, `url()`, `image-set()` and `@font-face` `src` readers, srcset parser. The collector bundles all three; post-processing imports the `url()` reader | none |
 | `src/server/scan/post/parse.ts` | Stylesheet URL walk, icon `sizes`, SVG root size, `data:` URIs | css-tree, css-values |
 | `src/server/scan/post/cdn.ts` | `originalCandidates`, `variantKey` | none |
 | `src/server/scan/post/verify.ts` | Original verification and declared URL probes | safe-fetch |
