@@ -35,6 +35,7 @@ Requirements: Node 22.19 or later on the 22 line, or Node 24 (production and CI 
 pnpm install
 pnpm dev            # http://localhost:3000
 pnpm lint
+pnpm knip           # unused files, exports and dependencies
 pnpm typecheck
 pnpm test           # unit tests
 pnpm test:integration   # needs Google Chrome
