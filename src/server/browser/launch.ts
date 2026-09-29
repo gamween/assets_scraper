@@ -4,7 +4,7 @@ import { chmod, lstat, mkdir, readdir, readFile, rename, rm, statfs, writeFile }
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import type { Browser, BrowserContext, CDPSession, Frame, Page } from "playwright-core";
+import type { Browser, BrowserContext, CDPSession, Frame, LaunchOptions, Page } from "playwright-core";
 import { orAfter, timeoutAfter, untilAborted } from "@/server/async";
 import { limits } from "@/server/config/limits";
 
@@ -70,7 +70,12 @@ export function parseMemAvailableMb(meminfo: string): number | undefined {
   return match ? Math.floor(Number(match[1]) / 1024) : undefined;
 }
 
-/** Chromium gets no app secrets in its environment (spec 7.3). */
+/**
+ * Chromium gets no app secrets in its environment (spec 7.3). That is hygiene, not an isolation boundary: on a serverless
+ * instance the browser runs unsandboxed as the same user as Node (`@sparticuz/chromium` passes `--no-sandbox` and
+ * `--single-process`), so a renderer exploit could still read the parent's environment. What bounds that is keeping the
+ * Chromium pin current and the secrets narrowly scoped (spec 16), not this filter.
+ */
 export function browserEnv(env: Record<string, string | undefined> = process.env): Record<string, string> {
   return Object.fromEntries(BROWSER_ENV_KEYS.flatMap((key) => (env[key] === undefined ? [] : [[key, env[key]]])));
 }
@@ -122,9 +127,51 @@ async function ensureStateDir(): Promise<string> {
   return dir;
 }
 
-interface Executable {
+export interface Executable {
   binary: string;
   args: string[];
+}
+
+/**
+ * Turns Chrome's sandbox off for a local run, on a host where it cannot start: Linux as root, or a container without
+ * user namespaces. It is never worth setting where Chrome starts with the sandbox, since the sandbox is what contains a
+ * page that exploits the renderer. A serverless instance has no sandbox either way.
+ */
+export const NO_SANDBOX_ENV = "ASSETS_SCRAPER_NO_SANDBOX";
+
+/**
+ * Whether the browser runs with its sandbox. Playwright passes `--no-sandbox` unless `chromiumSandbox` is exactly true,
+ * so leaving the option out launched the developer's own Google Chrome, on every local scan and every agent scan of a
+ * URL it found somewhere, with a renderer exploit one step from their home directory. Local runs keep it on;
+ * `@sparticuz/chromium` on a serverless instance cannot sandbox, and its own arguments say so.
+ */
+export function sandboxEnabled(env: Record<string, string | undefined> = process.env, platform: NodeJS.Platform = process.platform): boolean {
+  return !isServerlessRuntime(env, platform) && env[NO_SANDBOX_ENV] !== "1";
+}
+
+export interface LaunchTarget {
+  /** The wrapper script the launch executes (`wrapperScript`), which execs the real binary. */
+  wrapper: string;
+  egressPort: number;
+  pidfile: string;
+}
+
+/** Everything `chromium.launch` is given, in one pure function so a test can hold the hardening to it. */
+export function launchOptions(
+  executable: Executable,
+  target: LaunchTarget,
+  env: Record<string, string | undefined> = process.env,
+  platform: NodeJS.Platform = process.platform,
+): LaunchOptions {
+  return {
+    executablePath: target.wrapper,
+    args: [...chromiumArgs(executable.args), pidfileMarker(target.pidfile)],
+    headless: true,
+    chromiumSandbox: sandboxEnabled(env, platform),
+    timeout: limits.launchMs,
+    proxy: { server: `http://127.0.0.1:${target.egressPort}` },
+    env: { ...browserEnv(env), [PIDFILE_ENV]: target.pidfile },
+  };
 }
 
 let serverlessExecutable: Promise<Executable> | null = null;
@@ -335,14 +382,17 @@ async function launch(slot: number, executable: Executable, egressPort: number):
   const { chromium } = await import("playwright-core");
   const pidfile = pidfilePath(slot);
   const cleared = await removePidfile(pidfile);
-  const browser = await chromium.launch({
-    executablePath: await writeWrapper(executable.binary),
-    args: [...chromiumArgs(executable.args), pidfileMarker(pidfile)],
-    headless: true,
-    timeout: limits.launchMs,
-    proxy: { server: `http://127.0.0.1:${egressPort}` },
-    env: { ...browserEnv(), [PIDFILE_ENV]: pidfile },
-  });
+  const options = launchOptions(executable, { wrapper: await writeWrapper(executable.binary), egressPort, pidfile });
+  let browser: Browser;
+  try {
+    browser = await chromium.launch(options);
+  } catch (error) {
+    // Playwright's own advice for this failure is to turn the sandbox off in code; the switch for that is ours.
+    if (options.chromiumSandbox === true && error instanceof Error && /sandbox/i.test(error.message)) {
+      throw new Error(`${error.message}\nChrome could not start its sandbox on this host. Set ${NO_SANDBOX_ENV}=1 to run it without one.`, { cause: error });
+    }
+    throw error;
+  }
   const pid = await readPid(pidfile);
   // A pidfile that could not be removed can still hold the PID of an earlier launch, now maybe another process's.
   const trusted = pid !== undefined && (cleared || (await isOwnBrowser(pid, executable.binary, pidfile)));

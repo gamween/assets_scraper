@@ -25,7 +25,7 @@ claude plugin marketplace add "$PWD"
 claude plugin install assets-scraper
 ```
 
-Google Chrome has to be installed for a local scan. Set `CHROME_EXECUTABLE_PATH` if it is not in the default location. The plugin starts the server through `scripts/mcp-launcher.mjs`, which runs `dist/mcp.mjs` and fails with a clear message when the build or the dependencies are missing.
+Google Chrome has to be installed for a local scan. Set `CHROME_EXECUTABLE_PATH` if it is not in the default location. Chrome runs headless with its sandbox on, behind the scan's egress proxy: the pages an agent scans are pages nobody vetted, and the sandbox is what contains one that exploits the renderer. On a Linux host where the sandbox cannot start (running as root, or a container without user namespaces), the launch fails and says so; `ASSETS_SCRAPER_NO_SANDBOX=1` runs Chrome without it there, and nowhere else is it worth setting. The plugin starts the server through `scripts/mcp-launcher.mjs`, which runs `dist/mcp.mjs` and fails with a clear message when the build or the dependencies are missing.
 
 The marketplace stays pointed at the clone, and the bundle the launcher runs, `dist/mcp.mjs`, is not committed. The launcher rebuilds it whenever it is missing or older than any source file under `src/agent`, `src/server` or `src/lib`, so a `git pull` no longer leaves the MCP server serving the bundle of an older commit. The generated in-page bundles under `src/server/scan/inpage/generated` are build output, not sources, so a `pnpm test` that rewrote them is not a reason to rebuild. Restart Claude Code to pick up a rebuilt bundle. A rebuild it cannot do, node_modules not installed for instance, is reported on stderr and the server does not start. `claude mcp list` shows the server as `plugin:assets-scraper:assets-scraper` with the path it runs.
 
@@ -153,4 +153,5 @@ Every v1 limit still applies to the scan itself: 90 s for the whole scan, at mos
 | `ASSETS_SCRAPER_TOKEN` | Bearer token for that app |
 | `ASSETS_SCRAPER_OUT` | Destination root, host appended, overriding the project rule |
 | `CHROME_EXECUTABLE_PATH` | Chrome, when it is not in the default location |
+| `ASSETS_SCRAPER_NO_SANDBOX` | `1` runs Chrome without its sandbox, only for a host where it cannot start one |
 | `XDG_CACHE_HOME` | Where the scan cache goes, `~/.cache` by default |

@@ -5,7 +5,18 @@ import path from "node:path";
 import { promisify } from "node:util";
 import chromium from "@sparticuz/chromium";
 import { describe, expect, it } from "vitest";
-import { browserEnv, chromiumArgs, isServerlessRuntime, parseMemAvailableMb, PIDFILE_ENV, userAgentFor, wrapperScript } from "./launch";
+import {
+  browserEnv,
+  chromiumArgs,
+  isServerlessRuntime,
+  launchOptions,
+  NO_SANDBOX_ENV,
+  parseMemAvailableMb,
+  PIDFILE_ENV,
+  sandboxEnabled,
+  userAgentFor,
+  wrapperScript,
+} from "./launch";
 
 describe("chromiumArgs", () => {
   it("drops the insecure serverless flags and adds the hardening flags", () => {
@@ -91,6 +102,42 @@ describe("isServerlessRuntime", () => {
     expect(isServerlessRuntime({ VERCEL: "1", VERCEL_ENV: "production" }, "darwin")).toBe(false);
     expect(isServerlessRuntime({ AWS_LAMBDA_FUNCTION_NAME: "scan" }, "darwin")).toBe(false);
     expect(isServerlessRuntime({}, "linux")).toBe(false);
+  });
+});
+
+describe("launchOptions", () => {
+  const local = { binary: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", args: [] };
+  const target = { wrapper: "/tmp/assets-scraper-501/chromium-abc.sh", egressPort: 8123, pidfile: "/tmp/assets-scraper-501/chromium-1-0.pid" };
+
+  /**
+   * Regression: the option was left out, and Playwright passes `--no-sandbox` for anything but `chromiumSandbox: true`,
+   * so every local scan ran the user's own Google Chrome with its renderer sandbox off.
+   */
+  it("runs a local browser with its sandbox, on macOS and on Linux", () => {
+    for (const platform of ["darwin", "linux"] as const) {
+      const options = launchOptions(local, target, { PATH: "/bin" }, platform);
+      expect(options.chromiumSandbox).toBe(true);
+      expect(options.args).not.toContain("--no-sandbox");
+    }
+    // `vercel dev` and pulled Vercel variables are still a developer's machine.
+    expect(launchOptions(local, target, { VERCEL: "1", VERCEL_ENV: "development" }, "linux").chromiumSandbox).toBe(true);
+  });
+
+  it("leaves a serverless instance without one, and a local run only when the opt-out says so", () => {
+    expect(launchOptions({ binary: "/tmp/chromium", args: chromium.args }, target, { AWS_LAMBDA_FUNCTION_NAME: "scan" }, "linux").chromiumSandbox).toBe(false);
+    expect(launchOptions(local, target, { [NO_SANDBOX_ENV]: "1" }, "linux").chromiumSandbox).toBe(false);
+    // Only the documented value turns it off: a stray `0` or `true` keeps the safe default.
+    expect(sandboxEnabled({ [NO_SANDBOX_ENV]: "0" }, "linux")).toBe(true);
+    expect(sandboxEnabled({ [NO_SANDBOX_ENV]: "true" }, "darwin")).toBe(true);
+  });
+
+  it("launches the wrapper behind the egress proxy, with the pidfile marker and no app secrets", () => {
+    const options = launchOptions(local, target, { PATH: "/bin", ASSET_URL_SECRET: "s" }, "darwin");
+    expect(options.executablePath).toBe(target.wrapper);
+    expect(options.headless).toBe(true);
+    expect(options.proxy).toEqual({ server: "http://127.0.0.1:8123" });
+    expect(options.args).toContain(`--assets-scraper-pidfile=${target.pidfile}`);
+    expect(options.env).toEqual({ PATH: "/bin", [PIDFILE_ENV]: target.pidfile });
   });
 });
 

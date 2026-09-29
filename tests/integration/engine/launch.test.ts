@@ -85,6 +85,22 @@ describe("withBrowser", () => {
     await expect.poll(() => isProcessAlive(pid), { timeout: 5000 }).toBe(false);
   });
 
+  /**
+   * The browser a local scan starts is the user's own Google Chrome, driven to pages an agent picked: its renderer
+   * sandbox is what contains a page that exploits it. Playwright turns it off unless told otherwise, so this reads the
+   * command line Chrome actually runs with. `ASSETS_SCRAPER_NO_SANDBOX=1` is the one reason for it to be missing.
+   */
+  it.skipIf(process.env.ASSETS_SCRAPER_NO_SANDBOX === "1")("starts a local Chrome with its sandbox on", async () => {
+    const command = await withBrowser(open(), async ({ pid }) => {
+      expect(pid).toBeGreaterThan(1);
+      return process.platform === "linux"
+        ? readFileSync(`/proc/${pid}/cmdline`, "utf8").replaceAll("\0", " ")
+        : spawnSync("ps", ["-ww", "-o", "command=", "-p", String(pid)]).stdout.toString();
+    });
+    expect(command).toContain(pidfileMarker(path.join(browserStateDir(), `chromium-${process.pid}-0.pid`)));
+    expect(command).not.toContain("--no-sandbox");
+  });
+
   it("reports only the first launch of an instance as cold", async () => {
     // A fresh copy of the module, so the result does not depend on the launches of the tests before this one.
     vi.resetModules();
