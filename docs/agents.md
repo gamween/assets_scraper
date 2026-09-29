@@ -124,8 +124,8 @@ A `dest` that came from an agent is held to the narrower rule: it has to be insi
 
 `install_fonts` (and `assets-scraper fonts install`) does not just download a font, it installs it:
 
-1. One file per family: a loaded face covering Basic Latin, preferring the variable font.
-2. WOFF2 is converted to TTF. TTF and OTF install as they are. A format that does not convert is reported as not installable.
+1. One file per family: a loaded face covering Basic Latin, preferring the variable font. When that file cannot be fetched or converted, the next best one is tried.
+2. WOFF2 and WOFF are converted to the TrueType (or, for a CFF font, OpenType) font they wrap. TTF and OTF install as they are. EOT and other formats are not installable, and neither is a family with no file covering Basic Latin (an icon font): the `installable` column of the scan summary follows the same rule.
 3. The file is written to `~/Library/Fonts` on macOS, `~/.local/share/fonts` on Linux, as `<Family>-<Style>.ttf`, and a file the tool did not install is never overwritten.
 4. Every install is recorded in `~/.local/state/assets-scraper/installed-fonts.json` (family, files, source host, licence kind and text, date), so `list_installed_fonts` and `uninstall_fonts` work and an install is reversible.
 

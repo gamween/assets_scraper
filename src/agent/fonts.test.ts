@@ -9,7 +9,7 @@ import type { FontFamily, FontFile } from "@/lib/contract";
 import { agentLimitEnvName } from "./limits";
 import { fontManifestPath, listInstalledFonts } from "./font-manifest";
 import { installFonts, toSfnt, uninstallFonts, userFontDir } from "./fonts";
-import { testFontFamily, testFontFile } from "./testing";
+import { testFontFamily, testFontFile, woffFromSfnt } from "./testing";
 
 /**
  * The font installer (plan Task G3.1, spec section 5). Every test redirects the font directory and the state file into a
@@ -146,6 +146,43 @@ describe("installFonts", () => {
 
     expect(report.installed).toMatchObject([{ family: "Inter", converted: false, files: [path.join(fontDir, "Inter-Bold.ttf")] }]);
     expect(fs.readFileSync(path.join(fontDir, "Inter-Bold.ttf")).equals(ttf)).toBe(true);
+  });
+
+  /**
+   * Regression: WOFF went through wawoff2, which only reads WOFF2, so a family served as `.woff` alone was reported
+   * installable by the summary and always skipped here with `conversion-failed`.
+   */
+  it("converts a WOFF 1 family to the TTF it wraps", async () => {
+    served.set("https://cdn.example.com/inter.woff", woffFromSfnt(ttf));
+    const family = oneFile("Inter", { url: "https://cdn.example.com/inter.woff", format: "woff" });
+
+    const report = await installFonts([family], { fetchBytes });
+
+    expect(report.skipped).toEqual([]);
+    expect(report.installed).toMatchObject([{ family: "Inter", converted: true, files: [path.join(fontDir, "Inter-Regular.ttf")] }]);
+    expect(fs.readFileSync(path.join(fontDir, "Inter-Regular.ttf")).equals(ttf)).toBe(true);
+  });
+
+  /** Regression: only the best ranked file was ever tried, so one broken `src` entry cost the whole family. */
+  it("falls back to the next file of the family when the best one cannot be fetched or converted", async () => {
+    served.set("https://cdn.example.com/inter.woff2", woff2);
+    served.set("https://cdn.example.com/broken.woff2", Buffer.from("wOF2 not really a font"));
+    const withFiles = (name: string, urls: string[]): FontFamily =>
+      testFontFamily({ name, faces: [{ weight: "400", style: "normal", loaded: true, files: urls.map((url) => testFontFile({ url, format: "woff2" })) }] });
+
+    const report = await installFonts(
+      [
+        withFiles("Inter", ["https://cdn.example.com/broken.woff2", "https://cdn.example.com/inter.woff2"]),
+        withFiles("Fallback", ["https://cdn.example.com/gone.woff2", "https://cdn.example.com/inter.woff2"]),
+        withFiles("Nothing", ["https://cdn.example.com/broken.woff2", "https://cdn.example.com/gone.woff2"]),
+      ],
+      { fetchBytes },
+    );
+
+    expect(report.installed.map((install) => install.family)).toEqual(["Inter", "Fallback"]);
+    expect(fs.readFileSync(path.join(fontDir, "Inter-Regular.ttf")).equals(ttf)).toBe(true);
+    // Every file failed: the reason is the one the best of them gave.
+    expect(report.skipped).toEqual([{ family: "Nothing", reason: "conversion-failed", detail: "woff2" }]);
   });
 
   it("installs a commercial family and reports the licence read from the binary", async () => {

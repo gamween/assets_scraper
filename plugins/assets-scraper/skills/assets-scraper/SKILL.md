@@ -60,7 +60,7 @@ Leave `dest` unset unless the user names a directory. A `dest` you pass has to s
 
 ## Fonts
 
-`install_fonts` converts WOFF2 to TTF and copies the files into the user font directory (`~/Library/Fonts` on macOS, `~/.local/share/fonts` on Linux), so the font is usable in Figma, Keynote or a local app right away. It records every install, so `uninstall_fonts` can undo it.
+`install_fonts` converts WOFF2 and WOFF to TTF and copies the files into the user font directory (`~/Library/Fonts` on macOS, `~/.local/share/fonts` on Linux), so the font is usable in Figma, Keynote or a local app right away. It records every install, so `uninstall_fonts` can undo it.
 
 It installs commercial families too, and it always reports the licence read from the font binary. Pass that licence on to the user verbatim: using a commercial font is their call, not yours. Adobe Fonts kit families cannot be installed, and the tool says so.
 
