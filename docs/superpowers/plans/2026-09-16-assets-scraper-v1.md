@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-> **Status (2026-09-29):** done. Implemented and merged in #3 to #16, and deployed. The checkboxes below were not kept up to date and some values changed during review, so where this plan disagrees with the spec or the code, the spec and the code win. The current deploy procedure is the Deploy section of `README.md`.
+> **Status (2026-09-29):** done. Implemented and merged in #3 to #16 (#10, a diagnostics branch, was closed unmerged) and deployed; later fixes are in the Git history. The checkboxes below were not kept up to date and some values changed during review, so where this plan disagrees with the spec or the code, the spec and the code win. The current deploy procedure is the Deploy section of `README.md`.
 
 **Goal:** Build Assets Scraper v1 as specified in `docs/superpowers/specs/2026-09-16-assets-scraper-design.md`: paste a URL, get every SVG, image and font plus the brand palette, select and download.
 

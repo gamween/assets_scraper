@@ -13,7 +13,7 @@ A scan opens the page in a headless Chromium behind an egress proxy, walks the D
 - Web fonts, grouped by family, with the files each family loads and a TTF conversion for the ones whose licence allows it.
 - The brand color palette, read from what the page actually paints.
 
-Selected assets are zipped in the browser. Images load straight from their host, with no cookies and no referrer, and through a signed, rate-limited proxy when that fails or the URL is plain `http:`. Font files go through the proxy first, because font hosts do not allow cross-origin reads.
+Selected assets are zipped in the browser. Images load straight from their host, without a referrer, and through a signed proxy with a daily byte budget when that fails or the URL is plain `http:`. Font files go through the proxy first: they are only ever read with `fetch`, and many font hosts refuse cross-origin reads.
 
 ## Use it from an agent
 
@@ -41,7 +41,7 @@ pnpm test:integration   # needs Google Chrome
 pnpm test:e2e           # builds the app and runs Playwright
 ```
 
-Every value in the table below is optional in development; copy `.env.example` to `.env.local` to set any of them. Only `next dev` and `next start` read `.env.local`: the tests, the CLI and the MCP server read the shell environment, so export `CHROME_EXECUTABLE_PATH` there when Chrome is not where it installs itself.
+Every value in the table below is optional in development; copy `.env.example` to `.env.local` to set any of them. Only Next reads `.env.local`: the unit and integration tests, the CLI and the MCP server read the shell environment, so export `CHROME_EXECUTABLE_PATH` there when Chrome is not where it installs itself.
 
 ## Environment
 
@@ -94,7 +94,7 @@ These settings live in the Vercel project, not in this repository. Recreate them
 
 - Environment variables for production, and for preview when deploying previews: `ASSET_URL_SECRET` (required: without it no scan can sign its asset URLs), `OPS_TOKEN`, `AGENT_TOKENS` (without it every `/api/v1` call answers 401) and, optionally, `UPSTASH_REDIS_REST_URL` with `UPSTASH_REDIS_REST_TOKEN` for atomic budget counters. A changed variable reaches the app with the next deployment.
 - One Firewall rule: a rate limit of 20 requests per 10 minutes per IP on `/api/scan`, `/api/v1/scan` and `/api/v1/assets.zip`, answered with 429. It runs at the edge, before the gate, and counts every request, whatever token it carries.
-- Node 24.x. `engines` in `package.json` selects it over the project setting, and the build log says so.
+- Node 24.x. `engines` in `package.json` takes precedence over the project setting and resolves to the newest major it allows, which is 24.
 
 ## Layout
 
