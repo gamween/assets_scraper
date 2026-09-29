@@ -171,6 +171,51 @@ describe("resolveDestination", () => {
     ).toBe(path.join(home, "Downloads", "assets-scraper", "x"));
   });
 
+  /**
+   * Regression: a relative `dest` resolved against the server's working directory, so `stripe-brand` was always refused
+   * and `scrap/x` only worked when the session started at the repository root, while the schema says "a directory
+   * inside the project scrap folder".
+   */
+  it("reads a relative agent-supplied dest from the scrap folder, wherever the server runs", () => {
+    const root = makeTree(".git", "apps/web");
+    const cwd = path.join(root, "apps/web");
+    expect(resolveDestination({ host: "stripe.com", cwd, dest: "stripe-brand", restrictToProject: true }).dir).toBe(path.join(root, "scrap", "stripe-brand"));
+    expect(resolveDestination({ host: "stripe.com", cwd, dest: path.join(root, "scrap", "abs"), restrictToProject: true }).dir).toBe(
+      path.join(root, "scrap", "abs"),
+    );
+    expect(() => resolveDestination({ host: "stripe.com", cwd, dest: "../src", restrictToProject: true })).toThrow(/outside/i);
+  });
+
+  /**
+   * Regression: the project rule never checked where its links led, so a repository committing `scrap -> ../outside`
+   * (or `scrap/<host>` pointing out) had every download write there and replace the `manifest.json` it found.
+   */
+  it("refuses a scrap folder, or a host folder, that a symbolic link leads out of the project", () => {
+    const root = makeTree(".git");
+    const outside = makeTree();
+    fs.symlinkSync(outside, path.join(root, "scrap"));
+    expect(() => resolveDestination({ host: "stripe.com", cwd: root })).toThrow(/leads out of/);
+    expect(() => resolveDestination({ host: "stripe.com", cwd: root, dest: "x", restrictToProject: true })).toThrow(/outside/i);
+
+    const other = makeTree(".git", "scrap");
+    fs.symlinkSync(outside, path.join(other, "scrap", "stripe.com"));
+    expect(() => resolveDestination({ host: "stripe.com", cwd: other })).toThrow(/ASSETS_SCRAPER_OUT/);
+
+    // A link that stays inside the project is fine, and so is anywhere the user names.
+    const inside = makeTree(".git", "assets");
+    fs.symlinkSync(path.join(inside, "assets"), path.join(inside, "scrap"));
+    expect(resolveDestination({ host: "stripe.com", cwd: inside }).dir).toBe(path.join(inside, "scrap", "stripe.com"));
+    vi.stubEnv("ASSETS_SCRAPER_OUT", outside);
+    expect(resolveDestination({ host: "stripe.com", cwd: root }).dir).toBe(path.join(outside, "stripe.com"));
+  });
+
+  it("refuses a host folder of the fallback directory that leads out of it", () => {
+    const home = makeTree("Downloads/assets-scraper");
+    const outside = makeTree();
+    vi.stubEnv("HOME", home);
+    fs.symlinkSync(outside, path.join(home, "Downloads", "assets-scraper", "stripe.com"));
+    expect(() => resolveDestination({ host: "stripe.com", cwd: makeTree() })).toThrow(/leads out of/);
+  });
 });
 
 describe("assertInside", () => {

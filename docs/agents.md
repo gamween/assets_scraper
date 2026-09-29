@@ -118,7 +118,11 @@ The destination rule, strongest first:
 3. `<project root>/scrap/<host>`, where the project root is the git root of the working directory, or the nearest directory above it holding `package.json`, `pyproject.toml` or `.claude`.
 4. `~/Downloads/assets-scraper/<host>` when there is no project.
 
-A `dest` that came from an agent is held to the narrower rule: it has to be inside `<project root>/scrap`, so an agent cannot drop scraped files into the source tree. A `--out` you type yourself is your own choice and is not restricted. Existing files are never silently overwritten: identical bytes are skipped, different bytes get a `-2` suffix. Symlinks on the way to a destination are refused, and every file is created with `O_EXCL | O_NOFOLLOW`.
+A `dest` that came from an agent is held to the narrower rule: it is read relative to `<project root>/scrap` (`dest: "stripe-brand"` is `scrap/stripe-brand`) and has to stay inside it, so an agent cannot drop scraped files into the source tree. The project rule and the fallback are held the same way once symbolic links are resolved: a `scrap` or `scrap/<host>` that links out of the project is refused rather than followed. A `--out` you type yourself, or `ASSETS_SCRAPER_OUT`, is your own choice and is not restricted.
+
+Existing files are never silently overwritten: identical bytes are skipped, different bytes get a `-2` suffix, and names that differ only in case count as the same name, as they do on macOS. A file takes the extension of its format, whatever name the scan gave it, and bytes an asset carries inline are checked against that format like fetched ones. Every file is created with `O_EXCL | O_NOFOLLOW`.
+
+`manifest.json` lists every file the tool wrote into the folder that is still there, so a second download into it extends the listing; the counts and drops describe the latest download. A `manifest.json` the tool did not write (a web app's `public/manifest.json`, a browser extension's) is never touched: the manifest goes to `assets-scraper-manifest.json` next to it instead, and the answer's `manifestPath` names it.
 
 ## Fonts
 

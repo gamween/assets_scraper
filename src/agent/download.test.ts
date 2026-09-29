@@ -4,7 +4,7 @@ import path from "node:path";
 import sharp from "sharp";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Asset } from "@/lib/contract";
-import { downloadAssets, type DownloadManifest } from "./download";
+import { downloadAssets, FALLBACK_MANIFEST_NAME, type DownloadManifest } from "./download";
 import { agentLimitEnvName } from "./limits";
 import { testAsset, testScan } from "./testing";
 import type { AgentScan, ScanSource } from "./types";
@@ -271,6 +271,96 @@ describe("downloadAssets, the limits", () => {
 
     expect(result.files.map((file) => file.id)).toEqual(["icon"]);
     expect(readManifest(result).files[0].keptBecause).toBe("explicit id");
+  });
+});
+
+/** Enough of a PNG for the magic numbers: the bytes of an inline raster are checked like fetched ones. */
+const PNG = Buffer.concat([Buffer.from("\x89PNG\r\n\x1a\n", "latin1"), Buffer.from("pixels")]);
+
+describe("downloadAssets, what the scan says about a file", () => {
+  /**
+   * Regression: the file kept whatever extension the scan's file name carried, which a remote answer chooses, so a PNG
+   * could land as `Open me.terminal`, a file macOS hands to Terminal on a double click.
+   */
+  it("names a file with the extension of its format, whatever the scan's file name says", async () => {
+    const lure = testAsset({ id: "lure", format: "png", role: "image", filename: "Open me.terminal", width: 1600, height: 900 });
+    const bare = testAsset({ id: "bare", kind: "svg", format: "svg", role: "logo", filename: "Logo" });
+    const source = fakeSource({ [urlOf(lure)]: PNG, [urlOf(bare)]: Buffer.from("<svg/>") });
+
+    const result = await downloadAssets(scanOf([lure, bare]), source, { dest: dir });
+
+    expect(result.files.map((file) => path.relative(dir, file.path)).sort()).toEqual(["images/Open me.png", "svg/Logo.svg"]);
+  });
+
+  /** Regression: inline bytes skipped the check every fetched byte goes through, so a `data:image/png` of anything landed as a PNG. */
+  it("refuses inline bytes that are not the file the scan says they are", async () => {
+    const fake = testAsset({ id: "fake", format: "png", filename: "fake.png", width: 1600, height: 900, display: null, inline: { mime: "image/png", base64: Buffer.from("<html>not a png</html>").toString("base64") } });
+    const page = testAsset({ id: "page", kind: "svg", format: "svg", role: "logo", filename: "page.svg", display: null, inline: { mime: "image/svg+xml", text: "<!doctype html><html></html>" } });
+    const real = testAsset({ id: "real", format: "png", filename: "real.png", width: 1600, height: 900, display: null, inline: { mime: "image/png", base64: PNG.toString("base64") } });
+
+    const result = await downloadAssets(scanOf([fake, page, real]), fakeSource({}), { dest: dir });
+
+    expect(result.files.map((file) => file.id)).toEqual(["real"]);
+    expect(result.failed.map((failure) => failure.id).sort()).toEqual(["fake", "page"]);
+    expect(result.failed.every((failure) => /not a supported image or font|not the/.test(failure.reason))).toBe(true);
+    expect(fs.readdirSync(path.join(dir, "images"))).toEqual(["real.png"]);
+    expect(fs.existsSync(path.join(dir, "svg"))).toBe(false);
+  });
+
+  /** The archive's rule: a case-insensitive file system cannot hold `Logo.svg` and `logo.svg` apart, so neither does a download. */
+  it("gives two names that differ only in case a file each, on every file system", async () => {
+    const upper = testAsset({ id: "upper", kind: "svg", format: "svg", role: "logo", filename: "Logo.svg", score: 90 });
+    const lower = testAsset({ id: "lower", kind: "svg", format: "svg", role: "logo", filename: "logo.svg", score: 80 });
+    const source = fakeSource({ [urlOf(upper)]: Buffer.from("<svg><rect width='1'/></svg>"), [urlOf(lower)]: Buffer.from("<svg><rect width='2'/></svg>") });
+
+    const result = await downloadAssets(scanOf([upper, lower]), source, { dest: dir });
+
+    expect(result.files.map((file) => path.basename(file.path))).toEqual(["Logo.svg", "logo-2.svg"]);
+  });
+});
+
+describe("downloadAssets, the manifest", () => {
+  const logo = testAsset({ id: "logo", kind: "svg", format: "svg", role: "logo", filename: "logo.svg" });
+  const hero = testAsset({ id: "hero", filename: "hero.png", width: 1600, height: 900 });
+  const source = () => fakeSource({ [urlOf(logo)]: Buffer.from("<svg/>"), [urlOf(hero)]: PNG });
+
+  /**
+   * Regression: `manifest.json` was opened with O_TRUNC, so `get stripe.com --out ./public` replaced a PWA's manifest
+   * and `--out .` a browser extension's, with no warning.
+   */
+  it("never touches a manifest.json it did not write, and writes its own next to it", async () => {
+    const theirs = '{"name":"my PWA","icons":[]}';
+    fs.writeFileSync(path.join(dir, "manifest.json"), theirs);
+
+    const result = await downloadAssets(scanOf([logo]), source(), { dest: dir });
+
+    expect(fs.readFileSync(path.join(dir, "manifest.json"), "utf8")).toBe(theirs);
+    expect(result.manifestPath).toBe(path.join(dir, FALLBACK_MANIFEST_NAME));
+    expect(readManifest(result).files.map((file) => file.id)).toEqual(["logo"]);
+  });
+
+  it("leaves a manifest.json that is a link or a directory alone too", async () => {
+    fs.symlinkSync(path.join(dir, "elsewhere.json"), path.join(dir, "manifest.json"));
+
+    const result = await downloadAssets(scanOf([logo]), source(), { dest: dir });
+
+    expect(result.manifestPath).toBe(path.join(dir, FALLBACK_MANIFEST_NAME));
+    expect(fs.existsSync(path.join(dir, "elsewhere.json"))).toBe(false);
+    expect(fs.lstatSync(path.join(dir, "manifest.json")).isSymbolicLink()).toBe(true);
+  });
+
+  /** Regression: a second download into the same folder rewrote the listing, so the first one's files went unlisted. */
+  it("keeps listing the files an earlier download wrote into the folder while they are still there", async () => {
+    await downloadAssets(scanOf([logo, hero]), source(), { dest: dir, kinds: ["svg"] });
+    const second = await downloadAssets(scanOf([logo, hero]), source(), { dest: dir, kinds: ["image"] });
+
+    expect(second.manifestPath).toBe(path.join(dir, "manifest.json"));
+    expect(readManifest(second).files.map((file) => file.file)).toEqual(["images/hero.png", "svg/logo.svg"]);
+
+    fs.rmSync(path.join(dir, "svg", "logo.svg"));
+    const third = await downloadAssets(scanOf([logo, hero]), source(), { dest: dir, kinds: ["image"] });
+    expect(readManifest(third).files.map((file) => file.file)).toEqual(["images/hero.png"]);
+    expect(fs.readdirSync(dir).filter((name) => name.endsWith(".tmp"))).toEqual([]);
   });
 });
 

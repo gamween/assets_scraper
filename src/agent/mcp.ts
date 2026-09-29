@@ -158,7 +158,9 @@ function downloadAnswer(result: DownloadResult, unknownIds: string[]): CallToolR
     count: result.files.length,
     totalBytes: result.totalBytes,
     files,
-    ...(omitted > 0 ? { filesOmitted: omitted, hint: `${omitted} more files are on disk and in manifest.json. Read that file if you need every row.` } : {}),
+    ...(omitted > 0 ?
+      { filesOmitted: omitted, hint: `${omitted} more files are on disk and in ${path.basename(result.manifestPath)}. Read that file if you need every row.` }
+    : {}),
     dropped: result.dropped,
     // Three numbers, so an agent reading `over-budget` knows which limit to raise rather than having to open the manifest.
     budget: result.budget,
@@ -320,7 +322,11 @@ export function createAgentMcpServer(options: AgentMcpOptions = {}): McpServer {
           .min(0)
           .optional()
           .describe(`bytes one file may take under the deck profile. ${agentLimits.maxFileBytes} by default, 0 lifts the ceiling`),
-        dest: z.string().max(1024).optional().describe("a directory inside the project scrap folder. Left out, it is scrap/<host>"),
+        dest: z
+          .string()
+          .max(1024)
+          .optional()
+          .describe("a directory inside the project scrap folder, relative to it (\"stripe-brand\" is scrap/stripe-brand). Left out, it is scrap/<host>"),
       },
     },
     async ({ scanId, dest, kind, kinds, role, roles, ids, ...rest }) =>

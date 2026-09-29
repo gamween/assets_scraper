@@ -56,7 +56,7 @@ The cap gives each kind its share of the 60 files, so a page whose vectors outra
 
 Files land in `scrap/<host>/` inside the current project: `svg/`, `images/`, and a `manifest.json` recording every file with its source URL, dimensions, bytes, role and why it was kept. The project root is the git root of the working directory, or the nearest directory holding `package.json`, `pyproject.toml` or `.claude`. The home directory itself never counts as a project, so a session started outside one writes to `~/Downloads/assets-scraper/<host>/`.
 
-Leave `dest` unset unless the user names a directory. A `dest` you pass has to stay inside `scrap/`, so scraped files never land in the source tree. Existing files are never overwritten: identical bytes are skipped, different bytes get a `-2` suffix.
+Leave `dest` unset unless the user names a directory. A `dest` you pass is read relative to `scrap/` and has to stay inside it, so scraped files never land in the source tree. Existing files are never overwritten: identical bytes are skipped, different bytes get a `-2` suffix. When the folder already holds a `manifest.json` the tool did not write, the manifest is written as `assets-scraper-manifest.json` instead: use the `manifest` path the answer gives.
 
 ## Fonts
 

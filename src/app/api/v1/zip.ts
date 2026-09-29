@@ -1,6 +1,14 @@
 import { makeZip } from "client-zip";
 import { sanitizeHost } from "@/agent/dest";
-import { type DownloadManifest, type ManifestFile, safeFileName } from "@/agent/download";
+import {
+  assetFileName,
+  bytesSource,
+  type DownloadManifest,
+  inlineAssetBytes,
+  type ManifestFile,
+  manifestRow,
+  uniqueName,
+} from "@/agent/download";
 import { agentLimits } from "@/agent/limits";
 import { selectAssets } from "@/agent/select";
 import type { AgentScan, DropReason, ScanSource, SelectionOptions } from "@/agent/types";
@@ -53,29 +61,15 @@ export interface BuildZipOptions {
   concurrency?: number;
 }
 
-/** The URL the file came from, or "" for markup the scan already held (inline SVG has no URL of its own). */
-const sourceUrl = (asset: Asset): string => asset.original?.url ?? asset.display?.url ?? "";
-
 /**
- * The name one file takes, then `-2`, `-3` and so on for a name already used, which is the rule a local download writes
- * by (`writeUnique` in `src/agent/download.ts`). Unzipping an archive into a project therefore gives the same names
- * `assets-scraper get` would have written.
+ * Bytes of one asset: what it carries itself, checked like fetched bytes, else the original file, else what was
+ * displayed. The naming, the inline check and the manifest row are the local download's own (`src/agent/download.ts`),
+ * so unzipping an archive into a project gives the names and the manifest `assets-scraper get` would have written.
  */
-const uniqueName = (name: string, used: Set<string>): string => {
-  const dot = name.lastIndexOf(".");
-  const stem = dot > 0 ? name.slice(0, dot) : name;
-  const extension = dot > 0 ? name.slice(dot) : "";
-  let candidate = name;
-  for (let n = 2; used.has(candidate.toLowerCase()); n++) candidate = `${stem}-${n}${extension}`;
-  used.add(candidate.toLowerCase());
-  return candidate;
-};
-
-/** Bytes of one asset: its own markup when the scan carries it, the original file otherwise, then what was displayed. */
 async function assetBytes(asset: Asset, source: ScanSource, signal?: AbortSignal): Promise<Buffer> {
-  const inline = asset.inline;
-  if (inline) return "text" in inline ? Buffer.from(inline.text, "utf8") : Buffer.from(inline.base64, "base64");
-  const target = asset.original ?? asset.display;
+  const inline = inlineAssetBytes(asset);
+  if (inline) return inline;
+  const target = bytesSource(asset);
   if (!target) throw new Error("no bytes to fetch");
   return source.fetchBytes(target, signal ? { signal } : {});
 }
@@ -172,24 +166,17 @@ export async function buildAssetsZip(
     const buffer = fetched.bytes.get(asset.id);
     if (!buffer) continue;
     const folder = asset.kind === "svg" ? "svg" : "images";
-    const fallback = `${asset.id}.${asset.format}`;
-    // The download's own rule, so the two paths never name one asset two ways (plan Task G6.2).
-    const file = `${folder}/${uniqueName(safeFileName(asset.filename || asset.name || fallback, fallback), used)}`;
-    files.push({
-      id: asset.id,
-      name: asset.name,
-      file,
-      url: sourceUrl(asset),
-      kind: asset.kind,
-      role: asset.role,
-      format: asset.format,
-      ...(asset.width === undefined ? {} : { width: asset.width }),
-      ...(asset.height === undefined ? {} : { height: asset.height }),
-      bytes: buffer.byteLength,
-      // The same sentence `src/agent/download.ts` writes, so the two manifests read alike.
-      keptBecause: selection.ids ? "explicit id" : `${profile} profile (role ${asset.role})`,
-      ...(winners.has(asset.id) ? { duplicatesDropped: winners.get(asset.id) } : {}),
-    });
+    // The download's own rule, so the two paths never name one asset two ways (plan Task G6.2). The extension follows
+    // the format, which decides the folder, so one set of names covers both folders.
+    const file = `${folder}/${uniqueName(assetFileName(asset), used)}`;
+    const duplicatesDropped = winners.get(asset.id);
+    files.push(
+      manifestRow(asset, file, buffer.byteLength, {
+        profile,
+        explicit: selection.ids !== undefined,
+        ...(duplicatesDropped === undefined ? {} : { duplicatesDropped }),
+      }),
+    );
     entries.push({ name: file, input: buffer, lastModified: new Date(scan.scannedAt) });
   }
 

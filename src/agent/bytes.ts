@@ -11,9 +11,9 @@ import { sniffContentType } from "@/server/security/sniff";
  * bytes afterwards would otherwise have that answer written to disk as `images/hero.png`, with `manifest.json` asserting
  * `format: "png"`, and streamed out of `/api/v1/assets.zip` for an agent to unzip and trust.
  *
- * Everything `fetchBytes` returns goes through this, an inline font file included, so a caller never has to ask where
- * the bytes came from to know what they are. The inline SVG markup the download and the archive read straight out of
- * the scan does not: that is the document the scan itself produced, not a second answer from a host.
+ * Everything `fetchBytes` returns goes through this, an inline font file included, and so do the bytes an asset carries
+ * inline, which the download and the archive read straight out of the scan (`inlineAssetBytes` in `download.ts`): a
+ * `data:` URI is only as honest as the page that wrote it, and a remote answer only as honest as the host that sent it.
  */
 
 /** A file whose bytes are not the kind of file the scan said they were. Reported under `failed`, never thrown outward. */

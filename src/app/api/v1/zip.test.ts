@@ -118,6 +118,26 @@ describe("buildAssetsZip", () => {
     expect(built.manifest.dropped["too-large"]).toBe(4);
   });
 
+  /** The local download's rules, from the same helpers, so an unzipped archive matches what `get` writes. */
+  it("names files by their format and refuses inline bytes that are not what they claim, as a download does", async () => {
+    const lure = testAsset({ id: "a", format: "png", role: "illustration", filename: "Open me.terminal", width: 1200, height: 800 });
+    const fake = testAsset({
+      id: "fake",
+      format: "png",
+      role: "illustration",
+      filename: "fake.png",
+      width: 1200,
+      height: 800,
+      display: null,
+      inline: { mime: "image/png", base64: Buffer.from("<html></html>").toString("base64") },
+    });
+
+    const built = await buildAssetsZip({ ...scan, assets: [lure, fake] }, sourceOf(), {}, { meter: meterOf(Infinity) });
+
+    expect(built.manifest.files.map((file) => file.file)).toEqual(["images/Open me.png"]);
+    expect(built.manifest.failed.map((failure) => failure.id)).toEqual(["fake"]);
+  });
+
   it("reads AGENT_ZIP_MAX_BYTES for the per request cap", () => {
     vi.stubEnv("AGENT_ZIP_MAX_BYTES", "4096");
     expect(zipMaxBytes()).toBe(4_096);
