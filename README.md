@@ -71,7 +71,30 @@ The platform sets the rest itself: `NODE_ENV` (Next), `VERCEL`, `VERCEL_ENV`, `V
 - 8 s preflight, 20 s to launch Chromium, 25 s to navigate, 8 s of scrolling, 15 s of collection.
 - At most 1,500 assets and 2,000 signed URLs per scan; 1 MB per SVG; 25 MB per proxied file.
 - The scan budget above, and the per-day proxy byte budget, shared across the deployment.
+- 20 requests per 10 minutes per client address to `/api/scan`, `/api/v1/scan` and `/api/v1/assets.zip`, counted at the edge before the app runs (see Deploy).
 - A page that stops the scan early still returns what is ready, with `partial: true`.
+
+## Deploy
+
+Production is deployed from the command line. The Vercel project is not connected to the Git repository, so merging to `main` deploys nothing: deploy `main` by hand after a merge that changes the app.
+
+```bash
+git switch main && git pull --ff-only
+git status --short   # must print nothing
+npx vercel@latest link --yes --project assets-scraper --scope gamween-7559s-projects --token "$VERCEL_TOKEN"   # once per checkout
+npx vercel@latest deploy --prod --scope gamween-7559s-projects --token "$VERCEL_TOKEN"
+curl -s https://assets-scraper.vercel.app/api/health   # "version" is the deployed commit
+```
+
+- The token comes from the environment. Never write it on the command line as a literal, and never commit it.
+- The build runs on Vercel. Never deploy a local `--prebuilt` build, which would ship this machine's native binaries.
+- The CLI uploads the checkout as it is, uncommitted changes included, and reports the commit it sits on, which `/api/health` returns as `version`. Deploy from a clean checkout so that `version` equals `git rev-parse HEAD` and says what is live.
+
+These settings live in the Vercel project, not in this repository. Recreate them if the project is ever recreated:
+
+- Environment variables for production, and for preview when deploying previews: `ASSET_URL_SECRET` (required: without it no scan can sign its asset URLs), `OPS_TOKEN`, `AGENT_TOKENS` (without it every `/api/v1` call answers 401) and, optionally, `UPSTASH_REDIS_REST_URL` with `UPSTASH_REDIS_REST_TOKEN` for atomic budget counters. A changed variable reaches the app with the next deployment.
+- One Firewall rule: a rate limit of 20 requests per 10 minutes per IP on `/api/scan`, `/api/v1/scan` and `/api/v1/assets.zip`, answered with 429. It runs at the edge, before the gate, and counts every request, whatever token it carries.
+- Node 24.x. `engines` in `package.json` selects it over the project setting, and the build log says so.
 
 ## Layout
 
