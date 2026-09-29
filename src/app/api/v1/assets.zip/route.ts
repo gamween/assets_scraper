@@ -2,6 +2,7 @@ import type { AgentScan } from "@/agent/types";
 import { apiError } from "@/server/security/gate";
 import { scanFailureResponse } from "../errors";
 import { authorizeAgent, gateAgentTarget, parseSelectionParams } from "../gate";
+import { zipDeadlineMs } from "../limits";
 import { agentScanSource } from "../source";
 import { buildAssetsZip } from "../zip";
 
@@ -16,6 +17,7 @@ export const maxDuration = 120;
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request): Promise<Response> {
+  const started = Date.now();
   const authorized = authorizeAgent(request);
   if (!authorized.ok) return authorized.response;
 
@@ -34,9 +36,12 @@ export async function GET(request: Request): Promise<Response> {
     return scanFailureResponse(error, target.client);
   }
 
+  // Counted from the request's arrival, whatever the scan took, so the archive always goes out before the platform's
+  // limit: what is not fetched and compared by then is left out, and the manifest says so.
+  const deadline = AbortSignal.any([request.signal, AbortSignal.timeout(Math.max(0, started + zipDeadlineMs() - Date.now()))]);
   let built: Awaited<ReturnType<typeof buildAssetsZip>>;
   try {
-    built = await buildAssetsZip(scan, source, selection.options, { signal: request.signal, client: target.client });
+    built = await buildAssetsZip(scan, source, selection.options, { signal: deadline, client: target.client });
   } catch (error) {
     return scanFailureResponse(error, target.client);
   }

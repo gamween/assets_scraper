@@ -101,6 +101,8 @@ export async function selectAssets(
   options: SelectionOptions = {},
   /** Downloaded bytes by asset id. The byte rules (exact and near duplicates) only run on the ids present here. */
   bytes?: ReadonlyMap<string, Buffer>,
+  /** Stops the near duplicate pass: the images not fingerprinted by then are compared with nothing, and kept. */
+  signal?: AbortSignal,
 ): Promise<Selection> {
   const dropped: Partial<Record<DropReason, number>> = {};
   const drop = (reason: DropReason, count = 1): false => {
@@ -214,7 +216,7 @@ export async function selectAssets(
 
     if (profile === "deck") {
       const rasters = pool.filter((asset) => asset.kind === "image" && bytes.has(asset.id));
-      pool = nearDuplicates(pool, await fingerprintAll(rasters, bytes), drop, duplicates);
+      pool = nearDuplicates(pool, await fingerprintAll(rasters, bytes, signal), drop, duplicates);
     }
   }
 
@@ -281,11 +283,12 @@ function capByKind(sorted: Asset[], max: number): Asset[] {
  * `Promise.all` over `maxFiles` rasters spent 25 s of CPU and 576 MB of peak RSS in a single burst, on the same function
  * that drives Chromium and whose thread pool `dns.lookup` shares (review issue 3).
  */
-async function fingerprintAll(rasters: Asset[], bytes: ReadonlyMap<string, Buffer>): Promise<Map<string, ImageFingerprint>> {
+async function fingerprintAll(rasters: Asset[], bytes: ReadonlyMap<string, Buffer>, signal?: AbortSignal): Promise<Map<string, ImageFingerprint>> {
   const prints = new Map<string, ImageFingerprint>();
   let cursor = 0;
   const worker = async (): Promise<void> => {
     for (;;) {
+      if (signal?.aborted) return;
       const asset = rasters[cursor++];
       if (asset === undefined) return;
       const buffer = bytes.get(asset.id);

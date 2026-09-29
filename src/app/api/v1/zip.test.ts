@@ -4,7 +4,7 @@ import type { ScanSource } from "@/agent/types";
 import type { AssetSource } from "@/lib/contract";
 import type { ProxyBytesMeter } from "@/server/security/budget";
 import { zipMaxBytes } from "./limits";
-import { TRUNCATED_NOTE, buildAssetsZip } from "./zip";
+import { TRUNCATED_NOTE, UNCOMPARED_NOTE, buildAssetsZip } from "./zip";
 
 /**
  * `buildAssetsZip` when it cannot fit the whole selection (plan Task G4.3: "stops cleanly when the budget runs out, the
@@ -78,6 +78,51 @@ describe("buildAssetsZip", () => {
     expect(built.manifest.totalBytes).toBe(0);
     expect(built.manifest.dropped.unavailable).toBe(4);
     expect(built.manifest.note).toBe(TRUNCATED_NOTE);
+  });
+
+  /**
+   * The route gives the build a deadline, so the archive goes out before the platform's limit. A fetch the deadline cut
+   * short used to be listed as a failed file, and the files after it were not counted at all.
+   */
+  it("ends the archive at its deadline with what it fetched, and counts the fetch it cut as unavailable, not failed", async () => {
+    const source = sourceOf();
+    const stalling: ScanSource = {
+      ...source,
+      fetchBytes: (target, options = {}) =>
+        (target as AssetSource).url.endsWith("/c.png")
+          ? new Promise((_, reject) => options.signal?.addEventListener("abort", () => reject(options.signal?.reason), { once: true }))
+          : source.fetchBytes(target, options),
+    };
+
+    const built = await buildAssetsZip(scan, stalling, {}, { concurrency: 1, meter: meterOf(Infinity), signal: AbortSignal.timeout(100) });
+
+    expect(built.manifest.truncated).toBe(true);
+    expect(built.manifest.files.map((file) => file.id)).toEqual(["a", "b"]);
+    expect(built.manifest.failed).toEqual([]);
+    expect(built.manifest.dropped.unavailable).toBe(2);
+    expect(built.manifest.note).toContain(TRUNCATED_NOTE);
+    expect(built.manifest.note).toMatch(/time limit/);
+  });
+
+  it("keeps every image it had no time to compare, and says so", async () => {
+    const source = sourceOf();
+    const deadline = new AbortController();
+    // Every file is in when the time runs out, so nothing is missing: only the near duplicate pass is cut short.
+    const late: ScanSource = {
+      ...source,
+      fetchBytes: async (target, options) => {
+        const bytes = await source.fetchBytes(target, options);
+        if ((target as AssetSource).url.endsWith("/d.png")) deadline.abort();
+        return bytes;
+      },
+    };
+
+    const built = await buildAssetsZip(scan, late, {}, { concurrency: 1, meter: meterOf(Infinity), signal: deadline.signal });
+
+    expect(built.manifest.truncated).toBe(false);
+    expect(built.manifest.files).toHaveLength(4);
+    expect(built.manifest.note).toBe(UNCOMPARED_NOTE);
+    expect(UNCOMPARED_NOTE).not.toMatch(/[\u2013\u2014!]/);
   });
 
   it("is not truncated when everything fits, and settles the meter either way", async () => {

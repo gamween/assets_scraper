@@ -198,6 +198,24 @@ describe("GET /api/v1/assets.zip", () => {
     expect(paths).toEqual(["svg/evil.svg"]);
   });
 
+  it("streams what it has when its time runs out, instead of running past the function's limit", async () => {
+    process.env.AGENT_ZIP_DEADLINE_MS = "300";
+    fetchBytes.mockImplementation((target: AssetSource, options?: { signal?: AbortSignal }) =>
+      target.url.endsWith("/hero.png")
+        ? new Promise<Buffer>((_, reject) => options?.signal?.addEventListener("abort", () => reject(options.signal?.reason), { once: true }))
+        : Promise.resolve(bytesFor(/\/([^/]+)\.[a-z0-9]+$/.exec(target.url)?.[1] ?? "")),
+    );
+
+    const response = await GET(request());
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-assets-truncated")).toBe("true");
+    const manifest = manifestOf(await entriesOf(response));
+    expect(manifest.note).toMatch(/time limit/);
+    expect(manifest.files.map((file: { id: string }) => file.id)).not.toContain("hero");
+    expect(manifest.failed.map((file: { id: string }) => file.id)).not.toContain("hero");
+  });
+
   it("counts the bytes it serves against the daily proxy budget", async () => {
     process.env.PROXY_BYTES_PER_DAY = "1500";
     const manifest = manifestOf(await entriesOf(await GET(request())));
