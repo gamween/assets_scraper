@@ -20,9 +20,9 @@ import type {
  * In-page asset collector and SVG normalizer (spec 7.5, 8.1, 8.6), ported from the discovery lab (`lib/inpage.js`).
  *
  * Runs inside the scanned page, normally in a CDP isolated world where `customElements` is null, so it never uses it.
- * It cannot import app code, only the other files of this folder: the `srcset` and CSS readers it shares with Node
- * (`srcset.ts`, `css-values.ts`) are bundled in.
- * Returns plain JSON. Caps: `maxElements` walked, `timeBudgetMs` and `deadline`, `maxSvgNormalizations`, `maxSvgBytes` per SVG,
+ * It cannot import app code, only the other files of this folder: the `srcset` and CSS readers and the SVG text
+ * rewrites, which the unit tests read in Node (`srcset.ts`, `css-values.ts`, `svg-markup.ts`), are bundled in. Returns
+ * plain JSON. Caps: `maxElements` walked, `timeBudgetMs` and `deadline`, `maxSvgNormalizations`, `maxSvgBytes` per SVG,
  * `maxSvgTotalBytes` for all SVG markup, blob byte caps, `maxOutputChars` of JSON for the whole output. Hitting one sets
  * `stats.truncated`.
  */

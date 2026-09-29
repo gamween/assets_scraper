@@ -5,8 +5,9 @@ import { percentDecode } from "../percent";
 import { searchFrom } from "./search";
 
 /**
- * Parsers of post-processing. The URLs of one CSS value are read by `extractCssUrls`, which the in-page collector
- * bundles too (`inpage/css-values.ts`), so the page and Node read `url()` and `image-set()` the same way.
+ * Parsers of what post-processing, capture and probes read from page text: stylesheets, icon `sizes`, SVG root tags and
+ * `data:` URIs. The URLs of one CSS value are read by `extractCssUrls`, which the in-page collector bundles too
+ * (`inpage/css-values.ts`), so the page and Node read `url()` and `image-set()` the same way.
  */
 
 export interface StylesheetUrl {
