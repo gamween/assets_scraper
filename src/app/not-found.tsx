@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { Wordmark } from "@/components/app-shell/wordmark";
-import { buttonVariants } from "@/components/ui/button";
+import { buttonVariants } from "@/components/ui/button-variants";
 
 export const metadata: Metadata = { title: "Page not found" };
 
