@@ -9,8 +9,8 @@ const config: KnipConfig = {
     "src/server/scan/inpage/*.src.ts",
     // scripts/build-cn-tables.mjs hands its path to cn's compiler (pnpm build:cn), which loads it.
     "src/components/common/cn-config.mjs",
-    // The fixture sites tests/fixtures/serve.ts serves over HTTP: pages load these files, nothing imports them.
-    "tests/fixtures/*/**",
+    // The fixture site tests/fixtures/serve.ts serves over HTTP: its pages load these files, nothing imports them.
+    "tests/fixtures/site/**",
   ],
   // A system binary: tests/integration/engine/launch.test.ts checks with it that no Chrome process was left behind.
   ignoreBinaries: ["pgrep"],
