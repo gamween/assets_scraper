@@ -7,7 +7,7 @@ export const metadata: Metadata = {
   title: "Assets Scraper",
   description: "Every SVG, image and font on a page.",
   robots: { index: false, follow: false },
-  icons: { icon: [{ url: "/icon.svg", type: "image/svg+xml", sizes: "any" }] },
+  // Icons come from the file conventions next to this layout: icon.svg for the tab, apple-icon.png for a home screen.
 };
 
 export const viewport: Viewport = {
