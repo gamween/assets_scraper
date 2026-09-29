@@ -169,7 +169,8 @@ test.describe("notched phone in landscape", () => {
     await cdp.send("Emulation.setSafeAreaInsetsOverride", { insets: { top: 0, left: 47, bottom: 21, right: 47 } });
     await openResults(page);
     const left = async (locator: ReturnType<Page["locator"]>) => (await locator.boundingBox())!.x;
-    expect(await left(page.getByRole("link", { name: "Assets Scraper" }))).toBeGreaterThanOrEqual(47);
+    // The mark, not the link around it, whose hover background reaches 6 px past it on purpose.
+    expect(await left(page.getByRole("link", { name: "Assets Scraper" }).locator("svg"))).toBeGreaterThanOrEqual(47);
     expect(await left(page.getByTestId("asset-card").first())).toBeGreaterThanOrEqual(47);
     const gutters = await page.locator(".page-x").first().evaluate((element) => [getComputedStyle(element).paddingLeft, getComputedStyle(element).paddingRight]);
     expect(gutters).toEqual(["47px", "47px"]);
