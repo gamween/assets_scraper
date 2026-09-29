@@ -4,32 +4,73 @@ import { ident } from "css-tree/utils";
 import { describe, expect, it, vi } from "vitest";
 import { decodeIdent, MAX_DESCRIPTOR_CHARS, MAX_FAMILY_CHARS, MAX_SRC_ENTRIES, MAX_UNICODE_RANGE_CHARS, parseFontFaceCss, parseFontSrc } from "./css";
 import { MAX_INLINE_BYTES, MAX_URL_CHARS } from "./files";
-import { fastestMs, growthFactor, LINEAR_GROWTH_BOUND, random } from "./testing";
+import { benchmark, fastestMs, growthFactor, LINEAR_GROWTH_BOUND, LINEAR_OP_GROWTH_BOUND, opGrowth, random } from "./testing";
 
-// Counts the tokens the fonts code reads and the CSS escapes it decodes, to show where it stops reading
-const tokenizer = vi.hoisted(() => ({ tokens: 0 }));
-const decoder = vi.hoisted(() => ({ calls: 0 }));
+// Counts the tokens the fonts code reads, the characters they cover, and the CSS escapes it decodes, to show where it
+// stops reading and that the work grows with the input (`opGrowth`, on `tokenizer.chars`). `decoder.longest` is the
+// longest text handed to one of css-tree's decoders, which build their result one character at a time.
+const tokenizer = vi.hoisted(() => ({ tokens: 0, chars: { count: 0 } }));
+const decoder = vi.hoisted(() => ({ calls: 0, longest: 0 }));
+// Calls to css-tree's parser, which the fonts code never makes (see `css.ts`)
+const parser = vi.hoisted(() => ({ calls: 0 }));
 vi.mock("css-tree/utils", async (importOriginal) => {
   const actual = await importOriginal<typeof import("css-tree/utils")>();
+  const measured = <T extends (text: string) => string>(decode: T) =>
+    ((text: string) => {
+      decoder.longest = Math.max(decoder.longest, text.length);
+      return decode(text);
+    }) as T;
   const decode: typeof actual.ident.decode = (text) => {
     decoder.calls += 1;
     return actual.ident.decode(text);
   };
-  return { ...actual, ident: { ...actual.ident, decode } };
+  return {
+    ...actual,
+    ident: { ...actual.ident, decode: measured(decode) },
+    string: { ...actual.string, decode: measured(actual.string.decode) },
+    url: { ...actual.url, decode: measured(actual.url.decode) },
+  };
 });
 vi.mock("css-tree/tokenizer", async (importOriginal) => {
   const actual = await importOriginal<typeof import("css-tree/tokenizer")>();
   const tokenize: typeof actual.tokenize = (source, onToken) =>
     actual.tokenize(source, (type, start, end) => {
       tokenizer.tokens += 1;
+      tokenizer.chars.count += end - start;
       onToken?.(type, start, end);
     });
   return { ...actual, tokenize };
+});
+vi.mock("css-tree/parser", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("css-tree/parser")>();
+  const parse: typeof actual.default = (...args) => {
+    parser.calls += 1;
+    return actual.default(...args);
+  };
+  return { ...actual, default: parse };
 });
 
 const MIB = 1024 * 1024;
 const DIR = "https://s.example/css/";
 const BASE = `${DIR}a.css`;
+
+/** One sheet per place a 2 MB name can sit: a family, a descriptor, an at-rule, `!important`, each kind of source. */
+const longNameSheets = () => {
+  const name = `\\62 ${"a".repeat(2 * MIB)}`;
+  return {
+    family: `@font-face{font-family:${name};src:url(a.woff2)}`,
+    quotedFamily: `@font-face{font-family:"${name}";src:url(a.woff2)}`,
+    descriptor: `@font-face{${name}:x;font-family:A;src:url(a.woff2)}`,
+    atRule: `@${name}{}@font-face{font-family:A;src:url(a.woff2)}`,
+    important: `@font-face{font-family:A;src:url(a.woff2);font-display:swap !${name}}`,
+    srcFunction: `@font-face{font-family:A;src:${name}(x),url(a.woff2)}`,
+    srcString: `@font-face{font-family:A;src:url("data:font/woff2,${name}")}`,
+    srcUrl: `@font-face{font-family:A;src:url(data:font/woff2,${name})}`,
+    // over the caps of a local() name and of a URL other than a data: URI
+    srcLocal: `@font-face{font-family:A;src:local(${name}),url(a.woff2)}`,
+    srcRemote: `@font-face{font-family:A;src:url(${name}),url(a.woff2)}`,
+  };
+};
 
 /** A stylesheet of `rules` minimal `@font-face` rules, about 50 bytes each. */
 const sheetOf = (rules: number) => Array.from({ length: rules }, (_, index) => `@font-face{font-family:f${index};src:url(${index}.woff2)}`).join("");
@@ -139,29 +180,22 @@ describe("parseFontFaceCss", () => {
     }
   });
 
-  it("decodes names, families and URLs in about the time it takes to tokenize them, however long they are", async () => {
+  it("decodes names, families and URLs however long they are, and hands css-tree's decoders only escapes", () => {
     // css-tree's decoders built a 2 MB name one character at a time, 8 to 20 times slower than tokenizing it, into a
-    // rope of 60 MB: 15 MB names ran out of memory, and a family kept its rope as long as its rule
-    const name = `\\62 ${"a".repeat(2 * MIB)}`;
-    const sheets = {
-      family: `@font-face{font-family:${name};src:url(a.woff2)}`,
-      quotedFamily: `@font-face{font-family:"${name}";src:url(a.woff2)}`,
-      descriptor: `@font-face{${name}:x;font-family:A;src:url(a.woff2)}`,
-      atRule: `@${name}{}@font-face{font-family:A;src:url(a.woff2)}`,
-      important: `@font-face{font-family:A;src:url(a.woff2);font-display:swap !${name}}`,
-      srcFunction: `@font-face{font-family:A;src:${name}(x),url(a.woff2)}`,
-      srcString: `@font-face{font-family:A;src:url("data:font/woff2,${name}")}`,
-      srcUrl: `@font-face{font-family:A;src:url(data:font/woff2,${name})}`,
-      // over the caps of a local() name and of a URL other than a data: URI
-      srcLocal: `@font-face{font-family:A;src:local(${name}),url(a.woff2)}`,
-      srcRemote: `@font-face{font-family:A;src:url(${name}),url(a.woff2)}`,
-    };
+    // rope of 60 MB: 15 MB names ran out of memory, and a family kept its rope as long as its rule. They now only ever
+    // see one escape at a time, a backslash and at most six hex digits and a whitespace, which this counts.
+    decoder.longest = 0;
     // Lengths of the first source of each rule found
-    const found = Object.fromEntries(Object.entries(sheets).map(([key, css]) => [key, parseFontFaceCss(css, BASE).map((rule) => (rule.src[0].url ?? rule.src[0].local)!.length)]));
+    const found = Object.fromEntries(Object.entries(longNameSheets()).map(([key, css]) => [key, parseFontFaceCss(css, BASE).map((rule) => (rule.src[0].url ?? rule.src[0].local)!.length)]));
     const short = new URL("a.woff2", BASE).href.length;
     const long = `data:font/woff2,b${"a".repeat(2 * MIB)}`.length;
     expect(found).toEqual({ family: [], quotedFamily: [], descriptor: [short], atRule: [short], important: [short], srcFunction: [short], srcString: [long], srcUrl: [long], srcLocal: [short], srcRemote: [short] });
-    for (const [key, css] of Object.entries(sheets)) {
+    expect(decoder.longest).toBeGreaterThan(0);
+    expect(decoder.longest).toBeLessThanOrEqual(9);
+  }, 60_000);
+
+  benchmark("benchmark: decodes names, families and URLs in about the time it takes to tokenize them", async () => {
+    for (const [key, css] of Object.entries(longNameSheets())) {
       const parsing = await fastestMs(() => parseFontFaceCss(css, BASE));
       const tokenizing = await fastestMs(() => tokenize(css, () => {}));
       expect.soft(parsing, key).toBeLessThan(tokenizing * 5 + 5);
@@ -173,16 +207,23 @@ describe("parseFontFaceCss", () => {
     expect(parseFontFaceCss(sheetOf(10), BASE, { maxRules: 0 })).toEqual([]);
   });
 
-  it("stays linear on large stylesheets, even after css-tree parsed a larger one", async () => {
+  it("stays linear on large stylesheets, and never uses css-tree's parser", async () => {
     // css-tree's parser keeps buffers sized for the largest source it parsed and clears them on every parse, so
     // parsing each rule with it made every later stylesheet cost time in proportion to that largest source
+    parser.calls = 0;
+    expect(parseFontFaceCss(sheetOf(50_000), BASE)).toHaveLength(50_000);
+    expect(parser.calls).toBe(0);
+    const { small, factor } = await opGrowth((rules) => parseFontFaceCss(sheetOf(rules), BASE), 6_250, tokenizer.chars);
+    expect(small).toBeGreaterThan(0);
+    expect(factor).toBeLessThan(LINEAR_OP_GROWTH_BOUND);
+  }, 60_000);
+
+  benchmark("benchmark: stays linear on large stylesheets, even after css-tree parsed a larger one", async () => {
     const sheet = sheetOf(10_000);
     const before = await fastestMs(() => parseFontFaceCss(sheet, BASE));
     parse(`/*${" ".repeat(8 * MIB)}*/`);
     const after = await fastestMs(() => parseFontFaceCss(sheet, BASE));
     expect(after).toBeLessThan(before * 3 + 10);
-
-    expect(parseFontFaceCss(sheetOf(50_000), BASE)).toHaveLength(50_000);
     expect(await growthFactor((rules) => parseFontFaceCss(sheetOf(rules), BASE), 6_250)).toBeLessThan(LINEAR_GROWTH_BOUND);
   }, 60_000);
 
@@ -242,17 +283,25 @@ describe("parseFontSrc", () => {
     expect(parseFontSrc(`] url(a.woff2)) format("woff2"`, "https://s.example/")).toEqual([{ url: "https://s.example/a.woff2", format: "woff2" }]);
   });
 
+  /** Each hostile value in a `src`, a family and a rule prelude, read once per size. */
+  const hostileValues = (size: number) => {
+    for (const value of ["url(" + " ".repeat(size), "url(".repeat(size / 4), `url("${"a".repeat(size)}`, "local(".repeat(size / 6), "(".repeat(size), `url(a.woff2)${" format(".repeat(size / 8)}`, "\\31 a".repeat(size / 4), `"${"\\".repeat(size)}`]) {
+      parseFontSrc(value, BASE);
+      parseFontFaceCss(`@font-face{font-family:X;src:${value}}`, BASE);
+      parseFontFaceCss(`@font-face{font-family:${value};src:url(a.woff2)}`, BASE);
+      parseFontFaceCss(`@media x{${value}{@font-face{font-family:X;src:url(a.woff2)`, BASE);
+    }
+  };
+
   it("stays linear on hostile values", async () => {
-    const hostile = (size: number) => ["url(" + " ".repeat(size), "url(".repeat(size / 4), `url("${"a".repeat(size)}`, "local(".repeat(size / 6), "(".repeat(size), `url(a.woff2)${" format(".repeat(size / 8)}`, "\\31 a".repeat(size / 4), `"${"\\".repeat(size)}`];
-    const factor = await growthFactor((size) => {
-      for (const value of hostile(size)) {
-        parseFontSrc(value, BASE);
-        parseFontFaceCss(`@font-face{font-family:X;src:${value}}`, BASE);
-        parseFontFaceCss(`@font-face{font-family:${value};src:url(a.woff2)}`, BASE);
-        parseFontFaceCss(`@media x{${value}{@font-face{font-family:X;src:url(a.woff2)`, BASE);
-      }
-    }, 20_000);
-    expect(factor).toBeLessThan(LINEAR_GROWTH_BOUND);
+    // Counted in characters tokenized: reading a value again for each of its parts is what makes a reader quadratic
+    const { small, factor } = await opGrowth(hostileValues, 20_000, tokenizer.chars);
+    expect(small).toBeGreaterThan(0);
+    expect(factor).toBeLessThan(LINEAR_OP_GROWTH_BOUND);
+  });
+
+  benchmark("benchmark: stays linear on hostile values, in wall time", async () => {
+    expect(await growthFactor(hostileValues, 20_000)).toBeLessThan(LINEAR_GROWTH_BOUND);
   });
 
   it("reads at most 16 url() and local() sources, valid or not, and stops reading the value there", () => {
