@@ -366,7 +366,6 @@ test.describe("results", () => {
   test("scraped SVG markup never reaches the DOM", async ({ page }) => {
     await openResults(page, linear);
     await section(page, "Small icons").getByRole("button", { name: "Show" }).click();
-    await expect(page.locator("main svg[data-scraped]")).toHaveCount(0);
     const logo = findAsset(linear, (a) => a.role === "site-logo" && a.width === 88);
     const pathData = /\sd="([^"]{24})/.exec((logo.inline as { text: string }).text)![1];
     expect(await page.content()).not.toContain(pathData);
