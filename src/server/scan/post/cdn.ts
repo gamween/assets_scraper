@@ -52,6 +52,23 @@ const PRESENTATIONAL_PARAMS = [
  */
 const MAX_FILE_NAME_CHARS = 765;
 
+/**
+ * Cloudinary transformation parameters (`w_300`, `c_fill`, `f_auto`). A path segment is a transformation only when
+ * each of its comma-separated parts is one of these: a folder with an underscore in its name (`img_light`, `app_icons`)
+ * is part of the file's path, and reading it as a transformation dropped it from the variant key, which merged the
+ * light and dark logos of `img_light/logo.svg` and `img_dark/logo.svg` into one asset.
+ */
+const CLOUDINARY_PARAMS = new Set([
+  "a", "ac", "af", "ar", "b", "bo", "br", "c", "co", "cs", "d", "dl", "dn", "dpr", "du", "e", "eo", "f", "fl", "fn", "fps",
+  "g", "h", "if", "ki", "l", "o", "p", "pg", "q", "r", "so", "sp", "t", "u", "vc", "vs", "w", "x", "y", "z",
+]);
+
+const isCloudinaryTransform = (segment: string) =>
+  segment.split(",").every((part) => {
+    const underscore = part.indexOf("_");
+    return underscore > 0 && underscore < part.length - 1 && CLOUDINARY_PARAMS.has(part.slice(0, underscore));
+  });
+
 const tryUrl = (value: string | null | undefined, base?: string): URL | null => {
   if (value == null) return null;
   try {
@@ -174,9 +191,8 @@ function oneStep(u: URL, hints: CdnHints, depth: number): Rewrite[] {
     if (m && !/\/s--[A-Za-z0-9_-]{8}--\//.test(path)) {
       const prefix = `${m[1] ?? ""}/${m[2]}/${m[3]}/`;
       const segments = m[4].split("/");
-      const isTransform = (s: string) => /^(?:[a-z]{1,3}_[^,/]+)(?:,[a-z]{1,3}_[^,/]+)*$/.test(s) && !/^v\d+$/.test(s);
       let i = 0;
-      while (i < segments.length - 1 && isTransform(segments[i])) i++;
+      while (i < segments.length - 1 && isCloudinaryTransform(segments[i])) i++;
       if (m[3] === "fetch") {
         let rest: string | null = null;
         try {

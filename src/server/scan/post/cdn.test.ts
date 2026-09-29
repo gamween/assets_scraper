@@ -134,6 +134,16 @@ describe("originalCandidates", () => {
     expect(originalCandidates("https://i0.wp.com/example./a.jpg", {})).toEqual([]);
   });
 
+  it("reads only Cloudinary parameters as transformations, never a folder with an underscore", () => {
+    expect(originalCandidates("https://res.cloudinary.com/acme/image/upload/img_light/logo.svg", {})).toEqual([]);
+    expect(originalCandidates("https://res.cloudinary.com/acme/image/upload/w_300,c_fill/img_light/logo.svg", {})).toEqual([
+      "https://res.cloudinary.com/acme/image/upload/img_light/logo.svg",
+    ]);
+    expect(originalCandidates("https://res.cloudinary.com/acme/image/upload/if_w_gt_400,c_scale,w_400/if_end/logo.png", {})).toEqual([
+      "https://res.cloudinary.com/acme/image/upload/logo.png",
+    ]);
+  });
+
   it("ignores URLs that are not http(s)", () => {
     expect(originalCandidates("data:image/png;base64,AAAA", {})).toEqual([]);
     expect(originalCandidates("blob:https://a.example/1", {})).toEqual([]);
@@ -162,6 +172,15 @@ describe("variantKey", () => {
     expect(sizes[0]).toBe("https://is1-ssl.mzstatic.com/image/thumb/x5JjmiSD75wN12-HmmZRcg");
     // Different assets behind the same requested size stay apart.
     expect(variantKey("https://is1-ssl.mzstatic.com/image/thumb/AAA/220x54.png")).not.toBe(variantKey("https://is1-ssl.mzstatic.com/image/thumb/BBB/220x54.png"));
+  });
+
+  it("keeps the light and dark logos of two Cloudinary folders apart", () => {
+    // Regression: `img_light` and `img_dark` looked like transformations, so both files had the same key and one of
+    // them was merged away without being counted anywhere.
+    const light = variantKey("https://res.cloudinary.com/acme/image/upload/img_light/logo.svg");
+    const dark = variantKey("https://res.cloudinary.com/acme/image/upload/img_dark/logo.svg");
+    expect(light).not.toBe(dark);
+    expect(variantKey("https://res.cloudinary.com/acme/image/upload/w_200/img_light/logo.svg")).toBe(light);
   });
 
   it("keeps different images apart", () => {
