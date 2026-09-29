@@ -7,7 +7,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import pkg from "../../package.json";
 import { fontManifestPath } from "./font-manifest";
-import { createAgentMcpServer, MAX_TOOL_RESULT_BYTES, MCP_TOOL_NAMES } from "./mcp";
+import { createAgentMcpServer, MAX_TOOL_RESULT_BYTES } from "./mcp";
 import { noBudget, testAsset, testFontFamily, testScan } from "./testing";
 import type { AgentScan, ScanSource, SelectionOptions } from "./types";
 
@@ -80,10 +80,22 @@ function text(result: CallToolResult): string {
   return block.text;
 }
 
-describe("MCP_TOOL_NAMES", () => {
-  it("names the eight tools of the spec, once each", () => {
-    expect(MCP_TOOL_NAMES).toHaveLength(8);
-    expect(new Set(MCP_TOOL_NAMES).size).toBe(8);
+/** The eight tools of spec section 6. */
+const MCP_TOOL_NAMES = [
+  "scan_page",
+  "list_assets",
+  "download_assets",
+  "read_svg",
+  "get_palette",
+  "install_fonts",
+  "list_installed_fonts",
+  "uninstall_fonts",
+];
+
+describe("the tools", () => {
+  it("are the eight tools of the spec, once each", async () => {
+    const { tools } = await client.listTools();
+    expect(tools.map((tool) => tool.name).sort()).toEqual([...MCP_TOOL_NAMES].sort());
   });
 });
 

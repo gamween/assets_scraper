@@ -31,7 +31,7 @@ const STATUS: Record<ErrorCode, number> = {
   internal: 500,
 };
 
-export const statusForCode = (code: ErrorCode): number => STATUS[code] ?? 500;
+const statusForCode = (code: ErrorCode): number => STATUS[code] ?? 500;
 
 /**
  * The response for a failed scan. A `ScanFailure` carries a v1 code and a message written for a person; anything else

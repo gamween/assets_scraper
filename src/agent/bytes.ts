@@ -19,7 +19,7 @@ export { declaredType } from "@/server/security/sniff";
  */
 
 /** A file whose bytes are not the kind of file the scan said they were. Reported under `failed`, never thrown outward. */
-export class UnsupportedBytesError extends Error {
+class UnsupportedBytesError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "UnsupportedBytesError";

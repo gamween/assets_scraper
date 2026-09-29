@@ -27,7 +27,7 @@ export function copySvgCode(asset: Asset) {
 }
 
 /** `linear-hero.png` shown on the page as WebP saves as `linear-hero-as-displayed.webp`. */
-export function displayFilename(asset: Asset): string {
+function displayFilename(asset: Asset): string {
   const name = filenameForFormat(asset.filename, asset.display?.format ?? asset.format);
   const dot = name.lastIndexOf(".");
   return dot > 0 ? `${name.slice(0, dot)}-as-displayed${name.slice(dot)}` : `${name}-as-displayed`;

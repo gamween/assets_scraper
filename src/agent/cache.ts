@@ -28,7 +28,7 @@ export function scanCachePath(scanId: string): string {
 }
 
 /** How long a scan file is kept on disk. Well past the reuse TTL, so nothing an agent may still ask for is deleted. */
-export const SCAN_CACHE_KEEP_MS = 24 * 3_600_000;
+const SCAN_CACHE_KEEP_MS = 24 * 3_600_000;
 
 export async function saveScan(scan: AgentScan): Promise<string> {
   const file = scanCachePath(scan.scanId);

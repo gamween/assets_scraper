@@ -9,7 +9,7 @@ import type { FontInstall } from "./types";
  */
 
 /** How the report explains a family it could not install. */
-export const FONT_SKIP_LABELS: Record<FontSkipReason, string> = {
+const FONT_SKIP_LABELS: Record<FontSkipReason, string> = {
   "adobe-fonts": "Adobe Fonts never exposes the file",
   "not-downloadable": "the page gives no file to download",
   "no-latin-file": "no loaded file covers Basic Latin",

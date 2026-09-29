@@ -15,7 +15,7 @@ export interface EgressProxyOptions {
   idleTimeoutMs?: number;
 }
 
-export interface EgressProxyStats {
+interface EgressProxyStats {
   /** Bytes relayed in both directions. */
   bytes: number;
   /** Requests refused by policy: malformed targets, other ports, own hosts, private or unresolvable addresses. */

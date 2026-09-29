@@ -58,7 +58,7 @@ function writeHistory(path: string, mode: HistoryMode) {
  * Starts a scan of an already normalized URL. Any scan in flight is aborted first. `detail` is an asset id from the
  * address bar to open when the scan ends.
  */
-export function runScan(url: string, host: string, history: HistoryMode = "push", detail: string | null = null): void {
+function runScan(url: string, host: string, history: HistoryMode = "push", detail: string | null = null): void {
   leaveResults();
   pendingDetail = detail;
   const store = appStore.getState();

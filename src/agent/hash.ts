@@ -20,8 +20,8 @@ import { MAX_INPUT_PIXELS, withRenderSlot } from "@/server/scan/post/render-slot
  */
 
 /** Greyscale field the hash is read from: one extra column, so each row yields 16 comparisons. */
-export const FIELD_WIDTH = 17;
-export const FIELD_HEIGHT = 16;
+const FIELD_WIDTH = 17;
+const FIELD_HEIGHT = 16;
 
 /** Side of the greyscale thumbnail the confirmation check compares, in pixels. */
 export const THUMB_SIDE = 64;
@@ -38,10 +38,10 @@ export const DHASH_CHARS = DHASH_BITS / 4;
  * mirror, the image gets no fingerprint and is never grouped, which keeps the file rather than losing it.
  */
 export const MIN_HASH_BITS = DHASH_BITS / 16;
-export const MAX_HASH_BITS = DHASH_BITS - MIN_HASH_BITS;
+const MAX_HASH_BITS = DHASH_BITS - MIN_HASH_BITS;
 
 /** How far two aspect ratios may differ, as a share of the larger, before the pair is a different picture. */
-export const MAX_ASPECT_DRIFT = 0.15;
+const MAX_ASPECT_DRIFT = 0.15;
 
 /**
  * Root mean square difference of two `THUMB_SIDE` greyscale thumbnails, on the 0 to 255 scale, that still reads as the
@@ -50,7 +50,7 @@ export const MAX_ASPECT_DRIFT = 0.15;
  * middle of it: a duplicate a harsh re-encode pushes past it is one extra file on disk, while a distinct asset merged
  * away is a file the caller asked for and never gets.
  */
-export const MAX_THUMB_RMSE = 3;
+const MAX_THUMB_RMSE = 3;
 
 /** Alpha is composited onto white, the background a logo is drawn for, instead of being dropped. */
 const FLATTEN_BACKGROUND = { r: 255, g: 255, b: 255 } as const;

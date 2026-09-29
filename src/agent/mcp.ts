@@ -30,17 +30,6 @@ import type { AgentScan, DownloadResult, FontInstall, ScanSource, SelectionOptio
  * scanned twice to answer a follow-up, and an id that has aged out says so in words the agent can act on.
  */
 
-export const MCP_TOOL_NAMES = [
-  "scan_page",
-  "list_assets",
-  "download_assets",
-  "read_svg",
-  "get_palette",
-  "install_fonts",
-  "list_installed_fonts",
-  "uninstall_fonts",
-] as const;
-
 /** The version this server reports to a client: the package's, which the bundle inlines like the CLI's `--version`. */
 const SERVER_VERSION: string = pkg.version;
 
@@ -58,7 +47,7 @@ const MAX_SVG_TEXT_BYTES = 256 * 1024;
  * through, so a test can watch what the tool asked for. The destination is resolved here, not there, because it is the
  * agent that supplied it and spec 10 holds an agent-supplied path to the project's scrap directory.
  */
-export type DownloadAssetsPort = (
+type DownloadAssetsPort = (
   scan: AgentScan,
   options: { dir: string; source: ScanSource; selection?: SelectionOptions; signal?: AbortSignal },
 ) => Promise<DownloadResult>;
@@ -558,7 +547,7 @@ export function createAgentMcpServer(options: AgentMcpOptions = {}): McpServer {
 }
 
 /** Serves the tools on stdio. Nothing is ever written to stdout except the protocol: diagnostics go to stderr. */
-export async function main(): Promise<void> {
+async function main(): Promise<void> {
   // A missing dependency is the launcher's to report (`scripts/mcp-launcher.mjs`, before the import): most of them are
   // static imports of this bundle, which fail at link time, before anything here could run.
   const server = createAgentMcpServer();

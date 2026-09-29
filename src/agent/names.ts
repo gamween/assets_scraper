@@ -9,7 +9,7 @@ import { extensionFor } from "@/server/scan/post/format";
  */
 
 /** Characters a sanitized host keeps, so it fits a directory name and a cached scan id whatever a page declares. */
-export const MAX_HOST_CHARS = 100;
+const MAX_HOST_CHARS = 100;
 
 /**
  * A host as a directory name: `www.` off, lower case, punycode kept as it is, nothing that could leave the directory

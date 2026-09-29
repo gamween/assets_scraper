@@ -23,7 +23,7 @@ const FONT_EXTENSIONS: Record<FontFile["format"], string> = { woff2: "woff2", wo
  * File names come from the family, weight, style and stretch, never from the URL: inline (data URI) files have no URL,
  * and remote file names are often build hashes.
  */
-export function fontFaceBaseName(family: Pick<FontFamily, "name">, face: Pick<FontFaceInfo, "weight" | "style" | "stretch">): string {
+function fontFaceBaseName(family: Pick<FontFamily, "name">, face: Pick<FontFaceInfo, "weight" | "style" | "stretch">): string {
   const parts = [slugify(family.name) || "font", slugify(face.weight)];
   if (face.stretch && !["normal", "100%"].includes(face.stretch.trim())) parts.push(slugify(face.stretch));
   if (face.style && face.style.trim() !== "normal") parts.push(slugify(face.style));

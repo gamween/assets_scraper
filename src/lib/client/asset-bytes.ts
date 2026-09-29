@@ -15,7 +15,7 @@ export interface BytesOptions {
   signal?: AbortSignal;
 }
 
-export function base64ToBytes(base64: string): Uint8Array<ArrayBuffer> {
+function base64ToBytes(base64: string): Uint8Array<ArrayBuffer> {
   const binary = atob(base64);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
@@ -45,7 +45,7 @@ const isAbort = (error: unknown, signal?: AbortSignal) =>
  * error, a failed request and a `Failed to load resource` line per file before the proxy answered. Images keep the
  * direct-first order: they also load through `<img>`, which is not subject to CORS.
  */
-export async function fetchSourceBlob(
+async function fetchSourceBlob(
   source: Pick<AssetSource, "url" | "proxy">,
   id: string,
   options: BytesOptions & { proxyFirst?: boolean } = {},

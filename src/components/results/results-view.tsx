@@ -18,7 +18,7 @@ const EMPTY_TAB: Record<string, string> = {
   fonts: "No fonts on this page",
 };
 
-export function EmptyState({ title, line, children }: { title: string; line?: string; children?: React.ReactNode }) {
+function EmptyState({ title, line, children }: { title: string; line?: string; children?: React.ReactNode }) {
   return (
     <div className="mt-8 flex flex-col items-start gap-1 rounded-lg border border-dashed border-border-strong px-6 py-10 sm:items-center sm:text-center">
       <p className="text-title font-semibold text-text">{title}</p>
@@ -41,7 +41,7 @@ export function PartialBanner() {
  * The scan stopped listing before the page ran out of files (the `truncated` warning): past the asset cap, or with the
  * collector's output cut to size. Without this line such a scan looks complete.
  */
-export function TruncatedNotice() {
+function TruncatedNotice() {
   return (
     <div role="status" data-testid="truncated-notice" className="mt-6 flex items-center gap-2.5 rounded-lg border border-border bg-surface px-3.5 py-2.5 text-body text-text-2">
       <Info className="size-4 shrink-0 text-text-3" aria-hidden="true" />

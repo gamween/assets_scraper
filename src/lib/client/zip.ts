@@ -87,7 +87,7 @@ export function buildZip(items: ZipItem[], host: string, options: ZipOptions = {
  * end (or rejects on abort). Every archive the app builds goes through here, so none of them fetches everything at
  * once or loses the files that loaded to one that did not.
  */
-export function streamZip(plan: PlannedEntry[], options: ZipOptions = {}) {
+function streamZip(plan: PlannedEntry[], options: ZipOptions = {}) {
   const { signal, onProgress, concurrency = 6 } = options;
   const failed: ZipFailure[] = [];
   let settle!: { resolve: (value: { failed: ZipFailure[] }) => void; reject: (error: unknown) => void };

@@ -1,7 +1,7 @@
 import { browserStorage, readJson, writeString, type StringStorage } from "./storage";
 
 const KEY = "assets-scraper:recent";
-export const RECENT_LIMIT = 5;
+const RECENT_LIMIT = 5;
 
 const parseHosts = (value: unknown): string[] =>
   Array.isArray(value) ? value.filter((host): host is string => typeof host === "string" && host.length > 0).slice(0, RECENT_LIMIT) : [];
