@@ -111,7 +111,8 @@ async function fetchSelection(
         continue;
       }
       // `total` is read between awaits, so the request cap can be passed by what the other workers hold in flight, by
-      // at most `concurrency` files. The budget is the exact one: `take` is atomic and counts nothing when it refuses.
+      // at most `concurrency` files. The budget is the exact one: the meter runs takes one at a time, so workers taking
+      // at once never share one reservation, and a refused take counts nothing.
       if (total + buffer.byteLength > options.maxBytes || !(await options.meter.take(buffer.byteLength))) {
         truncated = true;
         return;

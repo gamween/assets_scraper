@@ -186,6 +186,8 @@ export function meterProxyBytes(now: Date = new Date()): ProxyBytesMeter {
   let reserved = 0;
   let used = 0;
   let settled = false;
+  /** The take in progress: the next one starts once it has counted its bytes. */
+  let turn: Promise<unknown> = Promise.resolve();
   const handBack = async (bytes: number) => {
     if (bytes > 0) await incr(proxyKey(now), -bytes, PROXY_DAY_TTL);
   };
@@ -199,16 +201,23 @@ export function meterProxyBytes(now: Date = new Date()): ProxyBytesMeter {
     reserved += amount;
     return true;
   };
+  const takeInTurn = async (amount: number) => {
+    const shortfall = used + amount - reserved;
+    if (shortfall > 0 && !(await reserve(Math.max(PROXY_BYTES_BLOCK, shortfall)))) return false;
+    // a settle that ran while the block was being granted already handed it back
+    if (settled) return false;
+    used += amount;
+    return true;
+  };
   return {
     reserve,
-    async take(bytes) {
-      const amount = byteCount(bytes);
-      const shortfall = used + amount - reserved;
-      if (shortfall > 0 && !(await reserve(Math.max(PROXY_BYTES_BLOCK, shortfall)))) return false;
-      // a settle that ran while the block was being granted already handed it back
-      if (settled) return false;
-      used += amount;
-      return true;
+    take(bytes) {
+      // One at a time, each after the one before it has counted: the ZIP endpoint's workers share a meter, and a take
+      // that started while another waited on its reservation found the block covering it, so the two served bytes the
+      // budget was never charged for. In turn, the second sees the first one's bytes and reserves its own if it must.
+      const result = turn.then(() => takeInTurn(byteCount(bytes)));
+      turn = result.catch(() => {});
+      return result;
     },
     async settle() {
       if (settled) return;

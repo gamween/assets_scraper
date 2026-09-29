@@ -183,6 +183,38 @@ describe("budget", () => {
     expect(await spent()).toBe(2 * block - 10 + 1);
   });
 
+  it("charges both of two takes that interleave, however close together they land", async () => {
+    // The ZIP endpoint's workers share one meter. A take that started in the few microtasks between another take's
+    // reservation and its count used to find the block covering it, and served five megabytes nobody was charged for.
+    const size = 5 * 1024 * 1024;
+    const ticks = async (count: number) => {
+      for (let tick = 0; tick < count; tick++) await Promise.resolve();
+    };
+    for (let delay = 0; delay <= 24; delay++) {
+      const store = new MemoryBudgetStore();
+      setBudgetStoreForTests(store);
+      const meter = meterProxyBytes(day1);
+      const first = meter.take(size);
+      await ticks(delay);
+      const second = meter.take(size);
+      const granted = [await first, await second].filter(Boolean).length;
+      await meter.settle();
+      expect(granted, `delay ${delay}`).toBe(2);
+      expect(await store.incr("proxy:d:2026-09-16", 0, 60), `delay ${delay}`).toBe(granted * size);
+    }
+  });
+
+  it("shares one block between takes that arrive together, rather than reserving one each", async () => {
+    // Near the end of a day, a block each for six workers would refuse files that one block covers.
+    const store = new MemoryBudgetStore();
+    setBudgetStoreForTests(store);
+    const meter = meterProxyBytes(day1);
+    expect(await Promise.all(Array.from({ length: 6 }, () => meter.take(100)))).toEqual(Array(6).fill(true));
+    expect(await store.incr("proxy:d:2026-09-16", 0, 60)).toBe(PROXY_BYTES_BLOCK);
+    await meter.settle();
+    expect(await store.incr("proxy:d:2026-09-16", 0, 60)).toBe(600);
+  });
+
   it("hands back a block that is granted after the meter settled", async () => {
     const store = new MemoryBudgetStore();
     let open: () => void = () => {};
