@@ -1,12 +1,12 @@
 import { createHash } from "node:crypto";
 import { chromium, type Browser } from "playwright-core";
+import { localExecutablePath } from "@/server/browser/launch";
 import { parseFontBinary } from "@/server/scan/fonts";
 import { parseFontSrc } from "@/server/scan/fonts/css";
 import type { CapturedFont, CapturedNetwork, CapturedSheet, RawCollectorOutput, RawFontFaceRule, RawFontStatus, RawFontUsage, Signer } from "@/server/scan/types";
 
 export function launchChrome(): Promise<Browser> {
-  const executablePath = process.env.CHROME_EXECUTABLE_PATH;
-  return chromium.launch(executablePath ? { executablePath } : { channel: "chrome" });
+  return chromium.launch({ executablePath: localExecutablePath() });
 }
 
 /**

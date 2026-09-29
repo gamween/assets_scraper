@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type http from "node:http";
 import { chromium, type Browser, type Page } from "playwright-core";
 import sharp from "sharp";
+import { localExecutablePath } from "@/server/browser/launch";
 import { limits } from "@/server/config/limits";
 import { safeFetch } from "@/server/net/safe-fetch";
 import { COLLECTOR_SOURCE } from "@/server/scan/inpage/generated/collector";
@@ -22,11 +23,9 @@ import { serveFixture, type FixtureServer } from "../../fixtures/serve";
  * keeps (spec 7.4).
  */
 
-const CHROME = process.env.CHROME_EXECUTABLE_PATH ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-
 export function launchChrome(): Promise<Browser> {
   return chromium.launch({
-    executablePath: CHROME,
+    executablePath: localExecutablePath(),
     headless: true,
     args: ["--disable-blink-features=AutomationControlled", "--hide-scrollbars", "--mute-audio"],
   });

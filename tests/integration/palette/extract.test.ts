@@ -3,6 +3,7 @@ import path from "node:path";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright-core";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Palette, type Swatch } from "@/lib/contract";
+import { localExecutablePath } from "@/server/browser/launch";
 import { PALETTE_SOURCE } from "@/server/scan/inpage/generated/palette";
 import { extractPalette, type ExtractPaletteOptions, type PaletteNullReason } from "@/server/scan/palette";
 import { buildPalette, toContractPalette } from "@/server/scan/palette/build";
@@ -12,9 +13,6 @@ import { readSignals, type RawPaletteSignals } from "@/server/scan/palette/signa
 import type { SafeFetch } from "@/server/scan/types";
 import { serveFixture, type FixtureServer } from "../../fixtures/serve";
 
-const CHROME =
-  process.env.CHROME_EXECUTABLE_PATH ??
-  (process.platform === "darwin" ? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" : "/usr/bin/google-chrome");
 const CONSENT_HTML = readFileSync(path.join(import.meta.dirname, "../../fixtures/palette/consent.html"));
 /** Same value as RESTORE_WAIT_MS in extractPalette. */
 const RESTORE_WAIT_MS = 500;
@@ -98,7 +96,7 @@ beforeAll(async () => {
       res.end(CONSENT_HTML);
     },
   });
-  browser = await chromium.launch({ executablePath: CHROME, headless: true });
+  browser = await chromium.launch({ executablePath: localExecutablePath(), headless: true });
 });
 
 afterAll(async () => {
