@@ -13,12 +13,18 @@ export default defineConfig([
   {
     // The stock merger does not know the app's type scale, so it reads `text-body` as a color and drops the real one
     // from the same element, with no error anywhere. shadcn writes this import into every base-nova item it generates.
+    // `cn/config` would know it, by compiling a 45 KB config in the browser on the first call.
     files: ["src/**/*.{ts,tsx}"],
     ignores: ["src/components/common/cn.ts"],
     rules: {
       "no-restricted-imports": [
         "error",
-        { paths: [{ name: "cn", message: "Import cn from @/components/common/cn; the stock merger does not know the type scale." }] },
+        {
+          paths: [
+            { name: "cn", message: "Import cn from @/components/common/cn; the stock merger does not know the type scale." },
+            { name: "cn/config", message: "Import cn from @/components/common/cn; it merges with tables compiled ahead of time (pnpm build:cn)." },
+          ],
+        },
       ],
     },
   },
@@ -41,5 +47,5 @@ export default defineConfig([
       ],
     },
   },
-  globalIgnores([".next/**", "out/**", "build/**", "dist/**", "next-env.d.ts", "playwright-report/**", "test-results/**", "src/server/scan/inpage/generated/**"]),
+  globalIgnores([".next/**", "out/**", "build/**", "dist/**", "next-env.d.ts", "playwright-report/**", "test-results/**", "src/server/scan/inpage/generated/**", "src/components/common/cn-tables.ts"]),
 ]);
