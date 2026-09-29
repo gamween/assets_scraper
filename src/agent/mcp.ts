@@ -286,8 +286,8 @@ export function createAgentMcpServer(options: AgentMcpOptions = {}): McpServer {
       },
     },
     async ({ url, refresh }, { signal }) => {
-      // Normalized before the cache lookup as well as before the scan: the cache key strips the scheme, so a bare host
-      // used to succeed while a scan of the `https:` form was warm and fail with `invalid-url` once it aged out.
+      // Normalized before the cache lookup as well as before the scan: a bare host used to succeed while a scan of the
+      // `https:` form was warm and fail with `invalid-url` once it aged out.
       const target = normalizeScanUrl(url);
       if (target === null) return fail(`invalid-url: ${JSON.stringify(url)} is not a valid web address`);
       try {

@@ -5,6 +5,7 @@ import * as z from "zod";
 import { Asset, Diagnostics, FontFamily, Palette, ScanStats } from "@/lib/contract";
 import { buildIdentity } from "./build-id";
 import { agentLimits } from "./limits";
+import { normalizeScanUrl } from "./scan-url";
 import type { AgentScan, ScanSource } from "./types";
 
 /**
@@ -162,15 +163,23 @@ const sameOrigin = (scan: AgentScan, origin: ScanOrigin): boolean =>
   scan.source === origin.kind && normalizeRemote(scan.remote) === normalizeRemote(origin.remote);
 
 /** `https://www.stripe.com/` and `stripe.com` are the same page to `findRecentScan`. */
-const sameUrl = (a: string, b: string): boolean => normalizeUrl(a) === normalizeUrl(b);
+const sameUrl = (a: string, b: string): boolean => pageKey(a) === pageKey(b);
 
-const normalizeUrl = (url: string): string =>
-  url
-    .trim()
-    .toLowerCase()
-    .replace(/^[a-z][a-z0-9+.-]*:\/\//, "")
-    .replace(/^www\./, "")
-    .replace(/\/+$/, "");
+/**
+ * One page however it was spelled: read the way a scan reads what it is given (`normalizeScanUrl`, so a bare host is
+ * its https form), the host without `www.` and the path without trailing slashes. The path, the query and the scheme
+ * keep what they say. The key used to lower case the whole URL and drop the scheme, so `/Docs` answered from a scan of
+ * `/docs`, `?id=AbC` from `?id=abc` and `http:` from `https:`, which are other pages on most servers.
+ */
+function pageKey(url: string): string {
+  const normalized = normalizeScanUrl(url) ?? url.trim();
+  try {
+    const parsed = new URL(normalized);
+    return `${parsed.protocol}//${parsed.host.replace(/^www\./, "")}${parsed.pathname.replace(/\/+$/, "")}${parsed.search}${parsed.hash}`;
+  } catch {
+    return normalized;
+  }
+}
 
 /**
  * The newest cached scan of `url` that `source` produced and that is younger than `ttlMs`, or null. Every failure is a
