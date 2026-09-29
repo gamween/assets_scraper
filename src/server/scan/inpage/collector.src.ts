@@ -1,5 +1,8 @@
 import type { FoundIn, HiddenReason } from "@/lib/contract";
+import { extractCssUrls, readCssUrls, readFontFaceSrc } from "./css-values";
 import { OUTPUT_LISTS } from "./lists";
+import { parseSrcset } from "./srcset";
+import { canonicalSvgMarkup, varFallback } from "./svg-markup";
 import type {
   CandidateContext,
   CollectorOptions,
@@ -17,8 +20,9 @@ import type {
  * In-page asset collector and SVG normalizer (spec 7.5, 8.1, 8.6), ported from the discovery lab (`lib/inpage.js`).
  *
  * Runs inside the scanned page, normally in a CDP isolated world where `customElements` is null, so it never uses it.
- * It cannot import app code: `parseSrcset` and `extractCssUrls` are copies of `post/parse.ts`, keep them in sync.
- * Returns plain JSON. Caps: `maxElements` walked, `timeBudgetMs`, `maxSvgNormalizations`, `maxSvgBytes` per SVG,
+ * It cannot import app code, only the other files of this folder: the `srcset` and CSS readers and the SVG text
+ * rewrites, which the unit tests read in Node (`srcset.ts`, `css-values.ts`, `svg-markup.ts`), are bundled in. Returns
+ * plain JSON. Caps: `maxElements` walked, `timeBudgetMs` and `deadline`, `maxSvgNormalizations`, `maxSvgBytes` per SVG,
  * `maxSvgTotalBytes` for all SVG markup, blob byte caps, `maxOutputChars` of JSON for the whole output. Hitting one sets
  * `stats.truncated`.
  */
@@ -33,6 +37,13 @@ const MAX_SAME_MARKUP_NORMALIZATIONS = 3;
 const MAX_STYLED_SVG_ELEMENTS = 4_000;
 /** `page.baseUrl` and `manifestUrl` longer than this are left out, so they cannot push the lists out of the budget. */
 const MAX_PAGE_URL_CHARS = 8_192;
+/**
+ * The largest revoked `blob:` image re-encoded through a canvas, in pixels. The PNG encode of a larger one takes
+ * seconds on the page's thread and rarely fits `maxBlobBytes` anyway.
+ */
+const MAX_CANVAS_PIXELS = 4_000_000;
+/** The time a canvas re-encode needs left before it starts. */
+const CANVAS_MIN_MS = 500;
 
 const LAZY_ATTR =
   /^data-(?:lazy-?)?(?:src|srcset|original|original-set|hi-?res(?:-src)?|full(?:-src)?|large(?:-src)?|zoom(?:-src)?|fallback(?:-src)?|bg|background|background-image|image|img|echo|flickity-lazyload|lazy|srcset-lazy|pin-media|retina|2x)$/i;
@@ -82,64 +93,6 @@ const CSS_PROPS: [string, FoundIn][] = [
   ["content", "css-other"],           // an element replaced by an image; on ::before and ::after it is css-pseudo
 ];
 const NON_IMAGE_DECLARATION = /^(?:cursor|behavior|clip-path|filter|marker(?:-start|-mid|-end)?|mask|src)$/;
-
-// ---------------------------------------------------------------- parsers (copies of post/parse.ts)
-
-function parseSrcset(value: string | null | undefined): { url: string; w?: number; x?: number }[] {
-  const out: { url: string; w?: number; x?: number }[] = [];
-  if (!value) return out;
-  const s = value;
-  const n = s.length;
-  const space = /\s/;
-  let i = 0;
-  while (i < n) {
-    while (i < n && (s[i] === "," || space.test(s[i]))) i++;
-    if (i >= n) break;
-    const start = i;
-    while (i < n && !space.test(s[i])) i++;
-    let url = s.slice(start, i);
-    let descriptor = "";
-    if (/,+$/.test(url)) {
-      url = url.replace(/,+$/, "");
-    } else {
-      let depth = 0;
-      const descriptorStart = i;
-      while (i < n) {
-        const c = s[i];
-        if (c === "(") depth++;
-        else if (c === ")") depth--;
-        else if (c === "," && depth <= 0) break;
-        i++;
-      }
-      descriptor = s.slice(descriptorStart, i).trim();
-      i++;
-    }
-    if (!url) continue;
-    // The digit runs are bounded and the alternation removes the `\d*`/`\d+` overlap: the unbounded form is cubic in
-    // the descriptor length, so one long digit run blocks the caller for minutes. Nine digits is far beyond any real
-    // descriptor, and a longer run is not a number `Number()` could use.
-    const w = descriptor.match(/(\d{1,9})w\b/);
-    const x = descriptor.match(/(\d{1,9}(?:\.\d{1,9})?|\.\d{1,9})x\b/);
-    if (w) out.push({ url, w: Number(w[1]) });
-    else out.push({ url, x: x ? Number(x[1]) : 1 });
-  }
-  return out;
-}
-
-const URL_TOKEN = /url\(\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|([^)\s]*))\s*\)/g;
-const QUOTED = /"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'/g;
-const unescapeCss = (text: string) => text.replace(/\\(.)/g, "$1");
-
-function extractCssUrls(value: string | null | undefined): string[] {
-  const out: string[] = [];
-  if (!value || value === "none") return out;
-  for (const match of value.matchAll(URL_TOKEN)) out.push(unescapeCss(match[1] ?? match[2] ?? match[3] ?? ""));
-  if (/image-set\(/i.test(value)) {
-    const rest = value.replace(URL_TOKEN, " ");
-    for (const match of rest.matchAll(QUOTED)) out.push(unescapeCss(match[1] ?? match[2] ?? ""));
-  }
-  return [...new Set(out)].filter((url) => url && !url.startsWith("#"));
-}
 
 // ---------------------------------------------------------------- small helpers
 
@@ -205,6 +158,9 @@ const noContext = (): CandidateContext => ({
   shadowRoot: false, iframe: false,
 });
 
+/** Bytes that `base64` decodes to. */
+const base64Bytes = (base64: string) => Math.floor((base64.length * 3) / 4) - (base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0);
+
 const bytesToBase64 = (bytes: Uint8Array) => {
   let binary = "";
   for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
@@ -232,7 +188,18 @@ interface ElementInfo {
 
 async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
   const T0 = performance.now();
-  const outOfTime = () => performance.now() - T0 > options.timeBudgetMs;
+  /**
+   * Milliseconds left: the in-page budget, and the engine's deadline, which also counts the time the collector took to
+   * start (a CDP session, an isolated world on a busy page, compiling this bundle) that its own clock cannot see. A
+   * collector that returns after the engine gave up on it loses its whole output. In the main-world fallback the page
+   * can replace `Date`, so a deadline that reads as no number is left out and the budget alone applies.
+   */
+  const remaining = () => {
+    const budget = options.timeBudgetMs - (performance.now() - T0);
+    const deadline = options.deadline - Date.now();
+    return Number.isFinite(deadline) ? Math.min(budget, deadline) : budget;
+  };
+  const outOfTime = () => !(remaining() > 0);
   let truncated = false;
   const noise: Partial<Record<HiddenReason, number>> = {};
   const countNoise = (reason: HiddenReason) => {
@@ -755,7 +722,7 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
             const style = (rule as CSSFontFaceRule).style;
             fontFaces.push({
               family: style.getPropertyValue("font-family").trim().replace(/^["']|["']$/g, ""),
-              src: parseFontSrc(style.getPropertyValue("src"), base),
+              src: readFontFaceSrc(style.getPropertyValue("src"), base),
               weight: style.getPropertyValue("font-weight") || "normal",
               style: style.getPropertyValue("font-style") || "normal",
               ...(style.getPropertyValue("font-stretch") ? { stretch: style.getPropertyValue("font-stretch") } : {}),
@@ -856,9 +823,11 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
   const fontStatuses: RawFontStatus[] = [];
   const loadedFamilies = new Set<string>();
   for (const face of document.fonts) {
-    const family = face.family.replace(/^["']|["']$/g, "");
-    fontStatuses.push({ family, weight: face.weight, style: face.style, stretch: face.stretch, status: face.status });
-    if (face.status === "loaded") loadedFamilies.add(family.toLowerCase());
+    // The family as the browser gives it, which post-processing decodes (`statusFamily` in `fonts/index.ts`): the name
+    // itself for a face from a rule, a CSS string for one made with the FontFace constructor. Cutting a quote off each
+    // end here cut the last character of a name that ends in one, such as `Quote "Face"`, which then matched no rule.
+    fontStatuses.push({ family: face.family, weight: face.weight, style: face.style, stretch: face.stretch, status: face.status });
+    if (face.status === "loaded") loadedFamilies.add(face.family.replace(/^["']|["']$/g, "").toLowerCase());
   }
   const usage = new Map<string, RawFontUsage>();
   {
@@ -910,10 +879,10 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
     let pending = spriteCache.get(url);
     if (!pending) {
       pending = (async () => {
-        const remaining = options.timeBudgetMs - (performance.now() - T0);
-        if (remaining <= 0) return null;
+        const left = remaining();
+        if (!(left > 0)) return null;
         try {
-          const response = await fetch(url, { credentials: "omit", signal: AbortSignal.timeout(Math.min(options.spriteFetchMs, remaining)) });
+          const response = await fetch(url, { credentials: "omit", signal: AbortSignal.timeout(Math.min(options.spriteFetchMs, left)) });
           if (!response.ok) return null;
           return new DOMParser().parseFromString(await response.text(), "image/svg+xml");
         } catch {
@@ -928,7 +897,7 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
     const ids = new Set<string>();
     const scan = (value: string | null) => {
       if (!value) return;
-      for (const match of value.matchAll(/url\(\s*["']?#([^"')\s]+)["']?\s*\)/g)) ids.add(match[1]);
+      for (const url of readCssUrls(value)) if (url.length > 1 && url.startsWith("#")) ids.add(url.slice(1));
     };
     for (const node of [el, ...el.querySelectorAll("*")]) {
       for (const attribute of node.attributes) {
@@ -1105,8 +1074,8 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
           for (const property of [...style]) if (property.startsWith("--") || style.getPropertyValue(property).includes("var(")) style.removeProperty(property);
           if (!node.getAttribute("style")?.trim()) node.removeAttribute("style");
         } else if (attribute.value.includes("var(") && name !== "d") {
-          const fallback = attribute.value.replace(/var\(\s*--[\w-]+\s*(?:,\s*((?:[^()]|\([^()]*\))*))?\)/g, (_, value?: string) => (value ?? "").trim()).trim();
-          if (fallback && !fallback.includes("var(")) node.setAttribute(name, fallback);
+          const fallback = varFallback(attribute.value);
+          if (fallback) node.setAttribute(name, fallback);
           else node.removeAttribute(name);
         } else if ((attribute.localName === "href") && !attribute.value.startsWith("#") && !attribute.value.startsWith("data:")) {
           const url = abs(attribute.value, svg.baseURI);
@@ -1118,16 +1087,7 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
 
     // Serialize, then hash a canonical form: ids renamed in order of appearance, whitespace collapsed
     const markup = new XMLSerializer().serializeToString(clone);
-    let canonical = markup;
-    let next = 0;
-    const ids = new Map<string, string>();
-    for (const match of markup.matchAll(/\sid="([^"]+)"/g)) if (!ids.has(match[1])) ids.set(match[1], `i${next++}`);
-    for (const [id, replacement] of ids) {
-      const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      canonical = canonical.replace(new RegExp(`(id="|#)${escaped}(?=["')\\s])`, "g"), `$1${replacement}`);
-    }
-    canonical = canonical.replace(/>\s+</g, "><").replace(/\s{2,}/g, " ");
-    return { markup, hash: sha1Hex(canonical), elementCount: liveElements.length, hasLiveText: hasText && hasWebFontText(svg) };
+    return { markup, hash: sha1Hex(canonicalSvgMarkup(markup)), elementCount: liveElements.length, hasLiveText: hasText && hasWebFontText(svg) };
   };
 
   const addSvg = (entry: RawSvg) => {
@@ -1277,21 +1237,24 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
       }
       let entry: { mime: string; bytes: Uint8Array } | null = null;
       try {
-        const response = await fetch(url, { signal: AbortSignal.timeout(options.blobFetchMs) });
+        // Bounded by the time left too: a fetch started near the end must not run past the engine's deadline
+        const response = await fetch(url, { signal: AbortSignal.timeout(Math.max(1, Math.min(options.blobFetchMs, remaining()))) });
         const blob = await response.blob();
         if (blob.size <= options.maxBlobBytes) entry = { mime: blob.type || "application/octet-stream", bytes: new Uint8Array(await blob.arrayBuffer()) };
       } catch {
-        // revoked: re-encode the decoded image through a canvas (a same-origin blob does not taint it)
+        // Revoked: re-encode the decoded image through a canvas (a same-origin blob does not taint it). The PNG encode
+        // is synchronous on the page's thread and nothing can stop it, so only an image small enough to encode quickly,
+        // with the time for it left, gets one.
         const img = elements.find((el) => el.localName === "img" && (el as HTMLImageElement).currentSrc === url) as HTMLImageElement | undefined;
-        if (img?.complete && img.naturalWidth > 0) {
+        if (img?.complete && img.naturalWidth > 0 && img.naturalWidth * img.naturalHeight <= MAX_CANVAS_PIXELS && remaining() > CANVAS_MIN_MS) {
           try {
             const canvas = img.ownerDocument.createElement("canvas");
             canvas.width = img.naturalWidth;
             canvas.height = img.naturalHeight;
             canvas.getContext("2d")?.drawImage(img, 0, 0);
             const base64 = canvas.toDataURL("image/png").split(",")[1] ?? "";
-            const bytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
-            if (bytes.length <= options.maxBlobBytes) entry = { mime: "image/png", bytes };
+            // Sized from the base64 first, so an encode over the cap is never decoded
+            if (base64Bytes(base64) <= options.maxBlobBytes) entry = { mime: "image/png", bytes: Uint8Array.from(atob(base64), (char) => char.charCodeAt(0)) };
           } catch {
             // tainted or too large for a canvas
           }
@@ -1332,7 +1295,9 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
       const text = collapse(el.textContent, 80) || collapse(el.getAttribute("aria-label"), 80) || collapse(el.getAttribute("title"), 80);
       // Only the last path segment counts, not the whole path: `/newsroom/news/<headline>` is one press release out of
       // many, not the press kit, and matching anywhere in the path filled stripe.com's row with five news articles.
-      const segment = decodeURIComponentSafe(url.pathname.replace(/\/+$/, "").split("/").pop() ?? "");
+      // The lookbehind lets only the first slash of a trailing run start a match: `\/+$` alone tried from every slash
+      // of a run that does not end the path, which was quadratic in its length.
+      const segment = decodeURIComponentSafe(url.pathname.replace(/(?<!\/)\/+$/, "").split("/").pop() ?? "");
       if (!isBrandLink(segment) && !isBrandLink(text)) continue;
       seen.add(url.href);
       brandLinks.push({ href: url.href, text });
@@ -1427,26 +1392,6 @@ function decodeURIComponentSafe(text: string): string {
   } catch {
     return text;
   }
-}
-
-/** `@font-face` `src` descriptors: `url()` with its `format()` hint, or `local()`. */
-function parseFontSrc(src: string, base: string): RawFontFaceRule["src"] {
-  const out: RawFontFaceRule["src"] = [];
-  const pattern = /(url|local)\(\s*(?:"([^"]*)"|'([^']*)'|([^)]*?))\s*\)(?:\s*format\(\s*["']?([^"')]+)["']?\s*\))?(?:\s*tech\([^)]*\))?/g;
-  for (const match of src.matchAll(pattern)) {
-    const value = (match[2] ?? match[3] ?? match[4] ?? "").trim();
-    if (match[1] === "local") {
-      if (value) out.push({ local: value });
-      continue;
-    }
-    try {
-      const url = new URL(value, base).href;
-      out.push(match[5] ? { url, format: match[5].trim().toLowerCase() } : { url });
-    } catch {
-      // not a URL
-    }
-  }
-  return out;
 }
 
 globalThis.__assetsScraper = { collect };

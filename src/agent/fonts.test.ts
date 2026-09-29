@@ -415,7 +415,8 @@ describe("toSfnt", () => {
     const concurrent = await Promise.all([toSfnt(woff2), toSfnt(sourceWoff2), toSfnt(woff2)]);
 
     expect(concurrent).toEqual([sequentialInter, sequentialSource, sequentialInter]);
-  });
+    // Five WOFF2 decompressions, over two seconds on a CI runner: the default 5 second timeout left little room
+  }, 30_000);
 
   it("answers null for bytes it cannot decompress", async () => {
     expect(await toSfnt(Buffer.from("wOF2 not really a font"))).toBeNull();

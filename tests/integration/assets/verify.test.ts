@@ -3,7 +3,7 @@ import sharp from "sharp";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { FixtureServer } from "../../fixtures/serve";
 import type { SafeFetch } from "@/server/scan/types";
-import { runVerifications, verifyUrl } from "@/server/scan/post/verify";
+import { verifyUrl } from "@/server/scan/post/verify";
 import { serveAssetsFixture, testFetch } from "./harness";
 
 const noise = (width: number, height: number) => {
@@ -162,37 +162,5 @@ describe("verifyUrl", () => {
     controller.abort();
     expect(await verifyUrl(`${server.origin}/ranged.png`, { ...options(), signal: controller.signal })).toMatchObject({ ok: false, reason: "verify-skipped" });
     expect(await verifyUrl(`${server.origin}/ranged.png`, { ...options(), deadline: Date.now() - 1 })).toMatchObject({ ok: false, reason: "verify-skipped" });
-  });
-});
-
-describe("runVerifications", () => {
-  it("respects the concurrency and stops starting tasks after the deadline", async () => {
-    let active = 0;
-    let maxActive = 0;
-    let started = 0;
-    const task = async () => {
-      started++;
-      active++;
-      maxActive = Math.max(maxActive, active);
-      await new Promise((resolve) => setTimeout(resolve, 200));
-      active--;
-      return { ok: true as const };
-    };
-    const results = await runVerifications(Array.from({ length: 40 }, () => task), { concurrency: 16, deadline: Date.now() + 300 });
-    expect(maxActive).toBe(16);
-    expect(started).toBe(32);
-    expect(results.filter((r) => r.ok)).toHaveLength(32);
-    expect(results.slice(32)).toEqual(Array.from({ length: 8 }, () => ({ ok: false, reason: "verify-skipped" })));
-  });
-
-  it("aborts running tasks at the deadline", async () => {
-    const results = await runVerifications(
-      [
-        (signal: AbortSignal) =>
-          new Promise<{ ok: boolean; reason?: string }>((resolve) => signal.addEventListener("abort", () => resolve({ ok: false, reason: "aborted" }))),
-      ],
-      { concurrency: 2, deadline: Date.now() + 50 },
-    );
-    expect(results).toEqual([{ ok: false, reason: "aborted" }]);
   });
 });

@@ -10,7 +10,6 @@ import { binaryFamilyName, cleanCssFamily, GENERIC_FAMILIES, resolveFamilyName, 
 import { coversBasicLatin } from "./unicode";
 
 export { parseFontBinary } from "./binary";
-export { parseFontFaceCss } from "./css";
 
 /**
  * Bounds on what a hostile page can make this module do: grouping is synchronous, where neither the scan deadline nor

@@ -245,6 +245,25 @@ describe("collector noise and edge cases", () => {
   });
 });
 
+describe("collector references", () => {
+  it("copies the definitions a style attribute or a <style> rule references", async () => {
+    // The shape SVG exports write: `style="fill:url(#a)"` and `.cls-1{clip-path:url(#b)}`, with the definitions kept in
+    // another SVG of the page. Left behind, the downloaded file paints black and unclipped.
+    const { context, page } = await openPage(browser, `${server.origin}/`);
+    await page.evaluate(() => {
+      const holder = document.createElement("div");
+      holder.innerHTML = `<svg width="0" height="0" style="position:absolute"><defs><linearGradient id="styled-grad"><stop offset="0" stop-color="#f00"/><stop offset="1" stop-color="#00f"/></linearGradient><clipPath id="ruled-clip"><rect width="10" height="10"/></clipPath></defs></svg>
+        <svg width="26" height="26"><style>.ruled-rect{clip-path:url(#ruled-clip)}</style><rect width="26" height="26" style="fill:url(#styled-grad)"/><rect class="ruled-rect" width="20" height="20"/></svg>`;
+      document.body.prepend(holder);
+    });
+    const referenced = await runCollector(page, collectorOptions(server.host, "Fixture"));
+    await context.close();
+    const styled = referenced.svgs.find((s) => s.markup.includes("ruled-rect"))!;
+    expect(styled.markup).toContain('linearGradient id="styled-grad"');
+    expect(styled.markup).toContain('clipPath id="ruled-clip"');
+  });
+});
+
 describe("collector sources", () => {
   it("reads content: url() on an element, itemprop=image links and msapplication meta icons", async () => {
     const { context, page } = await openPage(browser, `${server.origin}/sources.html`);
@@ -388,6 +407,45 @@ describe("collector limits and hostile pages", () => {
     expect(tampered.blobs).toHaveLength(1);
   });
 
+  it("stops at the engine's deadline, which counts the time the collector took to start", async () => {
+    // The collector's own budget starts with its first line. A deadline already past when it starts, as after a slow
+    // isolated world on a busy page, has to stop it there: an answer after the engine's timeout loses everything.
+    const { context, page } = await openPage(browser, `${server.origin}/`);
+    const late = await runCollector(page, collectorOptions(server.host, "Fixture", { deadline: Date.now() - 1 }));
+    await context.close();
+    expect(late.stats.truncated).toBe(true);
+    // Only the cheap passes that read the head and the style sheets once still run
+    expect(late.candidates.filter((c) => !["stylesheet", "icon-link", "og-image", "twitter-image", "meta-icon", "json-ld"].includes(c.foundIn))).toEqual([]);
+    expect(output.candidates.filter((c) => c.foundIn === "img").length).toBeGreaterThan(0);
+    expect(late.svgs).toEqual([]);
+    expect(late.blobs).toEqual([]);
+  });
+
+  it("re-encodes only a revoked blob: image small enough to encode quickly", async () => {
+    const { context, page } = await openPage(browser, `${server.origin}/`);
+    const huge = await page.evaluate(async () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = 2_200;
+      canvas.height = 2_000;
+      const blob = await new Promise<Blob>((resolve) => canvas.toBlob((result) => resolve(result!), "image/png"));
+      const url = URL.createObjectURL(blob);
+      const img = document.createElement("img");
+      await new Promise((resolve) => {
+        img.onload = resolve;
+        img.src = url;
+        document.body.prepend(img);
+      });
+      URL.revokeObjectURL(url);
+      return url;
+    });
+    const collected = await runCollector(page, collectorOptions(server.host, "Fixture"));
+    await context.close();
+    // 4.4 megapixels encode for seconds on the page's thread; the fixture's small revoked blob is still read
+    expect(collected.candidates.some((c) => c.url === huge)).toBe(true);
+    expect(collected.blobs.map((b) => b.url)).not.toContain(huge);
+    expect(collected.blobs).toHaveLength(1);
+  });
+
   it("stops at the element cap and the SVG caps and says so", async () => {
     const { context, page } = await openPage(browser, `${server.origin}/`);
     const capped = await runCollector(page, collectorOptions(server.host, "Fixture", { maxElements: 20 }));
@@ -458,6 +516,36 @@ describe("collector limits and hostile pages", () => {
     // The budget still holds when almost everything goes.
     expect(tiny.stats.truncated).toBe(true);
     expect(JSON.stringify(tiny).length).toBeLessThanOrEqual(tinyCap);
+  });
+
+  it("reads hostile attributes, markup and CSS without losing the page to them", async () => {
+    // Each of these made one of the collector's regular expressions quadratic, and a collector that outlives its
+    // budget loses its whole output: a lazy background of `url(url(`, a srcset URL holding a run of commas, a link
+    // path holding a run of slashes, a var() fallback after a run of spaces, an inline style of `url(#`, and an
+    // @font-face src with a run of spaces inside a quoted URL.
+    const { context, page } = await openPage(browser, `${server.origin}/`);
+    await page.evaluate(() => {
+      const lazy = document.createElement("div");
+      lazy.setAttribute("data-bg", "url(".repeat(100_000));
+      const img = document.createElement("img");
+      img.setAttribute("srcset", `/assets/og.png?x=${",".repeat(200_000)}y 2x`);
+      const link = document.createElement("a");
+      link.href = `/press${"/".repeat(200_000)}kit`;
+      link.textContent = "Press kit";
+      const holder = document.createElement("div");
+      holder.innerHTML = `<svg width="20" height="20"><style>.hostile{fill:${"url(#".repeat(50_000)}}</style><rect width="20" height="20" fill="var(--hostile,${" ".repeat(200_000)}#123456)"/></svg>`;
+      const style = document.createElement("style");
+      style.textContent = `@font-face{font-family:Hostile;src:url("h${" ".repeat(100_000)}\\"x.woff2")}`;
+      document.head.append(style);
+      document.body.prepend(link, lazy, img, holder);
+    });
+    const hostile = await runCollector(page, collectorOptions(server.host, "Fixture"));
+    await context.close();
+    expect(hostile.stats.truncated).toBe(false);
+    expect(hostile.candidates.some((c) => c.url.startsWith(`${server.origin}/assets/og.png?x=,,,`) && c.url.endsWith(",y"))).toBe(true);
+    expect(hostile.brandLinks.some((l) => l.href.endsWith("///kit"))).toBe(true);
+    expect(hostile.svgs.some((s) => s.markup.includes('fill="#123456"'))).toBe(true);
+    expect(hostile.fontFaces.find((face) => face.family === "Hostile")?.src).toEqual([{ url: `${server.origin}/h${"%20".repeat(100_000)}%22x.woff2` }]);
   });
 
   it("cuts a huge title and site name and drops a huge manifest URL before fitting, so the lists stay", async () => {
