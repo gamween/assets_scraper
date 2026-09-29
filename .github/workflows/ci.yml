@@ -11,9 +11,12 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# Production runs on Node 24 (spec section 16), so CI does too. Local development works on Node 22 and later.
+# Production runs on Node 24 (spec section 16), so CI does too. `engines` in package.json also allows Node 22 from
+# 22.19, the oldest release every dependency supports (undici sets it), and the CLI and the MCP server run on whatever
+# Node the user has, so the unit tests run on that floor as well. Keep NODE_FLOOR equal to the lower bound of `engines`.
 env:
   NODE_VERSION: 24
+  NODE_FLOOR: 22.19.0
 
 jobs:
   checks:
@@ -27,6 +30,18 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm typecheck
+      - run: pnpm build:agent
+      - run: pnpm test
+
+  node-floor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "${{ env.NODE_FLOOR }}", cache: pnpm }
+      - run: pnpm install --frozen-lockfile
       - run: pnpm build:agent
       - run: pnpm test
 

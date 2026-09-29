@@ -29,7 +29,7 @@ claude plugin install assets-scraper
 
 ## Running it locally
 
-Requirements: Node 22+ (production and CI run Node 24), pnpm 10.33, Google Chrome.
+Requirements: Node 22.19 or later on the 22 line, or Node 24 (production and CI run 24, and CI also runs the unit tests on 22.19), pnpm 10.33, Google Chrome. `pnpm install` refuses any other Node: the range is `engines` in `package.json`, enforced by `engineStrict` in `pnpm-workspace.yaml`.
 
 ```bash
 pnpm install
