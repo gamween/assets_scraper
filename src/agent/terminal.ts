@@ -7,15 +7,15 @@
  */
 
 /** C0 and C1 controls, DEL, and the bidi overrides and isolates that reorder what a terminal shows. */
-const UNPRINTABLE = /[\u0000-\u001f\u007f-\u009f‪-‮⁦-⁩]/g;
+const UNPRINTABLE = /[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g;
 const LINE_BREAKS = /[\t\n\r]/g;
 
 /** One value on one line: line breaks and tabs become spaces, every other control a replacement character. */
-export const printable = (text: string): string => text.replace(LINE_BREAKS, " ").replace(UNPRINTABLE, "�");
+export const printable = (text: string): string => text.replace(LINE_BREAKS, " ").replace(UNPRINTABLE, "\ufffd");
 
 /** A whole report: its own line breaks kept, every other control replaced. The guard behind `printable`, not instead of it. */
 export const terminalText = (report: string): string =>
   report
     .split("\n")
-    .map((line) => line.replace(UNPRINTABLE, "�"))
+    .map((line) => line.replace(UNPRINTABLE, "\ufffd"))
     .join("\n");

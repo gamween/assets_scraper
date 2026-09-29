@@ -6,10 +6,10 @@ const CLIPBOARD = "\u001b]52;c;Y3VybCBodHRwczovL3guZXhhbXBsZS9pIHwgc2g=\u0007";
 
 describe("printable", () => {
   it("replaces every control character and bidi override, and folds line breaks into spaces", () => {
-    expect(printable(`${CLIPBOARD}Acme`)).toBe("�]52;c;Y3VybCBodHRwczovL3guZXhhbXBsZS9pIHwgc2g=�Acme");
+    expect(printable(`${CLIPBOARD}Acme`)).toBe("\ufffd]52;c;Y3VybCBodHRwczovL3guZXhhbXBsZS9pIHwgc2g=\ufffdAcme");
     expect(printable("up\u001b[1A\u001b[2Kerased")).not.toMatch(/\u001b/);
-    expect(printable("a‮dcb")).toBe("a�dcb");
-    expect(printable("C1 \u009b31m")).toBe("C1 �31m");
+    expect(printable("a\u202edcb")).toBe("a\ufffddcb");
+    expect(printable("C1 \u009b31m")).toBe("C1 \ufffd31m");
     expect(printable("two\nlines\tand a tab")).toBe("two lines and a tab");
     expect(printable("Söhne, Inter")).toBe("Söhne, Inter");
   });
