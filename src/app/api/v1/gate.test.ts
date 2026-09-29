@@ -169,7 +169,7 @@ describe("parseSelectionParams", () => {
   });
 
   it("refuses an unknown profile, kind, role or number", () => {
-    for (const query of ["profile=everything", "kinds=svg,pdf", "roles=mascot", "max=0", "max=-4", "max=lots", "minLongSide=1.5"]) {
+    for (const query of ["profile=everything", "kinds=svg,pdf", "roles=mascot", "max=0", "max=-4", "max=lots", "minLongSide=1.5", "kinds=", "roles=", "kinds=,", "roles=+,+"]) {
       const result = parseSelectionParams(params(query));
       expect(result.ok).toBe(false);
       if (!result.ok) expect(result.message).not.toMatch(/[\u2013\u2014]/);

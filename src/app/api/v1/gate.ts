@@ -102,13 +102,14 @@ export function parseSelectionParams(params: URLSearchParams): SelectionParams {
   }
   const kinds = params.get("kinds");
   if (kinds !== null) {
-    const parsed = AssetKind.array().safeParse(list(kinds));
+    // At least one: an empty list would keep nothing, after spending a scan on an archive that holds only a manifest.
+    const parsed = AssetKind.array().min(1).safeParse(list(kinds));
     if (!parsed.success) return { ok: false, message: `kinds must be a comma separated list of ${AssetKind.options.join(", ")}.` };
     options.kinds = parsed.data;
   }
   const roles = params.get("roles");
   if (roles !== null) {
-    const parsed = AssetRole.array().safeParse(list(roles));
+    const parsed = AssetRole.array().min(1).safeParse(list(roles));
     if (!parsed.success) return { ok: false, message: `roles must be a comma separated list of ${AssetRole.options.join(", ")}.` };
     options.roles = parsed.data;
   }

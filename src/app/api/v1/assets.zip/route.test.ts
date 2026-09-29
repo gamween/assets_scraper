@@ -228,7 +228,8 @@ describe("GET /api/v1/assets.zip", () => {
   });
 
   it("refuses an unknown filter value and a missing URL", async () => {
-    for (const query of ["&profile=everything", "&kinds=pdf", "&roles=mascot", "&max=0"]) {
+    // An empty kinds or roles would select nothing: it is refused before the scan, so it spends no unit of the budget.
+    for (const query of ["&profile=everything", "&kinds=pdf", "&roles=mascot", "&max=0", "&kinds=", "&roles="]) {
       const response = await GET(request(query));
       expect(response.status).toBe(400);
       expect(ApiError.parse(await response.json()).error.code).toBe("invalid-url");
