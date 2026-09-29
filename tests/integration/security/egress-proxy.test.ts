@@ -6,13 +6,17 @@ import { chromium, type Browser } from "playwright-core";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { serveFixture, type FixtureServer } from "../../fixtures/serve";
 
-/** Fixed answers for chosen names, names whose lookup never answers; every other name goes to the real resolver. */
+/**
+ * Fixed answers for chosen names, names whose lookup never answers; every other name goes to the real resolver.
+ * `loopback.test` always answers loopback, standing in for a public name like 127.0.0.1.nip.io without depending on a
+ * public resolver or on a third party's records.
+ */
 const dns = vi.hoisted(() => ({ answers: new Map<string, string[]>(), silent: new Set<string>() }));
 vi.mock("node:dns/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:dns/promises")>();
   const lookup = async (hostname: string, options: LookupAllOptions) => {
     if (dns.silent.has(hostname)) return new Promise<never>(() => {});
-    const addresses = dns.answers.get(hostname);
+    const addresses = hostname === "loopback.test" ? ["127.0.0.1"] : dns.answers.get(hostname);
     return addresses === undefined ? actual.lookup(hostname, options) : addresses.map((address) => ({ address, family: net.isIP(address) }));
   };
   return { ...actual, default: { ...actual, lookup }, lookup };
@@ -53,7 +57,7 @@ function attackPage(proxyPort: number): string {
   const a = allowed.port;
   return `<!doctype html><title>attack</title>
 <img src="http://127.0.0.1:${v}/img">
-<img src="http://127.0.0.1.nip.io:${v}/nip">
+<img src="http://loopback.test:${v}/loopback-name">
 <img src="http://0.0.0.0:${v}/zero">
 <img src="http://localhost:${v}/localhost">
 <img src="http://2130706433:${v}/decimal">
@@ -296,8 +300,9 @@ describe("egress proxy with Chrome", () => {
       const context = await direct.newContext({ serviceWorkers: "block", acceptDownloads: false });
       const page = await context.newPage();
       await page.goto(`${allowed.origin}/attack.html`, { waitUntil: "domcontentloaded" });
-      // Not required here: 0.0.0.0 (some Chrome versions refuse it), nip.io (needs public DNS) and https (the victim
-      // answers no TLS handshake, so no request is logged). The [::1] canary never reaches the IPv4-only fixture server.
+      // Not required here: 0.0.0.0 (some Chrome versions refuse it), loopback.test (only the proxy's resolver knows the
+      // name) and https (the victim answers no TLS handshake, so no request is logged). The [::1] canary never reaches
+      // the IPv4-only fixture server.
       const ipv6 = (victim.address() as net.AddressInfo).family === "IPv6";
       const vectors = [
         "GET /img", "GET /localhost", "GET /decimal", "GET /redirected", "GET /css", "GET /script.js", "GET /fetch", "POST /beacon",
@@ -328,7 +333,7 @@ describe("egress proxy guard", () => {
     process.env.APP_HOSTS = "scraper.example.com";
     const targets = [
       "127.0.0.1:443", "[::1]:443", "localhost:443", "localhost.:80", "2130706433:443", "[::ffff:7f00:1]:443", "[::7f00:1]:443",
-      "0.0.0.0:80", "169.254.169.254:80", "10.0.0.1:443", "[fd00::1]:443", "127.0.0.1.nip.io:443", "scraper.example.com:443",
+      "0.0.0.0:80", "169.254.169.254:80", "10.0.0.1:443", "[fd00::1]:443", "loopback.test:443", "scraper.example.com:443",
       "example.com", "example.com:22", "[::1:443", "example.com:99999",
     ];
     for (const target of targets) {
