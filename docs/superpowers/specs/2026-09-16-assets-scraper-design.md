@@ -114,7 +114,7 @@ The route handler is a thin adapter that runs the gate and writes events as NDJS
 | `src/server/scan/palette/*.ts` | Palette post-processing and node-side extras (icon, manifest, screenshot quantization) | none |
 | `src/app/api/scan/route.ts` | Gate, then stream engine events as NDJSON | gate, engine, ndjson |
 | `src/app/api/asset/route.ts` | Signed byte proxy | sign, safe-fetch, budget |
-| `src/app/api/health/route.ts` | Build SHA, disabled flag, access code required flag | none |
+| `src/app/api/health/route.ts` | Build SHA, the scan and proxy disabled flags, access code required flag | none |
 | `src/lib/client/scan-client.ts` | POST, stream decode, cancel, retry once on `busy`, access code header | ndjson, contract |
 | `src/lib/client/asset-bytes.ts` | `getAssetBlob`: inline bytes, else direct CORS fetch, else proxy | contract |
 | `src/lib/client/zip.ts` | ZIP of a selection with client-zip, streaming save when available | client-zip, asset-bytes |
