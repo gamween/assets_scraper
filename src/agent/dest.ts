@@ -3,8 +3,6 @@ import os from "node:os";
 import path from "node:path";
 import { sanitizeHost } from "./names";
 
-export { sanitizeHost };
-
 /**
  * Where a download lands, and the guard that keeps every write inside it (spec 2 destination, spec 10).
  *

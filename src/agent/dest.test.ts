@@ -2,7 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { assertInside, createFileInside, resolveDestination, sanitizeHost } from "./dest";
+import { assertInside, createFileInside, resolveDestination } from "./dest";
+import { sanitizeHost } from "./names";
 
 const trees: string[] = [];
 
