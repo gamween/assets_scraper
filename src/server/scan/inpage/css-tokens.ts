@@ -42,44 +42,69 @@ function readEscape(text: string, at: number): { char: string; end: number } {
     const code = parseInt(text.slice(digits, end), 16);
     if (end < text.length && isSpace(text.charCodeAt(end))) end += text.charCodeAt(end) === 0x0d && text.charCodeAt(end + 1) === 0x0a ? 2 : 1;
     const valid = code !== 0 && code <= 0x10ffff && !(code >= 0xd800 && code <= 0xdfff);
-    return { char: valid ? String.fromCodePoint(code) : "�", end };
+    return { char: valid ? String.fromCodePoint(code) : "\uFFFD", end };
   }
   const code = text.codePointAt(end)!;
   return { char: String.fromCodePoint(code), end: end + (code > 0xffff ? 2 : 1) };
 }
 
+/**
+ * The decoded text of a token, built from the runs between its escapes. Text without escapes, the common case, is one
+ * slice of the source; with escapes the runs are joined once, so a long value is never a rope of small pieces.
+ */
+class Decoded {
+  private parts: string[] | null = null;
+  constructor(
+    private readonly text: string,
+    private from: number,
+  ) {}
+
+  /** Adds the source text up to `at`, then `char` in place of the escape that ends at `resume`. */
+  escape(at: number, char: string, resume: number): void {
+    (this.parts ??= []).push(this.text.slice(this.from, at), char);
+    this.from = resume;
+  }
+
+  /** Skips the source text from `at` to `resume`, which adds nothing. */
+  skip(at: number, resume: number): void {
+    this.escape(at, "", resume);
+  }
+
+  /** The decoded text up to `at`. */
+  until(at: number): string {
+    const last = this.text.slice(this.from, at);
+    return this.parts ? this.parts.join("") + last : last;
+  }
+}
+
 /** A quoted string from its opening quote at `start`. A newline ends it as a bad string; the end of the text closes it. */
 function readString(text: string, start: number): CssToken {
   const quote = text.charCodeAt(start);
-  const parts: string[] = [];
-  let from = start + 1;
-  let at = from;
+  const value = new Decoded(text, start + 1);
+  let at = start + 1;
   while (at < text.length) {
     const code = text.charCodeAt(at);
-    if (code === quote) {
-      parts.push(text.slice(from, at));
-      return { type: "string", end: at + 1, value: parts.join("") };
-    }
+    if (code === quote) return { type: "string", end: at + 1, value: value.until(at) };
     if (isNewline(code)) return { type: "bad-string", end: at, value: "" };
     if (code === BACKSLASH) {
-      parts.push(text.slice(from, at));
       if (at + 1 >= text.length) {
+        value.skip(at, at + 1);
         at += 1;
       } else if (isNewline(text.charCodeAt(at + 1))) {
         // An escaped newline continues the string on the next line and adds nothing to it
-        at += text.charCodeAt(at + 1) === 0x0d && text.charCodeAt(at + 2) === 0x0a ? 3 : 2;
+        const resume = at + (text.charCodeAt(at + 1) === 0x0d && text.charCodeAt(at + 2) === 0x0a ? 3 : 2);
+        value.skip(at, resume);
+        at = resume;
       } else {
         const escape = readEscape(text, at);
-        parts.push(escape.char);
+        value.escape(at, escape.char, escape.end);
         at = escape.end;
       }
-      from = at;
       continue;
     }
     at += 1;
   }
-  parts.push(text.slice(from, at));
-  return { type: "string", end: text.length, value: parts.join("") };
+  return { type: "string", end: text.length, value: value.until(text.length) };
 }
 
 /** What is left of a bad `url()`, up to and with its `)`: escapes are skipped, so an escaped `)` does not end it. */
@@ -93,36 +118,30 @@ function readBadUrl(text: string, at: number): CssToken {
 
 /** An unquoted `url()` from the first character after `url(` and its whitespace (section 4.3.6). */
 function readUrl(text: string, start: number): CssToken {
-  const parts: string[] = [];
-  let from = start;
+  const value = new Decoded(text, start);
   let at = start;
   while (at < text.length) {
     const code = text.charCodeAt(at);
-    if (code === 0x29) {
-      parts.push(text.slice(from, at));
-      return { type: "url", end: at + 1, value: parts.join("") };
-    }
+    if (code === 0x29) return { type: "url", end: at + 1, value: value.until(at) };
     if (isSpace(code)) {
-      parts.push(text.slice(from, at));
+      const url = value.until(at);
       while (at < text.length && isSpace(text.charCodeAt(at))) at += 1;
-      if (at >= text.length) return { type: "url", end: at, value: parts.join("") };
-      if (text.charCodeAt(at) === 0x29) return { type: "url", end: at + 1, value: parts.join("") };
+      if (at >= text.length) return { type: "url", end: at, value: url };
+      if (text.charCodeAt(at) === 0x29) return { type: "url", end: at + 1, value: url };
       return readBadUrl(text, at);
     }
     if (breaksUrl(code)) return readBadUrl(text, at);
     if (code === BACKSLASH) {
       if (!isEscape(text, at)) return readBadUrl(text, at);
-      parts.push(text.slice(from, at));
       const escape = readEscape(text, at);
-      parts.push(escape.char);
-      at = from = escape.end;
+      value.escape(at, escape.char, escape.end);
+      at = escape.end;
       continue;
     }
     at += 1;
   }
   // Left open at the end of the text: still a URL, as browsers read it
-  parts.push(text.slice(from, at));
-  return { type: "url", end: at, value: parts.join("") };
+  return { type: "url", end: at, value: value.until(at) };
 }
 
 /**
@@ -147,23 +166,20 @@ export function readCssToken(text: string, start: number): CssToken {
   if (code === 0x29) return { type: ")", end: start + 1, value: "" };
   if (code === 0x2c) return { type: ",", end: start + 1, value: "" };
 
-  const parts: string[] = [];
-  let from = start;
+  const decoded = new Decoded(text, start);
   let at = start;
   while (at < text.length) {
     const next = text.charCodeAt(at);
     if (endsWord(next) || (next === 0x2f && text.charCodeAt(at + 1) === 0x2a)) break;
     if (isEscape(text, at)) {
-      parts.push(text.slice(from, at));
       const escape = readEscape(text, at);
-      parts.push(escape.char);
-      at = from = escape.end;
+      decoded.escape(at, escape.char, escape.end);
+      at = escape.end;
       continue;
     }
     at += 1;
   }
-  parts.push(text.slice(from, at));
-  const value = parts.join("");
+  const value = decoded.until(at);
   if (text.charCodeAt(at) !== 0x28) return { type: "word", end: at, value };
   const name = value.toLowerCase();
   if (name === "url") {
