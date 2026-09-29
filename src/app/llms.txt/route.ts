@@ -4,7 +4,8 @@ import { limits } from "@/server/config/limits";
 
 /**
  * `GET /llms.txt` (spec section 8): what the agent API is, in the plainest text possible, for a model that was handed
- * this URL. `robots.txt` still disallows everything: this page is for agents that are told about it, not for crawlers.
+ * this URL. It is for agents that are told about it, not for crawlers: `robots.txt` allows it, since a fetcher acting
+ * for a person honours robots.txt, and `X-Robots-Tag: noindex` keeps it out of search results.
  */
 
 const seconds = (ms: number): string => `${Math.round(ms / 1000)} s`;
