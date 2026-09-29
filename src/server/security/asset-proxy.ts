@@ -20,16 +20,19 @@ const SAFETY_HEADERS = {
   "content-security-policy": "default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; sandbox",
   "x-content-type-options": "nosniff",
   "cross-origin-resource-policy": "same-origin",
-  // Authorization is in here because an agent token is a second way past the Fetch Metadata check below: the CDN must
-  // never answer an unauthenticated caller from a response a token earned, or the other way round.
-  vary: "Sec-Fetch-Site, Authorization",
+  // Not Authorization, though an agent token is a second way past the Fetch Metadata check below: a response a token
+  // earned is never stored at the CDN (`cacheHeaders`), so no cached answer can reach a caller that check refuses, and
+  // an arbitrary Authorization value cannot split one signed link into endless cache keys.
+  vary: "Sec-Fetch-Site",
 } as const;
 
-const RESPONSE_HEADERS = {
-  ...SAFETY_HEADERS,
-  "cache-control": "private, max-age=3600",
-  "vercel-cdn-cache-control": "public, s-maxage=86400",
-} as const;
+/**
+ * Cache headers of a served asset: an hour in the browser, and a day at the CDN, unless an agent token earned it. That
+ * answer is never stored at the CDN, which keys on `Sec-Fetch-Site` alone.
+ */
+function cacheHeaders(viaToken: boolean): Record<string, string> {
+  return { "cache-control": "private, max-age=3600", "vercel-cdn-cache-control": viaToken ? "no-store" : "public, s-maxage=86400" };
+}
 
 const WOFF2_SIGNATURE_BYTES = 4;
 const FETCH_STATUS: Record<SafeFetchErrorCode, number> = {
@@ -124,7 +127,7 @@ async function convertFont(
   url: string,
   dl: string | undefined,
   signal: AbortSignal,
-  { maxBytes, timeoutMs, client }: { maxBytes: number; timeoutMs: number; client: string | null },
+  { maxBytes, timeoutMs, client, viaToken }: { maxBytes: number; timeoutMs: number; client: string | null; viaToken: boolean },
 ): Promise<Response> {
   const busy = () => errorResponse(503, "busy", "Too many fonts are being converted. Try again in a moment.", { "retry-after": "5" });
   const started = Date.now();
@@ -163,7 +166,8 @@ async function convertFont(
       });
       return new Response(body, {
         headers: {
-          ...RESPONSE_HEADERS,
+          ...SAFETY_HEADERS,
+          ...cacheHeaders(viaToken),
           "content-type": contentType,
           "content-length": String(bytes.byteLength),
           "content-disposition": contentDisposition(dl, contentType),
@@ -207,14 +211,13 @@ export async function handleAssetRequest(request: Request, options: AssetProxyOp
     // fallback could never succeed. A configured token is stronger evidence than the header it stands in for, and it
     // buys nothing else: the signature, the type allowlist, the caps and the byte budget all still apply.
     const site = request.headers.get("sec-fetch-site");
-    if (site !== "same-origin" && site !== "none" && !authenticateAgent(request).ok) {
-      return errorResponse(403, "cross-site", "Only this app can load proxied assets.");
-    }
+    const viaToken = site !== "same-origin" && site !== "none";
+    if (viaToken && !authenticateAgent(request).ok) return errorResponse(403, "cross-site", "Only this app can load proxied assets.");
 
-    const { url, dl, fmt } = verifyAssetParams(new URL(request.url).searchParams);
+    const { url, dl, fmt } = verifyAssetParams(new URL(request.url).search);
     const client = clientAddress(request);
     if (!(await takeProxyBytes(0, client))) return budgetExhausted();
-    if (fmt === "ttf") return await convertFont(url, dl, request.signal, { maxBytes, timeoutMs, client });
+    if (fmt === "ttf") return await convertFont(url, dl, request.signal, { maxBytes, timeoutMs, client, viaToken });
 
     const upstream = await fetchAsset(url, request.signal, maxBytes, timeoutMs);
     if (upstream instanceof Response) return upstream;
@@ -288,7 +291,8 @@ export async function handleAssetRequest(request: Request, options: AssetProxyOp
     );
     return new Response(body, {
       headers: {
-        ...RESPONSE_HEADERS,
+        ...SAFETY_HEADERS,
+        ...cacheHeaders(viaToken),
         "content-type": contentType,
         "content-disposition": contentDisposition(dl, contentType),
         ...(knownLength !== undefined && { "content-length": String(knownLength) }),

@@ -197,7 +197,7 @@ describe("handleAssetRequest", () => {
     expect(response.headers.get("content-security-policy")).toBe(CSP);
     expect(response.headers.get("vercel-cdn-cache-control")).toBe("public, s-maxage=86400");
     expect(response.headers.get("cache-control")).toBe("private, max-age=3600");
-    expect(response.headers.get("vary")).toBe("Sec-Fetch-Site, Authorization");
+    expect(response.headers.get("vary")).toBe("Sec-Fetch-Site");
     expect(response.headers.get("content-disposition")).toBe("inline");
     expect(Buffer.from(await response.arrayBuffer())).toEqual(readFileSync(path.join(SITE, "assets/logo.svg")));
 
@@ -235,7 +235,7 @@ describe("handleAssetRequest", () => {
     expect(await errorOf(await handleAssetRequest(proxied("/assets/logo.svg", "", "cross-site")))).toMatchObject({ status: 403 });
     const sameSite = await handleAssetRequest(proxied("/assets/logo.svg", "", "same-site"));
     expect(sameSite.status).toBe(403);
-    expect(sameSite.headers.get("vary")).toBe("Sec-Fetch-Site, Authorization");
+    expect(sameSite.headers.get("vary")).toBe("Sec-Fetch-Site");
     // spec 11.2: same-origin or none only, so scripts and old clients without Fetch Metadata are refused too
     expect(await errorOf(await handleAssetRequest(proxied("/assets/logo.svg", "", null)))).toMatchObject({ status: 403, code: "cross-site" });
     expect(await errorOf(await handleAssetRequest(proxied("/assets/logo.svg", "", "")))).toMatchObject({ status: 403 });
@@ -253,6 +253,9 @@ describe("handleAssetRequest", () => {
     const response = await handleAssetRequest(new Request(signed.url, { headers: { authorization: `Bearer ${token}` } }));
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toBe("image/svg+xml");
+    // Never stored at the CDN, which keys on Sec-Fetch-Site alone: a cached token answer would reach callers without one.
+    expect(response.headers.get("vercel-cdn-cache-control")).toBe("no-store");
+    expect(response.headers.get("vary")).toBe("Sec-Fetch-Site");
     expect(Buffer.from(await response.arrayBuffer())).toEqual(readFileSync(path.join(SITE, "assets/logo.svg")));
 
     // A wrong token is no better than no token, and the signature still decides the rest.
@@ -305,6 +308,18 @@ describe("handleAssetRequest", () => {
       expect(streamed.status, path).toBe(200);
       await expect(streamed.arrayBuffer(), path).rejects.toThrow();
     }
+  });
+
+  it("answers only the signer's own spelling of a signed query, so one link is one cache key", async () => {
+    const signed = new URL(proxied("/counted.png?spelling").url);
+    const { u, e, s } = Object.fromEntries(signed.searchParams);
+    for (const spelling of [`?s=${s}&e=${e}&u=${u}`, `?u=%${u.charCodeAt(0).toString(16)}${u.slice(1)}&e=${e}&s=${s}`, `?u=${u}&e=0${e}&s=${s}`]) {
+      const response = await handleAssetRequest(new Request(`https://app.local/api/asset${spelling}`, { headers: SAME_ORIGIN }));
+      expect(await errorOf(response), spelling).toMatchObject({ status: 400, code: "invalid-params" });
+    }
+    expect(hits.get("/counted.png?spelling")).toBeUndefined();
+    expect((await handleAssetRequest(new Request(signed, { headers: SAME_ORIGIN }))).status).toBe(200);
+    expect(hits.get("/counted.png?spelling")).toBe(1);
   });
 
   it("refuses a swapped download name, so dl cannot bust the CDN cache", async () => {
