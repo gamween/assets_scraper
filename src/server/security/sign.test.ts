@@ -60,15 +60,18 @@ describe("sign", () => {
     expect(paramsOf(named).get("dl")).toBe("Logo dark.png");
     expect(paramsOf(named).get("s")).not.toBe(paramsOf(plain).get("s"));
     expect(verifyAssetParams(queryOf(named), now, secret)).toMatchObject({ url: "https://a.com/x.png", dl: "Logo dark.png" });
-    expect(statusOf(() => verifyAssetParams(queryOf(named).replace("Logo%20dark", "Logo%20light"), now, secret))).toBe(403);
+    expect(statusOf(() => verifyAssetParams(queryOf(named).replace("Logo+dark", "Logo+light"), now, secret))).toBe(403);
   });
 
-  it("writes a download name the way a browser sends it back, so the signed path is the requested one", () => {
-    const path = createSigner({ secret, now }).sign("https://a.com/x.png", "Logo (it's dark)!.png");
-    expect(path).toContain("&dl=Logo%20%28it%27s%20dark%29%21.png");
-    // A browser encodes `'` in the query of an http(s) URL itself: had the signer left it bare, the request would differ.
+  it("writes a download name the way it comes back to the handler, so the signed path is the one requested", () => {
+    const path = createSigner({ secret, now }).sign("https://a.com/x.png", "Logo (it's dark) ~é!.png");
+    expect(path).toContain("&dl=Logo+%28it%27s+dark%29+%7E%C3%A9%21.png");
+    // A browser leaves the query as it is, and the Next server rewrites every query the way URLSearchParams writes it,
+    // before the route runs: either way the handler gets the path the signer wrote.
     expect(queryOf(path)).toBe(path.slice(path.indexOf("?")));
-    expect(verifyAssetParams(queryOf(path), now, secret)).toMatchObject({ dl: "Logo (it's dark)!.png" });
+    const rewritten = `?${new URLSearchParams(queryOf(path))}`;
+    expect(rewritten).toBe(queryOf(path));
+    expect(verifyAssetParams(rewritten, now, secret)).toMatchObject({ dl: "Logo (it's dark) ~é!.png" });
   });
 
   it("caps signed URLs per scan", () => {
@@ -132,7 +135,7 @@ describe("sign", () => {
       `?u=${u}&e=%3${e[0]}${e.slice(1)}&s=${s}`,
       `?u=${u}&e=${e}&fmt=ttf&s=${s}`,
       `${plain}&`,
-      named.replace("Logo%20dark", "Logo+dark"),
+      named.replace("Logo+dark", "Logo%20dark"),
       named.replace(".png", "%2Epng"),
     ];
     for (const spelling of spellings) {

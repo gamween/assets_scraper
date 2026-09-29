@@ -33,19 +33,16 @@ const mac = (secret: string, expiry: number, url: string, dl = "") =>
   createHmac("sha256", secret).update(`v1\n${expiry}\n${url}\n${dl}`).digest("base64url").slice(0, 32);
 
 /**
- * A download name as the query carries it: everything but unreserved characters percent-encoded, `'` included, which a
- * browser encodes on its own in the query of an http(s) URL, so the path the signer writes is the path a client asks for.
- */
-const encodeName = (dl: string): string =>
-  encodeURIComponent(dl).replace(/[!'()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
-
-/**
  * The query of a signed path, in the one order and encoding the signer writes and `verifyAssetParams` accepts: `u`, `e`,
- * `s`, then `dl` when there is one, then `fmt`, which the client appends last.
+ * `s`, then `dl` when there is one, then `fmt`, which the client appends last, all as `URLSearchParams` writes them. That
+ * encoding is the one that comes through unchanged on the way to the handler: a browser leaves a query it already holds
+ * in that form alone, and the Next server rewrites every query into exactly that form before a route sees it.
  */
 function assetQuery(params: { u: string; e: string; s: string; dl?: string | null; fmt?: string | null }): string {
-  const name = params.dl == null ? "" : `&dl=${encodeName(params.dl)}`;
-  return `u=${params.u}&e=${params.e}&s=${params.s}${name}${params.fmt == null ? "" : `&fmt=${params.fmt}`}`;
+  const query = new URLSearchParams({ u: params.u, e: params.e, s: params.s });
+  if (params.dl != null) query.append("dl", params.dl);
+  if (params.fmt != null) query.append("fmt", params.fmt);
+  return query.toString();
 }
 
 /**
@@ -86,11 +83,15 @@ const invalid = (message: string) => new HttpError(400, "invalid-params", messag
  * expired link. `expiry` comes back in seconds, so the proxy can keep the CDN from outliving the link.
  *
  * The query is the CDN cache key, so it has to be the one the signer wrote, byte for byte (plus the client's `&fmt=ttf`):
- * any other spelling of the same values, reordered or percent-encoded some other way, would be one more cache miss, one
- * more invocation and one more upstream fetch on a single signature. `dl` is part of the MAC for the same reason. `fmt`
- * stays out of it: the client appends `&fmt=ttf`, it has two values, and the proxy checks it against the font licence.
- * No caller names its downloads today, so every signed path is an inline one, but a signer given a name signs it with
- * the URL and appends it as `dl`.
+ * any other spelling of the same values would be one more cache miss, one more invocation and one more upstream fetch on
+ * a single signature. `dl` is part of the MAC for the same reason. `fmt` stays out of it: the client appends `&fmt=ttf`,
+ * it has two values, and the proxy checks it against the font licence. No caller names its downloads today, so every
+ * signed path is an inline one, but a signer given a name signs it with the URL and appends it as `dl`.
+ *
+ * Next hands a route the query already decoded and encoded again, so a percent-encoding variant of a value arrives
+ * in the canonical spelling and cannot be told apart here: what this refuses behind Next is every difference that
+ * survives that rewrite (order, a repeated or unknown param, a leading zero in `e`). A variant that gets through is
+ * still charged to its caller's share of the proxy budget, like any download.
  */
 export function verifyAssetParams(
   search: string,
