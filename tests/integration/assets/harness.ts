@@ -1,5 +1,6 @@
 import type http from "node:http";
 import { chromium, type Browser, type Page } from "playwright-core";
+import { localExecutablePath } from "@/server/browser/launch";
 import { limits } from "@/server/config/limits";
 import { safeFetch } from "@/server/net/safe-fetch";
 import { startCapture } from "@/server/scan/capture";
@@ -23,11 +24,9 @@ import { serveFixture, type FixtureServer } from "../../fixtures/serve";
 /** How long `capture.settle()` waits for the bodies still being read: a fixture page lands them in milliseconds. */
 const SETTLE_MS = 30_000;
 
-const CHROME = process.env.CHROME_EXECUTABLE_PATH ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-
 export function launchChrome(): Promise<Browser> {
   return chromium.launch({
-    executablePath: CHROME,
+    executablePath: localExecutablePath(),
     headless: true,
     args: ["--disable-blink-features=AutomationControlled", "--hide-scrollbars", "--mute-audio"],
   });

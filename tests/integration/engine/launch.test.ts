@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Page } from "playwright-core";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { browserStateDir, BusyError, PIDFILE_ENV, pidfileMarker, withBrowser, wrapperScript } from "@/server/browser/launch";
+import { browserStateDir, BusyError, localExecutablePath, PIDFILE_ENV, pidfileMarker, withBrowser, wrapperScript } from "@/server/browser/launch";
 import { serveFixture, type FixtureServer } from "../../fixtures/serve";
 import { delay, isProcessAlive, startTestProxy, type TestProxy } from "./helpers";
 
@@ -52,7 +52,7 @@ afterEach(() => {
 });
 
 const open = () => ({ egressPort: proxy.port, signal: new AbortController().signal });
-const CHROME = process.env.CHROME_EXECUTABLE_PATH ?? (process.platform === "darwin" ? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" : "/usr/bin/google-chrome");
+const CHROME = localExecutablePath();
 const fetchClip = () => fetch("/clip.mp4").then(() => "loaded", () => "blocked");
 
 /**

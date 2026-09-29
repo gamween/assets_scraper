@@ -1,11 +1,11 @@
 import { chromium, type Browser } from "playwright-core";
+import { localExecutablePath } from "@/server/browser/launch";
 import { startCapture } from "@/server/scan/capture";
 import type { CapturedNetwork, RawCollectorOutput, Signer } from "@/server/scan/types";
 import { collectorOptions, runCollector } from "../assets/harness";
 
 export function launchChrome(): Promise<Browser> {
-  const executablePath = process.env.CHROME_EXECUTABLE_PATH;
-  return chromium.launch(executablePath ? { executablePath } : { channel: "chrome" });
+  return chromium.launch({ executablePath: localExecutablePath() });
 }
 
 /**
