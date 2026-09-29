@@ -37,8 +37,11 @@ export function itemsBytes(items: ZipItem[]): number | null {
   return sum;
 }
 
-/** Stays until dismissed or replaced, so a keyboard user has the time to reach `Show` (F6, then Tab). */
-function showFailures(failed: ZipFailure[]) {
+/**
+ * The toast of a ZIP that had to skip files, the page ZIP or a font family's. Stays until dismissed or replaced, so a
+ * keyboard user has the time to reach `Show` (F6, then Tab).
+ */
+export function showZipFailures(failed: ZipFailure[]) {
   toast.add({
     title: `${formatCount(failed.length, "file")} couldn't be downloaded`,
     description: toastKeyboardHint("Show"),
@@ -85,7 +88,7 @@ function startZip(items: ZipItem[], source: ZipProgress["source"]) {
     },
   })
     .then(({ failed }) => {
-      if (isCurrentZipJob(job) && failed.length) showFailures(failed);
+      if (isCurrentZipJob(job) && failed.length) showZipFailures(failed);
     })
     .catch((error: unknown) => {
       // Leaving the results is not a click on Cancel: say where the ZIP went. A picker save is discarded, not cut.

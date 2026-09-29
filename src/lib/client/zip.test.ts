@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readZip } from "../../../e2e/support/zip";
-import { buildZip, zipFileName, type ZipItem } from "./zip";
+import { buildZip, planFontFamily, zipFileName, zipToBlob, type PlannedEntry, type ZipItem } from "./zip";
 import { makeAsset, makeFont, makeFontFile, remoteSource } from "./testing";
 
 afterEach(() => {
@@ -149,5 +149,41 @@ describe("buildZip", () => {
     await expect(response.arrayBuffer()).rejects.toThrow();
     await expect(result).rejects.toMatchObject({ name: "AbortError" });
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("font family downloads", () => {
+  it("plan the family's files, or their TTFs, at the root of an archive named after it", () => {
+    const files = planFontFamily(inter, "files");
+    expect(files.zipName).toBe("inter-variable.zip");
+    expect(files.entries.map((entry) => entry.path)).toEqual(["inter-variable-100-900.woff2", "inter-variable-100-900-italic.woff2"]);
+    const ttf = planFontFamily(inter, "ttf");
+    expect(ttf.zipName).toBe("inter-variable-ttf.zip");
+    expect(ttf.entries.map((entry) => entry.path)).toEqual(["inter-variable-100-900.ttf", "inter-variable-100-900-italic.ttf"]);
+    expect(planFontFamily(mono, "ttf").entries).toEqual([]);
+  });
+
+  it("load six files at a time and keep the ones that loaded when one fails", async () => {
+    // A family served as unicode-range subsets has dozens of files. They used to load all at once, and one 404 among
+    // them threw the whole download away.
+    let inFlight = 0;
+    let peak = 0;
+    const entries: PlannedEntry[] = Array.from({ length: 30 }, (_, index) => ({
+      path: `subset-${index}.woff2`,
+      label: `Subset ${index}`,
+      load: async () => {
+        peak = Math.max(peak, ++inFlight);
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        inFlight -= 1;
+        if (index === 7) throw new Error("404");
+        return new Blob([`subset ${index}`]);
+      },
+    }));
+    const { blob, failed } = await zipToBlob(entries);
+    expect(peak).toBe(6);
+    expect(failed).toEqual([{ name: "Subset 7", path: "subset-7.woff2" }]);
+    const names = readZip(new Uint8Array(await blob.arrayBuffer())).map((entry) => entry.name);
+    expect(names).toHaveLength(29);
+    expect(names).not.toContain("subset-7.woff2");
   });
 });
