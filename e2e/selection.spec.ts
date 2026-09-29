@@ -1,24 +1,14 @@
 import { readFileSync } from "node:fs";
 import { expect, test, type Page } from "@playwright/test";
-import type { ScanEvent } from "../src/lib/contract";
 import { formatBytes } from "../src/lib/format";
 import { findAsset, fontsOf, loadFixture, mapAssets } from "./support/fixtures";
-import { mockAssetRoutes, mockScan, type AssetRouteOptions } from "./support/routes";
+import { hideSavePicker, openResults } from "./support/routes";
 import { readZip } from "./support/zip";
 
 const linear = loadFixture("linear");
 const siteLogo = findAsset(linear, (a) => a.role === "site-logo" && a.width === 88);
 const photo = findAsset(linear, (a) => a.kind === "image" && a.role === "image" && a.visible && (a.renderedWidth ?? 0) > 100);
 const berkeley = fontsOf(linear)[1];
-
-async function openResults(page: Page, options: AssetRouteOptions = {}, events: ScanEvent[] = linear) {
-  // Chrome has the File System Access API: without this, Download ZIP would open a native save dialog.
-  await page.addInitScript(() => Object.defineProperty(window, "showSaveFilePicker", { value: undefined, configurable: true }));
-  await mockAssetRoutes(page, events, options);
-  await mockScan(page, events);
-  await page.goto(`/?url=${encodeURIComponent("https://linear.app/")}`);
-  await expect(page.getByTestId("results")).toBeVisible();
-}
 
 const cardOf = (page: Page, id: string) => page.locator(`[data-asset-id="${id}"]`);
 const selectionBar = (page: Page) => page.getByRole("region", { name: "Selection" });
@@ -31,6 +21,8 @@ async function zipEntries(page: Page, click: () => Promise<void>) {
 }
 
 test.describe("selection and ZIP", () => {
+  test.beforeEach(({ page }) => hideSavePicker(page));
+
   test("checkbox, Cmd+click, Shift+click, Cmd+A and Esc", async ({ page }) => {
     await openResults(page);
     const cards = page.getByTestId("asset-card");
@@ -100,7 +92,7 @@ test.describe("selection and ZIP", () => {
   test("the bar drops the size when the scan never sized one of the files", async ({ page }) => {
     // The scan records no size for plenty of CDN originals: summing the rest reported 3.2 KB for a 4.2 MB ZIP.
     const unsized = mapAssets(linear, (asset) => (asset.id === photo.id && asset.original ? { ...asset, original: { ...asset.original, bytes: undefined } } : asset));
-    await openResults(page, {}, unsized);
+    await openResults(page, { events: unsized });
     await cardOf(page, siteLogo.id).hover();
     await cardOf(page, siteLogo.id).getByRole("checkbox").click();
     await expect(selectionBar(page).getByTestId("selection-count")).toHaveText(`1 selected · ${formatBytes(siteLogo.bytes!)}`);
@@ -111,7 +103,7 @@ test.describe("selection and ZIP", () => {
 
   test("a file that fails ends in a toast with Show", async ({ page }) => {
     const path = new URL(photo.original!.url).pathname;
-    await openResults(page, { failDirect: [path], failProxy: [path] });
+    await openResults(page, { assets: { failDirect: [path], failProxy: [path] } });
     await cardOf(page, siteLogo.id).hover();
     await cardOf(page, siteLogo.id).getByRole("checkbox").click();
     await cardOf(page, photo.id).locator("[data-card-main]").click();

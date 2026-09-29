@@ -1,19 +1,8 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
-import type { ScanEvent } from "../src/lib/contract";
-import { loadFixture } from "./support/fixtures";
-import { mockAssetRoutes, mockScan } from "./support/routes";
+import { openResults } from "./support/routes";
 
 /** `--accent` (spec 12.6), the only color the focus ring is allowed to use. */
 const ACCENT = "rgb(43, 80, 232)";
-
-const linear = loadFixture("linear");
-
-async function openResults(page: Page, events: ScanEvent[] = linear) {
-  await mockAssetRoutes(page, events);
-  await mockScan(page, events);
-  await page.goto(`/?url=${encodeURIComponent("https://linear.app/")}`);
-  await expect(page.getByTestId("results")).toBeVisible();
-}
 
 /** `transition-colors` animates `outline-color` too, so a ring read right after focus is still the old color. */
 const settle = (locator: Locator) => locator.evaluate((element) => Promise.all(element.getAnimations().map((a) => a.finished.catch(() => {}))).then(() => {}));

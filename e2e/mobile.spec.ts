@@ -1,15 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { loadFixture } from "./support/fixtures";
-import { mockAssetRoutes, mockScan } from "./support/routes";
-
-const linear = loadFixture("linear");
-
-async function openResults(page: Page) {
-  await mockAssetRoutes(page, linear);
-  await mockScan(page, linear);
-  await page.goto(`/?url=${encodeURIComponent("https://linear.app/")}`);
-  await expect(page.getByTestId("results")).toBeVisible();
-}
+import { openResults } from "./support/routes";
 
 /** The 360 px toast and the bottom centre bar share the bottom edge on a narrow window, and the toast wins on z-index. */
 async function expectToastClearOfTheBar(page: Page) {

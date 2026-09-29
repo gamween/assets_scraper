@@ -1,7 +1,6 @@
 import { expect, test, type Page, type TestInfo } from "@playwright/test";
-import type { ScanEvent } from "../src/lib/contract";
 import { diagnostics, findAsset, loadFixture } from "./support/fixtures";
-import { installControlledScan, mockAssetRoutes, mockScan } from "./support/routes";
+import { installControlledScan, mockScan, openResults } from "./support/routes";
 
 /**
  * Responsive screenshots (spec 15 visual QA). Not pixel-compared: they are attached to the report for review. Each
@@ -24,13 +23,6 @@ async function capture(page: Page, testInfo: TestInfo, name: string) {
   await testInfo.attach(name, { path, contentType: "image/png" });
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
   expect(overflow, `${name} scrolls horizontally`).toBeLessThanOrEqual(0);
-}
-
-async function openResults(page: Page, events: ScanEvent[] = linear, query = "") {
-  await mockAssetRoutes(page, events);
-  await mockScan(page, events);
-  await page.goto(`/?url=${encodeURIComponent("https://linear.app/")}${query}`);
-  await expect(page.getByTestId("results")).toBeVisible();
 }
 
 for (const viewport of VIEWPORTS) {
@@ -72,7 +64,7 @@ for (const viewport of VIEWPORTS) {
     });
 
     test("detail", async ({ page }, testInfo) => {
-      await openResults(page, linear, `&asset=${siteLogo.id}`);
+      await openResults(page, { query: `&asset=${siteLogo.id}` });
       await expect(page.getByRole("dialog")).toBeVisible();
       await capture(page, testInfo, `detail-${viewport.width}`);
     });
