@@ -55,17 +55,37 @@ pnpm build:agent
 node dist/cli.mjs scan stripe.com
 ```
 
+`package.json` declares the `assets-scraper` command (`bin`, pointing at `dist/cli.mjs`), so after `pnpm build:agent` a `pnpm link --global` in the clone puts it on your PATH, and every example below works as written. `dist/` is not committed: build it first, and again after a pull.
+
+`assets-scraper --help` is the reference:
+
 ```
-assets-scraper scan <url> [--json] [--remote]
-assets-scraper get <url> [--out DIR] [--profile deck|all] [--kind svg,image] [--role logo]
-                         [--min-long-side 600] [--max 60] [--max-bytes 26214400] [--max-file-bytes 8388608]
-                         [--name-contains x] [--json] [--remote]
-assets-scraper fonts install <url> [--families "Inter,Roboto"] [--json]
-assets-scraper fonts list [--json]
-assets-scraper fonts uninstall <family> [--json]
+assets-scraper scan <url> [options]
+assets-scraper get <url> [options]
+assets-scraper fonts install <url> [options]
+assets-scraper fonts list [options]
+assets-scraper fonts uninstall <family> [options]
+
+--out DIR             Where to write. Default: <project root>/scrap/<host>, or ~/Downloads/assets-scraper/<host>
+--profile deck|all    deck (default) drops icons, thumbnails, small images and duplicates. all keeps everything
+--kind svg,image      Only these kinds
+--role logo,site-logo Only these roles
+--min-long-side 600   Drop a raster whose longest side is under this, logos and favicons excepted
+--max 60              Files one download writes, highest scoring first
+--max-bytes N         Bytes one download writes, best scoring first. 0 takes the selection whatever it weighs
+--max-file-bytes N    Bytes one file may take under the deck profile, 0 to lift it
+--name-contains TEXT  Only assets whose name holds TEXT
+--include-icons       Keep icons the deck profile would drop, at any size. --role icon does the same
+--families "A,B"      Font families to install or remove, as scan reported them
+--json                Print JSON instead of a report
+--refresh             Scan again instead of reusing a scan of the last hour
+--remote              Scan on the hosted app. Needs ASSETS_SCRAPER_TOKEN
+--remote-url URL      The hosted app to use. Default: ASSETS_SCRAPER_REMOTE, then https://assets-scraper.vercel.app
+--token TOKEN         Agent token for the hosted app. Prefer ASSETS_SCRAPER_TOKEN
+--help, --version
 ```
 
-Human output by default, `--json` for agents, exit code 1 on failure, every path printed absolute.
+Human output by default, `--json` for agents, exit code 1 on failure, every path printed absolute. The human report is terminal safe: page titles and font family names are page text, and their control characters are replaced before they are printed. Pass the token through `ASSETS_SCRAPER_TOKEN` rather than `--token`: other users of the machine can read a command line with `ps`, and the shell keeps it in its history.
 
 ## 3. Hosted HTTP API
 

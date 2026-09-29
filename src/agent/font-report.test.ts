@@ -63,6 +63,20 @@ describe("formatFontList", () => {
   });
 });
 
+describe("page text in a font report", () => {
+  /** A CSS family name keeps what a page escaped into it, `\1b` included, so every report cleans it before printing. */
+  it("never reaches the terminal with its control characters", () => {
+    const hostile = { ...inter, family: "Inter\u001b]52;c;cGF5bG9hZA==\u0007", sourceHost: "cdn\u001b[2J.example", license: { kind: "commercial" as const, text: "Read me\u001b[1A\u001b[2K" } };
+    const reports = [
+      formatFontInstall({ fontDir: "/tmp/fonts", manifestPath: "/tmp/state/installed-fonts.json", installed: [hostile], skipped: [{ family: hostile.family, reason: "exists", detail: "/tmp/fonts/x\u001b[2J" }] }),
+      formatFontList([hostile]),
+      formatFontUninstall({ removed: [hostile], missing: [hostile.family], stillInstalled: [], changed: [{ family: hostile.family, files: ["/tmp/fonts/Inter-Regular.ttf"] }] }),
+    ];
+    for (const report of reports) expect(report).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/);
+    expect(reports[0]).toContain("Read it before you ship anything with this font");
+  });
+});
+
 describe("formatFontUninstall", () => {
   it("names what it removed and what it never installed", () => {
     const report = formatFontUninstall({ removed: [inter], missing: ["Nope"], stillInstalled: [], changed: [] });

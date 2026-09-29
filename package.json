@@ -2,6 +2,9 @@
   "name": "assets-scraper",
   "version": "0.1.0",
   "private": true,
+  "bin": {
+    "assets-scraper": "dist/cli.mjs"
+  },
   "scripts": {
     "build:inpage": "node scripts/build-inpage.mjs",
     "dev": "node scripts/build-inpage.mjs --watch next dev",
