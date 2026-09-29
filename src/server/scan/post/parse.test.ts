@@ -1,10 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { LINEAR_OP_GROWTH_BOUND, opGrowth } from "../fonts/testing";
-import { decodeDataUri, forEachStylesheetUrl, type StylesheetUrl } from "./parse";
+import { decodeDataUri, forEachStylesheetUrl, largestIconSize, MAX_ICON_SIZES_CHARS, type StylesheetUrl } from "./parse";
 
 /**
- * The characters the CSS value reader steps over (`readCssToken`), counted, so `opGrowth` sees how the work on the
- * values of a captured stylesheet grows with it. css-tree splits the sheet into declarations first, in linear time.
+ * The characters the text readers step over, counted, so `opGrowth` sees how their work grows with the input: the CSS
+ * value reader (`readCssToken`) and the forward search (`searchFrom`). css-tree splits a sheet into declarations first,
+ * in linear time.
  */
 const ops = vi.hoisted(() => ({ count: 0 }));
 vi.mock("../inpage/css-tokens", async (importOriginal) => {
@@ -15,6 +16,17 @@ vi.mock("../inpage/css-tokens", async (importOriginal) => {
       const token = actual.readCssToken(text, start);
       ops.count += token.end - start;
       return token;
+    },
+  };
+});
+vi.mock("./search", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./search")>();
+  return {
+    ...actual,
+    searchFrom: (text: string, pattern: RegExp, from: number) => {
+      const match = actual.searchFrom(text, pattern, from);
+      ops.count += (match ? match.index + match[0].length : text.length) - from;
+      return match;
     },
   };
 });
@@ -101,6 +113,31 @@ describe("forEachStylesheetUrl", () => {
       expect.soft(factor, kind).toBeLessThan(LINEAR_OP_GROWTH_BOUND);
     }
     expect(stylesheetUrls(`a{background:${"url(".repeat(250_000)}`, "https://s.example/")).toEqual([]);
+  });
+});
+
+describe("largestIconSize", () => {
+  it("reads the largest size of a sizes list", () => {
+    expect(largestIconSize("16x16 32x32 any")).toEqual({ width: 32, height: 32 });
+    expect(largestIconSize("192X192")).toEqual({ width: 192, height: 192 });
+    expect(largestIconSize("any")).toBeUndefined();
+    expect(largestIconSize(undefined)).toBeUndefined();
+    // A number longer than five digits is no size, rather than the size of its last five
+    expect(largestIconSize("123456x7 48x48")).toEqual({ width: 48, height: 48 });
+  });
+
+  /**
+   * Regression: `(\d+)x(\d+)` backtracked over a digit run from every digit of it, and the value comes as it is from a
+   * `<link sizes>` or a web manifest. Half a million digits held the event loop for over a minute. The read is capped,
+   * so the work stops growing with the value at all.
+   */
+  it("reads a bounded prefix of a hostile value", async () => {
+    for (const [kind, value] of Object.entries({ digits: (size: number) => "1".repeat(size), sizes: (size: number) => "1x1 ".repeat(size / 4) })) {
+      const { small, large } = await opGrowth((size) => largestIconSize(value(size)), 4_000, ops);
+      expect.soft(small, kind).toBeGreaterThan(0);
+      expect.soft(large, kind).toBeLessThanOrEqual(MAX_ICON_SIZES_CHARS);
+    }
+    expect(largestIconSize(`${"1".repeat(1_000_000)}x1`)).toBeUndefined();
   });
 });
 

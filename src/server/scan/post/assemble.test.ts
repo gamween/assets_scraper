@@ -1,8 +1,23 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { limits } from "@/server/config/limits";
 import { SignLimitError } from "@/server/security/sign";
+import { LINEAR_OP_GROWTH_BOUND, opGrowth } from "../fonts/testing";
 import type { CandidateContext, CapturedImage, CapturedSheet, PostInput, RawCandidate, RawCollectorOutput, SafeFetch, Signer } from "../types";
 import { assembleAssets, siteLabel, svgSize } from "./assemble";
+
+/** The characters each `searchFrom` steps over, counted for `opGrowth`. */
+const ops = vi.hoisted(() => ({ count: 0 }));
+vi.mock("./search", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./search")>();
+  return {
+    ...actual,
+    searchFrom: (text: string, pattern: RegExp, from: number) => {
+      const match = actual.searchFrom(text, pattern, from);
+      ops.count += (match ? match.index + match[0].length : text.length) - from;
+      return match;
+    },
+  };
+});
 
 // Counts the image header reads of inline rasters, and how many run at once
 const metadataCalls = vi.hoisted(() => ({ total: 0, active: 0, peak: 0 }));
@@ -156,6 +171,26 @@ describe("assembleAssets hidden counts", () => {
     const { assets, hidden } = await run(collector);
     expect(assets).toEqual([]);
     expect(hidden).toEqual({ "probe-failed": 1 });
+  });
+});
+
+describe("assembleAssets icon sizes", () => {
+  it("sizes an icon it could not measure from its declared sizes, and reads only the start of a hostile one", async () => {
+    const unmeasured = { width: undefined, height: undefined };
+    const { assets } = await run(
+      collectorOutput({
+        candidates: [
+          candidate(`${PAGE}icon.png`, 1, 1, { foundIn: "icon-link", sizes: "16x16 48x48 any" }),
+          // Half a million digits took over a minute to read with the unbounded pattern
+          candidate(`${PAGE}apple.png`, 2, 2, { foundIn: "icon-link", sizes: `${"1".repeat(500_000)}x1 180x180` }),
+        ],
+      }),
+      [captured(`${PAGE}icon.png`, unmeasured), captured(`${PAGE}apple.png`, unmeasured)],
+    );
+    expect(Object.fromEntries(assets.map((asset) => [asset.original?.url, [asset.width, asset.height]]))).toEqual({
+      [`${PAGE}icon.png`]: [48, 48],
+      [`${PAGE}apple.png`]: [undefined, undefined],
+    });
   });
 });
 
@@ -391,6 +426,24 @@ describe("svgSize", () => {
     expect(svgSize(`<svg viewBox="0 0 16 32"></svg>`)).toEqual({ width: 16, height: 32 });
     expect(svgSize(`<svg width="0" height="0" viewBox="0 0 16 32"></svg>`)).toEqual({ width: 16, height: 32 });
     expect(svgSize(`<svg width="24"></svg>`)).toEqual({});
+  });
+
+  it("finds the root tag in linear time", async () => {
+    // Regression: `<svg\b[^>]*>` over the whole markup read from every `<svg` to the end when no `>` followed. A 1 MB
+    // captured SVG that sharp could not measure took minutes, three times per asset.
+    const hostile: Record<string, (size: number) => string> = {
+      open: (size) => "<svg".repeat(size / 4),
+      late: (size) => `${"<svg ".repeat(size / 5)}width="4" height="2">`,
+    };
+    for (const [kind, markup] of Object.entries(hostile)) {
+      const { small, large, factor } = await opGrowth((size) => svgSize(markup(size)), 32_000, ops);
+      expect.soft(small, kind).toBeGreaterThan(0);
+      expect.soft(factor, kind).toBeLessThan(LINEAR_OP_GROWTH_BOUND);
+      expect.soft(large, kind).toBeLessThanOrEqual(markup(32_000 * 8).length);
+    }
+    expect(svgSize("<svg".repeat(250_000))).toEqual({});
+    // A root tag past the cut is read from its first 4 KB, as before
+    expect(svgSize(`<svg width="4" height="2" data-x="${"x".repeat(8_000)}"><rect/></svg>`)).toEqual({ width: 4, height: 2 });
   });
 
   it("stays fast on a root tag carrying a long digit run", () => {

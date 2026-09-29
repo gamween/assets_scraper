@@ -2,6 +2,7 @@ import { tokenize, tokenTypes as T } from "css-tree/tokenizer";
 import { ByteStack } from "../byte-stack";
 import { extractCssUrls } from "../inpage/css-values";
 import { percentDecode } from "../percent";
+import { searchFrom } from "./search";
 
 /**
  * Parsers of post-processing. The URLs of one CSS value are read by `extractCssUrls`, which the in-page collector
@@ -129,6 +130,28 @@ export function forEachStylesheetUrl(cssText: string, baseUrl: string, visit: (i
   } catch (error) {
     if (!(error instanceof Stop)) throw error;
   }
+}
+
+/** The most characters of a `sizes` value read: a real one lists a few sizes, a page or a manifest can send megabytes. */
+export const MAX_ICON_SIZES_CHARS = 256;
+/** One `WxH` size, a whole number of at most five digits on each side. */
+const ICON_SIZE = /(?<!\d)(\d{1,5})[xX](\d{1,5})(?!\d)/g;
+
+/**
+ * The largest size an icon declares in its `sizes` (`"16x16 32x32 any"`), from a `<link>` or a web manifest. Only the
+ * first `MAX_ICON_SIZES_CHARS` are read. The unbounded `(\d+)x(\d+)` this replaces backtracked over a long digit run from
+ * every digit of it: half a million digits in a manifest held the event loop for over a minute.
+ */
+export function largestIconSize(sizes: string | undefined): { width: number; height: number } | undefined {
+  if (!sizes) return undefined;
+  const text = sizes.slice(0, MAX_ICON_SIZES_CHARS);
+  let largest: { width: number; height: number } | undefined;
+  for (let match = searchFrom(text, ICON_SIZE, 0); match; match = searchFrom(text, ICON_SIZE, match.index + match[0].length)) {
+    const width = Number(match[1]);
+    const height = Number(match[2]);
+    if (!largest || width * height > largest.width * largest.height) largest = { width, height };
+  }
+  return largest;
 }
 
 /**

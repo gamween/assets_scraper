@@ -8,8 +8,9 @@ import { originalCandidates, variantKey } from "./cdn";
 import { extensionFor, formatFromContentType, formatFromUrl, sniffFormat } from "./format";
 import { createFilenamer, displayName } from "./naming";
 import { noiseReason, svgNoiseReason, TINY_DATA_URI_BYTES } from "./noise";
-import { decodeDataUri, forEachStylesheetUrl } from "./parse";
+import { decodeDataUri, forEachStylesheetUrl, largestIconSize } from "./parse";
 import { assignRole, isSpriteSheet, logoScore, relevanceScore } from "./roles";
+import { searchFrom } from "./search";
 import { createToneBudget } from "./tone";
 import { groupVariants, pickBest, sizeScore, type SizeHints, type VariantMember } from "./variants";
 import { BROWSER_USER_AGENT, createLimiter, verifyUrl, type Limiter } from "./verify";
@@ -81,11 +82,19 @@ const area = (size?: { width?: number; height?: number }) => (size?.width ?? 0) 
 const defined = <T extends object>(value: T): T =>
   Object.fromEntries(Object.entries(value).filter(([, v]) => v !== undefined)) as T;
 
+/** The start of an `<svg>` tag, and the end of any tag. */
+const SVG_TAG = /<svg\b/gi;
+const TAG_END = />/g;
+/** The longest root tag read: a real one is never near this, and a scraped one can be megabytes of junk. */
+const MAX_ROOT_TAG_CHARS = 4096;
+
 /** Width and height of an SVG from its root attributes, else from its viewBox. */
 export function svgSize(markup: string): { width?: number; height?: number } {
-  // The slice bounds every regex below, the way preflight caps a tag: a real <svg> root tag is never near 4 KB, and a
-  // scraped one can be megabytes of junk.
-  const root = (/<svg\b[^>]*>/i.exec(markup)?.[0] ?? "").slice(0, 4096);
+  // Two forward searches find the root tag, and the cut bounds every regex below, the way preflight caps a tag. One
+  // pattern for the whole tag (`<svg\b[^>]*>`) read from every `<svg` to the end of the markup when no `>` followed.
+  const open = searchFrom(markup, SVG_TAG, 0);
+  const close = open && searchFrom(markup, TAG_END, open.index + open[0].length);
+  const root = open && close ? markup.slice(open.index, Math.min(close.index + 1, open.index + MAX_ROOT_TAG_CHARS)) : "";
   // The digit runs are bounded so the alternatives at each start position stay constant: an unbounded `\d*\.?\d+`
   // backtracks quadratically over a long digit run that never reaches the closing quote.
   const attribute = (name: string) => Number(new RegExp(`\\s${name}\\s*=\\s*["']\\s*(\\d{1,10}(?:\\.\\d{1,10})?|\\.\\d{1,10})(?:px)?\\s*["']`, "i").exec(root)?.[1]) || undefined;
@@ -294,12 +303,10 @@ async function buildRecords(input: PostInput, baseUrl: string, limiter: Limiter,
       record.naturalWidth = candidate.naturalWidth;
       record.naturalHeight = candidate.naturalHeight;
     }
-    for (const match of (candidate.sizes ?? "").matchAll(/(\d+)x(\d+)/gi)) {
-      const size = { width: Number(match[1]), height: Number(match[2]) };
-      if (area(size) > area({ width: record.declaredWidth, height: record.declaredHeight })) {
-        record.declaredWidth = size.width;
-        record.declaredHeight = size.height;
-      }
+    const declared = largestIconSize(candidate.sizes);
+    if (declared && area(declared) > area({ width: record.declaredWidth, height: record.declaredHeight })) {
+      record.declaredWidth = declared.width;
+      record.declaredHeight = declared.height;
     }
     record.visible ||= candidate.visible;
     if (candidate.visible && candidate.rect && area(candidate.rect) > area(record.rendered)) {
