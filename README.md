@@ -53,7 +53,9 @@ Set `CHROME_EXECUTABLE_PATH` if Chrome is not in the default location. Every val
 | `OPS_TOKEN` | Operator token, at least 32 characters, sent as `x-ops-token` to skip BotID and the scan budget. |
 | `SCANS_PER_DAY`, `SCANS_PER_MONTH` | Shared scan budget (80 and 800). |
 | `SCANS_PER_IP_PER_DAY` | Scans one client address may take per day (20). Raise it for a shared NAT. |
-| `PROXY_BYTES_PER_DAY` | Bytes the asset proxy may serve per day (300 MB). |
+| `PROXY_BYTES_PER_DAY` | Bytes the asset proxy and the ZIP endpoint may serve per day (300 MB). |
+| `PROXY_BYTES_PER_IP_PER_DAY` | Of those, bytes one client address may take per day (75 MB). Raise it with `SCANS_PER_IP_PER_DAY` for a shared NAT. |
+| `PROXY_DISABLED` | `1` turns the asset proxy off, without stopping scans. |
 | `APP_HOSTS` | Extra hosts of this app that scans and fetches refuse. |
 | `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` | Shared budget store. Without them the counters are in memory, per instance. |
 | `SCAN_TEST_ALLOW_HOSTS` | Tests only: `host:port` pairs that may reach private addresses. Never set in production. |

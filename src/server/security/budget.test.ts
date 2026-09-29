@@ -136,13 +136,48 @@ describe("budget", () => {
 
   it("sums proxied bytes per day without counting a refused take", async () => {
     vi.stubEnv("PROXY_BYTES_PER_DAY", "1000");
-    expect(await takeProxyBytes(400, day1)).toBe(true);
-    expect(await takeProxyBytes(0, day1)).toBe(true);
-    expect(await takeProxyBytes(700, day1)).toBe(false);
-    expect(await takeProxyBytes(600, day1)).toBe(true);
-    expect(await takeProxyBytes(1, day1)).toBe(false);
-    expect(await takeProxyBytes(0, day1)).toBe(false);
-    expect(await takeProxyBytes(900, day2)).toBe(true);
+    expect(await takeProxyBytes(400, null, day1)).toBe(true);
+    expect(await takeProxyBytes(0, null, day1)).toBe(true);
+    expect(await takeProxyBytes(700, null, day1)).toBe(false);
+    expect(await takeProxyBytes(600, null, day1)).toBe(true);
+    expect(await takeProxyBytes(1, null, day1)).toBe(false);
+    expect(await takeProxyBytes(0, null, day1)).toBe(false);
+    expect(await takeProxyBytes(900, null, day2)).toBe(true);
+  });
+
+  it("limits proxied bytes per client per day without spending the shared budget", async () => {
+    // Without it one caller could pull the whole day's bytes through signed links of pages it hosts, and every other
+    // visitor's previews, font files and archives answered 429 until midnight.
+    vi.stubEnv("PROXY_BYTES_PER_DAY", "1000");
+    vi.stubEnv("PROXY_BYTES_PER_IP_PER_DAY", "400");
+    expect(await takeProxyBytes(300, "203.0.113.7", day1)).toBe(true);
+    expect(await takeProxyBytes(200, "203.0.113.7", day1)).toBe(false);
+    expect(await takeProxyBytes(100, "203.0.113.7", day1)).toBe(true);
+    expect(await takeProxyBytes(0, "203.0.113.7", day1)).toBe(false);
+    // The refused take moved nothing: the shared day holds the 400 the first client took, so 600 are left for the rest.
+    expect(await takeProxyBytes(0, null, day1)).toBe(true);
+    expect(await takeProxyBytes(400, "203.0.113.8", day1)).toBe(true);
+    expect(await takeProxyBytes(200, null, day1)).toBe(true);
+    // The shared day is spent now, and a client with its own allowance left is refused by it, and charged nothing.
+    expect(await takeProxyBytes(1, "203.0.113.9", day1)).toBe(false);
+    expect(await takeProxyBytes(0, "203.0.113.9", day1)).toBe(false);
+    vi.stubEnv("PROXY_BYTES_PER_DAY", "2000");
+    expect(await takeProxyBytes(400, "203.0.113.9", day1)).toBe(true);
+    expect(await takeProxyBytes(400, "203.0.113.7", day2)).toBe(true);
+  });
+
+  it("meters a client's bytes against both its allowance and the day, and hands them back to both", async () => {
+    vi.stubEnv("PROXY_BYTES_PER_IP_PER_DAY", String(2 * PROXY_BYTES_BLOCK));
+    const store = new MemoryBudgetStore();
+    setBudgetStoreForTests(store);
+    const meter = meterProxyBytes("203.0.113.7", day1);
+    expect(await meter.take(100)).toBe(true);
+    expect(await store.incr("proxy:d:2026-09-16:203.0.113.7", 0, 60)).toBe(PROXY_BYTES_BLOCK);
+    expect(await store.incr("proxy:d:2026-09-16", 0, 60)).toBe(PROXY_BYTES_BLOCK);
+    expect(await meter.take(2 * PROXY_BYTES_BLOCK)).toBe(false);
+    await meter.settle();
+    expect(await store.incr("proxy:d:2026-09-16:203.0.113.7", 0, 60)).toBe(100);
+    expect(await store.incr("proxy:d:2026-09-16", 0, 60)).toBe(100);
   });
 
   it("takes bytes of unknown length in blocks, refuses a block that does not fit and hands back what was not used", async () => {
@@ -153,7 +188,7 @@ describe("budget", () => {
     setBudgetStoreForTests(store);
     const spent = () => store.incr("proxy:d:2026-09-16", 0, 60);
 
-    const body = meterProxyBytes(day1);
+    const body = meterProxyBytes(null, day1);
     expect(await body.take(1000)).toBe(true);
     expect(await spent()).toBe(block);
     // bytes the current block covers take nothing more
@@ -163,7 +198,7 @@ describe("budget", () => {
     expect(await spent()).toBe(2 * block);
 
     // a chunk larger than a block takes what it needs; one that does not fit is refused and counts nothing
-    const other = meterProxyBytes(day1);
+    const other = meterProxyBytes(null, day1);
     expect(await other.take(block + 10)).toBe(false);
     expect(await spent()).toBe(2 * block);
     // a reservation takes exactly what it asks for
@@ -193,7 +228,7 @@ describe("budget", () => {
     for (let delay = 0; delay <= 24; delay++) {
       const store = new MemoryBudgetStore();
       setBudgetStoreForTests(store);
-      const meter = meterProxyBytes(day1);
+      const meter = meterProxyBytes(null, day1);
       const first = meter.take(size);
       await ticks(delay);
       const second = meter.take(size);
@@ -208,7 +243,7 @@ describe("budget", () => {
     // Near the end of a day, a block each for six workers would refuse files that one block covers.
     const store = new MemoryBudgetStore();
     setBudgetStoreForTests(store);
-    const meter = meterProxyBytes(day1);
+    const meter = meterProxyBytes(null, day1);
     expect(await Promise.all(Array.from({ length: 6 }, () => meter.take(100)))).toEqual(Array(6).fill(true));
     expect(await store.incr("proxy:d:2026-09-16", 0, 60)).toBe(PROXY_BYTES_BLOCK);
     await meter.settle();
@@ -220,7 +255,7 @@ describe("budget", () => {
     let open: () => void = () => {};
     const gate = new Promise<void>((resolve) => { open = resolve; });
     setBudgetStoreForTests({ incr: async (key, by, ttl) => { await gate; return store.incr(key, by, ttl); } });
-    const meter = meterProxyBytes(day1);
+    const meter = meterProxyBytes(null, day1);
     const pending = meter.take(10);
     const settled = meter.settle();
     open();
@@ -233,7 +268,7 @@ describe("budget", () => {
     const seen: [string, number][] = [];
     setBudgetStoreForTests({ incr: async (key, by) => { seen.push([key, by]); return by; } });
     // settled once the clock is past day1, the unused part still goes back to day1
-    const meter = meterProxyBytes(day1);
+    const meter = meterProxyBytes(null, day1);
     expect(await meter.reserve(500)).toBe(true);
     expect(await meter.take(200)).toBe(true);
     await meter.settle();
@@ -245,12 +280,14 @@ describe("budget", () => {
     const recording: BudgetStore = { incr: async (key, by, ttl) => { seen.push([key, by, ttl]); return 1; } };
     setBudgetStoreForTests(recording);
     await takeScanBudget(null, day1);
-    await takeProxyBytes(123, day1);
-    const meter = meterProxyBytes(day1);
+    await takeProxyBytes(123, null, day1);
+    const meter = meterProxyBytes(null, day1);
     await meter.take(45);
     await meter.settle();
     vi.stubEnv("PROXY_BYTES_PER_DAY", "1000");
-    expect(await takeProxyBytes(2000, day1)).toBe(false);
+    expect(await takeProxyBytes(2000, null, day1)).toBe(false);
+    await takeScanBudget("203.0.113.7", day1);
+    await takeProxyBytes(7, "203.0.113.7", day1);
     expect(seen).toEqual([
       ["scan:d:2026-09-16", 1, 2 * 86_400],
       ["scan:m:2026-09", 1, 40 * 86_400],
@@ -259,6 +296,11 @@ describe("budget", () => {
       ["proxy:d:2026-09-16", 45 - 1024 * 1024, 2 * 86_400],
       ["proxy:d:2026-09-16", 2000, 2 * 86_400],
       ["proxy:d:2026-09-16", -2000, 2 * 86_400],
+      ["scan:d:2026-09-16:203.0.113.7", 1, 2 * 86_400],
+      ["scan:d:2026-09-16", 1, 2 * 86_400],
+      ["scan:m:2026-09", 1, 40 * 86_400],
+      ["proxy:d:2026-09-16:203.0.113.7", 7, 2 * 86_400],
+      ["proxy:d:2026-09-16", 7, 2 * 86_400],
     ]);
   });
 

@@ -206,6 +206,26 @@ describe("GET /api/v1/assets.zip", () => {
     expect(manifest.dropped.unavailable).toBeGreaterThan(0);
   });
 
+  it("counts them against the caller's own daily share too, so one address cannot spend the day", async () => {
+    // One block: the meter takes a megabyte ahead of the first file, so the first archive fits and hands the rest
+    // back, and the same address's next one no longer does.
+    process.env.VERCEL = "1";
+    process.env.PROXY_BYTES_PER_IP_PER_DAY = String(1024 * 1024);
+    const from = (address: string) =>
+      new Request("https://assets.example.com/api/v1/assets.zip?url=stripe.com", { headers: { authorization: `Bearer ${TOKEN}`, "x-real-ip": address } });
+
+    const first = manifestOf(await entriesOf(await GET(from("203.0.113.7"))));
+    expect(first.truncated).toBe(false);
+    expect(first.files).toHaveLength(4);
+    const again = manifestOf(await entriesOf(await GET(from("203.0.113.7"))));
+    expect(again.truncated).toBe(true);
+    expect(again.files).toEqual([]);
+    // Another address still has its own share of a day the first one did not empty.
+    const other = manifestOf(await entriesOf(await GET(from("203.0.113.8"))));
+    expect(other.truncated).toBe(false);
+    expect(other.files).toHaveLength(4);
+  });
+
   it("refuses a request without a bearer token, before it scans anything", async () => {
     const response = await GET(new Request("https://assets.example.com/api/v1/assets.zip?url=stripe.com"));
     expect(response.status).toBe(401);

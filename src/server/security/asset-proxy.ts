@@ -7,6 +7,7 @@ import { authenticateAgent } from "./agent-auth";
 import { meterProxyBytes, PROXY_BYTES_BLOCK, takeProxyBytes } from "./budget";
 import { contentDisposition } from "./download-name";
 import { convertWoff2, takeConversionSlot, WOFF2_MAX_OUTPUT_BYTES, WOFF2_MAX_SOURCE_BYTES } from "./font-convert";
+import { clientAddress } from "./request";
 import { verifyAssetParams } from "./sign";
 import { declaredType, isAllowedDeclaredType, SNIFF_BYTES, sniffContentType, UNTYPED } from "./sniff";
 
@@ -41,8 +42,8 @@ const FETCH_STATUS: Record<SafeFetchErrorCode, number> = {
  * handle proxy failures by HTTP status (403, 400, 413, 415, 429, 5xx) and must not parse these bodies with `ApiError`.
  */
 export type AssetProxyErrorCode =
-  | "method" | "cross-site" | "invalid-params" | "bad-signature" | "expired" | "budget" | "upstream-status" | "too-large"
-  | "unsupported-type" | "not-convertible" | "license" | "busy" | "internal" | SafeFetchErrorCode;
+  | "method" | "disabled" | "cross-site" | "invalid-params" | "bad-signature" | "expired" | "budget" | "upstream-status"
+  | "too-large" | "unsupported-type" | "not-convertible" | "license" | "busy" | "internal" | SafeFetchErrorCode;
 
 function errorResponse(status: number, code: AssetProxyErrorCode, message: string, headers: Record<string, string> = {}): Response {
   return Response.json({ error: { code, message } }, { status, headers: { ...SAFETY_HEADERS, "cache-control": "no-store", ...headers } });
@@ -86,8 +87,8 @@ async function peek(
  * `head` and the rest of the body in one buffer. Every byte read is taken from the budget before it is kept, in blocks,
  * and stays counted when the download then fails; a block the budget refuses stops the download with 429.
  */
-async function readBudgeted(reader: ReadableStreamDefaultReader<Uint8Array>, head: Uint8Array): Promise<Buffer> {
-  const budget = meterProxyBytes();
+async function readBudgeted(reader: ReadableStreamDefaultReader<Uint8Array>, head: Uint8Array, client: string | null): Promise<Buffer> {
+  const budget = meterProxyBytes(client);
   const chunks: Uint8Array[] = [];
   try {
     for (let chunk = head; ; ) {
@@ -123,7 +124,7 @@ async function convertFont(
   url: string,
   dl: string | undefined,
   signal: AbortSignal,
-  { maxBytes, timeoutMs }: { maxBytes: number; timeoutMs: number },
+  { maxBytes, timeoutMs, client }: { maxBytes: number; timeoutMs: number; client: string | null },
 ): Promise<Response> {
   const busy = () => errorResponse(503, "busy", "Too many fonts are being converted. Try again in a moment.", { "retry-after": "5" });
   const started = Date.now();
@@ -140,9 +141,9 @@ async function convertFont(
       await rest.cancel().catch(() => {});
       return errorResponse(415, "not-convertible", "Only WOFF2 fonts can be converted.");
     }
-    const source = await readBudgeted(rest, head);
+    const source = await readBudgeted(rest, head, client);
 
-    const output = meterProxyBytes();
+    const output = meterProxyBytes(client);
     try {
       if (!(await output.reserve(WOFF2_MAX_OUTPUT_BYTES))) return budgetExhausted();
       const converted = await convertWoff2(source, deadline);
@@ -179,8 +180,9 @@ async function convertFont(
 /**
  * Signed byte proxy behind `GET /api/asset` (spec 11.2): GET only, same-origin callers only, HMAC-checked URL, SSRF-safe
  * fetch with size and time caps, image and font types only (untyped bytes by magic number), sandboxed and not
- * sniffable, cached on the CDN, and taken from the daily proxied bytes budget before it is served. `fmt=ttf`
- * decompresses an open-licence WOFF2.
+ * sniffable, cached on the CDN, and taken from the caller's and the day's proxied bytes budgets before it is served.
+ * `fmt=ttf` decompresses an open-licence WOFF2. `PROXY_DISABLED=1` turns it off, for an operator stopping abuse without
+ * stopping scans.
  *
  * Budget: a body with a known length takes it before its status, a body of unknown length takes `PROXY_BYTES_BLOCK`
  * (429 when that does not fit, so the last block of a day serves known lengths only), then another block whenever the
@@ -193,6 +195,7 @@ export async function handleAssetRequest(request: Request, options: AssetProxyOp
   try {
     // A HEAD would fetch the upstream for headers alone and leave a body of unknown length unread and uncounted.
     if (request.method !== "GET") return errorResponse(405, "method", "Use GET.", { allow: "GET" });
+    if (process.env.PROXY_DISABLED === "1") return errorResponse(503, "disabled", "Downloads are paused.");
 
     // Spec 11.2: only this app's pages (same-origin) or a link opened directly (none). A missing header is refused
     // too, so every browser with Fetch Metadata is covered. A script can forge the header, and nothing in the function
@@ -209,8 +212,9 @@ export async function handleAssetRequest(request: Request, options: AssetProxyOp
     }
 
     const { url, dl, fmt } = verifyAssetParams(new URL(request.url).searchParams);
-    if (!(await takeProxyBytes(0))) return budgetExhausted();
-    if (fmt === "ttf") return await convertFont(url, dl, request.signal, { maxBytes, timeoutMs });
+    const client = clientAddress(request);
+    if (!(await takeProxyBytes(0, client))) return budgetExhausted();
+    if (fmt === "ttf") return await convertFont(url, dl, request.signal, { maxBytes, timeoutMs, client });
 
     const upstream = await fetchAsset(url, request.signal, maxBytes, timeoutMs);
     if (upstream instanceof Response) return upstream;
@@ -237,7 +241,7 @@ export async function handleAssetRequest(request: Request, options: AssetProxyOp
       return errorResponse(415, "unsupported-type", "Only images and fonts can be downloaded.");
     }
 
-    const budget = meterProxyBytes();
+    const budget = meterProxyBytes(client);
     if (!(await budget.reserve(knownLength ?? PROXY_BYTES_BLOCK)) || !(await budget.take(head.byteLength))) {
       await rest.cancel().catch(() => {});
       await budget.settle();

@@ -48,6 +48,8 @@ export interface BuiltZip {
 
 export interface BuildZipOptions {
   signal?: AbortSignal;
+  /** The caller's address, whose own daily share of the proxy budget the fetched bytes come out of too. */
+  client?: string | null;
   meter?: ProxyBytesMeter;
   maxBytes?: number;
   concurrency?: number;
@@ -144,7 +146,7 @@ export async function buildAssetsZip(
   selection: SelectionOptions,
   options: BuildZipOptions = {},
 ): Promise<BuiltZip> {
-  const meter = options.meter ?? meterProxyBytes();
+  const meter = options.meter ?? meterProxyBytes(options.client ?? null);
   const byName = await selectAssets(scan.assets, selection);
   let fetched: Awaited<ReturnType<typeof fetchSelection>>;
   try {

@@ -36,7 +36,7 @@ export async function GET(request: Request): Promise<Response> {
 
   let built: Awaited<ReturnType<typeof buildAssetsZip>>;
   try {
-    built = await buildAssetsZip(scan, source, selection.options, { signal: request.signal });
+    built = await buildAssetsZip(scan, source, selection.options, { signal: request.signal, client: target.client });
   } catch (error) {
     return scanFailureResponse(error, target.client);
   }

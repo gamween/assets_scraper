@@ -11,6 +11,12 @@ const fonts = vi.hoisted(() => ({
 vi.mock("@/server/scan/fonts/index", () => fonts);
 const functions = vi.hoisted(() => ({ waitUntil: vi.fn() }));
 vi.mock("@vercel/functions", async (importOriginal) => ({ ...(await importOriginal<typeof import("@vercel/functions")>()), waitUntil: functions.waitUntil }));
+/** The caller's address as the platform reports it: off Vercel there is none, which is what most of these tests want. */
+const caller = vi.hoisted(() => ({ address: null as string | null }));
+vi.mock("@/server/security/request", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/server/security/request")>()),
+  clientAddress: () => caller.address,
+}));
 
 import { handleAssetRequest } from "@/server/security/asset-proxy";
 import { MemoryBudgetStore, setBudgetStoreForTests, takeProxyBytes } from "@/server/security/budget";
@@ -122,6 +128,7 @@ afterAll(async () => {
 });
 
 beforeEach(() => {
+  caller.address = null;
   setBudgetStoreForTests(new MemoryBudgetStore());
   functions.waitUntil.mockClear();
   fonts.parseFontBinary.mockClear();
@@ -428,6 +435,21 @@ describe("handleAssetRequest", () => {
     expect(await errorOf(await handleAssetRequest(proxied("/assets/logo.svg")))).toMatchObject({ status: 429, code: "budget" });
     expect((await handleAssetRequest(proxied("/sized.png"))).status).toBe(200);
     expect(await takeProxyBytes(0)).toBe(true);
+  });
+
+  it("holds one caller to its own share of the day's bytes, so it cannot spend the day for everyone", async () => {
+    vi.stubEnv("PROXY_BYTES_PER_IP_PER_DAY", String(png.length + 10));
+    caller.address = "203.0.113.7";
+    expect(Buffer.from(await (await handleAssetRequest(proxied("/sized.png"))).arrayBuffer())).toEqual(png);
+    expect(await errorOf(await handleAssetRequest(proxied("/sized.png")))).toMatchObject({ status: 429, code: "budget" });
+    caller.address = "203.0.113.8";
+    expect(Buffer.from(await (await handleAssetRequest(proxied("/sized.png"))).arrayBuffer())).toEqual(png);
+  });
+
+  it("refuses every download while PROXY_DISABLED is set, before it fetches anything", async () => {
+    vi.stubEnv("PROXY_DISABLED", "1");
+    expect(await errorOf(await handleAssetRequest(proxied("/counted.png?disabled")))).toMatchObject({ status: 503, code: "disabled" });
+    expect(hits.get("/counted.png?disabled")).toBeUndefined();
   });
 
   it("keeps concurrent bodies of unknown length within the daily budget plus one block each", async () => {
