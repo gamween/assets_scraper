@@ -195,9 +195,8 @@ async function convertFont(
  * Signed byte proxy behind `GET /api/asset` (spec 11.2): GET only, same-origin callers only, HMAC-checked URL, SSRF-safe
  * fetch with size and time caps, image and font types only (untyped bytes by magic number), sandboxed and not
  * sniffable, cached on the CDN within its link's life when small, and taken from the caller's and the day's proxied
- * bytes budgets before it is served.
- * `fmt=ttf` decompresses an open-licence WOFF2. `PROXY_DISABLED=1` turns it off, for an operator stopping abuse without
- * stopping scans.
+ * bytes budgets before it is served. `fmt=ttf` decompresses an open-licence WOFF2. `PROXY_DISABLED=1` turns it off, for
+ * an operator stopping abuse without stopping scans.
  *
  * Budget: a body with a known length takes it before its status, a body of unknown length takes `PROXY_BYTES_BLOCK`
  * (429 when that does not fit, so the last block of a day serves known lengths only), then another block whenever the
