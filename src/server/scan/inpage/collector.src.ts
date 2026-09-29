@@ -823,9 +823,11 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
   const fontStatuses: RawFontStatus[] = [];
   const loadedFamilies = new Set<string>();
   for (const face of document.fonts) {
-    const family = face.family.replace(/^["']|["']$/g, "");
-    fontStatuses.push({ family, weight: face.weight, style: face.style, stretch: face.stretch, status: face.status });
-    if (face.status === "loaded") loadedFamilies.add(family.toLowerCase());
+    // The family as the browser gives it, which post-processing decodes (`statusFamily` in `fonts/index.ts`): the name
+    // itself for a face from a rule, a CSS string for one made with the FontFace constructor. Cutting a quote off each
+    // end here cut the last character of a name that ends in one, such as `Quote "Face"`, which then matched no rule.
+    fontStatuses.push({ family: face.family, weight: face.weight, style: face.style, stretch: face.stretch, status: face.status });
+    if (face.status === "loaded") loadedFamilies.add(face.family.replace(/^["']|["']$/g, "").toLowerCase());
   }
   const usage = new Map<string, RawFontUsage>();
   {
