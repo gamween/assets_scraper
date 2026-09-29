@@ -1,5 +1,5 @@
 import { agentLimits } from "@/agent/limits";
-import { AssetKind, AssetRole, ErrorCode } from "@/lib/contract";
+import { AssetFormat, AssetKind, AssetRole, ErrorCode } from "@/lib/contract";
 
 /**
  * `GET /api/openapi.json` (spec section 8): the same two endpoints `llms.txt` describes in prose, as OpenAPI 3.1, for
@@ -18,7 +18,7 @@ const error = (description: string) => ({
 /** Every failure both endpoints share, as the v1 codes map onto HTTP (see `src/app/api/v1/errors.ts`). */
 const errorResponses = () => ({
   "400": error("invalid-url: the request or the URL could not be read."),
-  "401": error("access-code: the bearer token is missing or unknown."),
+  "401": error("access-code: the bearer token is missing or unknown, or the deployment's access code was not sent in x-access-code."),
   "422": error("blocked-address, unsupported-port, own-host or not-html: the URL cannot be scanned."),
   "429": error("budget: the daily scan limit is spent."),
   "500": error("internal: something went wrong on our side."),
@@ -26,6 +26,15 @@ const errorResponses = () => ({
   "503": error("busy or disabled: no browser was free, or scanning is paused."),
   "504": error("timeout: the scan did not finish in time."),
 });
+
+/** Required only by a deployment the owner put behind `ACCESS_CODE`, which asks a token holder for it too. */
+const accessCodeHeader = {
+  name: "x-access-code",
+  in: "header",
+  required: false,
+  description: "The deployment's access code, when it has one. A bearer token does not replace it.",
+  schema: { type: "string" },
+};
 
 const filter = (name: string, description: string, schema: Record<string, unknown>) => ({
   name,
@@ -54,6 +63,7 @@ export function openApiDocument(origin: string): Record<string, unknown> {
           operationId: "scanPage",
           summary: "Scan a page and return one JSON document.",
           security: [{ bearerAuth: [] }],
+          parameters: [accessCodeHeader],
           requestBody: {
             required: true,
             content: {
@@ -94,11 +104,12 @@ export function openApiDocument(origin: string): Record<string, unknown> {
             filter("kinds", "Comma separated kinds to keep.", { type: "string", examples: [AssetKind.options.join(",")] }),
             filter("roles", "Comma separated roles to keep.", { type: "string", examples: [AssetRole.options.join(",")] }),
             filter("max", `Files to keep, held to ${agentLimits.maxFiles}.`, { type: "integer", minimum: 1, default: agentLimits.maxFiles }),
-            filter("minLongSide", "Rasters under this many pixels on their longest side are dropped.", {
-              type: "integer",
-              minimum: 1,
-              default: agentLimits.minLongSide,
-            }),
+            filter(
+              "minLongSide",
+              `Rasters under this many pixels on their longest side are dropped, ${agentLimits.minLongSide} by default under the deck profile and ` +
+                "none under all unless given. Site logos, logos, favicons and icons asked for are never dropped for size, and SVG has no size gate.",
+              { type: "integer", minimum: 1 },
+            ),
             filter("maxBytes", `Bytes to keep in total, best scoring files first, held to what one request serves. 0 means that ceiling.`, {
               type: "integer",
               minimum: 0,
@@ -110,6 +121,11 @@ export function openApiDocument(origin: string): Record<string, unknown> {
               default: agentLimits.maxFileBytes,
             }),
             filter("nameContains", "Keeps the files whose name contains this text.", { type: "string" }),
+            filter("includeIcons", "Keeps the icons the deck profile drops, raster icons under minLongSide included. Naming the icon role does the same.", {
+              type: "boolean",
+              default: false,
+            }),
+            accessCodeHeader,
           ],
           responses: {
             "200": {
@@ -190,13 +206,16 @@ export function openApiDocument(origin: string): Record<string, unknown> {
               type: "array",
               items: {
                 type: "object",
-                required: ["id", "name", "kind"],
+                description: "The format and the size tell a wordmark from a photograph the scan also called a logo.",
+                required: ["id", "name", "kind", "format"],
                 properties: {
                   id: { type: "string" },
                   name: { type: "string" },
                   kind: { type: "string", enum: AssetKind.options },
+                  format: { type: "string", enum: AssetFormat.options },
                   width: { type: "integer" },
                   height: { type: "integer" },
+                  bytes: { type: "integer", description: "When the scan measured it." },
                 },
               },
             },

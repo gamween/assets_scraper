@@ -27,8 +27,11 @@ Every request carries a bearer token:
 
 Tokens are configured on the server in AGENT_TOKENS, one per client, comma separated. Ask the owner of this
 deployment for one. A missing or unknown token is answered with 401 and {"error":{"code":"access-code", ...}}.
-A token replaces the bot check that keeps the browser endpoint private, and nothing else: the rate limit, the daily
-scan budget, the private address guards and every cap below still apply.
+A token replaces the bot check that keeps the browser endpoint private, and nothing else: the access code, the rate
+limit, the daily scan budget, the private address guards and every cap below still apply. When the owner has put the
+deployment behind an access code, send it with every request too:
+
+    x-access-code: <code>
 
 ## POST /api/v1/scan
 
@@ -52,7 +55,7 @@ assets answers hundreds of kilobytes, and the archive below is the way to get th
 
     ${origin}/api/v1/assets.zip
 
-Query: url, profile, kinds, roles, max, maxBytes, maxFileBytes, minLongSide, nameContains
+Query: url, profile, kinds, roles, max, maxBytes, maxFileBytes, minLongSide, nameContains, includeIcons
 
   profile        "deck" (default) keeps what is usable and drops icons, sprites, thumbnails and duplicates.
                  "all" keeps everything the explicit filters allow.
@@ -62,9 +65,11 @@ Query: url, profile, kinds, roles, max, maxBytes, maxFileBytes, minLongSide, nam
   maxBytes       bytes to keep in total, best scoring files first, default ${mb(agentLimits.maxTotalBytes)} and at most
                  ${mb(zipMaxBytes())}, which is what 0 asks for. Files that do not fit are counted under over-budget
   maxFileBytes   bytes one file may take under the deck profile, default ${mb(agentLimits.maxFileBytes)}, 0 lifts it
-  minLongSide    a raster under this many pixels on its longest side is dropped, default ${agentLimits.minLongSide} px.
-                 A site logo, a logo and a favicon are never dropped for size, and SVG has no size gate.
+  minLongSide    a raster under this many pixels on its longest side is dropped, default ${agentLimits.minLongSide} px under deck
+                 and none under all. A site logo, a logo, a favicon and an icon asked for are never dropped for
+                 size, and SVG has no size gate.
   nameContains   keeps the files whose name contains this text
+  includeIcons   true keeps the icons the deck profile drops, at any size. Asking for roles=icon does the same
 
 The archive holds svg/, images/ and a manifest.json listing, per file, its path inside the archive, source URL,
 dimensions, bytes, role and why it was kept, plus every drop counted by reason. It is the same document the
@@ -78,19 +83,24 @@ The response headers x-assets-count, x-assets-bytes and x-assets-truncated say w
   ${agentLimits.maxFiles} files and ${mb(zipMaxBytes())} for one archive, out of ${mb(limits.proxyBytesPerDay)} of asset bytes a day
   ${limits.maxAssets} assets in one scan
 
-Errors use the codes of the v1 contract with the matching HTTP status: 400 invalid-url, 401 access-code,
-422 blocked-address, unsupported-port, own-host or not-html, 429 budget, 502 dns, connect, http or blocked,
-503 busy or disabled, 504 timeout, 500 internal. The body is always {"error":{"code","message"}}.
+Errors use the codes of the v1 contract with the matching HTTP status: 400 invalid-url, 401 access-code (no
+token, an unknown one, or a missing access code), 422 blocked-address, unsupported-port, own-host or not-html,
+429 budget, 502 dns, connect, http or blocked, 503 busy or disabled, 504 timeout, 500 internal. The body of every
+error this app writes is {"error":{"code","message"}}.
+
+One answer does not come from the app: a client the hosting firewall challenges gets 403 with an HTML page and the
+header x-vercel-mitigated: challenge, on every path, until the challenge expires. Only a browser can pass it, so wait
+a few minutes and slow down rather than retrying at once or changing the token.
 
 ## Examples
 
 Read what a page holds:
 
-    curl -s -X POST ${origin}/api/v1/scan -H "Authorization: Bearer $ASSETS_SCRAPER_TOKEN" -H "content-type: application/json" -d '{"url":"stripe.com"}'
+    curl -sS --fail-with-body -X POST ${origin}/api/v1/scan -H "Authorization: Bearer $ASSETS_SCRAPER_TOKEN" -H "content-type: application/json" -d '{"url":"stripe.com"}'
 
-Take the logos and the large images into ./scrap/stripe.com:
+Take the logos and the large images into ./scrap/stripe.com (-f keeps an error's JSON body out of assets.zip):
 
-    curl -s -L -o assets.zip "${origin}/api/v1/assets.zip?url=stripe.com&profile=deck&max=20" -H "Authorization: Bearer $ASSETS_SCRAPER_TOKEN" && mkdir -p scrap/stripe.com && unzip -o assets.zip -d scrap/stripe.com
+    curl -fsSL -o assets.zip "${origin}/api/v1/assets.zip?url=stripe.com&profile=deck&max=20" -H "Authorization: Bearer $ASSETS_SCRAPER_TOKEN" && mkdir -p scrap/stripe.com && unzip -o assets.zip -d scrap/stripe.com
 
 ## Machine readable
 

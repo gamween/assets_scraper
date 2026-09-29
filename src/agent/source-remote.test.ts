@@ -22,12 +22,22 @@ interface Call {
   method: string;
   url: string;
   authorization?: string;
+  accessCode?: string;
   body: string;
+}
+
+interface Answer {
+  status: number;
+  body: string;
+  type?: string;
+  headers?: Record<string, string>;
 }
 
 const calls: Call[] = [];
 /** The answer `/api/v1/scan` gives next, so one server covers the happy path and every failure. */
-let answer: { status: number; body: string; type?: string } = { status: 200, body: "{}" };
+let answer: Answer = { status: 200, body: "{}" };
+/** The answer of the hosted proxy, `/api/asset`, when a test wants something other than the bytes. */
+let proxyAnswer: Answer | null = null;
 let origin: string;
 let server: http.Server;
 
@@ -56,15 +66,17 @@ beforeAll(async () => {
         method: request.method ?? "",
         url,
         ...(request.headers.authorization === undefined ? {} : { authorization: request.headers.authorization }),
+        ...(request.headers["x-access-code"] === undefined ? {} : { accessCode: String(request.headers["x-access-code"]) }),
         body: Buffer.concat(chunks).toString("utf8"),
       });
-      if (url.startsWith("/api/asset")) {
+      const reply = url.startsWith("/api/asset") ? proxyAnswer : answer;
+      if (reply === null) {
         response.writeHead(200, { "content-type": "image/png" });
         response.end(PROXIED_PNG);
         return;
       }
-      response.writeHead(answer.status, { "content-type": answer.type ?? "application/json" });
-      response.end(answer.body);
+      response.writeHead(reply.status, { "content-type": reply.type ?? "application/json", ...reply.headers });
+      response.end(reply.body);
     });
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -114,17 +126,24 @@ describe("createRemoteScanSource().scan", () => {
     expect(scan.source).toBe("remote");
     expect(scan.page.host).toBe("stripe.com");
     expect(scan.assets.map((asset) => asset.id)).toEqual(["logo"]);
-    expect(scan.scanId).toBe("scan-1");
+    expect(scan.scanId).toMatch(/^stripe\.com-[0-9a-z]+-[0-9a-f]{6}$/);
   });
 
-  it("gives a scan with no id one the cache accepts", async () => {
-    const body = remoteScan();
-    delete body.scanId;
-    answer = { status: 200, body: JSON.stringify(body) };
+  /**
+   * Regression: an id the hosted app chose became the cache file name. `..` passed the source's own check and failed
+   * the save, so every scan_page against that app failed, and the id of a local scan already on disk replaced it.
+   */
+  it("mints the scan id here, whatever the hosted app called it", async () => {
+    for (const scanId of [undefined, "..", "stripe.com-local-scan", "scan-1"]) {
+      const body = remoteScan();
+      if (scanId === undefined) delete body.scanId;
+      else body.scanId = scanId;
+      answer = { status: 200, body: JSON.stringify(body) };
 
-    const scan = await source().scan("stripe.com");
+      const scan = await source().scan("stripe.com");
 
-    expect(scan.scanId).toMatch(/^stripe\.com-[0-9a-z]+-[0-9a-f]{6}$/);
+      expect(scan.scanId).toMatch(/^stripe\.com-[0-9a-z]+-[0-9a-f]{6}$/);
+    }
   });
 
   it("refuses to be created without a token", () => {
@@ -165,6 +184,87 @@ describe("createRemoteScanSource().scan", () => {
   it("rejects an answer that is not a scan", async () => {
     const error = await failure(200, JSON.stringify({ page: { url: "stripe.com" } }));
     expect(error).toMatchObject({ code: "response" });
+  });
+
+  /**
+   * Regression: Vercel's firewall answers a challenged client with a 403 HTML page on every path, and that read as
+   * `answered HTTP 403` under the `unauthorized` code, which pointed at a token that was fine.
+   */
+  it("says the firewall stopped the client when it answers with its challenge page", async () => {
+    const page = "<!doctype html><title>Vercel Security Checkpoint</title>";
+    answer = { status: 403, body: page, type: "text/html", headers: { "x-vercel-mitigated": "challenge" } };
+    const flagged = await source().scan("stripe.com").then(() => null, (error: unknown) => error as RemoteScanError);
+    expect(flagged).toMatchObject({ code: "challenged", status: 403 });
+    expect(flagged?.message).toMatch(/firewall/);
+    expect(flagged?.message).toMatch(/challenge/);
+    expect(flagged?.message).toMatch(/token is not the problem/);
+
+    // The same page without the header: the app itself only answers JSON, so a 403 that is not JSON is not the app.
+    answer = { status: 403, body: page, type: "text/html" };
+    expect(await source().scan("stripe.com").then(() => null, (error: unknown) => error)).toMatchObject({ code: "challenged" });
+
+    // A 403 the app wrote itself is still what it says.
+    expect(await failure(403, JSON.stringify({ error: { code: "access-code", message: "no" } }))).toMatchObject({ code: "unauthorized" });
+  });
+
+  /** Only a challenge is a page a browser could pass: a firewall deny or rate limit must not send the user to one. */
+  it("names a firewall deny or rate limit for what it is", async () => {
+    const stopped = async (status: number, verdict: string) => {
+      answer = { status, body: "<!doctype html>", type: "text/html", headers: { "x-vercel-mitigated": verdict } };
+      return source().scan("stripe.com").then(() => null, (error: unknown) => error as RemoteScanError);
+    };
+
+    const denied = await stopped(403, "deny");
+    expect(denied).toMatchObject({ code: "challenged", status: 403 });
+    expect(denied?.message).toMatch(/token is not the problem/);
+    expect(denied?.message).not.toMatch(/browser/);
+
+    const limited = await stopped(429, "rate_limit");
+    expect(limited).toMatchObject({ code: "rate-limited", status: 429 });
+    expect(limited?.message).not.toMatch(/browser/);
+  });
+
+  it("reports a redirect instead of following it without the token", async () => {
+    answer = { status: 308, body: "", headers: { location: "https://moved.example/api/v1/scan" } };
+    const error = await source().scan("stripe.com").then(() => null, (thrown: unknown) => thrown as RemoteScanError);
+    expect(error).toMatchObject({ code: "request", status: 308 });
+    expect(error?.message).toContain("https://moved.example/api/v1/scan");
+  });
+});
+
+describe("createRemoteScanSource() configuration", () => {
+  const refusal = (options: Parameters<typeof createRemoteScanSource>[0]) => {
+    try {
+      createRemoteScanSource(options);
+      return null;
+    } catch (error) {
+      return error as RemoteScanError;
+    }
+  };
+
+  /** Regression: an `http:` typo sent the bearer token in clear text before the hosted app redirected to https. */
+  it("refuses to send the token to anything but https, loopback development servers excepted", () => {
+    const plain = refusal({ remote: "http://assets-scraper.vercel.app", token: "agent-token" });
+    expect(plain).toMatchObject({ name: "RemoteScanError", code: "request" });
+    expect(plain?.message).toMatch(/https/);
+    expect(refusal({ remote: "ftp://assets.example.com", token: "agent-token" })).toMatchObject({ code: "request" });
+    expect(refusal({ remote: "not a url", token: "agent-token" })).toMatchObject({ code: "request" });
+
+    for (const remote of ["https://assets-scraper.vercel.app", "http://localhost:3000", "http://127.0.0.1:3000", "http://[::1]:3000"]) {
+      expect(refusal({ remote, token: "agent-token" }), remote).toBeNull();
+    }
+  });
+
+  /** A deployment behind ACCESS_CODE asks the token holder for it too, so the client sends it when it has one. */
+  it("sends the access code next to the token when one is configured, and nothing when none is", async () => {
+    answer = { status: 200, body: JSON.stringify(remoteScan()) };
+    calls.length = 0;
+
+    await createRemoteScanSource({ remote: origin, token: "agent-token", accessCode: "open-sesame" }).scan("stripe.com");
+    await createRemoteScanSource({ remote: origin, token: "agent-token", accessCode: "" }).scan("stripe.com");
+
+    expect(calls.map((call) => call.accessCode)).toEqual(["open-sesame", undefined]);
+    expect(calls.every((call) => call.authorization === "Bearer agent-token")).toBe(true);
   });
 });
 
@@ -248,6 +348,30 @@ describe("createRemoteScanSource().fetchBytes", () => {
     expect(bytes).toEqual(woff2);
     expect(fetch.urls).toEqual([]);
     expect(calls).toHaveLength(0);
+  });
+
+  it("says the firewall stopped the client when the hosted proxy answers with its challenge page", async () => {
+    proxyAnswer = { status: 403, body: "<!doctype html>", type: "text/html", headers: { "x-vercel-mitigated": "challenge" } };
+    try {
+      const error = await createRemoteScanSource({ remote: origin, token: "agent-token" }, { fetch: fakeFetch(null) })
+        .fetchBytes({ url: "https://cdn.example.com/hero.png", proxy: "/api/asset?id=hero", format: "png" })
+        .then(() => null, (thrown: unknown) => thrown as RemoteScanError);
+      expect(error).toMatchObject({ name: "RemoteScanError", code: "challenged", status: 403 });
+    } finally {
+      proxyAnswer = null;
+    }
+  });
+
+  it("carries what the hosted proxy said when it refuses a file", async () => {
+    proxyAnswer = { status: 413, body: JSON.stringify({ error: { code: "too-large", message: "File too large" } }) };
+    try {
+      const error = await createRemoteScanSource({ remote: origin, token: "agent-token" }, { fetch: fakeFetch(null) })
+        .fetchBytes({ url: "https://cdn.example.com/hero.png", proxy: "/api/asset?id=hero", format: "png" })
+        .then(() => null, (thrown: unknown) => thrown as Error);
+      expect(error?.message).toMatch(/HTTP 413 from the hosted proxy.*too-large: File too large/);
+    } finally {
+      proxyAnswer = null;
+    }
   });
 
   it("reports an asset with no way to fetch it", async () => {

@@ -22,6 +22,8 @@ import { serveAssetsFixture } from "../assets/harness";
  */
 
 const TOKEN = "integration-remote-agent-token-xyz";
+/** The deployment runs behind an access code, the way an owner locks a hosted app to strangers. */
+const ACCESS_CODE = "integration-access-code";
 
 let fixture: FixtureServer;
 let app: http.Server;
@@ -59,6 +61,7 @@ beforeAll(async () => {
   env = { ...process.env };
   fixture = await serveAssetsFixture();
   process.env.AGENT_TOKENS = TOKEN;
+  process.env.ACCESS_CODE = ACCESS_CODE;
   appPosts = [];
   app = http.createServer((incoming, response) => {
     if (incoming.method === "POST") appPosts.push((incoming.url ?? "").split("?")[0]);
@@ -102,9 +105,24 @@ afterAll(async () => {
   process.env = env;
 });
 
-const source = (deps: { fetch?: SafeFetch } = {}) => createRemoteScanSource({ remote: appOrigin, token: TOKEN }, deps);
+const source = (deps: { fetch?: SafeFetch } = {}) => createRemoteScanSource({ remote: appOrigin, token: TOKEN, accessCode: ACCESS_CODE }, deps);
 
 describe("the remote source against the hosted app", () => {
+  /**
+   * The app asks a token holder for the access code too (spec section 8), and the client had no way to send it, so
+   * turning ACCESS_CODE on locked every remote CLI and MCP scan out. Every scan in this file now goes through it.
+   */
+  it("is refused by a deployment behind an access code until it sends the code", async () => {
+    const before = appPosts.length;
+    const refused = await createRemoteScanSource({ remote: appOrigin, token: TOKEN, accessCode: "" })
+      .scan(`${fixture.origin}/`)
+      .then(() => null, (error: unknown) => error as RemoteScanError);
+
+    expect(refused).toMatchObject({ name: "RemoteScanError", code: "unauthorized", status: 401 });
+    expect(refused?.message).toContain("x-access-code");
+    expect(appPosts.slice(before)).toEqual(["/api/v1/scan"]);
+  }, 30_000);
+
   it("reads the document POST /api/v1/scan actually answers", async () => {
     const scan = await source().scan(`${fixture.origin}/`);
 

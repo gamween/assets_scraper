@@ -80,6 +80,25 @@ describe("findRecentScan", () => {
   });
 
   /**
+   * Regression: the key lower cased the whole URL and dropped the scheme, so for an hour `/Docs` was answered with the
+   * scan of `/docs`, `?id=AbC` with `?id=abc` and an http page with its https twin.
+   */
+  it("tells pages apart by the case of their path and query, and by their scheme", async () => {
+    vi.stubEnv("XDG_CACHE_HOME", makeTree());
+    const at = new Date().toISOString();
+    const page = (url: string) => ({ url, finalUrl: url, host: "site.test", title: "Site" });
+    await saveScan(testScan({ scanId: "docs", scannedAt: at, page: page("https://site.test/docs?id=abc") }));
+
+    const found = async (url: string) => (await findRecentScan(url, { kind: "local" }, 3_600_000))?.scanId ?? null;
+    expect(await found("https://site.test/docs?id=abc")).toBe("docs");
+    expect(await found("site.test/docs/?id=abc")).toBe("docs");
+    expect(await found("https://WWW.Site.Test/docs?id=abc")).toBe("docs");
+    expect(await found("https://site.test/Docs?id=abc")).toBeNull();
+    expect(await found("https://site.test/docs?id=AbC")).toBeNull();
+    expect(await found("http://site.test/docs?id=abc")).toBeNull();
+  });
+
+  /**
    * Regression: the lookup only knew "local" against "remote", so every hosted app shared one bucket. A scan of
    * production then answered a run pointed at staging, which never saw a request, and the answer still said "remote".
    */

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { MAX_SUMMARY_BYTES, isInstallableFamily, summarize } from "./summary";
-import { testAsset, testFontFamily, testScan } from "./testing";
+import { MAX_SUMMARY_BYTES, summarize } from "./summary";
+import type { FontFamily, FontFile } from "@/lib/contract";
+import { testAsset, testFontFamily, testFontFile, testScan } from "./testing";
 
 describe("summarize", () => {
   it("stays small on a page with 236 assets", () => {
@@ -107,14 +108,26 @@ describe("summarize", () => {
   });
 });
 
-describe("isInstallableFamily", () => {
-  it("is false for Adobe Fonts and for a family with no file, true for a self-hosted WOFF2", () => {
-    expect(isInstallableFamily(testFontFamily({ name: "Inter" }))).toBe(true);
-    expect(isInstallableFamily(testFontFamily({ name: "Proxima Nova", source: "adobe-fonts", downloadable: false }))).toBe(false);
-    expect(isInstallableFamily(testFontFamily({ name: "Empty", faces: [] }))).toBe(false);
-    expect(isInstallableFamily(testFontFamily({ name: "Commercial", license: { kind: "commercial" }, convertible: false }))).toBe(true);
-    expect(
-      isInstallableFamily(testFontFamily({ name: "Eot", faces: [{ weight: "400", style: "normal", loaded: true, files: [{ url: "https://x/f.eot", proxy: "", format: "eot", coversLatin: true }] }] })),
-    ).toBe(false);
+describe("the installable column", () => {
+  const installable = (family: FontFamily): boolean => summarize(testScan({ fonts: [family] })).fonts[0].installable;
+  const withFiles = (name: string, files: Partial<FontFile>[]): FontFamily =>
+    testFontFamily({ name, faces: [{ weight: "400", style: "normal", loaded: true, files: files.map((file) => testFontFile(file)) }] });
+
+  it("says what the installer would install, whatever the licence", () => {
+    expect(installable(testFontFamily({ name: "Inter" }))).toBe(true);
+    expect(installable(testFontFamily({ name: "Proxima Nova", source: "adobe-fonts", downloadable: false }))).toBe(false);
+    expect(installable(testFontFamily({ name: "Empty", faces: [] }))).toBe(false);
+    expect(installable(testFontFamily({ name: "Commercial", license: { kind: "commercial" }, convertible: false }))).toBe(true);
+    expect(installable(withFiles("Eot", [{ url: "https://x/f.eot", format: "eot" }]))).toBe(false);
+    expect(installable(withFiles("Woff", [{ url: "https://x/f.woff", format: "woff" }]))).toBe(true);
+  });
+
+  /**
+   * Regression: the summary kept its own copy of the rule, which ignored `coversLatin`, so every icon font and every
+   * Cyrillic-only subset read `installable: true` and then failed `install_fonts` with `no-latin-file`.
+   */
+  it("says no for a family whose files cover no Basic Latin, as the installer does", () => {
+    expect(installable(withFiles("Icons", [{ url: "https://x/icons.woff2", format: "woff2", coversLatin: false }]))).toBe(false);
+    expect(installable(withFiles("Mixed", [{ url: "https://x/cyr.woff2", coversLatin: false }, { url: "https://x/latin.woff2" }]))).toBe(true);
   });
 });

@@ -13,6 +13,7 @@ import { realpathSync } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { AGENT_EXTERNALS } from "./agent-externals.mjs";
 
 /** The repo, from this file rather than from the working directory: the plugin starts the launcher from anywhere. */
 export const ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -25,6 +26,21 @@ export const BUNDLE = "dist/mcp.mjs";
  * bundle as surely as an edit to the other two.
  */
 export const SOURCE_DIRS = ["src/agent", "src/server", "src/lib"];
+
+/**
+ * The other inputs of the bundle. `package.json` is inlined (its version is the build identity), the lockfile pins the
+ * dependencies the bundle inlines, zod among them, `tsconfig.json` holds the `@/` alias, and the build scripts decide
+ * what stays external. A pull that only bumped one of these left every file under `src/` older than the bundle, and
+ * the launcher served the old build in silence.
+ */
+export const SOURCE_FILES = [
+  "package.json",
+  "pnpm-lock.yaml",
+  "tsconfig.json",
+  "scripts/build-agent.mjs",
+  "scripts/build-inpage.mjs",
+  "scripts/agent-externals.mjs",
+];
 
 /**
  * Directories under `SOURCE_DIRS` that are build output, not source. `scripts/build-inpage.mjs` rewrites
@@ -48,8 +64,12 @@ export const BUILD_STEPS = ["scripts/build-inpage.mjs", "scripts/build-agent.mjs
 /** What a rebuild needs. Only checked when there is one to run: a current bundle starts without esbuild. */
 export const BUILD_PACKAGES = ["esbuild"];
 
-/** What the bundle itself imports at run time. Missing means the server cannot start, however fresh the bundle is. */
-export const RUNTIME_PACKAGES = ["@modelcontextprotocol/sdk"];
+/**
+ * What the bundle itself imports at run time: every package the build keeps external. Missing means the server cannot
+ * start, however fresh the bundle is, and checked here it says so before node's own error, which names the package and
+ * not the install to run.
+ */
+export const RUNTIME_PACKAGES = AGENT_EXTERNALS;
 
 /** Everything a rebuild and a start need together. All are missing together when node_modules is not installed. */
 export const REQUIRED_PACKAGES = [...BUILD_PACKAGES, ...RUNTIME_PACKAGES];
@@ -84,13 +104,20 @@ async function newestUnder(dir, skip) {
   return newest;
 }
 
-/** The newest source file under `dirs` of `root`, as `{ file, mtimeMs }`, or null. `GENERATED_DIRS` are not sources. */
-export async function newestSource(root, dirs = SOURCE_DIRS) {
+/**
+ * The newest source under `dirs` of `root`, or among `files`, as `{ file, mtimeMs }`, or null. `GENERATED_DIRS` are not
+ * sources, and a file of `files` that does not exist is not one either.
+ */
+export async function newestSource(root, dirs = SOURCE_DIRS, files = SOURCE_FILES) {
   const skip = new Set(GENERATED_DIRS.map((dir) => path.join(root, dir)));
   let newest = null;
-  for (const dir of dirs) {
-    const found = await newestUnder(path.join(root, dir), skip);
+  const consider = (found) => {
     if (found && (!newest || found.mtimeMs > newest.mtimeMs)) newest = found;
+  };
+  for (const dir of dirs) consider(await newestUnder(path.join(root, dir), skip));
+  for (const file of files) {
+    const full = path.join(root, file);
+    consider(await stat(full).then((stats) => ({ file: full, mtimeMs: stats.mtimeMs }), () => null));
   }
   return newest;
 }
@@ -99,7 +126,7 @@ export async function newestSource(root, dirs = SOURCE_DIRS) {
  * Why the bundle has to be rebuilt, or null when it does not: it exists and no source file is newer than it. Equal
  * timestamps are up to date, since a build writes the bundle after the sources it read.
  */
-export async function staleness(root, dirs = SOURCE_DIRS) {
+export async function staleness(root, dirs = SOURCE_DIRS, files = SOURCE_FILES) {
   let bundle;
   try {
     bundle = await stat(path.join(root, BUNDLE));
@@ -107,7 +134,7 @@ export async function staleness(root, dirs = SOURCE_DIRS) {
     return `${BUNDLE} is missing`;
   }
   if (!bundle.isFile()) return `${BUNDLE} is not a file`;
-  const newest = await newestSource(root, dirs);
+  const newest = await newestSource(root, dirs, files);
   if (!newest || newest.mtimeMs <= bundle.mtimeMs) return null;
   return `${BUNDLE} is older than ${path.relative(root, newest.file)}`;
 }
@@ -147,9 +174,9 @@ export function runBuildStep(root, script) {
  * The path to a bundle that is not older than its sources, building it first when it is. Reports what it did through
  * `log` and throws a `LauncherError` when the bundle is stale and cannot be built.
  */
-export async function ensureBundle({ root = ROOT, dirs = SOURCE_DIRS, run = runBuildStep, log = () => {} } = {}) {
+export async function ensureBundle({ root = ROOT, dirs = SOURCE_DIRS, files = SOURCE_FILES, run = runBuildStep, log = () => {} } = {}) {
   const bundle = path.join(root, BUNDLE);
-  const reason = await staleness(root, dirs);
+  const reason = await staleness(root, dirs, files);
   if (!reason) {
     // A current bundle still imports its dependencies. Saying so here rather than letting the import fail is what makes
     // this path read like the one below: node's own ERR_MODULE_NOT_FOUND names the package and not what to do about it.

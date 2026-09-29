@@ -1,11 +1,12 @@
 // Bundles the agent entry points into dist/cli.mjs and dist/mcp.mjs (agent access spec section 3).
 //   node scripts/build-agent.mjs
-// Native and heavy packages stay external, so both bundles run from the repo with its node_modules present. An entry
-// point that is not written yet is skipped with a warning, so the build works while the tracks land one by one.
-import { chmod, mkdir, readFile, rename, rm, stat } from "node:fs/promises";
+// Native and heavy packages stay external, so both bundles run from the repo with its node_modules present. A missing
+// entry point fails the build, like any other broken import: CI builds the bundles, and a warning there went unseen.
+import { chmod, mkdir, readFile, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
+import { AGENT_EXTERNALS } from "./agent-externals.mjs";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const OUT = path.join(ROOT, "dist");
@@ -15,21 +16,6 @@ const entries = [
   { name: "mcp", entry: "src/agent/mcp.ts" },
 ];
 
-/**
- * Packages the bundle must not inline: native bindings (sharp, wawoff2), the browser driver and its Chromium, and the
- * MCP SDK, which ships its own ESM. They resolve from node_modules at run time.
- */
-const external = [
-  "playwright-core",
-  "@sparticuz/chromium",
-  "sharp",
-  "fontkit",
-  "css-tree",
-  "undici",
-  "ipaddr.js",
-  "wawoff2",
-  "@modelcontextprotocol/sdk",
-];
 
 /** The `@/` alias, read from tsconfig.json so it cannot drift from the one TypeScript uses. */
 const aliasFromTsconfig = async () => {
@@ -52,24 +38,11 @@ import { createRequire as __createRequire } from "node:module";
 const require = __createRequire(import.meta.url);
 `;
 
-const exists = async (file) => {
-  try {
-    return (await stat(file)).isFile();
-  } catch {
-    return false;
-  }
-};
-
 const alias = await aliasFromTsconfig();
 await mkdir(OUT, { recursive: true });
 
-let built = 0;
 for (const { name, entry } of entries) {
   const entryPoint = path.join(ROOT, entry);
-  if (!(await exists(entryPoint))) {
-    console.warn(`build-agent: skipping ${entry}, it is not written yet`);
-    continue;
-  }
   const outfile = path.join(OUT, `${name}.mjs`);
   // Built under a temporary name and renamed into place, so the bundle is never half written: two MCP launchers can
   // start inside the build window and both run this, and one importing dist/mcp.mjs while the other's esbuild is still
@@ -84,7 +57,7 @@ for (const { name, entry } of entries) {
       platform: "node",
       format: "esm",
       target: "node22",
-      external,
+      external: AGENT_EXTERNALS,
       alias,
       banner: { js: banner },
       logLevel: "warning",
@@ -96,7 +69,4 @@ for (const { name, entry } of entries) {
     throw error;
   }
   console.log(`build-agent: wrote ${path.relative(ROOT, outfile)}`);
-  built += 1;
 }
-
-if (built === 0) console.warn("build-agent: nothing to build yet");

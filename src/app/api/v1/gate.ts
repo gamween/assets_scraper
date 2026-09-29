@@ -200,5 +200,11 @@ export function parseSelectionParams(params: URLSearchParams): SelectionParams {
   const nameContains = params.get("nameContains");
   // Cut, because it is echoed back in the archive's manifest: a caller has no use for a needle longer than a file name.
   if (nameContains !== null && nameContains.trim() !== "") options.nameContains = nameContains.trim().slice(0, MAX_NAME_CONTAINS);
+  // The same switch the CLI (`--include-icons`) and the MCP tool take, so all three surfaces accept one input.
+  const includeIcons = params.get("includeIcons");
+  if (includeIcons !== null) {
+    if (includeIcons !== "true" && includeIcons !== "false") return { ok: false, message: "includeIcons must be true or false." };
+    if (includeIcons === "true") options.includeIcons = true;
+  }
   return { ok: true, options };
 }

@@ -37,8 +37,12 @@ export interface AgentScan {
 }
 
 export interface ScanSourceOptions {
+  /** The hosted app to scan against. `ASSETS_SCRAPER_REMOTE` when left out, and a local scan when neither names one. */
   remote?: string;
+  /** Its agent token. `ASSETS_SCRAPER_TOKEN` when left out. */
   token?: string;
+  /** The deployment's access code, when it has one. `ASSETS_SCRAPER_ACCESS_CODE` when left out. */
+  accessCode?: string;
 }
 
 export interface ScanSource {

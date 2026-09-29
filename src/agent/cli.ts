@@ -1,5 +1,3 @@
-import fs from "node:fs";
-import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import pkg from "../../package.json";
 import { AssetKind, AssetRole } from "@/lib/contract";
@@ -7,14 +5,15 @@ import { formatBytes, formatCount, formatDimensions, formatDuration } from "@/li
 import { ScanFailure } from "@/server/errors";
 import { findRecentScan, saveScan } from "./cache";
 import { downloadAssets } from "./download";
+import { isEntry } from "./entry";
 import { listInstalledFonts } from "./font-manifest";
 import { formatFontInstall, formatFontList, formatFontUninstall } from "./font-report";
 import { installFonts, uninstallFonts } from "./fonts";
 import { agentLimits } from "./limits";
 import { normalizeScanUrl } from "./scan-url";
-import { createLocalScanSource } from "./source-local";
-import { createRemoteScanSource } from "./source-remote";
+import { createScanSource, remoteBaseUrl } from "./source";
 import { summarize } from "./summary";
+import { printable, terminalText } from "./terminal";
 import type { AgentScan, DownloadResult, DropReason, ScanSource, ScanSummary, SelectionOptions, SelectionProfile } from "./types";
 
 /**
@@ -52,13 +51,14 @@ Options
                         Default: ${agentLimits.maxTotalBytes}
   --max-file-bytes N    Bytes one file may take under the deck profile, 0 to lift it. Default: ${agentLimits.maxFileBytes}
   --name-contains TEXT  Only assets whose name holds TEXT
-  --include-icons       Keep icons the deck profile would drop
+  --include-icons       Keep icons the deck profile would drop, at any size. --role icon does the same
   --families "A,B"      Font families to install or remove, as scan reported them
   --json                Print JSON instead of a report
   --refresh             Scan again instead of reusing a scan of the last hour
   --remote              Scan on the hosted app. Needs ASSETS_SCRAPER_TOKEN
   --remote-url URL      The hosted app to use. Default: ASSETS_SCRAPER_REMOTE, then ${DEFAULT_REMOTE}
-  --token TOKEN         Agent token for the hosted app. Default: ASSETS_SCRAPER_TOKEN
+  --token TOKEN         Agent token for the hosted app. Prefer ASSETS_SCRAPER_TOKEN: other users of this
+                        machine can read a command line in ps, and a shell keeps it in its history
   --help, --version
 
 Examples
@@ -191,13 +191,14 @@ export function scanUrl(raw: string): string {
   return url;
 }
 
-/** Where the scan runs (spec 2): the hosted app when `--remote`, `--remote-url` or `ASSETS_SCRAPER_REMOTE` names one. */
+/**
+ * Where the scan runs (spec 2): the hosted app `--remote-url` or `ASSETS_SCRAPER_REMOTE` names, `DEFAULT_REMOTE` on a
+ * bare `--remote`, and this machine otherwise. The source itself comes from `createScanSource`, like the MCP server's.
+ */
 export function openSource(values: Values): ScanSource {
-  const named = asString(values, "remote-url")?.trim() || process.env.ASSETS_SCRAPER_REMOTE?.trim() || "";
-  const remote = named || (values.remote === true ? DEFAULT_REMOTE : "");
-  if (remote === "") return createLocalScanSource();
+  const remote = asString(values, "remote-url")?.trim() || remoteBaseUrl() || (values.remote === true ? DEFAULT_REMOTE : "");
   const token = asString(values, "token");
-  return createRemoteScanSource({ remote, ...(token === undefined ? {} : { token }) });
+  return createScanSource({ remote, ...(token === undefined ? {} : { token }) });
 }
 
 /**
@@ -217,8 +218,9 @@ export async function scanPage(url: string, source: ScanSource, values: Values):
   return { scan, reused: false };
 }
 
-const line = (text: string): void => {
-  process.stdout.write(`${text}\n`);
+/** One answer on stdout: JSON as it is, since it escapes every control character, and a report made terminal safe. */
+const line = (text: string, json = false): void => {
+  process.stdout.write(`${json ? text : terminalText(text)}\n`);
 };
 
 /** "8 icons, 4 too small", the one line a report gives to why files were not taken. */
@@ -233,44 +235,47 @@ export function formatDropped(dropped: Partial<Record<DropReason, number>>): str
 const total = (dropped: Partial<Record<DropReason, number>>): number =>
   Object.values(dropped).reduce((sum, count) => sum + (count ?? 0), 0);
 
+/** The line a report opens with: the page's title and host, both text the page controls. */
+const pageLine = (page: { title: string; host: string }): string => `${printable(page.title || page.host)} (${printable(page.host)})`;
+
 export function formatSummary(summary: ScanSummary, reused: boolean): string {
   const rows: string[] = [];
-  rows.push(`${summary.page.title || summary.page.host} (${summary.page.host})`);
-  rows.push(`  url: ${summary.page.finalUrl}`);
+  rows.push(pageLine(summary.page));
+  rows.push(`  url: ${printable(summary.page.finalUrl)}`);
   const counts = summary.counts;
   rows.push(
     `  ${formatCount(counts.assets, "asset")}: ${counts.svg} svg, ${counts.images} images, ` +
       `${formatCount(counts.fonts, "font family", "font families")}, ${counts.hidden} hidden, in ${formatDuration(summary.durationMs)}`,
   );
   if (summary.palette.length > 0) {
-    rows.push(`  palette: ${summary.palette.map((swatch) => (swatch.role ? `${swatch.hex} ${swatch.role}` : swatch.hex)).join(", ")}`);
+    rows.push(`  palette: ${summary.palette.map((swatch) => printable(swatch.role ? `${swatch.hex} ${swatch.role}` : swatch.hex)).join(", ")}`);
   }
   for (const font of summary.fonts) {
     const notes = [`${font.license} licence`, font.usedOnPage ? "used on the page" : "declared only", font.installable ? "installable" : "not installable"];
-    rows.push(`  font: ${font.family} (${notes.join(", ")})`);
+    rows.push(`  font: ${printable(font.family)} (${notes.join(", ")})`);
   }
   if (summary.logos.length > 0) {
     rows.push("  logos:");
     for (const logo of summary.logos) {
       // The format and the size, not just the kind: v1 gives role `logo` to a hero photo as well as to a wordmark.
       const size = [formatDimensions(logo.width, logo.height) || "size unknown", logo.bytes === undefined ? "" : formatBytes(logo.bytes)];
-      rows.push(`    ${logo.id}  ${logo.name}  ${logo.format}  ${size.filter(Boolean).join(", ")}`);
+      rows.push(`    ${printable(logo.id)}  ${printable(logo.name)}  ${logo.format}  ${size.filter(Boolean).join(", ")}`);
     }
   }
   if (summary.otherAssets > 0) rows.push(`  and ${formatCount(summary.otherAssets, "other asset")}`);
-  for (const warning of summary.warnings) rows.push(`  warning: ${warning}`);
+  for (const warning of summary.warnings) rows.push(`  warning: ${printable(warning)}`);
   rows.push(`  scan id: ${summary.scanId}${reused ? " (reused from the cache, --refresh to scan again)" : ""}`);
   return rows.join("\n");
 }
 
 export function formatDownload(result: DownloadResult): string {
   const rows: string[] = [];
-  rows.push(`wrote ${formatCount(result.files.length, "file")}, ${formatBytes(result.totalBytes)} into ${result.dir}`);
-  for (const file of result.files) rows.push(`  ${file.path}`);
+  rows.push(`wrote ${formatCount(result.files.length, "file")}, ${formatBytes(result.totalBytes)} into ${printable(result.dir)}`);
+  for (const file of result.files) rows.push(`  ${printable(file.path)}`);
   const missed = total(result.dropped);
   if (missed > 0) rows.push(`dropped ${missed}: ${formatDropped(result.dropped)}`);
-  for (const failure of result.failed) rows.push(`failed: ${failure.name} (${failure.reason})`);
-  rows.push(`manifest: ${result.manifestPath}`);
+  for (const failure of result.failed) rows.push(`failed: ${printable(failure.name)} (${printable(failure.reason)})`);
+  rows.push(`manifest: ${printable(result.manifestPath)}`);
   return rows.join("\n");
 }
 
@@ -297,19 +302,19 @@ async function runFonts(positionals: string[], values: Values): Promise<number> 
         pageHost: scan.page.host,
         ...(named === undefined ? {} : { only: named }),
       });
-      line(values.json === true ? JSON.stringify(report) : formatFontInstall(report));
+      line(values.json === true ? JSON.stringify(report) : formatFontInstall(report), values.json === true);
       return 0;
     }
     case "list": {
       const fonts = await listInstalledFonts();
-      line(values.json === true ? JSON.stringify({ fonts }) : formatFontList(fonts));
+      line(values.json === true ? JSON.stringify({ fonts }) : formatFontList(fonts), values.json === true);
       return 0;
     }
     case "uninstall": {
       const families = [...positionals.slice(2), ...(named ?? [])];
       if (families.length === 0) throw new UsageError("fonts uninstall needs a family: assets-scraper fonts uninstall Inter");
       const result = await uninstallFonts(families);
-      line(values.json === true ? JSON.stringify(result) : formatFontUninstall(result));
+      line(values.json === true ? JSON.stringify(result) : formatFontUninstall(result), values.json === true);
       return 0;
     }
     default:
@@ -328,7 +333,7 @@ async function runScan(url: string | undefined, values: Values): Promise<number>
   selectionFrom(values);
   const { scan, reused } = await scanPage(scanUrl(url), openSource(values), values);
   const summary = summarize(scan);
-  line(values.json === true ? JSON.stringify(summary) : formatSummary(summary, reused));
+  line(values.json === true ? JSON.stringify(summary) : formatSummary(summary, reused), values.json === true);
   return 0;
 }
 
@@ -339,8 +344,8 @@ async function runGet(url: string | undefined, values: Values): Promise<number> 
   const { scan } = await scanPage(target, source, values);
   const out = asString(values, "out");
   const result = await downloadAssets(scan, source, { ...selectionFrom(values), ...(out === undefined ? {} : { dest: out }) });
-  if (values.json === true) line(JSON.stringify({ scanId: scan.scanId, page: scan.page, ...result }));
-  else line(`${scan.page.title || scan.page.host} (${scan.page.host})\n${formatDownload(result)}`);
+  if (values.json === true) line(JSON.stringify({ scanId: scan.scanId, page: scan.page, ...result }), true);
+  else line(`${pageLine(scan.page)}\n${formatDownload(result)}`);
   return 0;
 }
 
@@ -382,7 +387,7 @@ export async function main(argv: string[]): Promise<number> {
 /** One line, never a stack: a scan failure keeps its code, so an agent can read what went wrong. */
 function report(error: unknown): number {
   const message = error instanceof ScanFailure ? `${error.code}: ${error.message}` : error instanceof Error ? error.message : String(error);
-  process.stderr.write(`assets-scraper: ${message.replace(/\s+/g, " ").trim()}\n`);
+  process.stderr.write(`assets-scraper: ${printable(message).replace(/\s+/g, " ").trim()}\n`);
   return 1;
 }
 
@@ -394,18 +399,7 @@ export async function run(argv: string[] = process.argv.slice(2)): Promise<numbe
   }
 }
 
-/** True when this file is what node was asked to run, so importing it from a test runs nothing. */
-function isEntry(): boolean {
-  const argv = process.argv[1];
-  if (!argv) return false;
-  try {
-    return fs.realpathSync(argv) === fs.realpathSync(fileURLToPath(import.meta.url));
-  } catch {
-    return false;
-  }
-}
-
-if (isEntry()) {
+if (isEntry(import.meta.url)) {
   void run().then((code) => {
     process.exitCode = code;
     // Nothing should hold the loop open once a command is done, and a socket that does must not hang an agent.

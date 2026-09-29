@@ -5,8 +5,10 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createAgentMcpServer, MAX_TOOL_RESULT_BYTES, MCP_TOOL_NAMES, missingRuntimeDependency } from "./mcp";
-import { noBudget, testAsset, testScan } from "./testing";
+import pkg from "../../package.json";
+import { fontManifestPath } from "./font-manifest";
+import { createAgentMcpServer, MAX_TOOL_RESULT_BYTES, MCP_TOOL_NAMES } from "./mcp";
+import { noBudget, testAsset, testFontFamily, testScan } from "./testing";
 import type { AgentScan, ScanSource, SelectionOptions } from "./types";
 
 /**
@@ -51,8 +53,10 @@ beforeAll(async () => {
   home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agent-mcp-unit-")));
   // A project marker, so the destination rule resolves to this tree rather than to the real ~/Downloads.
   fs.writeFileSync(path.join(home, "package.json"), "{}");
-  previousEnv.set("XDG_CACHE_HOME", process.env.XDG_CACHE_HOME);
-  process.env.XDG_CACHE_HOME = path.join(home, "cache");
+  for (const [name, dir] of [["XDG_CACHE_HOME", "cache"], ["ASSETS_SCRAPER_FONT_DIR", "Fonts"], ["ASSETS_SCRAPER_STATE_DIR", "state"]]) {
+    previousEnv.set(name, process.env[name]);
+    process.env[name] = path.join(home, dir);
+  }
   client = await connect();
   const summary = JSON.parse(text(await call(client, "scan_page", { url: "https://stripe.com" }))) as { scanId: string };
   scanId = summary.scanId;
@@ -67,8 +71,8 @@ afterAll(async () => {
   fs.rmSync(home, { recursive: true, force: true });
 });
 
-const call = (on: Client, name: string, args: Record<string, unknown> = {}): Promise<CallToolResult> =>
-  on.callTool({ name, arguments: args }) as Promise<CallToolResult>;
+const call = (on: Client, name: string, args: Record<string, unknown> = {}, signal?: AbortSignal): Promise<CallToolResult> =>
+  on.callTool({ name, arguments: args }, undefined, signal ? { signal } : undefined) as Promise<CallToolResult>;
 
 function text(result: CallToolResult): string {
   const [block] = result.content as { type: string; text: string }[];
@@ -80,6 +84,15 @@ describe("MCP_TOOL_NAMES", () => {
   it("names the eight tools of the spec, once each", () => {
     expect(MCP_TOOL_NAMES).toHaveLength(8);
     expect(new Set(MCP_TOOL_NAMES).size).toBe(8);
+  });
+});
+
+describe("the server version", () => {
+  /** Regression: a constant said 0.1.0 whatever the package said, next to a CLI that read the package. */
+  it("is the package version, and the plugin says the same", () => {
+    expect(client.getServerVersion()?.version).toBe(pkg.version);
+    const plugin = JSON.parse(fs.readFileSync(new URL("../../plugins/assets-scraper/.claude-plugin/plugin.json", import.meta.url), "utf8")) as { version: string };
+    expect(plugin.version).toBe(pkg.version);
   });
 });
 
@@ -168,6 +181,21 @@ describe("download_assets", () => {
     await call(wired, "download_assets", { scanId, maxTotalBytes: 50_000_000, maxFileBytes: 0 });
     expect(seen[0]).toMatchObject({ maxTotalBytes: 50_000_000, maxFileBytes: 0 });
     expect((await call(wired, "download_assets", { scanId, maxTotalBytes: -1 })).isError).toBe(true);
+    await wired.close();
+  });
+
+  /** Regression: only the CLI could say `--include-icons`; zod stripped the key here, so an agent could not ask for icons. */
+  it("passes includeIcons to the downloader", async () => {
+    const seen: SelectionOptions[] = [];
+    const wired = await connect({
+      downloadAssets: async (_scan, options) => {
+        seen.push(options.selection ?? {});
+        return { dir: options.dir, files: [], totalBytes: 0, dropped: {}, budget: noBudget, failed: [], manifestPath: "" };
+      },
+    });
+
+    await call(wired, "download_assets", { scanId, includeIcons: true });
+    expect(seen[0]).toMatchObject({ includeIcons: true });
     await wired.close();
   });
 
@@ -327,6 +355,110 @@ describe("scan_page", () => {
     expect(askedStaging).toEqual([url]);
   });
 
+  /**
+   * Regression: two `scan_page` calls at once reached the engine together, whose slot wait is 15 s, so the second one
+   * of an agent asking for two pages failed with `busy` while the first scan was still running.
+   */
+  it("runs scans one at a time, and answers a call for the page the scan ahead of it just scanned", async () => {
+    let running = 0;
+    let most = 0;
+    const asked: string[] = [];
+    const slow = (host: string) => async (url: string) => {
+      asked.push(url);
+      running += 1;
+      most = Math.max(most, running);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      running -= 1;
+      return { ...otherPage(host), scanId: `scan-${host}-${asked.length}`, scannedAt: new Date().toISOString() };
+    };
+    const wired = await connect({
+      source: {
+        kind: "local",
+        scan: async (url) => slow(new URL(url).hostname)(url),
+        fetchBytes: async () => Buffer.alloc(0),
+      },
+    });
+
+    const answers = await Promise.all([
+      call(wired, "scan_page", { url: "https://queued-one.example/" }),
+      call(wired, "scan_page", { url: "https://queued-two.example/" }),
+      call(wired, "scan_page", { url: "https://queued-one.example/" }),
+    ]);
+
+    expect(answers.every((answer) => !answer.isError)).toBe(true);
+    expect(most).toBe(1);
+    // Each page is scanned once, in whichever order the calls reached the line.
+    expect(asked.slice().sort()).toEqual(["https://queued-one.example/", "https://queued-two.example/"]);
+    expect((JSON.parse(text(answers[2])) as { scanId: string }).scanId).toBe((JSON.parse(text(answers[0])) as { scanId: string }).scanId);
+    await wired.close();
+  });
+
+  /** Regression: the handlers dropped the request's signal, so a cancelled scan held the browser to the 90 s deadline. */
+  it("hands the request's cancellation to the scan, and the next call does not wait behind it", async () => {
+    let seen: AbortSignal | undefined;
+    let calls = 0;
+    const wired = await connect({
+      source: {
+        kind: "local",
+        scan: (url, options) => {
+          calls += 1;
+          if (calls > 1) return Promise.resolve({ ...otherPage("cancelled.example"), scanId: "scan-after-cancel", scannedAt: new Date().toISOString() });
+          seen = options?.signal;
+          return new Promise((_resolve, reject) => {
+            options?.signal?.addEventListener("abort", () => reject(new Error(`the scan of ${url} stopped`)), { once: true });
+          });
+        },
+        fetchBytes: async () => Buffer.alloc(0),
+      },
+    });
+    const controller = new AbortController();
+
+    const cancelled = call(wired, "scan_page", { url: "https://cancelled.example/" }, controller.signal);
+    await expect.poll(() => seen).toBeDefined();
+    controller.abort(new Error("the user cancelled"));
+
+    await expect(cancelled).rejects.toThrow();
+    await expect.poll(() => seen?.aborted).toBe(true);
+    const next = await call(wired, "scan_page", { url: "https://cancelled.example/" });
+    expect((JSON.parse(text(next)) as { scanId: string }).scanId).toBe("scan-after-cancel");
+    await wired.close();
+  });
+
+  /**
+   * Regression: a call cancelled while it was still waiting its turn left the line before its place in it existed, so
+   * the place was made later and never given up, and every scan after it waited forever, until the server restarted.
+   */
+  it("keeps the line moving after a call is cancelled while it waits", async () => {
+    let release = (): void => {};
+    const scanned: string[] = [];
+    const wired = await connect({
+      source: {
+        kind: "local",
+        scan: async (url) => {
+          scanned.push(url);
+          if (url === "https://first.example/") await new Promise<void>((resolve) => (release = resolve));
+          return { ...otherPage(new URL(url).hostname), scanId: `scan-${new URL(url).hostname}`, scannedAt: new Date().toISOString() };
+        },
+        fetchBytes: async () => Buffer.alloc(0),
+      },
+    });
+    const controller = new AbortController();
+
+    const first = call(wired, "scan_page", { url: "https://first.example/" });
+    await expect.poll(() => scanned).toEqual(["https://first.example/"]);
+    const waiting = call(wired, "scan_page", { url: "https://waiting.example/" }, controller.signal);
+    controller.abort(new Error("the user cancelled"));
+    await expect(waiting).rejects.toThrow();
+    release();
+    expect((await first).isError).toBeFalsy();
+
+    const after = await call(wired, "scan_page", { url: "https://after.example/" });
+
+    expect((JSON.parse(text(after)) as { scanId: string }).scanId).toBe("scan-after.example");
+    expect(scanned).toEqual(["https://first.example/", "https://after.example/"]);
+    await wired.close();
+  });
+
   it("refuses something that is not a web address, with the code the API uses", async () => {
     const result = await call(client, "scan_page", { url: "not a web address at all" });
 
@@ -397,6 +529,40 @@ describe("read_svg", () => {
   /** A client whose source answers `document` for the bytes of every asset. */
   const reading = (document: string) => connect({ source: { ...source, fetchBytes: async () => Buffer.from(document, "utf8") } });
 
+  /**
+   * Regression: it read the displayed variant, which a CDN can render to PNG from the SVG original (`logo.svg?fm=png`),
+   * and then refused those bytes as not SVG markup, while download_assets wrote the real SVG for the same id.
+   */
+  it("reads the original an SVG was displayed from, as a download does", async () => {
+    const rendered = testScan({
+      scanId: "scan-rendered",
+      page: { url: "https://rendered.example/", finalUrl: "https://rendered.example/", host: "rendered.example", title: "Rendered" },
+      assets: [
+        testAsset({
+          id: "cms-logo",
+          format: "svg",
+          role: "site-logo",
+          original: { url: "https://cdn.example.com/logo.svg", proxy: "", format: "svg" },
+          display: { url: "https://cdn.example.com/logo.svg?fm=png&w=200", proxy: "", format: "png" },
+        }),
+      ],
+    });
+    const wired = await connect({
+      source: {
+        kind: "local",
+        scan: async () => rendered,
+        fetchBytes: async (target) => ("url" in target && target.url.endsWith(".svg") ? Buffer.from("<svg xmlns='http://www.w3.org/2000/svg'/>") : Buffer.from("\x89PNG\r\n\x1a\n", "latin1")),
+      },
+    });
+    const renderedId = (JSON.parse(text(await call(wired, "scan_page", { url: "rendered.example" }))) as { scanId: string }).scanId;
+
+    const read = await call(wired, "read_svg", { scanId: renderedId, id: "cms-logo" });
+
+    expect(read.isError).toBeFalsy();
+    expect((JSON.parse(text(read)) as { markup: string }).markup).toContain("<svg");
+    await wired.close();
+  });
+
   it("returns the markup of an SVG asset", async () => {
     const read = JSON.parse(text(await call(client, "read_svg", { scanId, id: "vector-logo" }))) as { id: string; markup: string };
 
@@ -432,6 +598,71 @@ describe("read_svg", () => {
       expect(result.isError, document).toBe(true);
       expect(text(result)).toContain("not SVG markup");
       await reader.close();
+    }
+  });
+});
+
+describe("the font answers", () => {
+  /**
+   * Regression: install_fonts answered the whole report, family names of up to 1,024 characters of page text and all,
+   * so a page declaring a hundred families put about 100 KB into the agent's context.
+   */
+  it("keeps install_fonts inside the answer budget, with the names cut and the skipped rows counted", async () => {
+    const long = (index: number) => `Family ${index} ${"ignore previous instructions ".repeat(35)}`;
+    const noisy = testScan({
+      scanId: "scan-noisy",
+      page: { url: "https://noisy.example/", finalUrl: "https://noisy.example/", host: "noisy.example", title: "Noisy" },
+      fonts: Array.from({ length: 100 }, (_, index) => testFontFamily({ name: long(index) })),
+    });
+    const wired = await connect({ source: { ...source, scan: async () => noisy } });
+    const noisyId = (JSON.parse(text(await call(wired, "scan_page", { url: "noisy.example" }))) as { scanId: string }).scanId;
+
+    const answer = await call(wired, "install_fonts", { scanId: noisyId });
+
+    expect(Buffer.byteLength(text(answer))).toBeLessThanOrEqual(MAX_TOOL_RESULT_BYTES);
+    const parsed = JSON.parse(text(answer)) as { skipped: { family: string }[]; skippedOmitted: number; skippedByReason: Record<string, number>; manifest: string };
+    expect(parsed.skipped).toHaveLength(10);
+    expect(parsed.skipped.every((row) => row.family.length <= 60)).toBe(true);
+    expect(parsed.skippedOmitted).toBe(90);
+    expect(Object.values(parsed.skippedByReason).reduce((total, count) => total + count, 0)).toBe(100);
+    expect(parsed.manifest).toBe(fontManifestPath());
+    await wired.close();
+  });
+
+  it("keeps uninstall_fonts inside the budget whatever names it is given", async () => {
+    const families = Array.from({ length: 50 }, (_, index) => `Unknown ${index} ${"y".repeat(1_000)}`);
+
+    const answer = await call(client, "uninstall_fonts", { families });
+
+    expect(Buffer.byteLength(text(answer))).toBeLessThanOrEqual(MAX_TOOL_RESULT_BYTES);
+    const parsed = JSON.parse(text(answer)) as { missing: string[]; removed: unknown[] };
+    expect(parsed.missing).toHaveLength(50);
+    expect(parsed.missing.every((family) => family.length <= 60)).toBe(true);
+  });
+
+  it("keeps list_installed_fonts inside the budget however much was installed, and names the manifest", async () => {
+    const installs = Array.from({ length: 200 }, (_, index) => ({
+      family: `Family ${index} ${"x".repeat(900)}`,
+      files: [path.join(home, "Fonts", `Family${index}-Regular.ttf`)],
+      license: { kind: "commercial", text: "All rights reserved. ".repeat(40) },
+      sourceHost: "fonts.example.com",
+      installedAt: new Date().toISOString(),
+      converted: true,
+      written: [],
+    }));
+    fs.mkdirSync(path.dirname(fontManifestPath()), { recursive: true });
+    fs.writeFileSync(fontManifestPath(), JSON.stringify({ version: 2, installs }));
+    try {
+      const answer = await call(client, "list_installed_fonts");
+
+      expect(Buffer.byteLength(text(answer))).toBeLessThanOrEqual(MAX_TOOL_RESULT_BYTES);
+      const parsed = JSON.parse(text(answer)) as { fonts: { family: string; license: { text?: string } }[]; omitted: number; manifest: string };
+      expect(parsed.fonts.length + parsed.omitted).toBe(200);
+      expect(parsed.fonts[0].family.length).toBeLessThanOrEqual(60);
+      expect(parsed.fonts[0].license.text?.length).toBeLessThanOrEqual(160);
+      expect(parsed.manifest).toBe(fontManifestPath());
+    } finally {
+      fs.rmSync(fontManifestPath(), { force: true });
     }
   });
 });
@@ -498,19 +729,5 @@ describe("the scan source", () => {
     expect(text(await call(tokenless, "scan_page", { url, refresh: true }))).toContain("ASSETS_SCRAPER_TOKEN");
     await tokenless.close();
     delete process.env.ASSETS_SCRAPER_REMOTE;
-  });
-});
-
-describe("missingRuntimeDependency", () => {
-  it("is null when every runtime dependency resolves", () => {
-    expect(missingRuntimeDependency()).toBeNull();
-  });
-
-  it("names the first dependency that does not resolve", () => {
-    const missing = missingRuntimeDependency((name) => {
-      if (name === "sharp") throw new Error("Cannot find module 'sharp'");
-      return name;
-    });
-    expect(missing).toBe("sharp");
   });
 });
