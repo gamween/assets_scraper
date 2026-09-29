@@ -1,4 +1,4 @@
-import { normalizeInputUrl } from "@/lib/url";
+import { normalizeInputUrl, type UrlInputResult } from "@/lib/url";
 import { revokePreviewUrls } from "./preview-urls";
 import { addRecent, readRecent, removeRecent } from "./recent";
 import { startScan, type ScanHandle } from "./scan-client";
@@ -7,6 +7,10 @@ import { dropZipJob } from "./zip-job";
 
 /** Spec 13: the inline message under the input for `invalid-url`. */
 export const INVALID_URL_MESSAGE = "Enter a web address, like linear.app";
+/** Spec 13 `unsupported-port`, inline: the address is a web address, and its port is what cannot be scanned. */
+export const UNSUPPORTED_PORT_MESSAGE = "Only ports 80 and 443 are supported";
+
+const inputMessage = (code: Extract<UrlInputResult, { ok: false }>["code"]) => (code === "unsupported-port" ? UNSUPPORTED_PORT_MESSAGE : INVALID_URL_MESSAGE);
 
 let current: ScanHandle | null = null;
 
@@ -93,15 +97,16 @@ export function runScan(url: string, host: string, history: HistoryMode = "push"
 }
 
 /**
- * Normalizes user input and scans it. When the input is not a URL it only shows the inline error under the field the
- * user typed in (spec 13 `invalid-url`) and returns false: a scan in flight, its results and the address bar stay.
+ * Normalizes user input and scans it. When the input cannot be scanned it only shows the inline error under the field
+ * the user typed in (spec 13 `invalid-url`, `unsupported-port`) and returns false: a scan in flight, its results and
+ * the address bar stay.
  */
 export function submitUrl(raw: string, history: HistoryMode = "push"): boolean {
   const result = normalizeInputUrl(raw);
   if (!result.ok) {
     const store = appStore.getState();
     store.setInput(raw);
-    store.setInputError(INVALID_URL_MESSAGE);
+    store.setInputError(inputMessage(result.code));
     return false;
   }
   runScan(result.url, result.host, history);
@@ -148,10 +153,10 @@ export function syncFromLocation(): void {
   }
   const result = normalizeInputUrl(raw);
   if (!result.ok) {
-    // `/?url=` with something that is not a URL: the landing with the inline message, at `/` like any landing.
+    // `/?url=` with something that cannot be scanned: the landing with the inline message, at `/` like any landing.
     leaveResults();
     store.reset(raw);
-    appStore.getState().setInputError(INVALID_URL_MESSAGE);
+    appStore.getState().setInputError(inputMessage(result.code));
     writeHistory("/", "replace");
     return;
   }

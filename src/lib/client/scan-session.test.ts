@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { inlinePreviewUrl } from "./preview-urls";
-import { cancelScan, goHome } from "./scan-session";
+import { cancelScan, goHome, INVALID_URL_MESSAGE, submitUrl, UNSUPPORTED_PORT_MESSAGE } from "./scan-session";
 import { appStore } from "./store";
 import { makeAsset } from "./testing";
 import { beginZipJob, isCurrentZipJob } from "./zip-job";
@@ -13,6 +13,15 @@ describe("scan session", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     appStore.getState().reset("");
+  });
+
+  it("names the port, not the address, when only the port cannot be scanned", () => {
+    expect(submitUrl("staging.example.com:8080")).toBe(false);
+    expect(appStore.getState().inputError).toBe(UNSUPPORTED_PORT_MESSAGE);
+    expect(appStore.getState().input).toBe("staging.example.com:8080");
+
+    expect(submitUrl("not a url")).toBe(false);
+    expect(appStore.getState().inputError).toBe(INVALID_URL_MESSAGE);
   });
 
   it.each([
