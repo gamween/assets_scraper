@@ -1,10 +1,12 @@
-import { expect, test, type Page, type TestInfo } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { diagnostics, findAsset, loadFixture } from "./support/fixtures";
 import { installControlledScan, mockScan, openResults } from "./support/routes";
 
 /**
- * Responsive screenshots (spec 15 visual QA). Not pixel-compared: they are attached to the report for review. Each
- * screen also checks the layout rules of spec 12.6 that a screenshot review would catch.
+ * The layout rules of spec 12.6 at the three reference viewports (spec 15), on every screen: columns per breakpoint, a
+ * sticky top bar, a selection bar inside the viewport, and nothing that scrolls sideways. These used to save a
+ * screenshot per screen that nothing compared and that a green run threw away; the rules are what a review of them
+ * would have checked.
  */
 const VIEWPORTS = [
   { name: "desktop", width: 1470, height: 956, columns: 6 },
@@ -15,12 +17,9 @@ const VIEWPORTS = [
 const linear = loadFixture("linear");
 const siteLogo = findAsset(linear, (a) => a.role === "site-logo" && a.width === 88);
 
-async function capture(page: Page, testInfo: TestInfo, name: string) {
-  // Let lazy previews and fades settle.
-  await page.waitForTimeout(400);
-  const path = testInfo.outputPath(`${name}.png`);
-  await page.screenshot({ path });
-  await testInfo.attach(name, { path, contentType: "image/png" });
+/** Nothing on the screen scrolls sideways, once the web fonts that set every line's width have loaded. */
+async function expectNoSidewaysScroll(page: Page, name: string) {
+  await page.evaluate(() => document.fonts.ready.then(() => {}));
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
   expect(overflow, `${name} scrolls horizontally`).toBeLessThanOrEqual(0);
 }
@@ -29,14 +28,14 @@ for (const viewport of VIEWPORTS) {
   test.describe(`${viewport.name} ${viewport.width}x${viewport.height}`, () => {
     test.use({ viewport: { width: viewport.width, height: viewport.height } });
 
-    test("landing", async ({ page }, testInfo) => {
+    test("landing", async ({ page }) => {
       await page.addInitScript(() => localStorage.setItem("assets-scraper:recent", JSON.stringify(["vercel.com", "ripple.com"])));
       await page.goto("/");
       await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
-      await capture(page, testInfo, `landing-${viewport.width}`);
+      await expectNoSidewaysScroll(page, `landing-${viewport.width}`);
     });
 
-    test("scanning", async ({ page }, testInfo) => {
+    test("scanning", async ({ page }) => {
       const scan = await installControlledScan(page);
       await page.goto("/");
       await page.getByRole("textbox", { name: "Page URL" }).fill("linear.app");
@@ -48,28 +47,28 @@ for (const viewport of VIEWPORTS) {
         linear.find((event) => event.type === "page")!,
       );
       await expect(page.getByTestId("scan-status")).toBeVisible();
-      await capture(page, testInfo, `scanning-${viewport.width}`);
+      await expectNoSidewaysScroll(page, `scanning-${viewport.width}`);
     });
 
-    test("results", async ({ page }, testInfo) => {
+    test("results", async ({ page }) => {
       await openResults(page);
       const columns = await page.locator(".asset-grid").first().evaluate((grid) => getComputedStyle(grid).gridTemplateColumns.split(" ").length);
       expect(columns).toBe(viewport.columns);
-      await capture(page, testInfo, `results-${viewport.width}`);
+      await expectNoSidewaysScroll(page, `results-${viewport.width}`);
 
       // The top bar and the filter row stay in place while the grid scrolls.
       await page.mouse.wheel(0, 1200);
       await expect.poll(() => page.locator("header").first().boundingBox().then((box) => box?.y)).toBe(0);
-      await capture(page, testInfo, `results-scrolled-${viewport.width}`);
+      await expectNoSidewaysScroll(page, `results-scrolled-${viewport.width}`);
     });
 
-    test("detail", async ({ page }, testInfo) => {
+    test("detail", async ({ page }) => {
       await openResults(page, { query: `&asset=${siteLogo.id}` });
       await expect(page.getByRole("dialog")).toBeVisible();
-      await capture(page, testInfo, `detail-${viewport.width}`);
+      await expectNoSidewaysScroll(page, `detail-${viewport.width}`);
     });
 
-    test("selection bar", async ({ page }, testInfo) => {
+    test("selection bar", async ({ page }) => {
       await openResults(page);
       const cards = page.getByTestId("asset-card");
       for (const index of [0, 1, 3]) await cards.nth(index).locator("[data-card-main]").click({ modifiers: ["ControlOrMeta"] });
@@ -80,17 +79,17 @@ for (const viewport of VIEWPORTS) {
       const box = (await bar.boundingBox())!;
       expect(box.x).toBeGreaterThanOrEqual(0);
       expect(box.x + box.width).toBeLessThanOrEqual(viewport.width);
-      await capture(page, testInfo, `selection-${viewport.width}`);
+      await expectNoSidewaysScroll(page, `selection-${viewport.width}`);
     });
 
-    test("error", async ({ page }, testInfo) => {
+    test("error", async ({ page }) => {
       await mockScan(page, [
         { type: "accepted", scanId: diagnostics.scanId, url: "https://linear.app/" },
         { type: "error", code: "internal", message: "internal", diagnostics },
       ]);
       await page.goto(`/?url=${encodeURIComponent("https://linear.app/")}`);
       await expect(page.getByTestId("error-panel")).toBeVisible();
-      await capture(page, testInfo, `error-${viewport.width}`);
+      await expectNoSidewaysScroll(page, `error-${viewport.width}`);
     });
   });
 }
