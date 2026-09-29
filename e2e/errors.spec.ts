@@ -62,6 +62,20 @@ test.describe("error states", () => {
     await expect(page.getByTestId("top-bar-url")).toBeVisible();
   });
 
+  test("an event this tab cannot render shows the error page, not a blank screen", async ({ page }) => {
+    // A deploy newer than the tab can send an asset in a shape it does not know. Rendering it threw, and Next's
+    // client-side exception screen replaced the whole page, with no way back but the address bar.
+    const events = loadFixture("linear");
+    const done = events.findIndex((event) => event.type === "done");
+    const unknownShape = { type: "assets", items: [{ id: "from-the-future", kind: "svg" }] } as unknown as ScanEvent;
+    await mockScan(page, [...events.slice(0, done), unknownShape, ...events.slice(done)]);
+    await page.goto(`/?url=${encodeURIComponent("https://linear.app/")}`);
+    const error = page.getByTestId("app-error");
+    await expect(error.getByRole("heading", { level: 1 })).toHaveText("Something went wrong on our side");
+    await error.getByRole("button", { name: "Start again" }).click();
+    await expect(page.getByRole("heading", { level: 1, name: "Every SVG, image and font on a page." })).toBeVisible();
+  });
+
   test("a scan that fails offline blames the connection, not the service", async ({ page, context }) => {
     await page.goto("/");
     await context.setOffline(true);
