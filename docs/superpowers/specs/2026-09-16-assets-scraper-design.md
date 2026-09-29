@@ -84,7 +84,7 @@ The route handler is a thin adapter that runs the gate and writes events as NDJS
 | `src/lib/format.ts` | Bytes, dimensions, counts formatting | none |
 | `src/lib/ndjson.ts` | NDJSON encoder (server) and streaming line decoder (client) | contract |
 | `src/server/config/limits.ts` | Every limit and budget in one place, env-overridable | none |
-| `src/server/net/ip.ts` | `isPublicIp`, `resolvePublicHost`, own-host checks | ipaddr.js |
+| `src/server/net/ip.ts` | `isPublicIp`, `resolvePublicAddresses`, own-host checks | ipaddr.js |
 | `src/server/net/safe-fetch.ts` | undici Agent with checked DNS lookup, manual redirects re-validated, byte and time caps | undici, ip |
 | `src/server/net/egress-proxy.ts` | Per-scan HTTP/CONNECT proxy that pins checked IPs, ports 80/443 only, byte and socket caps | ip |
 | `src/server/security/sign.ts` | HMAC signing and verification of asset proxy URLs | node:crypto |
@@ -457,7 +457,7 @@ The palette module is a port of the validated lab code (v2 with every fix enable
 ### 11.1 SSRF
 
 - Every Chromium request goes through the per-scan egress proxy. The proxy resolves DNS once, requires every A and AAAA record to be public, connects to the checked IP, allows only ports 80 and 443, denies own hosts, and caps 96 sockets and 400 MB per scan. Playwright proxies loopback too.
-- Every Node request (preflight, verification, probes, manifest, icons, Google Fonts check, Wikidata, asset proxy) goes through `safeFetch` with the same `resolvePublicHost`: undici Agent with a checked `connect.lookup`, IP literals checked separately, `redirect: "manual"` with every hop re-validated (at most 5), timeouts and byte caps.
+- Every Node request (preflight, verification, probes, manifest, icons, Google Fonts check, Wikidata, asset proxy) goes through `safeFetch` with the same `resolvePublicAddresses`: undici Agent with a checked `connect.lookup`, IP literals checked separately, `redirect: "manual"` with every hop re-validated (at most 5), timeouts and byte caps.
 - `isPublicIp`: ipaddr.js `range() === "unicast"` after unwrapping IPv4-mapped IPv6, and an explicit block of `::/96` (IPv4-compatible), which ipaddr.js wrongly classifies as unicast.
 - Own hosts: `VERCEL_URL`, `VERCEL_BRANCH_URL`, `VERCEL_PROJECT_PRODUCTION_URL`, `APP_HOSTS` (comma list) and, in production, `localhost`. This stops a scan from scanning the app itself.
 - Tests only: `SCAN_TEST_ALLOW_HOSTS` accepts exact `host:port` pairs, honored only when `NODE_ENV !== "production"` and `VERCEL` is unset.
