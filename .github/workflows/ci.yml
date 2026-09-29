@@ -74,6 +74,8 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: "${{ env.NODE_VERSION }}", cache: pnpm }
       - run: pnpm install --frozen-lockfile
+      # A cold runner's first Chrome start once took longer than the engine's 20 s launch timeout, so pay it here.
+      - run: timeout 60 /usr/bin/google-chrome --headless=new --dump-dom about:blank > /dev/null
       - run: pnpm test:integration
 
   e2e:
