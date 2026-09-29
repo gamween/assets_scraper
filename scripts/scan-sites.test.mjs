@@ -1,16 +1,28 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import { isEdgeDenial, isFailure, parseArgs, shouldRetry, summarize } from "./scan-sites.mjs";
 
 const script = fileURLToPath(new URL("./scan-sites.mjs", import.meta.url));
 const run = promisify(execFile);
+
+// Every run of the script writes a summary and a file per site, so each test gets its own output root, removed after.
+const roots = [];
+afterEach(async () => {
+  for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
+});
+
+const outDir = async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "scan-sites-"));
+  roots.push(dir);
+  return dir;
+};
 
 /** A scan result as scanSite returns it, with only the fields summarize reads. */
 const result = (over = {}) => ({
@@ -140,7 +152,7 @@ const streamingServer = async (lines) => {
 
 describe("main", () => {
   it("skips NDJSON lines that are valid JSON but not events, instead of losing the scan", async () => {
-    const out = await mkdtemp(path.join(tmpdir(), "scan-sites-"));
+    const out = await outDir();
     // `null` is the damaging one: reading `.type` off it used to throw and turn the whole scan into a transport failure.
     const server = await streamingServer([
       "null",
@@ -163,7 +175,7 @@ describe("main", () => {
   }, 30_000);
 
   it("does not fail the run when the only site without a result is blocked as expected", async () => {
-    const out = await mkdtemp(path.join(tmpdir(), "scan-sites-"));
+    const out = await outDir();
     const server = await blockingServer();
     try {
       const args = [script, "--base", server.base, "--sites", "g2.com", "--retries", "0", "--out", out];
@@ -182,7 +194,7 @@ describe("main", () => {
   }, 30_000);
 
   it("reports an edge denial as never scanned, apart from the sites without a scan result", async () => {
-    const out = await mkdtemp(path.join(tmpdir(), "scan-sites-"));
+    const out = await outDir();
     const server = await denyingServer();
     try {
       const args = [script, "--base", server.base, "--sites", "stripe.com", "--retries", "0", "--out", out];
@@ -199,7 +211,7 @@ describe("main", () => {
   }, 30_000);
 
   it("paces a sweep so it stays under the edge rate limit", async () => {
-    const out = await mkdtemp(path.join(tmpdir(), "scan-sites-"));
+    const out = await outDir();
     const server = await streamingServer([JSON.stringify({ type: "done", partial: false, stats: { durationMs: 1, assets: 0, svg: 0, images: 0, fonts: 0, hidden: {} } })]);
     try {
       const args = [script, "--base", server.base, "--sites", "a.com,b.com,c.com", "--retries", "0", "--pace", "2", "--pace-window", "1200", "--out", out];
@@ -217,7 +229,7 @@ describe("main", () => {
   }, 30_000);
 
   it("exits non zero and dates the run from its start when every site fails", async () => {
-    const out = await mkdtemp(path.join(tmpdir(), "scan-sites-"));
+    const out = await outDir();
     const args = [script, "--base", "http://127.0.0.1:1", "--sites", "example.com", "--retries", "0", "--out", out];
     const failure = await run(process.execPath, args).then(() => null, (error) => error);
     expect(failure?.code).toBe(1);
