@@ -66,7 +66,7 @@ describe("sign", () => {
   it("writes a download name the way it comes back to the handler, so the signed path is the one requested", () => {
     const path = createSigner({ secret, now }).sign("https://a.com/x.png", "Logo (it's dark) ~é!.png");
     expect(path).toContain("&dl=Logo+%28it%27s+dark%29+%7E%C3%A9%21.png");
-    // A browser leaves the query as it is, and the Next server rewrites every query the way URLSearchParams writes it,
+    // A browser leaves the query as it is, and `next start` rewrites every query the way URLSearchParams writes it,
     // before the route runs: either way the handler gets the path the signer wrote.
     expect(queryOf(path)).toBe(path.slice(path.indexOf("?")));
     const rewritten = `?${new URLSearchParams(queryOf(path))}`;

@@ -36,7 +36,7 @@ const mac = (secret: string, expiry: number, url: string, dl = "") =>
  * The query of a signed path, in the one order and encoding the signer writes and `verifyAssetParams` accepts: `u`, `e`,
  * `s`, then `dl` when there is one, then `fmt`, which the client appends last, all as `URLSearchParams` writes them. That
  * encoding is the one that comes through unchanged on the way to the handler: a browser leaves a query it already holds
- * in that form alone, and the Next server rewrites every query into exactly that form before a route sees it.
+ * in that form alone, and `next start` rewrites every query into exactly that form before a route sees it.
  */
 function assetQuery(params: { u: string; e: string; s: string; dl?: string | null; fmt?: string | null }): string {
   const query = new URLSearchParams({ u: params.u, e: params.e, s: params.s });
@@ -88,10 +88,11 @@ const invalid = (message: string) => new HttpError(400, "invalid-params", messag
  * it has two values, and the proxy checks it against the font licence. No caller names its downloads today, so every
  * signed path is an inline one, but a signer given a name signs it with the URL and appends it as `dl`.
  *
- * Next hands a route the query already decoded and encoded again, so a percent-encoding variant of a value arrives
- * in the canonical spelling and cannot be told apart here: what this refuses behind Next is every difference that
- * survives that rewrite (order, a repeated or unknown param, a leading zero in `e`). A variant that gets through is
- * still charged to its caller's share of the proxy budget, like any download.
+ * `next start` hands a route the query already decoded and encoded again, so there a percent-encoding variant of a
+ * value arrives in the canonical spelling and cannot be told apart: what this refuses behind it is every difference that
+ * survives that rewrite (order, a repeated or unknown param, a leading zero in `e`), and a host that passes the query
+ * through as sent gets the variants refused too. A variant that gets through is still charged to its caller's share of
+ * the proxy budget, like any download.
  */
 export function verifyAssetParams(
   search: string,
