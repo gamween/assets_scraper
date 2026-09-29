@@ -47,9 +47,9 @@ export const DEFAULT_CONFIG: PaletteConfig = {
   maxNeutral: 4,
 };
 
-export type PaletteRole = "primary" | "accent" | "background" | "text" | null;
+type PaletteRole = "primary" | "accent" | "background" | "text" | null;
 
-export interface PaletteColor {
+interface PaletteColor {
   hex: string;
   kind: "brand" | "neutral";
   role: PaletteRole;

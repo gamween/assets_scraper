@@ -13,7 +13,7 @@ export class SafeFetchError extends Error {
   }
 }
 
-export const DEFAULT_USER_AGENT = "Mozilla/5.0 (compatible; AssetsScraper/1.0; +https://github.com/gamween/assets_scraper)";
+const DEFAULT_USER_AGENT = "Mozilla/5.0 (compatible; AssetsScraper/1.0; +https://github.com/gamween/assets_scraper)";
 
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 const DNS_CODES = new Set(["ENOTFOUND", "EAI_AGAIN", "EAI_NONAME", "EAI_NODATA", "EAI_FAIL"]);

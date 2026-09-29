@@ -20,10 +20,10 @@ import { sanitizeHost } from "./names";
  */
 
 /** The directory name a download writes into inside a project. */
-export const SCRAP_DIR_NAME = "scrap";
+const SCRAP_DIR_NAME = "scrap";
 
 /** Where the fallback lands, relative to the home directory. */
-export const FALLBACK_SEGMENTS = ["Downloads", "assets-scraper"] as const;
+const FALLBACK_SEGMENTS = ["Downloads", "assets-scraper"] as const;
 
 const PROJECT_MARKERS = ["package.json", "pyproject.toml", ".claude"] as const;
 
@@ -65,7 +65,7 @@ export interface DestinationOptions {
 const isHome = (dir: string): boolean => dir === path.resolve(os.homedir());
 
 /** The git root of `cwd`, or the nearest directory above it holding a project marker, or null. */
-export function findProjectRoot(cwd: string): string | null {
+function findProjectRoot(cwd: string): string | null {
   const start = path.resolve(cwd);
   for (const dir of ancestors(start)) if (!isHome(dir) && fs.existsSync(path.join(dir, ".git"))) return dir;
   for (const dir of ancestors(start)) {

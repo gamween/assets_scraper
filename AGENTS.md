@@ -11,6 +11,8 @@
 - Never insert scraped SVG markup into the DOM. Preview through blob URLs in `<img>`, show code as text.
 - UI copy: English, sentence case, no em dash, no en dash, no exclamation marks, no emojis.
 - In-page code lives in `src/server/scan/inpage/*.src.ts` and is bundled by `pnpm build:inpage` (`pnpm dev` rebuilds it on change). It must not import runtime code from the app: the bundler rejects imports from outside that folder, `import type` is fine.
+- Run `pnpm build:cn` after a `cn` upgrade or a change to `src/components/common/cn-config.mjs`: it compiles the committed `src/components/common/cn-tables.ts`, and `scripts/build-cn-tables.test.mjs` fails while that file is out of date.
+- `pnpm knip` must stay clean, and CI runs it: drop the export of a symbol nothing outside its module uses, and name an entry point knip cannot see in `knip.config.ts` rather than ignoring files.
 
 <!-- BEGIN:nextjs-agent-rules -->
 

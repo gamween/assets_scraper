@@ -15,10 +15,10 @@ import type { AgentScan, ScanSummary } from "./types";
 export const MAX_SUMMARY_BYTES = 4_096;
 
 /** Logo rows a summary shows. Past that, an agent lists assets with the filters it wants. */
-export const MAX_SUMMARY_LOGOS = 8;
-export const MAX_SUMMARY_PALETTE = 12;
-export const MAX_SUMMARY_FONTS = 12;
-export const MAX_SUMMARY_WARNINGS = 5;
+const MAX_SUMMARY_LOGOS = 8;
+const MAX_SUMMARY_PALETTE = 12;
+const MAX_SUMMARY_FONTS = 12;
+const MAX_SUMMARY_WARNINGS = 5;
 /**
  * URLs are cut like every other string here: `ScanRequest` allows 2048 characters and a redirect chain can make the
  * final URL as long again, which on its own blew the budget the rest of the document is cut to keep.

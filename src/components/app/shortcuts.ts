@@ -7,7 +7,7 @@ import { appStore, useApp, type AppState } from "@/lib/client/store";
 import { SEARCH_INPUT_ID } from "@/components/results/filter-bar";
 import { displayHost, normalizeInputUrl } from "@/lib/url";
 
-export function isEditableTarget(target: EventTarget | null): boolean {
+function isEditableTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
   if (target.isContentEditable) return true;
   const tag = target.tagName;
@@ -71,7 +71,7 @@ const TAB_KEYS = { "1": "all", "2": "svg", "3": "images", "4": "fonts" } as cons
  * Which results keys apply: the full set wherever the results grid shows (a finished scan, or a failed one that still
  * delivered assets, like a timeout), and everything but the tabs over the fallback assets of a blocked site.
  */
-export function shortcutScope(state: Pick<AppState, "phase" | "assets" | "fonts" | "error">): "results" | "fallback" | null {
+function shortcutScope(state: Pick<AppState, "phase" | "assets" | "fonts" | "error">): "results" | "fallback" | null {
   if (state.phase === "results") return "results";
   if (state.phase !== "error") return null;
   if (state.assets.length + state.fonts.length > 0) return "results";

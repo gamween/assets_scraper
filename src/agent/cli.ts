@@ -349,7 +349,7 @@ async function runGet(url: string | undefined, values: Values): Promise<number> 
   return 0;
 }
 
-export async function main(argv: string[]): Promise<number> {
+async function main(argv: string[]): Promise<number> {
   let values: Values;
   let positionals: string[];
   try {
@@ -391,7 +391,7 @@ function report(error: unknown): number {
   return 1;
 }
 
-export async function run(argv: string[] = process.argv.slice(2)): Promise<number> {
+async function run(argv: string[] = process.argv.slice(2)): Promise<number> {
   try {
     return await main(argv);
   } catch (error) {

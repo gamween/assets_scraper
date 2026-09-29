@@ -101,7 +101,8 @@ The route handler is a thin adapter that runs the gate and writes events as NDJS
 | `src/server/scan/inpage/palette.src.ts` | In-page palette signal collector (browser code) | none (bundled) |
 | `src/server/scan/inpage/run.ts` | Runs a bundled collector in a CDP isolated world, main-world fallback | playwright-core, generated bundles |
 | `scripts/build-inpage.mjs` | Bundles the two `.src.ts` files with esbuild into IIFE strings in `src/server/scan/inpage/generated/` | esbuild |
-| `src/server/scan/post/parse.ts` | srcset, `url()`, `image-set()` parsers | none |
+| `src/server/scan/inpage/{css-tokens,css-values,srcset}.ts` | CSS tokenizer, `url()`, `image-set()` and `@font-face` `src` readers, srcset parser. The collector bundles all three; post-processing imports the `url()` reader | none |
+| `src/server/scan/post/parse.ts` | Stylesheet URL walk, icon `sizes`, SVG root size, `data:` URIs | css-tree, css-values |
 | `src/server/scan/post/cdn.ts` | `originalCandidates`, `variantKey` | none |
 | `src/server/scan/post/verify.ts` | Original verification and declared URL probes | safe-fetch |
 | `src/server/scan/post/noise.ts` | Noise rules and reasons | none |
@@ -627,7 +628,7 @@ All in `src/server/config/limits.ts`, env-overridable.
 - **Unit (Vitest, node):** URL normalization (hash routes kept, IDN, credentials stripped, ports), `isPublicIp` edge table including `::7f00:1`, signing, NDJSON codec, zod schemas, srcset/`url()`/`image-set()` parsers, CDN rules (table-driven from verified samples), `variantKey`, noise rules, variants merge, roles and scores, naming and filename sanitizing, tone thresholds, `detectBlock` (recorded pages including a false positive), font family resolution and licence detection, unicode-range, palette post-processing on recorded signals, budget store, gate order.
 - **Integration (Vitest, node, real Chrome):** the engine against the fixture site with golden expectations (every edge case listed in section 8), the SSRF suite (redirect to loopback, `nip.io` loopback, literal and IPv6 loopback, `0.0.0.0`, WebSocket, subresources) with zero hits on a victim server, a download URL, a never-ending body, an infinite-loop page (deadline kill and partial result), a heavy page (100k elements, 5k SVGs) within caps, own-host recursion.
 - **E2E (Playwright test, `next start`):** mocked NDJSON streams for landing, progress, results, sections, search, sort, background control, detail navigation and keys, selection, ZIP download content, Copy SVG code (clipboard permission), every error state; plus one real scan of the fixture site through the running app.
-- **Visual QA:** screenshots at 1470x956, 1024x768 and 390x844 of landing, scanning, results and detail, reviewed before release.
+- **Visual QA:** `e2e/layout.spec.ts` asserts the layout rules of section 12.6 in CI: columns per breakpoint, a sticky top bar, the selection bar inside the viewport and no horizontal scroll at 1470x956, 1024x768 and 390x844 on landing, scanning, results, detail, selection and error; page gutters from 360 to 1680 px wide; flat surfaces. A local run also saves a screenshot of each screen for a review before release.
 - **Production checks:** after each production deploy, a script scans the 23 reference sites and records counts, timings and diagnostics; SSRF probes against production must return `blocked-address` or produce no hit.
 - **CI (GitHub Actions, ubuntu):** lint, typecheck, unit, integration (Chrome), E2E on every PR.
 

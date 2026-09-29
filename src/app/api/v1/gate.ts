@@ -65,7 +65,7 @@ export async function gateAgentTarget(input: string | null | undefined, request:
 const PROFILES = new Set<SelectionProfile>(["deck", "all"]);
 
 /** Characters of `nameContains` the endpoint keeps. */
-export const MAX_NAME_CONTAINS = 200;
+const MAX_NAME_CONTAINS = 200;
 
 const list = (value: string): string[] =>
   value

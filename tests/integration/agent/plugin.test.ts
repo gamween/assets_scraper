@@ -121,16 +121,8 @@ describe("the Claude Code plugin manifests", () => {
 });
 
 describe("pnpm build:agent", () => {
-  const source = path.join(ROOT, "src", "agent", "mcp.ts");
-  const entry = path.join(ROOT, "dist", "mcp.mjs");
-
   it("writes the MCP entry point the plugin runs", async () => {
     await promisify(execFile)("pnpm", ["build:agent"], { cwd: ROOT });
-    if (!fs.existsSync(source)) {
-      // Track G3 writes src/agent/mcp.ts. Until it lands the build skips the entry with a warning, by design.
-      expect(fs.existsSync(entry)).toBe(false);
-      return;
-    }
-    expect(read(entry).startsWith("#!/usr/bin/env node")).toBe(true);
+    expect(read(path.join(ROOT, "dist", "mcp.mjs")).startsWith("#!/usr/bin/env node")).toBe(true);
   }, 120_000);
 });

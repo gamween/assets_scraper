@@ -58,7 +58,7 @@ const FETCH_STATUS: Record<SafeFetchErrorCode, number> = {
  * `error.code` values in asset proxy JSON errors. They are not the scan `ErrorCode` enum of the contract: clients
  * handle proxy failures by HTTP status (403, 400, 413, 415, 429, 5xx) and must not parse these bodies with `ApiError`.
  */
-export type AssetProxyErrorCode =
+type AssetProxyErrorCode =
   | "method" | "disabled" | "cross-site" | "invalid-params" | "bad-signature" | "expired" | "budget" | "upstream-status"
   | "too-large" | "unsupported-type" | "not-convertible" | "license" | "busy" | "internal" | SafeFetchErrorCode;
 

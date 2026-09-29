@@ -11,13 +11,13 @@ import { withRenderSlot } from "./render-slot";
  * most the first 256 KB, accepts images only, and reads the full size and the dimensions from what it got.
  */
 
-export const VERIFY_RANGE_BYTES = 262_144;
-export const VERIFY_ACCEPT = "image/png,image/jpeg,image/gif,image/svg+xml,*/*;q=0.5";
+const VERIFY_RANGE_BYTES = 262_144;
+const VERIFY_ACCEPT = "image/png,image/jpeg,image/gif,image/svg+xml,*/*;q=0.5";
 /** A normal desktop Chrome user agent, never "HeadlessChrome". */
 export const BROWSER_USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36";
 
-export type VerifySkipped = { ok: false; reason: "verify-skipped" };
+type VerifySkipped = { ok: false; reason: "verify-skipped" };
 const SKIPPED: VerifySkipped = Object.freeze({ ok: false, reason: "verify-skipped" });
 
 export type VerifyResult =
@@ -102,7 +102,7 @@ const headerDimensions = (b: Buffer, format: AssetFormat): { width: number; heig
  * post-processing sizes SVG markup, rather than parsed whole by librsvg. A raster header is read through the render
  * gate every sharp call shares (see `render-slot.ts`), since up to `verifyConcurrency` probes land at once.
  */
-export async function imageDimensions(body: Buffer, format: AssetFormat, complete: boolean, signal?: AbortSignal): Promise<{ width?: number; height?: number }> {
+async function imageDimensions(body: Buffer, format: AssetFormat, complete: boolean, signal?: AbortSignal): Promise<{ width?: number; height?: number }> {
   if (format === "svg") return complete ? svgSize(body.toString("utf8")) : {};
   const read = await withRenderSlot(
     () => sharp(body, { failOn: "none", limitInputPixels: false }).metadata().catch(() => null), // partial or unsupported

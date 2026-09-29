@@ -18,8 +18,8 @@ import type { ScanErrorInfo } from "./scan-client";
 import { readString, writeString } from "./storage";
 import type { ZipFailure } from "./zip";
 
-export type Phase = "idle" | "scanning" | "results" | "error";
-export type StepStatus = "active" | "done";
+type Phase = "idle" | "scanning" | "results" | "error";
+type StepStatus = "active" | "done";
 
 /** Canonical display order of the scan steps (spec 12.2). */
 export const STEP_ORDER: readonly StepId[] = ["open", "queue", "load", "scroll", "collect", "process"];

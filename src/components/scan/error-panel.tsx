@@ -21,7 +21,7 @@ const CANT_SCAN = "This address can't be scanned";
 const CHECK_ADDRESS = "Check the address and try again.";
 
 /** Spec 13: title, line and actions for every error code, and for `offline`, the client's own. */
-export function errorCopy(error: ScanErrorInfo, host: string): ErrorCopy {
+function errorCopy(error: ScanErrorInfo, host: string): ErrorCopy {
   switch (error.code) {
     case "invalid-url":
       return { title: "Enter a web address, like linear.app", actions: ["try-another"], icon: CircleAlert };
@@ -62,7 +62,7 @@ export function errorCopy(error: ScanErrorInfo, host: string): ErrorCopy {
   }
 }
 
-export function focusAddress() {
+function focusAddress() {
   const input = document.querySelector<HTMLInputElement>("[data-testid=top-bar-url]");
   input?.focus();
   input?.select();

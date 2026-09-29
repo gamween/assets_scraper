@@ -24,7 +24,7 @@ export function parseUnicodeRange(descriptor: string | undefined): CodePointRang
   return ranges.length ? ranges : FULL_RANGE;
 }
 
-export const rangeCovers = (ranges: CodePointRange[], codePoint: number): boolean =>
+const rangeCovers = (ranges: CodePointRange[], codePoint: number): boolean =>
   ranges.some(([start, end]) => codePoint >= start && codePoint <= end);
 
 /** True when the range includes both "A" and "a", the check used to pick the Latin file of a subset family. */

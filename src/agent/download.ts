@@ -65,7 +65,7 @@ export interface DownloadManifest {
   failed: DownloadResult["failed"];
 }
 
-export const MANIFEST_NAME = "manifest.json";
+const MANIFEST_NAME = "manifest.json";
 /**
  * Where the manifest goes when the folder already holds a `manifest.json` this tool did not write: a PWA's
  * `public/manifest.json` or a browser extension's own, reached through a `--out` the user typed. Those are never touched.

@@ -31,7 +31,7 @@ export interface FontSection {
 
 export type Section = AssetSection | FontSection;
 
-export const SECTION_TITLES: Record<SectionId, string> = {
+const SECTION_TITLES: Record<SectionId, string> = {
   logos: "Logos",
   svg: "SVG",
   images: "Images",
@@ -43,7 +43,7 @@ export const SECTION_TITLES: Record<SectionId, string> = {
 };
 
 /** Sections that start collapsed and whose items stay out of the grid and select-all until expanded. */
-export const COLLAPSIBLE_SECTIONS: ReadonlySet<SectionId> = new Set<SectionId>(["small-icons", "stylesheets", "declared-fonts"]);
+const COLLAPSIBLE_SECTIONS: ReadonlySet<SectionId> = new Set<SectionId>(["small-icons", "stylesheets", "declared-fonts"]);
 
 export interface FilterOptions {
   tab: Tab;
@@ -60,7 +60,7 @@ const LOGO_ROLES = new Set<Asset["role"]>(["site-logo", "logo", "favicon"]);
 const EXEMPT_FROM_SMALL = new Set<Asset["role"]>(["site-logo", "logo", "favicon", "social"]);
 const SMALL_ICON_MAX = 48;
 
-export const isLogo = (asset: Asset) => LOGO_ROLES.has(asset.role);
+const isLogo = (asset: Asset) => LOGO_ROLES.has(asset.role);
 
 /**
  * Spec 8.5, the single small-icon rule: longest rendered side <= 48 CSS px, or intrinsic side <= 48 px when the asset
@@ -75,16 +75,16 @@ export function isSmallIcon(asset: Asset): boolean {
   return intrinsic > 0 && intrinsic <= SMALL_ICON_MAX;
 }
 
-export function normalizeQuery(query: string): string {
+function normalizeQuery(query: string): string {
   return query.trim().toLowerCase();
 }
 
-export function assetMatches(asset: Asset, query: string): boolean {
+function assetMatches(asset: Asset, query: string): boolean {
   if (!query) return true;
   return [asset.name, asset.filename, asset.display?.url, asset.original?.url].some((value) => value?.toLowerCase().includes(query));
 }
 
-export function fontMatches(font: FontFamily, query: string): boolean {
+function fontMatches(font: FontFamily, query: string): boolean {
   if (!query) return true;
   const values = [font.name, font.googleFamily, ...font.cssFamilies, ...font.faces.flatMap((face) => face.files.map((file) => file.url))];
   return values.some((value) => value?.toLowerCase().includes(query));

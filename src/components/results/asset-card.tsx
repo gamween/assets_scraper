@@ -16,7 +16,7 @@ import { assetMetaParts, roleBadge } from "./labels";
  * Spec 12.4 click model: checkbox or Cmd/Ctrl+click toggles, Shift+click selects a range in visual order, and once
  * something is selected (or selection mode is on) a plain click toggles too. Otherwise a click opens the detail view.
  */
-export function activateItem(key: string, event: Pick<MouseEvent, "metaKey" | "ctrlKey" | "shiftKey">, open: () => void) {
+function activateItem(key: string, event: Pick<MouseEvent, "metaKey" | "ctrlKey" | "shiftKey">, open: () => void) {
   const state = appStore.getState();
   if (event.shiftKey) state.selectRange(key);
   else if (event.metaKey || event.ctrlKey || state.selection.size > 0 || state.selectionMode) state.toggle(key);

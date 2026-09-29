@@ -153,7 +153,7 @@ export function displayName(input: NameInput): string {
 }
 
 /** Lowercase words joined by dashes. Latin accents are dropped; other scripts are kept. No dots, slashes or controls. */
-export function slugify(text: string): string {
+function slugify(text: string): string {
   return text
     .normalize("NFKD")
     .replace(/(\p{Script=Latin})\p{M}+/gu, "$1")

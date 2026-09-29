@@ -21,7 +21,7 @@ import type { FontInstall } from "./types";
  */
 
 /** Where the manifest lives: `~/.local/state/assets-scraper`, or `ASSETS_SCRAPER_STATE_DIR` or `XDG_STATE_HOME`. */
-export function stateDir(): string {
+function stateDir(): string {
   const override = process.env.ASSETS_SCRAPER_STATE_DIR?.trim();
   if (override) return path.resolve(override);
   const xdg = process.env.XDG_STATE_HOME?.trim();

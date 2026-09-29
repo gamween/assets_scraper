@@ -40,7 +40,7 @@ export const isErrorCode = (value: unknown): value is ErrorCode => typeof value 
  * `offline` is the client's own code, never sent by the server: a request that failed in the browser while it had no
  * connection, which is the user's network and not the service.
  */
-export type ScanErrorCode = ErrorCode | "offline";
+type ScanErrorCode = ErrorCode | "offline";
 
 /** A failed scan, from the gate (JSON, before streaming) or from the stream (`error` event, always the last line). */
 export interface ScanErrorInfo {

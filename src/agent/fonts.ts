@@ -46,7 +46,7 @@ export type FontSkipReason =
   | "write-failed"
   | "unknown-family";
 
-export interface FontSkipped {
+interface FontSkipped {
   family: string;
   reason: FontSkipReason;
   /** The path, the message or the format that explains the reason, when there is one worth printing. */
@@ -159,17 +159,17 @@ async function removeFamilies(families: string[]): Promise<FontUninstallReport> 
  * `src/server/scan/fonts/css.ts`), and `<Family>-<Style>.ttf` has to fit the 255 byte limit of a file name, so it is cut
  * here rather than at the `open` call, the way `sanitizeHost` cuts a host.
  */
-export const MAX_FAMILY_FILE_CHARS = 100;
+const MAX_FAMILY_FILE_CHARS = 100;
 
 /** `Söhne VF` to `SohneVF`: diacritics folded, everything that is not a letter or a digit dropped (spec 5.3). */
-export function fileSafeFamily(name: string): string {
+function fileSafeFamily(name: string): string {
   const folded = name.normalize("NFKD").replace(/\p{Mn}+/gu, "");
   return folded.replace(/[^A-Za-z0-9]+/g, "").slice(0, MAX_FAMILY_FILE_CHARS) || "Font";
 }
 
 
 /** `Inter-Regular.ttf`, `Inter-BoldItalic.ttf`: the style the file name carries, from the face the installer picked. */
-export function styleName(face: Pick<FontFaceInfo, "weight" | "style">): string {
+function styleName(face: Pick<FontFaceInfo, "weight" | "style">): string {
   const weight = WEIGHT_NAMES.get(weightOf(face.weight) ?? 400) ?? "Regular";
   const italic = isItalic(face.style);
   if (!italic) return weight;
