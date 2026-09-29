@@ -185,6 +185,33 @@ test.describe("selection and ZIP", () => {
     expect(downloaded).toBe(false);
   });
 
+  test("keys and pastes stay inside the list of files that couldn't be downloaded", async ({ page }) => {
+    const path = new URL(photo.original!.url).pathname;
+    const { scan } = await openResults(page, { assets: { failDirect: [path], failProxy: [path] } });
+    await cardOf(page, siteLogo.id).hover();
+    await cardOf(page, siteLogo.id).getByRole("checkbox").click();
+    await cardOf(page, photo.id).locator("[data-card-main]").click();
+    await zipEntries(page, () => selectionBar(page).getByRole("button", { name: "Download ZIP" }).click());
+    // Base UI keeps an urgent toast out of the accessibility tree until its region has focus (see the test above).
+    await page.getByTestId("toast").locator("button", { hasText: "Show" }).click();
+    const failures = page.getByRole("dialog", { name: "Files that couldn't be downloaded" });
+    await expect(failures).toBeVisible();
+
+    // Cmd+A selects the list text, not every card behind the dialog; 2 is not the SVG tab; a URL pasted is no scan.
+    await page.keyboard.press("ControlOrMeta+a");
+    await page.keyboard.press("2");
+    await page.evaluate(() => {
+      const data = new DataTransfer();
+      data.setData("text/plain", "stripe.com");
+      document.activeElement!.dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }));
+    });
+    await expect(failures).toBeVisible();
+    await expect(page.locator("[data-testid=asset-card][data-selected]")).toHaveCount(2);
+    // The page behind a modal dialog is out of the accessibility tree, so the tab is found by its id.
+    await expect(page.locator("#tab-all")).toHaveAttribute("aria-selected", "true");
+    expect(scan.bodies).toHaveLength(1);
+  });
+
   test("only one near-black button is on screen at a time", async ({ page }) => {
     await openResults(page);
     const nearBlack = async () =>
