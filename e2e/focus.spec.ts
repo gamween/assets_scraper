@@ -105,3 +105,61 @@ test.describe("keyboard focus ring", () => {
     expect(wrapper).toEqual({ style: "solid", width: "2px", color: ACCENT });
   });
 });
+
+/**
+ * WCAG 1.4.11: the edge of a form control carries 3:1 against its own fill and against what surrounds it, or a pale
+ * field on the pale page reads as no control at all. The fields used to draw it in `--border`, about 1.3:1.
+ */
+async function edgeContrast(locator: Locator) {
+  return locator.evaluate((element) => {
+    // Computed colors come as `rgb(...)` or, from `color-mix`, as `color(srgb r g b)` in 0 to 1.
+    const channels = (value: string) => {
+      const srgb = /color\(srgb ([\d.]+) ([\d.]+) ([\d.]+)/.exec(value);
+      if (srgb) return srgb.slice(1, 4).map((part) => Number(part) * 255);
+      return value.match(/[\d.]+/g)!.slice(0, 3).map(Number);
+    };
+    const opaque = (value: string) => !/rgba\(.*, 0\)$/.test(value) && value !== "transparent";
+    const luminance = (value: string) => {
+      const [r, g, b] = channels(value).map((channel) => {
+        const c = channel / 255;
+        return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+      });
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    const contrast = (a: string, b: string) => {
+      const [light, dark] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+      return (light + 0.05) / (dark + 0.05);
+    };
+    let around: Element | null = element.parentElement;
+    while (around && !opaque(getComputedStyle(around).backgroundColor)) around = around.parentElement;
+    const edge = getComputedStyle(element).borderTopColor;
+    return {
+      fill: contrast(edge, getComputedStyle(element).backgroundColor),
+      around: contrast(edge, getComputedStyle(around ?? document.body).backgroundColor),
+    };
+  });
+}
+
+test.describe("form control edges", () => {
+  test("fields, selects and checkboxes stand out from the page at 3:1", async ({ page }) => {
+    await page.goto("/");
+    const landing = await edgeContrast(page.getByRole("textbox", { name: "Page URL" }));
+    expect(landing.fill, "landing field").toBeGreaterThanOrEqual(3);
+    expect(landing.around, "landing field").toBeGreaterThanOrEqual(3);
+
+    await openResults(page);
+    const card = page.getByTestId("asset-card").first();
+    await card.hover();
+    const controls: [string, Locator][] = [
+      ["top bar field", page.getByTestId("top-bar-url")],
+      ["filter", page.getByRole("searchbox", { name: "Filter by name or URL" })],
+      ["sort", page.getByRole("combobox", { name: "Sort" })],
+      ["card checkbox", card.getByRole("checkbox")],
+    ];
+    for (const [name, locator] of controls) {
+      const { fill, around } = await edgeContrast(locator);
+      expect(fill, `${name} against its fill`).toBeGreaterThanOrEqual(3);
+      expect(around, `${name} against the page`).toBeGreaterThanOrEqual(3);
+    }
+  });
+});

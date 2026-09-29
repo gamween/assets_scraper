@@ -49,6 +49,17 @@ test.describe("phone toolbar", () => {
     await expect(page.getByText("/", { exact: true })).toBeHidden();
   });
 
+  test("text fields and selects read at 16 px, so iOS does not zoom into them", async ({ page }) => {
+    await openResults(page);
+    // iOS Safari zooms into a focused field set under 16 px and never zooms back out: the grid then scrolled sideways.
+    const sizes = await page
+      .locator("input:not([type=checkbox]), select")
+      .evaluateAll((fields) => fields.map((field) => [field.getAttribute("aria-label"), parseFloat(getComputedStyle(field).fontSize)] as const));
+    expect(sizes.map(([label]) => label)).toEqual(expect.arrayContaining(["Page URL", "Filter by name or URL", "Sort", "Preview background"]));
+    for (const [label, size] of sizes) expect(size, `${label} font size`).toBeGreaterThanOrEqual(16);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(0);
+  });
+
   test("Select still turns the checkboxes on", async ({ page }) => {
     await openResults(page);
     await page.getByRole("button", { name: "Select" }).click();
@@ -146,6 +157,37 @@ test.describe("phone detail sheet", () => {
     await page.goBack();
     await expect(page.getByRole("heading", { level: 1, name: "Every SVG, image and font on a page." })).toBeVisible();
     expect(scan.bodies).toHaveLength(1);
+  });
+});
+
+test.describe("notched phone in landscape", () => {
+  test.use({ viewport: { width: 844, height: 390 }, hasTouch: true, isMobile: true });
+
+  test("the page, the selection bar and the detail keep out of the safe area", async ({ page }) => {
+    // `viewport-fit=cover` hands the notch side to the page: 47 px here, more than the 32 px gutter.
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send("Emulation.setSafeAreaInsetsOverride", { insets: { top: 0, left: 47, bottom: 21, right: 47 } });
+    await openResults(page);
+    const left = async (locator: ReturnType<Page["locator"]>) => (await locator.boundingBox())!.x;
+    expect(await left(page.getByRole("link", { name: "Assets Scraper" }))).toBeGreaterThanOrEqual(47);
+    expect(await left(page.getByTestId("asset-card").first())).toBeGreaterThanOrEqual(47);
+    const gutters = await page.locator(".page-x").first().evaluate((element) => [getComputedStyle(element).paddingLeft, getComputedStyle(element).paddingRight]);
+    expect(gutters).toEqual(["47px", "47px"]);
+
+    await page.getByRole("button", { name: "Select" }).click();
+    await page.getByTestId("asset-card").first().getByRole("checkbox").click();
+    const bar = page.locator("[data-selection-bar]");
+    expect(await bar.evaluate((element) => [getComputedStyle(element).paddingLeft, getComputedStyle(element).paddingRight])).toEqual(["47px", "47px"]);
+
+    await page.getByRole("button", { name: "Done" }).click();
+    await page.getByRole("button", { name: "Clear" }).click();
+    await page.locator("[data-card-main]").first().tap();
+    const detail = page.getByRole("dialog");
+    await expect(detail).toBeVisible();
+    const box = (await detail.boundingBox())!;
+    expect(box.x).toBeGreaterThanOrEqual(47);
+    expect(box.x + box.width).toBeLessThanOrEqual(844 - 47);
+    expect(await left(detail.getByRole("radiogroup", { name: "Preview background" }))).toBeGreaterThanOrEqual(47);
   });
 });
 

@@ -31,7 +31,10 @@ export function SelectionBar() {
   if (count === 0 && !zipping) return null;
 
   return (
-    <div data-selection-bar className="pointer-events-none fixed inset-x-0 bottom-[calc(12px+env(safe-area-inset-bottom,0px))] z-40 flex justify-center px-3">
+    <div
+      data-selection-bar
+      className="pointer-events-none fixed inset-x-0 bottom-[calc(12px+env(safe-area-inset-bottom,0px))] z-40 flex justify-center pr-[max(12px,env(safe-area-inset-right,0px))] pl-[max(12px,env(safe-area-inset-left,0px))]"
+    >
       <section
         aria-label="Selection"
         data-motion="move"

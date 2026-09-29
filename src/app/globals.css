@@ -43,6 +43,12 @@
   --swatch-edge: color-mix(in srgb, var(--ink) 10%, transparent);
   /* A pale swatch is told from the page by its border alone, so that border carries the 3:1 a boundary needs. */
   --swatch-edge-strong: color-mix(in srgb, var(--ink) 61%, var(--bg));
+  /*
+   * Edge of a form control (field, select, checkbox), which is what tells it apart from the page: at least 3:1 on the
+   * surface, the page and the well (WCAG 1.4.11). `--border` (1.3:1) stays for dividers and cards, which are not
+   * controls. Darker on hover, the accent on focus.
+   */
+  --control-edge: color-mix(in srgb, var(--ink) 50%, var(--surface));
 
   --top-bar-height: 56px;
   --filter-bar-height: 52px;
@@ -74,6 +80,7 @@
   --color-success-line: var(--success-line);
   --color-swatch-edge: var(--swatch-edge);
   --color-swatch-edge-strong: var(--swatch-edge-strong);
+  --color-control-edge: var(--control-edge);
   --color-preview-light: var(--preview-light);
   --color-preview-dark: var(--preview-dark);
 
@@ -193,6 +200,18 @@
   body:has([data-selection-bar]) [data-toast-viewport] {
     bottom: calc(76px + env(safe-area-inset-bottom, 0px));
   }
+
+  /*
+   * iOS Safari zooms the page into a focused field whose text is under 16 px and never zooms back out, and the
+   * sticky filter bar and the grid then scroll sideways. On a touch screen every text field and select reads at 16 px;
+   * the dense sizes stay where a pointer is fine. The selector outranks a `text-*` utility on purpose, so a field
+   * added later cannot miss it.
+   */
+  @media (pointer: coarse) {
+    :is(input, select, textarea):not([type="checkbox"], [type="radio"], [type="range"], [type="color"]) {
+      font-size: 16px;
+    }
+  }
 }
 
 @layer components {
@@ -233,15 +252,21 @@
     }
   }
 
-  /* Page gutter (spec 12.6): 32, or 16 on phones (below 640); content capped at 1600 from 1680. */
+  /*
+   * Page gutter (spec 12.6): 32, or 16 on phones (below 640); content capped at 1600 from 1680. With
+   * `viewport-fit=cover`, a notched phone in landscape has a safe area of 47 to 59 px on its sides, wider than the
+   * gutter: the gutter grows to it, so nothing sits under the sensor housing or the rounded corner.
+   */
   .page-x {
     margin-inline: auto;
     max-width: calc(1600px + 2 * 32px);
-    padding-inline: 16px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
   }
   @media (width >= 40rem) {
     .page-x {
-      padding-inline: 32px;
+      padding-left: max(32px, env(safe-area-inset-left, 0px));
+      padding-right: max(32px, env(safe-area-inset-right, 0px));
     }
   }
 

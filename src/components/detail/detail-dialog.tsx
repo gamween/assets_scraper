@@ -191,7 +191,8 @@ function DetailBody({ asset }: { asset: Asset }) {
   return (
     <div className="flex h-full min-h-0 flex-col md:grid md:grid-cols-[minmax(0,1fr)_var(--detail-panel)] md:grid-rows-[minmax(0,1fr)]">
       <div className={cn("relative h-[44dvh] shrink-0 md:h-full md:min-h-0", WELL_CLASSES[well])} data-testid="detail-well" data-background={well}>
-        <div className="absolute inset-x-3 top-3 z-10 flex items-center justify-between gap-3">
+        {/* Clear of the safe area too: a phone in landscape has 47 to 59 px of it on the notch side. */}
+        <div className="absolute top-3 right-[max(12px,env(safe-area-inset-right,0px))] left-[max(12px,env(safe-area-inset-left,0px))] z-10 flex items-center justify-between gap-3">
           <BackgroundControl value={background} onChange={setOverride} className="bg-well/95" />
           {/*
            * On a phone the well is 44dvh over a 390 px screen and the arrows sat inside it, about 7 px from the
@@ -376,7 +377,7 @@ export function DetailDialog() {
           style={{ "--detail-height": `${shown ? dialogHeight(shown) : DIALOG_MAX_HEIGHT}px`, "--detail-width": `${DIALOG_WIDTH}px`, "--detail-panel": `${PANEL_WIDTH}px` } as CSSProperties}
           className={cn(
             "fixed inset-0 z-50 flex flex-col overflow-hidden bg-surface text-text outline-none",
-            "md:inset-auto md:top-1/2 md:left-1/2 md:h-[min(calc(100dvh-96px),var(--detail-height))] md:w-[min(var(--detail-width),calc(100vw-48px))] md:-translate-x-1/2 md:-translate-y-1/2 md:rounded-xl md:border md:border-border md:shadow-float",
+            "md:inset-auto md:top-1/2 md:left-1/2 md:h-[min(calc(100dvh-96px),var(--detail-height))] md:w-[min(var(--detail-width),calc(100vw_-_2_*_max(24px,env(safe-area-inset-left,0px),env(safe-area-inset-right,0px))))] md:-translate-x-1/2 md:-translate-y-1/2 md:rounded-xl md:border md:border-border md:shadow-float",
             "transition-[opacity,scale] duration-150 ease-enter data-ending-style:scale-[0.98] data-ending-style:opacity-0 data-ending-style:duration-100 data-ending-style:ease-exit data-starting-style:scale-[0.98] data-starting-style:opacity-0",
           )}
         >
