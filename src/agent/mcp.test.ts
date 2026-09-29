@@ -387,7 +387,8 @@ describe("scan_page", () => {
 
     expect(answers.every((answer) => !answer.isError)).toBe(true);
     expect(most).toBe(1);
-    expect(asked).toEqual(["https://queued-one.example/", "https://queued-two.example/"]);
+    // Each page is scanned once, in whichever order the calls reached the line.
+    expect(asked.slice().sort()).toEqual(["https://queued-one.example/", "https://queued-two.example/"]);
     expect((JSON.parse(text(answers[2])) as { scanId: string }).scanId).toBe((JSON.parse(text(answers[0])) as { scanId: string }).scanId);
     await wired.close();
   });
