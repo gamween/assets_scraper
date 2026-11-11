@@ -9,6 +9,7 @@
 import type {
   MediaKind, MediaRect, PaletteInPage, PaletteSignalOptions, PaletteSource, RawPaletteSignals, RectTuple,
 } from "../palette/signals";
+import { canvasPainter, COLOR_TOKEN_RE, colorReader, over, toHex as hex, type RGB, type RGBA } from "./css-color";
 
 /**
  * Set on every hidden element: "-" when it had no `style` attribute, else "=" followed by that attribute, which
@@ -42,47 +43,8 @@ function collect(opts: PaletteSignalOptions = {}): RawPaletteSignals {
   const sy = scrollY;
   const docH = Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0);
 
-  // ---------- color parsing (any CSS color to 8-bit sRGB plus alpha) ----------
-  type RGBA = [number, number, number, number];
-  type RGB = [number, number, number];
-  const cv = document.createElement("canvas");
-  cv.width = cv.height = 1;
-  const ctx = cv.getContext("2d", { willReadFrequently: true }) as CanvasRenderingContext2D;
-  const cache = new Map<string, RGBA | null>();
-  const RGB_RE = /^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:\s*[,/]\s*([\d.]+)(%?))?\s*\)$/;
-  const parse = (str: string | null | undefined): RGBA | null => {
-    if (!str) return null;
-    str = str.trim();
-    if (!str || str === "none" || str === "transparent" || str === "currentcolor") return null;
-    const hit = cache.get(str);
-    if (hit !== undefined) return hit;
-    let v: RGBA | null = null;
-    const m = RGB_RE.exec(str);
-    // Raw strings (custom properties, meta colors) can hold channels a browser would clamp or refuse.
-    const channels = m ? [+m[1], +m[2], +m[3]] : [];
-    if (m && channels.every((c) => Number.isFinite(c))) {
-      const a = m[4] === undefined ? 1 : m[5] ? parseFloat(m[4]) / 100 : parseFloat(m[4]);
-      const [r, g, b] = channels.map((c) => Math.min(255, c));
-      v = [r, g, b, a];
-    } else if (CSS.supports("color", str)) {
-      ctx.globalCompositeOperation = "copy";
-      ctx.fillStyle = "#000";
-      ctx.fillStyle = str;
-      ctx.fillRect(0, 0, 1, 1);
-      const d = ctx.getImageData(0, 0, 1, 1).data;
-      v = [d[0], d[1], d[2], d[3] / 255];
-    }
-    if (v && v[3] < 0.02) v = null;
-    cache.set(str, v);
-    return v;
-  };
-  const over = (fg: RGBA, alphaMul: number, bg: RGB): RGB => {
-    const a = Math.max(0, Math.min(1, fg[3] * alphaMul));
-    return [fg[0] * a + bg[0] * (1 - a), fg[1] * a + bg[1] * (1 - a), fg[2] * a + bg[2] * (1 - a)];
-  };
-  const hex = (c: RGB | RGBA): string =>
-    "#" + ((1 << 24) | (Math.round(c[0]) << 16) | (Math.round(c[1]) << 8) | Math.round(c[2])).toString(16).slice(1);
-  const COLOR_TOKEN_RE = /(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\([^()]*\)|#[0-9a-fA-F]{3,8}\b/g;
+  // ---------- color parsing (any CSS color to 8-bit sRGB plus alpha, `css-color.ts`) ----------
+  const parse = colorReader(canvasPainter(document));
   const tokens = (s: string): RGBA[] => {
     const out: RGBA[] = [];
     for (const t of (s.match(COLOR_TOKEN_RE) || []).slice(0, MAX_PAINT_COLORS)) {
