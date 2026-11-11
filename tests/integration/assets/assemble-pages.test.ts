@@ -189,6 +189,19 @@ beforeAll(async () => {
     </body></html>`),
     "/brand/PagesLogoSymbol.svg": svgFile('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 118 100"><path d="M0 0h118L59 100z" fill="#e33"/></svg>'),
     "/brand/pages-hero-illustration.svg": svgFile('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 236 200"><path d="M0 0h236v200H0z" fill="#123"/><path d="M60 50h118L119 150z" fill="#e33"/></svg>'),
+    // raisesummit.com in miniature, served where a link to "#" resolves to a home page: the site logo links to home,
+    // and each sponsor logo of the marquee below sits in a link block the page builder left at href="#".
+    "/fr/": html(`</head><body>
+      <div class="navbar"><a href="/fr/" aria-label="home"><img src="/assets/logo.svg" class="nav_logo" width="131" height="42" alt=""></a></div>
+      <h1 style="height:400px">Summit</h1>
+      <div class="section-logos" style="display:flex;gap:24px">
+        ${["Bloomberg", "Reuters", "Forbes", "Wired"].map((name, i) => `<a href="#" class="logos-box"><img class="logo-box-proof" src="/sponsors/${name}-logo.svg" width="${120 + i}" height="30" alt=""></a>`).join("")}
+      </div>
+    </body></html>`),
+    ...Object.fromEntries(["Bloomberg", "Reuters", "Forbes", "Wired"].map((name, i) => [
+      `/sponsors/${name}-logo.svg`,
+      svgFile(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${120 + i} 30"><path d="M0 0h${120 + i}v30H0z"/></svg>`),
+    ])),
     "/favicon.ico": (_req, res) => {
       if (faviconMissing) {
         res.writeHead(404, { "content-type": "text/html" });
@@ -275,6 +288,14 @@ describe("assembleAssets on purpose-built pages", () => {
     expect(role("Pages Symbol")).toBe("logo");
     expect(role("Pages wordmark")).toBe("logo");
     expect(role("Pages Symbol on a dark field")).toBe("illustration");
+  });
+
+  it("does not take a link to # on the home page for a link to home", async () => {
+    const { assets } = await scan("/fr/");
+    const logos = assets.filter((a) => a.role === "site-logo" || a.role === "logo");
+    expect(logos.filter((a) => a.role === "site-logo").map((a) => a.name)).toEqual(["home"]);
+    // Named after their files, not after the site.
+    expect(logos.filter((a) => a.role === "logo").map((a) => a.name).sort()).toEqual(["Bloomberg-logo", "Forbes-logo", "Reuters-logo", "Wired-logo"]);
   });
 
   it("adds web manifest icons, drops the ones that fail their probe and still probes /favicon.ico", async () => {

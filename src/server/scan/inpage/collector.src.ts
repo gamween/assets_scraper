@@ -306,8 +306,14 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
     for (let node: Element | null = el; node; node = composedParent(node)) if (node.matches("header,[role=banner]") && isBanner(node)) return true;
     return false;
   };
+  /**
+   * A link to the home page of the site, in any language. A fragment or an empty href is not one, even though on the
+   * home page it resolves there: it points at a place on the page, and it is what a page builder writes on a link it
+   * never wired. raisesummit.com wraps each of its 113 sponsor logos in `<a href="#">`, and with that and a logo word
+   * every one of them was taken for the site logo and named "raisesummit logo".
+   */
   const isHomeHref = (href: string | null, base: string) => {
-    if (!href) return false;
+    if (!href?.trim() || href.trim().startsWith("#")) return false;
     try {
       const u = new URL(href, base);
       return u.hostname.replace(/^www\./, "") === hostname && /^\/(?:[a-z]{2}(?:[-_][a-z]{2,4})?\/?)?$/i.test(u.pathname);
