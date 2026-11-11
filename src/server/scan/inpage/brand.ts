@@ -67,6 +67,16 @@ export function isBrandPortal(url: URL): boolean {
   return url.pathname.replace(/\/+$/, "") !== "";
 }
 
+/**
+ * What two links to one page or file have in common: the URL without its fragment, its credentials or a trailing slash
+ * on its path. francefintech.org links its press releases as both `/cp` and `https://francefintech.org/cp/`, and they
+ * took two brand link slots. Only the slash: another case, a query or an `index.html` can be another page.
+ */
+export function linkKey(url: URL): string {
+  const path = url.pathname.length > 1 && url.pathname.endsWith("/") ? url.pathname.slice(0, -1) : url.pathname;
+  return `${url.origin}${path}${url.search}`;
+}
+
 /** What a brand kit is made of: archives, documents, and the vector or raster logos it links one by one. */
 const BRAND_FILE_EXTENSION = /\.(zip|pdf|ai|eps|svg|png)$/i;
 

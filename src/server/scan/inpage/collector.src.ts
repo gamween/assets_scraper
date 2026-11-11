@@ -1,6 +1,6 @@
 import type { FoundIn, HiddenReason } from "@/lib/contract";
 import { extractCssUrls, readCssUrls, readFontFaceSrc } from "./css-values";
-import { brandFileType, isBrandFileWord, isBrandPortal, isBrandWord, isStrongBrandPhrase, SECOND_LEVEL_LABELS, siteOf } from "./brand";
+import { brandFileType, isBrandFileWord, isBrandPortal, isBrandWord, isStrongBrandPhrase, linkKey, SECOND_LEVEL_LABELS, siteOf } from "./brand";
 import { OUTPUT_LISTS } from "./lists";
 import { LOGO_WORD } from "./logo-word";
 import { labelNamesOnlyTheLink } from "./profile-label";
@@ -1456,7 +1456,8 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
         });
         continue;
       }
-      if (url.href === current || seen.has(url.href) || strong.length >= options.maxBrandLinks) continue;
+      const key = linkKey(url);
+      if (url.href === current || seen.has(key) || strong.length >= options.maxBrandLinks) continue;
       const name = text || label;
       if (siteOf(url.hostname) === site) {
         if (localeFree(url.pathname) === currentPath) continue;
@@ -1468,7 +1469,7 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
         if (!isBrandWord(segment) && !isBrandWord(name)) continue;
         const list = isStrongBrandPhrase(name) || isStrongBrandPhrase(segment) ? strong : plain;
         if (list.length >= options.maxBrandLinks) continue;
-        seen.add(url.href);
+        seen.add(key);
         list.push({ href: url.href, text: name });
         continue;
       }
@@ -1479,7 +1480,7 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
         const caption = captionOf(el, "links");
         if (caption === undefined || !isStrongBrandPhrase(caption)) continue;
       }
-      seen.add(url.href);
+      seen.add(key);
       strong.push({ href: url.href, text: name });
     }
     brandLinks.push(...[...strong, ...plain].slice(0, options.maxBrandLinks));

@@ -420,20 +420,28 @@ describe("collector brand links", () => {
   it("takes a bare two-letter path for a page of its own, not the home page in another language", async () => {
     const context = await browser.newContext();
     const page = await context.newPage();
-    // francefintech.org: the home page links its press releases at /cp, which read as the home page in another language.
+    // francefintech.org: the home page links its press releases at /cp, which read as the home page in another language,
+    // and at /cp/ too.
     await page.route("**/*", (route) =>
       route.request().url() === "https://fintech.test/"
         ? route.fulfill({
             contentType: "text/html; charset=utf-8",
             body: `<!doctype html><title>Fintech</title>
-              <a href="/cp">Communiqu\u00e9s de presse</a>`,
+              <a href="/cp">Communiqu\u00e9s de presse</a> <a href="https://fintech.test/cp/">Communiqu\u00e9s de presse</a>
+              <a href="https://fintech.test/cp/">Communiqu\u00e9s de presse</a> <a href="/cp/?page=2">Communiqu\u00e9s de presse</a>
+              <a href="https://acme.frontify.com/d/kit">Brand</a> <a href="https://acme.frontify.com/d/kit/#logos">Brand portal</a>`,
           })
         : route.fulfill({ status: 404 }),
     );
     await page.goto("https://fintech.test/");
     const fintech = await runCollector(page, collectorOptions("fintech.test", ""));
     await context.close();
-    expect(fintech.brandLinks).toEqual([{ href: "https://fintech.test/cp", text: "Communiqu\u00e9s de presse" }]);
+    // `/cp` and `/cp/` are one page, here and on a brand portal; a query can be another page.
+    expect(fintech.brandLinks).toEqual([
+      { href: "https://acme.frontify.com/d/kit", text: "Brand" },
+      { href: "https://fintech.test/cp", text: "Communiqu\u00e9s de presse" },
+      { href: "https://fintech.test/cp/?page=2", text: "Communiqu\u00e9s de presse" },
+    ]);
   });
 
   it("takes the press kit, not every article filed under it", async () => {
