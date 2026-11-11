@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cleanBasename, createFilenamer, displayName, hrefName, markupName, type NameInput } from "./naming";
+import { cleanBasename, createFilenamer, displayName, fileName, hrefName, markupName, type NameInput } from "./naming";
 
 const name = (patch: Partial<NameInput>) => displayName({ kind: "image", role: "image", index: 12, siteName: "Linear", ...patch });
 
@@ -111,6 +111,17 @@ describe("cleanBasename", () => {
     // Notion's own static files keep their plain name, and another host is read as before.
     expect(cleanBasename("https://ethglobal.notion.site/images/notion-logo-block-main.svg")).toBe("notion-logo-block-main");
     expect(cleanBasename("https://a.example/image/attachment%3Acf353582-4ab1-4745-854a-c87ed7d7c8b4%3ALogo.png")).toBe("attachment:cf353582-4ab1-4745-854a-c87ed7d7c8b4:Logo");
+  });
+});
+
+describe("fileName", () => {
+  it("reads the file a URL or an SVGR compiled vector came from", () => {
+    expect(fileName("https://www.redstone.finance/images/RedStoneLogoSymbol.svg")).toBe("RedStoneLogoSymbol");
+    expect(fileName("https://a.example/_next/image?url=%2Fimg%2Fpartner-logo.png&w=640&q=75")).toBe("partner-logo");
+    // ethglobal.com: SVGR prefixes the ids of an inline vector with the file it compiled.
+    expect(fileName(undefined, '<svg><g clip-path="url(#logo_svg__a)"><path/></g><clipPath id="logo_svg__a"/></svg>')).toBe("logo");
+    expect(fileName(undefined, '<svg><clipPath id="clip0_1_2"/></svg>')).toBeUndefined();
+    expect(fileName("data:image/png;base64,AAAA")).toBeUndefined();
   });
 });
 

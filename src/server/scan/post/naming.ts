@@ -81,6 +81,22 @@ export function cleanBasename(url: string): string | undefined {
   return usable(base);
 }
 
+/**
+ * SVGR, the SVG loader of Next.js, Vite and Create React App, prefixes every id of a vector with the file it compiled
+ * it from: `logo_svg__a` for logo.svg.
+ */
+const SVGR_ID = /\bid="([^"]+?)_svg__/;
+
+/**
+ * The name of the file an asset came from: the basename of its URL, and for an inline SVG the file SVGR compiled. It
+ * names the asset the way a class does: redstone.finance labels its symbol marks "RedStone Symbol" and serves them as
+ * RedStoneLogoSymbol.svg, and ethglobal.com draws its header logo inline with no label, class or alt, where only the
+ * ids (`logo_svg__a`) say it came from logo.svg.
+ */
+export function fileName(url: string | undefined, markup?: string): string | undefined {
+  return (url ? cleanBasename(url) : undefined) ?? (markup ? usable(SVGR_ID.exec(markup)?.[1]) : undefined);
+}
+
 /** Path segments that say what the page is about rather than which asset this is. */
 const GENERIC_SEGMENT = /^(?:[a-z]{2}(?:[-_][a-z]{2,4})?|index|home|default|page|pages|assets?|images?|img|media|static|www|v?\d+)$/i;
 

@@ -7,7 +7,8 @@ import { SignLimitError } from "@/server/security/sign";
 import type { AssetsOutput, CapturedImage, CandidateContext, NameHints, OriginalProbes, PostInput, RawCandidate } from "../types";
 import { originalCandidates, variantKey } from "./cdn";
 import { extensionFor, formatFromContentType, formatFromUrl, sniffFormat } from "./format";
-import { createFilenamer, displayName } from "./naming";
+import { LOGO_WORD } from "../inpage/logo-word";
+import { createFilenamer, displayName, fileName } from "./naming";
 import { noiseReason, svgNoiseReason, TINY_DATA_URI_BYTES } from "./noise";
 import { decodeDataUri, forEachStylesheetUrl, largestIconSize, svgSize, withoutFragment } from "./parse";
 import { assignRole, isSpriteSheet, logoScore, relevanceScore } from "./roles";
@@ -38,6 +39,7 @@ interface UrlRecord extends VariantMember, SizeHints {
   logoScore: number;
   logoWord: boolean;
   logoWall: boolean;
+  fileWord: boolean;          // the logo word in the file name
   declaredOnly: boolean;
   jsonLd: boolean;
   implicit: boolean;          // /favicon.ico added without the page declaring it
@@ -81,6 +83,9 @@ const sha1 = (value: string | Buffer) => createHash("sha1").update(value).digest
 const area = (size?: { width?: number; height?: number }) => (size?.width ?? 0) * (size?.height ?? 0);
 const defined = <T extends object>(value: T): T =>
   Object.fromEntries(Object.entries(value).filter(([, v]) => v !== undefined)) as T;
+
+/** A logo word in the name of the file counts like one in a class name or an alt (spec 8.5). */
+const namesLogo = (name: string | undefined): boolean => !!name && LOGO_WORD.test(name.toLowerCase());
 
 /** Second-level labels under a two-letter country code that are public suffixes: shop.co.uk, shop.com.au. */
 const SECOND_LEVEL_LABELS = /^(?:ac|co|com|edu|go|gov|ne|net|or|org)$/;
@@ -264,8 +269,8 @@ async function buildRecords(input: PostInput, baseUrl: string, limiter: Limiter,
     if (!record) {
       record = {
         url, scheme, kind: "raster", groups: [], artDirectedOnly: true, foundIn: [], order: candidate.order, visible: false,
-        labelOrder: Infinity, logoScore: 0, logoWord: false, logoWall: false, declaredOnly: true, jsonLd: false, implicit: false,
-        groupSet: new Set(), uses: new Set(),
+        labelOrder: Infinity, logoScore: 0, logoWord: false, logoWall: false, fileWord: namesLogo(fileName(url)), declaredOnly: true,
+        jsonLd: false, implicit: false, groupSet: new Set(), uses: new Set(),
       };
       records.set(url, record);
     }
@@ -298,8 +303,9 @@ async function buildRecords(input: PostInput, baseUrl: string, limiter: Limiter,
     }
     record.linkText ??= candidate.linkText;
     record.hints ??= candidate.hints;
-    record.logoScore = Math.max(record.logoScore, logoScore(candidate.context, candidate.visible, candidate.rect));
-    record.logoWord ||= candidate.context.logoWord;
+    const context = record.fileWord ? { ...candidate.context, logoWord: true } : candidate.context;
+    record.logoScore = Math.max(record.logoScore, logoScore(context, candidate.visible, candidate.rect));
+    record.logoWord ||= context.logoWord;
     record.logoWall ||= candidate.context.logoWall;
     record.declaredOnly &&= candidate.declaredOnly;
     record.jsonLd ||= candidate.foundIn === "json-ld";
@@ -629,9 +635,10 @@ function inlineSvgAssets(input: PostInput, hide: (reason: HiddenReason) => void)
     if (svg.context.iframe) foundIn.push("iframe");
     const rendered = svg.visible && svg.rect ? { width: svg.rect.width, height: svg.rect.height } : undefined;
     const size = svgSize(svg.markup);
-    const score = logoScore(svg.context, svg.visible, svg.rect);
+    const context = namesLogo(fileName(undefined, svg.markup)) ? { ...svg.context, logoWord: true } : svg.context;
+    const score = logoScore(context, svg.visible, svg.rect);
     const role = assignRole({
-      kind: "svg", foundIn, logoScore: score, logoWord: svg.context.logoWord, logoWall: svg.context.logoWall, label: svg.label,
+      kind: "svg", foundIn, logoScore: score, logoWord: context.logoWord, logoWall: context.logoWall, label: svg.label,
       rendered, intrinsic: size, spriteSymbol: symbol,
     });
     const asset: Asset = defined({

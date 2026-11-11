@@ -25,6 +25,10 @@ let noisePng: Buffer;
 let bigPng: Buffer;
 let faviconMissing = false;
 
+const svgFile = (text: string): http.RequestListener => (_req, res) => {
+  res.writeHead(200, { "content-type": "image/svg+xml" });
+  res.end(text);
+};
 const css = (text: string): http.RequestListener => (_req, res) => {
   res.writeHead(200, { "content-type": "text/css" });
   res.end(text);
@@ -163,10 +167,11 @@ beforeAll(async () => {
         <img class="logo" src="/assets/lazy.jpg" alt="Umbrella">
       </div>
     </body></html>`),
-    // ethglobal.com in miniature: a top bar of plain divs, then event cards far down the page that each open with a
-    // <header> holding the event logo, whose alt names the site and the word logo.
+    // ethglobal.com in miniature: a top bar of plain divs whose logo, drawn inline with no label, only says where it
+    // came from in the ids SVGR wrote, then event cards far down the page that each open with a <header> holding the
+    // event logo, whose alt names the site and the word logo.
     "/events.html": html(`</head><body style="margin:0">
-      <div style="height:60px"><a href="/"><svg width="160" height="60" viewBox="0 0 160 60"><path d="M0 0h160v60H0z"/></svg></a></div>
+      <div style="height:60px"><a href="/"><svg width="160" height="60" viewBox="0 0 160 60"><g clip-path="url(#logo_svg__a)"><path d="M0 0h160v60H0z"/></g><defs><clipPath id="logo_svg__a"><path d="M0 0h160v60H0z"/></clipPath></defs></svg></a></div>
       <div style="height:1800px"></div>
       <div style="display:flex;gap:16px">
         <div><header><img src="/assets/imgset-1x.png" width="56" height="56" alt="Pages Cannes 2027 logo"></header><p>Cannes</p></div>
@@ -174,6 +179,16 @@ beforeAll(async () => {
         <div><header><img src="/assets/touch.png" width="56" height="56" alt="Pages Tokyo 2027 logo"></header><p>Tokyo</p></div>
       </div>
     </body></html>`),
+    // redstone.finance/brand-kit in miniature: the symbol-only marks are labelled with the site name and a word that is
+    // not "logo", and only their file names say what they are.
+    "/brand-kit.html": html(`</head><body>
+      <h1 style="height:400px">Brand kit</h1>
+      <div><img src="/brand/PagesLogoSymbol.svg" width="118" height="100" alt="Pages Symbol"></div>
+      <div><img src="/assets/logo.svg" width="118" height="35" alt="Pages wordmark"></div>
+      <div><img src="/brand/pages-hero-illustration.svg" width="236" height="200" alt="Pages Symbol on a dark field"></div>
+    </body></html>`),
+    "/brand/PagesLogoSymbol.svg": svgFile('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 118 100"><path d="M0 0h118L59 100z" fill="#e33"/></svg>'),
+    "/brand/pages-hero-illustration.svg": svgFile('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 236 200"><path d="M0 0h236v200H0z" fill="#123"/><path d="M60 50h118L119 150z" fill="#e33"/></svg>'),
     "/favicon.ico": (_req, res) => {
       if (faviconMissing) {
         res.writeHead(404, { "content-type": "text/html" });
@@ -247,6 +262,19 @@ describe("assembleAssets on purpose-built pages", () => {
     const role = (name: string) => assets.find((a) => a.name === name)?.role;
     // Logo word and site word, but each sits in the <header> of an event card 1,800 px down, not in the site header.
     for (const event of ["Pages Cannes 2027 logo", "Pages New York 2027 logo", "Pages Tokyo 2027 logo"]) expect(role(event)).toBe("logo");
+  });
+
+  it("reads the logo word in the name of the file", async () => {
+    // The top bar logo has nothing but a link to home and its place at the top (score 4) and the ids SVGR wrote.
+    const { assets: events } = await scan("/events.html");
+    const top = events.find((a) => a.kind === "svg" && a.renderedWidth === 160)!;
+    expect(top.role).toBe("site-logo");
+    // The symbol mark is served as PagesLogoSymbol.svg. The illustration beside it has a name of its own and stays one.
+    const { assets } = await scan("/brand-kit.html");
+    const role = (name: string) => assets.find((a) => a.name === name)?.role;
+    expect(role("Pages Symbol")).toBe("logo");
+    expect(role("Pages wordmark")).toBe("logo");
+    expect(role("Pages Symbol on a dark field")).toBe("illustration");
   });
 
   it("adds web manifest icons, drops the ones that fail their probe and still probes /favicon.ico", async () => {

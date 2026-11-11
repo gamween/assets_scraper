@@ -2,6 +2,7 @@ import type { FoundIn, HiddenReason } from "@/lib/contract";
 import { extractCssUrls, readCssUrls, readFontFaceSrc } from "./css-values";
 import { brandFileType, isBrandFileWord, isBrandPortal, isBrandWord, isStrongBrandPhrase, SECOND_LEVEL_LABELS, siteOf } from "./brand";
 import { OUTPUT_LISTS } from "./lists";
+import { LOGO_WORD } from "./logo-word";
 import { parseSrcset } from "./srcset";
 import { canonicalSvgMarkup, varFallback, withCurrentColor } from "./svg-markup";
 import type {
@@ -56,12 +57,6 @@ const MAX_CAPTION_CHARS = 80;
 const LAZY_ATTR =
   /^data-(?:lazy-?)?(?:src|srcset|original|original-set|hi-?res(?:-src)?|full(?:-src)?|large(?:-src)?|zoom(?:-src)?|fallback(?:-src)?|bg|background|background-image|image|img|echo|flickity-lazyload|lazy|srcset-lazy|pin-media|retina|2x)$/i;
 const LAZY_BACKGROUND_ATTR = /^data-(?:bg|background|background-image|bg-src|lazy-background|image-src)$/i;
-/**
- * "brand" only counts at the end of a token (navbar-brand, .brand, header__brand), never as a qualifier inside a
- * compound name, because a page wraps ordinary photos in names like
- * payments-graphic__checkout-item-card-brand-content and every one of them would be filed as a logo.
- */
-const LOGO_WORD = /logo|wordmark|logotype|brand(?:s|mark)?(?![a-z]|[-_][a-z])/;
 
 const STYLE_PROPS = [
   "fill", "fill-opacity", "fill-rule", "stroke", "stroke-width", "stroke-opacity", "stroke-linecap", "stroke-linejoin",
