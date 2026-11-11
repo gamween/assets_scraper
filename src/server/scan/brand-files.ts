@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { BrandFile, BrandFileType } from "@/lib/contract";
 import { limits } from "@/server/config/limits";
+import { BROWSER_USER_AGENT } from "@/server/net/safe-fetch";
 import { brandFileType, isArchiveOrDocument, isBrandFileWord, isBrandWord, isGenericLabel, siteOf } from "./inpage/brand";
 import type { RawBrandFileLink, SafeFetch } from "./types";
 
@@ -221,6 +222,8 @@ function announcedSize(status: number, headers: Headers): number | undefined {
 
 export interface ProbeOptions {
   fetch: SafeFetch;
+  /** The scanned page, sent as the referrer: the scan's browser asked for the page's files from it. */
+  referer: string;
   signal: AbortSignal;
   /** Epoch ms after which no probe starts and none runs on: the end of post-processing's network time. */
   deadline: number;
@@ -242,7 +245,9 @@ export async function probeBrandFiles(files: BrandFile[], options: ProbeOptions)
       const file = probed[index];
       try {
         const response = await options.fetch(file.url, {
-          headers: { range: "bytes=0-0", accept: "*/*" },
+          // The browser's user agent: a host that refuses a program by its user agent would answer the probe with a
+          // page, and the file would read as one without a size.
+          headers: { range: "bytes=0-0", accept: "*/*", "user-agent": BROWSER_USER_AGENT, referer: options.referer },
           timeoutMs,
           maxBytes: 1_024,
           maxRedirects: limits.proxyMaxRedirects,

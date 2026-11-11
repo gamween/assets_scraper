@@ -152,24 +152,25 @@ describe("probeBrandFiles", () => {
       "https://x.com/brand/d.zip": () => response(200, { "content-type": "text/html; charset=UTF-8", "content-length": "5825" }),
       "https://x.com/brand/e.zip": () => response(200, { "content-length": "100", "content-encoding": "gzip" }),
     };
-    const requests: { url: string; range?: string }[] = [];
+    const requests: { url: string; range?: string; agent?: string; referer?: string }[] = [];
     const fetch = (async (url: string, options) => {
-      requests.push({ url, range: options?.headers?.range });
+      requests.push({ url, range: options?.headers?.range, agent: options?.headers?.["user-agent"], referer: options?.headers?.referer });
       const answer = answers[url];
       if (!answer) throw new Error("connect");
       return answer();
     }) as SafeFetch;
     const files = brandFilesFrom({ pageUrl: "https://x.com/brand", links: ["a.zip", "b.pdf", "c.zip", "d.zip", "e.zip", "f.zip"].map((name) => ({ href: `/brand/${name}`, text: "" })) });
-    const probed = await probeBrandFiles(files, { fetch, signal: new AbortController().signal, deadline: Date.now() + 10_000 });
+    const probed = await probeBrandFiles(files, { fetch, referer: "https://x.com/brand", signal: new AbortController().signal, deadline: Date.now() + 10_000 });
     expect(probed.map((file) => file.bytes)).toEqual([29_679_666, 6_311_412, undefined, undefined, undefined, undefined]);
-    expect(requests.every((request) => request.range === "bytes=0-0")).toBe(true);
+    // Asked the way the scan's browser asked: the first byte, a browser's user agent, the page as the referrer.
+    expect(requests.every((request) => request.range === "bytes=0-0" && /Chrome\/\d/.test(request.agent ?? "") && request.referer === "https://x.com/brand")).toBe(true);
     expect(files.every((file) => file.bytes === undefined)).toBe(true);
   });
 
   it("starts no probe past the deadline", async () => {
     const fetch = vi.fn<SafeFetch>();
     const files = brandFilesFrom({ pageUrl: "https://x.com/brand", links: [{ href: "/brand/a.zip", text: "" }] });
-    expect(await probeBrandFiles(files, { fetch, signal: new AbortController().signal, deadline: Date.now() - 1 })).toEqual(files);
+    expect(await probeBrandFiles(files, { fetch, referer: "https://x.com/brand", signal: new AbortController().signal, deadline: Date.now() - 1 })).toEqual(files);
     expect(fetch).not.toHaveBeenCalled();
   });
 });

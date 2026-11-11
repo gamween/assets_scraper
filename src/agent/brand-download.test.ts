@@ -35,16 +35,18 @@ afterEach(() => {
 type Answer = { status?: number; type?: string; body: Buffer | string } | Error;
 
 /** A guarded fetch answering from `answers` by URL; an absent URL is a 404 page. */
-const fakeFetch = (answers: Record<string, Answer>): SafeFetch & { urls: string[] } => {
+const fakeFetch = (answers: Record<string, Answer>): SafeFetch & { urls: string[]; headers: Record<string, string>[] } => {
   const urls: string[] = [];
-  const fetch = (async (url: string) => {
+  const headers: Record<string, string>[] = [];
+  const fetch = (async (url: string, options) => {
     urls.push(url);
+    headers.push(options?.headers ?? {});
     const answer = answers[url] ?? { status: 404, type: "text/html", body: "<!doctype html><title>Not found</title>" };
     if (answer instanceof Error) throw answer;
     const body = Buffer.from(answer.body);
     return { url, status: answer.status ?? 200, headers: new Headers({ "content-type": answer.type ?? "application/octet-stream" }), buffer: async () => body, cancel: async () => {} } as unknown as SafeResponse;
   }) as SafeFetch;
-  return Object.assign(fetch, { urls });
+  return Object.assign(fetch, { urls, headers });
 };
 
 const file = (id: string, url: string, name: string, type: BrandFile["type"]): BrandFile => ({ id, url, name, type, foundIn: "link" });
@@ -92,6 +94,8 @@ describe("downloadBrandFiles", () => {
     expect(result.archives).toEqual([{ id: kit.id, name: "Fixture Brand Kit", files: 2, skipped: { metadata: 1, "unsafe-path": 1, "nested-archive": 1 } }]);
     expect(result.failed).toEqual([]);
     expect(result.totalBytes).toBe(TEST_SVG.length + TEST_PNG.length + PDF.length);
+    // Asked for as the scan's browser asked for the page's files: its user agent, the page as the referrer.
+    expect(fetch.headers.map((sent) => [/Chrome\/\d/.test(sent["user-agent"] ?? ""), sent.referer])).toEqual([[true, "https://stripe.com/"], [true, "https://stripe.com/"]]);
 
     const manifest = JSON.parse(fs.readFileSync(result.manifestPath, "utf8"));
     expect(manifest).toMatchObject({ tool: "assets-scraper", manifestVersion: 1, kind: "brand-files", page: { host: "monad.xyz" } });

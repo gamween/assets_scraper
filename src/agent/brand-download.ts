@@ -11,6 +11,7 @@ import { resolveDestination } from "./dest";
 import { writeManifest, writeUnique } from "./download";
 import { agentLimits } from "./limits";
 import { safeFileName } from "./names";
+import { pageFileHeaders } from "./source-local";
 import type { AgentScan, BrandArchiveReport, BrandDownloadFile, BrandDownloadResult } from "./types";
 
 /**
@@ -74,11 +75,13 @@ export function brandFileName(file: BrandFile): string {
  * The bytes of one brand file, held to being that kind of file. A host that answers with a page instead (Cloudflare's
  * challenge, which arbitrum.io serves its archives behind to anything but a browser) is named for what it is.
  */
-async function fetchBrandFile(file: BrandFile, fetch: SafeFetch, signal?: AbortSignal): Promise<Buffer> {
+async function fetchBrandFile(file: BrandFile, page: string, fetch: SafeFetch, signal?: AbortSignal): Promise<Buffer> {
   const max = agentLimits.brandFileMaxBytes;
   let bytes: Buffer;
   try {
+    // The request the scan's browser would make, as `fetchBytes` does for an asset (`pageFileHeaders`).
     const response = await fetch(file.url, {
+      headers: pageFileHeaders(page),
       maxBytes: max,
       timeoutMs: agentLimits.brandFileTimeoutMs,
       maxRedirects: limits.proxyMaxRedirects,
@@ -149,7 +152,7 @@ export async function downloadBrandFiles(scan: AgentScan, options: BrandDownload
     }
     let bytes: Buffer;
     try {
-      bytes = await fetchBrandFile(file, fetch, options.signal);
+      bytes = await fetchBrandFile(file, scan.page.finalUrl, fetch, options.signal);
     } catch (error) {
       if (options.signal?.aborted) throw error;
       failed.push({ id: file.id, name: file.name, reason: oneLine(error) });

@@ -427,7 +427,7 @@ async function runScan({ url, deps, cancel, emit }: ScanContext): Promise<void> 
         Promise.all([
           ready(deps.assembleAssets(postInput)),
           ready(deps.buildFontFamilies(postInput)),
-          ready(probeBrandFiles(brandFiles, { fetch: deps.fetch, signal: postSignal, deadline: postWindow.networkDeadline })),
+          ready(probeBrandFiles(brandFiles, { fetch: deps.fetch, referer: context.finalUrl, signal: postSignal, deadline: postWindow.networkDeadline })),
         ]),
       );
     } finally {
