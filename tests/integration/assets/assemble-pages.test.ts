@@ -146,6 +146,23 @@ beforeAll(async () => {
         <div><svg width="142" height="34" viewBox="0 0 142 34"><path d="M0 6h142v28H0z"/></svg></div>
       </div>
     </body></html>`),
+    // bnbchain.org in miniature: project screenshots cover-cropped into short, wide carousel cards, a row the logo wall
+    // rule took for logos, next to raster logos whose cover-fitted boxes keep their shape.
+    "/carousel.html": html(`</head><body>
+      <style>.card { width: 256px; height: 113px; object-fit: cover } .logo { width: 120px; height: 60px; object-fit: cover }</style>
+      <div style="display:flex;gap:8px">
+        <a href="/p/1"><img class="card" src="/assets/og.png" alt="Agent kit"></a>
+        <a href="/p/2"><img class="card" src="/assets/photo-large.png" alt="Swap example"></a>
+        <a href="/p/3"><img class="card" src="/assets/hero.jpg" alt="Wallet demo"></a>
+        <a href="/p/4"><img class="card" src="/assets/poster.jpg" alt="Bridge demo"></a>
+      </div>
+      <div style="display:flex;gap:8px">
+        <img class="logo" src="/assets/photo-small.png" alt="Acme">
+        <img class="logo" src="/assets/iframe.png" alt="Globex">
+        <img class="logo" src="/assets/shadow.png" alt="Initech">
+        <img class="logo" src="/assets/lazy.jpg" alt="Umbrella">
+      </div>
+    </body></html>`),
     "/favicon.ico": (_req, res) => {
       if (faviconMissing) {
         res.writeHead(404, { "content-type": "text/html" });
@@ -204,6 +221,14 @@ describe("assembleAssets on purpose-built pages", () => {
     expect(names).toContain("Jackson Hot Yoga");                // the caption beside it
     // Nothing anywhere near the last one, so the generic name stays the last resort.
     expect(names.filter((n) => /^svg \d+$/.test(n))).toHaveLength(1);
+  });
+
+  it("keeps cover-cropped carousel pictures out of the logo wall", async () => {
+    const { assets } = await scan("/carousel.html");
+    const role = (name: string) => assets.find((a) => a.name === name)?.role;
+    for (const card of ["Agent kit", "Swap example", "Wallet demo", "Bridge demo"]) expect(role(card)).toBe("image");
+    // Cover-fitted too, but each box has its picture's shape: nothing is cut off, and the row is a logo wall.
+    for (const logo of ["Acme", "Globex", "Initech", "Umbrella"]) expect(role(logo)).toBe("logo");
   });
 
   it("adds web manifest icons, drops the ones that fail their probe and still probes /favicon.ico", async () => {
