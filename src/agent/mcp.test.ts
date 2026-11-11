@@ -8,7 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import pkg from "../../package.json";
 import { fontManifestPath } from "./font-manifest";
 import { createAgentMcpServer, MAX_TOOL_RESULT_BYTES } from "./mcp";
-import { noBudget, testAsset, testFontFamily, testScan } from "./testing";
+import { MCP_TOOL_NAMES, noBudget, testAsset, testFontFamily, testScan } from "./testing";
 import type { AgentScan, BrandDownloadResult, ScanSource, SelectionOptions } from "./types";
 
 /**
@@ -80,23 +80,10 @@ function text(result: CallToolResult): string {
   return block.text;
 }
 
-/** The eight tools of spec section 6, and the brand file download. */
-const MCP_TOOL_NAMES = [
-  "scan_page",
-  "list_assets",
-  "download_assets",
-  "download_brand_files",
-  "read_svg",
-  "get_palette",
-  "install_fonts",
-  "list_installed_fonts",
-  "uninstall_fonts",
-];
-
 describe("the tools", () => {
-  it("are the tools of the spec and the brand file download, once each", async () => {
+  it("are the tools of the spec and the brand file download, once each, in the order the /agents page lists them", async () => {
     const { tools } = await client.listTools();
-    expect(tools.map((tool) => tool.name).sort()).toEqual([...MCP_TOOL_NAMES].sort());
+    expect(tools.map((tool) => tool.name)).toEqual(MCP_TOOL_NAMES);
   });
 
   it("say where download_assets writes when there is no project, and what <host> is", async () => {
