@@ -1,7 +1,7 @@
 import { waitUntil } from "@vercel/functions";
 import { limits } from "@/server/config/limits";
 import { HttpError } from "@/server/errors";
-import { safeFetch, SafeFetchError, type SafeFetchErrorCode } from "@/server/net/safe-fetch";
+import { BROWSER_USER_AGENT, safeFetch, SafeFetchError, type SafeFetchErrorCode } from "@/server/net/safe-fetch";
 import type { SafeResponse } from "@/server/scan/types";
 import { authenticateAgent } from "./agent-auth";
 import { meterProxyBytes, PROXY_BYTES_BLOCK, takeProxyBytes } from "./budget";
@@ -72,7 +72,9 @@ const budgetExhausted = () => errorResponse(429, "budget", BUDGET_MESSAGE);
 /** The upstream response, or the error response for a status outside 2xx. */
 async function fetchAsset(url: string, signal: AbortSignal, maxBytes: number, timeoutMs: number): Promise<SafeResponse | Response> {
   const upstream = await safeFetch(url, {
-    headers: { referer: `${new URL(url).origin}/` },
+    // The user agent the scan read the file with: an edge that refuses this tool's own (bybit.com, for its favicon.ico)
+    // would otherwise fail the preview and the download of a file the scan had just listed.
+    headers: { "user-agent": BROWSER_USER_AGENT, referer: `${new URL(url).origin}/` },
     maxBytes,
     timeoutMs,
     maxRedirects: limits.proxyMaxRedirects,

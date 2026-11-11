@@ -302,7 +302,7 @@ async function runFonts(positionals: string[], values: Values): Promise<number> 
       const source = openSource(values);
       const { scan } = await scanPage(scanUrl(url), source, values);
       const report = await installFonts(scan.fonts, {
-        fetchBytes: (file, fetchOptions) => source.fetchBytes(file, fetchOptions),
+        fetchBytes: (file, fetchOptions) => source.fetchBytes(file, { ...fetchOptions, referer: scan.page.finalUrl }),
         pageHost: scan.page.host,
         ...(named === undefined ? {} : { only: named }),
       });

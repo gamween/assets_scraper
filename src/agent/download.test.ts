@@ -40,6 +40,8 @@ afterEach(() => {
 interface FakeSource extends ScanSource {
   /** Every URL `fetchBytes` was asked for, in order. */
   requests: string[];
+  /** The referrer each of those fetches was given, in the same order. */
+  referers: (string | undefined)[];
   /** The most fetches that were ever in flight at the same time. */
   peak: number;
 }
@@ -47,15 +49,18 @@ interface FakeSource extends ScanSource {
 /** A source answering from `bodies` by URL. A body that is an `Error` fails the fetch; an absent URL is a 404. */
 const fakeSource = (bodies: Record<string, Buffer | Error>, delayMs = 0): FakeSource => {
   const requests: string[] = [];
+  const referers: (string | undefined)[] = [];
   let inFlight = 0;
   const source: FakeSource = {
     kind: "local",
     requests,
+    referers,
     peak: 0,
     scan: () => Promise.reject(new Error("the fake source does not scan")),
-    async fetchBytes(target) {
+    async fetchBytes(target, options) {
       const url = "url" in target ? target.url : "";
       requests.push(url);
+      referers.push(options?.referer);
       inFlight += 1;
       source.peak = Math.max(source.peak, inFlight);
       try {
@@ -112,6 +117,17 @@ describe("downloadAssets", () => {
       bytes: heroBytes.length,
       keptBecause: "deck profile (role image)",
     });
+  });
+
+  it("names the scanned page as the referrer of every fetch, like the scan's own requests", async () => {
+    const favicon = testAsset({ id: "favicon", format: "ico", role: "site-logo", name: "bybit logo", filename: "bybit-logo.ico", width: 48, height: 48 });
+    const source = fakeSource({ [urlOf(favicon)]: Buffer.from("\0\0\x01\0", "latin1") });
+    const scan = scanOf([favicon], { page: { url: "https://www.bybit.com/", finalUrl: "https://www.bybit.com/en/", host: "www.bybit.com", title: "Bybit" } });
+
+    await downloadAssets(scan, source, { dest: dir, ids: ["favicon"] });
+
+    expect(source.requests).toEqual([urlOf(favicon)]);
+    expect(source.referers).toEqual(["https://www.bybit.com/en/"]);
   });
 
   it("writes an inline SVG from its markup without any request", async () => {

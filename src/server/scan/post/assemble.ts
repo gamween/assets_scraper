@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import sharp from "sharp";
 import type { Asset, AssetFormat, AssetKind, AssetSource, FoundIn, HiddenReason, Tone, WarningCode } from "@/lib/contract";
 import { limits } from "@/server/config/limits";
+import { BROWSER_USER_AGENT } from "@/server/net/safe-fetch";
 import { SignLimitError } from "@/server/security/sign";
 import type { AssetsOutput, CapturedImage, CandidateContext, NameHints, OriginalProbes, PostInput, RawCandidate } from "../types";
 import { originalCandidates, variantKey } from "./cdn";
@@ -12,7 +13,7 @@ import { decodeDataUri, forEachStylesheetUrl, largestIconSize, svgSize, withoutF
 import { assignRole, isSpriteSheet, logoScore, relevanceScore } from "./roles";
 import { createToneBudget } from "./tone";
 import { groupVariants, pickBest, sizeScore, type SizeHints, type VariantMember } from "./variants";
-import { BROWSER_USER_AGENT, createLimiter, verifyUrl, type Limiter } from "./verify";
+import { createLimiter, verifyUrl, type Limiter } from "./verify";
 
 /**
  * Builds the final `Asset[]` from the collector output and the captured network (spec 8.1 to 8.8): URL records, noise,

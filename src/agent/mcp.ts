@@ -447,7 +447,7 @@ export function createAgentMcpServer(options: AgentMcpOptions = {}): McpServer {
         const markup =
           inline && "text" in inline ? inline.text
           : inline && "base64" in inline ? Buffer.from(inline.base64, "base64").toString("utf8")
-          : (await openSource().fetchBytes(from, { signal })).toString("utf8");
+          : (await openSource().fetchBytes(from, { signal, referer: scan.page.finalUrl })).toString("utf8");
         const bytes = Buffer.from(markup, "utf8");
         if (bytes.byteLength > MAX_SVG_TEXT_BYTES) {
           return fail(`this SVG is ${bytes.byteLength} bytes, too much to read into a context. Use download_assets instead.`);
@@ -493,7 +493,7 @@ export function createAgentMcpServer(options: AgentMcpOptions = {}): McpServer {
     async ({ scanId, families }, { signal }) =>
       withScan(scanId, async (scan) => {
         const report = await installFonts(scan.fonts, {
-          fetchBytes: (file, fetchOptions) => openSource().fetchBytes(file, fetchOptions),
+          fetchBytes: (file, fetchOptions) => openSource().fetchBytes(file, { ...fetchOptions, referer: scan.page.finalUrl }),
           pageHost: scan.page.host,
           signal,
           ...(families === undefined ? {} : { only: families }),

@@ -240,7 +240,7 @@ export async function downloadAssets(scan: AgentScan, source: ScanSource, option
         continue;
       }
       try {
-        const buffer = await source.fetchBytes(from, options.signal ? { signal: options.signal } : undefined);
+        const buffer = await source.fetchBytes(from, { referer: scan.page.finalUrl, ...(options.signal ? { signal: options.signal } : {}) });
         bytes.set(asset.id, buffer);
         taken += buffer.length;
       } catch (error) {

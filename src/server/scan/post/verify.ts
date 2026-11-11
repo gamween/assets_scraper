@@ -1,6 +1,6 @@
 import sharp from "sharp";
 import type { AssetFormat } from "@/lib/contract";
-import { SafeFetchError, type SafeFetchErrorCode } from "@/server/net/safe-fetch";
+import { BROWSER_USER_AGENT, SafeFetchError, type SafeFetchErrorCode } from "@/server/net/safe-fetch";
 import type { SafeFetch } from "../types";
 import { formatFromContentType, sniffFormat } from "./format";
 import { svgSize } from "./parse";
@@ -13,9 +13,6 @@ import { withRenderSlot } from "./render-slot";
 
 const VERIFY_RANGE_BYTES = 262_144;
 const VERIFY_ACCEPT = "image/png,image/jpeg,image/gif,image/svg+xml,*/*;q=0.5";
-/** A normal desktop Chrome user agent, never "HeadlessChrome". */
-export const BROWSER_USER_AGENT =
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36";
 
 type VerifySkipped = { ok: false; reason: "verify-skipped" };
 const SKIPPED: VerifySkipped = Object.freeze({ ok: false, reason: "verify-skipped" });

@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { AssetSource, Diagnostics, PageInfo, ScanEvent, ScanStats } from "@/lib/contract";
 import { ScanFailure } from "@/server/errors";
-import type { SafeFetch, SafeResponse, ScanBackend } from "@/server/scan/types";
+import { BROWSER_USER_AGENT } from "@/server/net/safe-fetch";
+import type { SafeFetch, SafeFetchOptions, SafeResponse, ScanBackend } from "@/server/scan/types";
 import { createLocalScanSource, scanIdFor } from "./source-local";
 import { testAsset, testFontFamily, testFontFile } from "./testing";
 
@@ -143,10 +144,15 @@ const assetSource = (url: string, format: AssetSource["format"] = "png"): AssetS
 const PNG = Buffer.concat([Buffer.from("\x89PNG\r\n\x1a\n", "latin1"), Buffer.from("pixels")]);
 
 /** A fetch in the shape `safeFetch` returns, with only the parts `fetchBytes` touches, counting what it was asked. */
-const fakeFetch = (status: number, body: Buffer | string, contentType = "image/png"): SafeFetch & { calls: number; cancels: number } => {
+const fakeFetch = (
+  status: number,
+  body: Buffer | string,
+  contentType = "image/png",
+): SafeFetch & { calls: number; cancels: number; headers: Record<string, string>[] } => {
   const fetch = Object.assign(
-    async () => {
+    async (_url: string, options?: SafeFetchOptions) => {
       fetch.calls += 1;
+      fetch.headers.push(options?.headers ?? {});
       return {
         status,
         headers: new Headers(contentType === "" ? {} : { "content-type": contentType }),
@@ -154,7 +160,7 @@ const fakeFetch = (status: number, body: Buffer | string, contentType = "image/p
         cancel: async () => void (fetch.cancels += 1),
       } as unknown as SafeResponse;
     },
-    { calls: 0, cancels: 0 },
+    { calls: 0, cancels: 0, headers: [] as Record<string, string>[] },
   );
   return fetch;
 };
@@ -171,6 +177,18 @@ describe("createLocalScanSource().fetchBytes", () => {
 
     expect(await source.fetchBytes(assetSource("https://cdn.example.com/a.png"))).toEqual(PNG);
     expect(fetch.calls).toBe(1);
+  });
+
+  it("asks for a file the way the scan's browser did", async () => {
+    // bybit.com answers safeFetch's own user agent 403 for the favicon.ico the scan had just read as the site logo.
+    const fetch = fakeFetch(200, PNG);
+    const source = createLocalScanSource({ backend: fakeBackend([]), fetch });
+    await source.fetchBytes(assetSource("https://www.bybit.com/favicon.ico"), { referer: "https://www.bybit.com/" });
+    await source.fetchBytes(assetSource("https://cdn.example.com/a.png"));
+    expect(fetch.headers).toEqual([
+      { "user-agent": BROWSER_USER_AGENT, referer: "https://www.bybit.com/" },
+      { "user-agent": BROWSER_USER_AGENT },
+    ]);
   });
 
   it("throws on an error status and cancels the body", async () => {

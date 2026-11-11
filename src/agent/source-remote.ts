@@ -4,7 +4,7 @@ import { limits } from "@/server/config/limits";
 import { safeFetch } from "@/server/net/safe-fetch";
 import type { SafeFetch } from "@/server/scan/types";
 import { assertDeclaredType, assertSupportedBytes, declaredType, inlineFileBytes } from "./bytes";
-import { scanIdFor } from "./source-local";
+import { pageFileHeaders, scanIdFor } from "./source-local";
 import type { ScanSource, ScanSourceOptions } from "./types";
 
 /**
@@ -247,6 +247,7 @@ export function createRemoteScanSource(options: ScanSourceOptions = {}, deps: Re
       if (target.url.startsWith("https:")) {
         try {
           const direct = await fetchBytesDirect(target.url, {
+            headers: pageFileHeaders(fetchOptions?.referer),
             maxBytes: limits.proxyMaxBytes,
             timeoutMs: limits.proxyTimeoutMs,
             maxRedirects: limits.proxyMaxRedirects,

@@ -21,12 +21,25 @@ let scan: AgentScan;
 let steps: string[];
 let cache: string;
 let previousCache: string | undefined;
+let browserOnlyReferer: string | undefined;
 
 beforeAll(async () => {
   previousCache = process.env.XDG_CACHE_HOME;
   cache = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agent-local-")));
   process.env.XDG_CACHE_HOME = cache;
-  server = await serveAssetsFixture();
+  server = await serveAssetsFixture({
+    // bybit.com's edge: the favicon.ico it serves Chrome is a 403 for any other user agent, this tool's own included.
+    "/browser-only/favicon.ico": (req, res) => {
+      if (!/ Chrome\/\d/.test(req.headers["user-agent"] ?? "")) {
+        res.writeHead(403, { "content-type": "text/html" });
+        res.end("<!doctype html><title>Access denied</title>");
+        return;
+      }
+      browserOnlyReferer = req.headers.referer;
+      res.writeHead(200, { "content-type": "image/x-icon" });
+      res.end(fs.readFileSync(path.join(import.meta.dirname, "../../fixtures/site/assets/favicon.ico")));
+    },
+  });
   steps = [];
   scan = await createScanSource().scan(`${server.origin}/`, { onStep: (step) => steps.push(step) });
 }, 150_000);
@@ -92,6 +105,13 @@ describe("createScanSource, local", () => {
     const bytes = await source.fetchBytes(file);
     expect(bytes.subarray(0, 4).toString("latin1")).toBe("wOF2");
     expect(bytes.length).toBe(file.bytes);
+  });
+
+  it("fetches a file the way the scan's browser did, for an edge that refuses anything else", async () => {
+    const favicon = { url: `${server.origin}/browser-only/favicon.ico`, proxy: "", format: "ico" as const };
+    const bytes = await createScanSource().fetchBytes(favicon, { referer: scan.page.finalUrl });
+    expect(bytes.equals(fs.readFileSync(path.join(import.meta.dirname, "../../fixtures/site/assets/favicon.ico")))).toBe(true);
+    expect(browserOnlyReferer).toBe(`${server.origin}/`);
   });
 
   it("rejects an unreachable URL with the engine's failure", async () => {
