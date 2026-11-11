@@ -84,6 +84,17 @@ describe("brandFilesFrom", () => {
     expect(files[3]).toMatchObject({ url: "https://arbitrum.io/press/kit", type: "pdf" });
   });
 
+  it("merges two links to one file whatever their trailing slash, as the brand links do", () => {
+    const files = brandFilesFrom({
+      pageUrl: "https://x.com/press",
+      links: [
+        { href: "/press/kit", text: "Download", download: "Acme_Press-Kit.pdf" },
+        { href: "https://x.com/press/kit/", text: "Press kit", download: "Acme_Press-Kit.pdf" },
+      ],
+    });
+    expect(files.map(({ url, name, type }) => ({ url, name, type }))).toEqual([{ url: "https://x.com/press/kit", name: "Press kit", type: "pdf" }]);
+  });
+
   it("keeps the files a brand page's code names in a brand folder, and none of the rest of the site's bundle", () => {
     const files = brandFilesFrom({
       pageUrl: "https://monad.xyz/brand-and-media-kit",

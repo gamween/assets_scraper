@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { BrandFile, BrandFileType } from "@/lib/contract";
 import { limits } from "@/server/config/limits";
 import { BROWSER_USER_AGENT } from "@/server/net/safe-fetch";
-import { brandFileType, isArchiveOrDocument, isBrandFileWord, isBrandWord, isGenericLabel, siteOf } from "./inpage/brand";
+import { brandFileType, isArchiveOrDocument, isBrandFileWord, isBrandWord, isGenericLabel, linkKey, siteOf } from "./inpage/brand";
 import type { RawBrandFileLink, SafeFetch } from "./types";
 
 /**
@@ -175,7 +175,8 @@ export interface BrandFilesInput {
 
 /**
  * The brand files of a page, links first in page order, then the files only its scripts name, at most
- * `limits.maxBrandFiles`. Two links to one URL are one file, named from the better of their labels.
+ * `limits.maxBrandFiles`. Two links to one URL are one file, named from the better of their labels, and a trailing slash
+ * makes no other URL (`linkKey`, the brand links' rule).
  */
 export function brandFilesFrom(input: BrandFilesInput): BrandFile[] {
   const byUrl = new Map<string, { url: URL; type: BrandFileType; links: RawBrandFileLink[]; foundIn: BrandFile["foundIn"] }>();
@@ -184,17 +185,17 @@ export function brandFilesFrom(input: BrandFilesInput): BrandFile[] {
     if (!url) continue;
     const type = brandFileType(decode(url.pathname)) ?? (link.download ? brandFileType(link.download) : undefined);
     if (!type) continue;
-    const entry = byUrl.get(url.href);
+    const entry = byUrl.get(linkKey(url));
     if (entry) entry.links.push(link);
-    else byUrl.set(url.href, { url, type, links: [link], foundIn: "link" });
+    else byUrl.set(linkKey(url), { url, type, links: [link], foundIn: "link" });
   }
   for (const path of (input.scriptFiles ?? []).slice(0, MAX_SCRIPT_FILE_PATHS)) {
     if (typeof path !== "string") continue;
     const url = httpUrl(path, input.pageUrl);
-    if (!url || byUrl.has(url.href)) continue;
+    if (!url || byUrl.has(linkKey(url))) continue;
     const type = brandFileType(decode(url.pathname));
     if (!type || !isScriptBrandFile(url, type)) continue;
-    byUrl.set(url.href, { url, type, links: [], foundIn: "script" });
+    byUrl.set(linkKey(url), { url, type, links: [], foundIn: "script" });
   }
 
   const files: BrandFile[] = [];

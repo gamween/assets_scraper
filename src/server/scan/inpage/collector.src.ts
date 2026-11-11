@@ -1,8 +1,9 @@
 import type { FoundIn, HiddenReason } from "@/lib/contract";
 import { extractCssUrls, readCssUrls, readFontFaceSrc } from "./css-values";
-import { brandFileType, isBrandFileWord, isBrandPortal, isBrandWord, isStrongBrandPhrase, SECOND_LEVEL_LABELS, siteOf } from "./brand";
+import { brandFileType, isBrandFileWord, isBrandPortal, isBrandWord, isStrongBrandPhrase, linkKey, SECOND_LEVEL_LABELS, siteOf } from "./brand";
 import { OUTPUT_LISTS } from "./lists";
 import { LOGO_WORD } from "./logo-word";
+import { labelNamesOnlyTheLink } from "./profile-label";
 import { parseSrcset } from "./srcset";
 import { canonicalSvgMarkup, varFallback, withCurrentColor } from "./svg-markup";
 import type {
@@ -367,13 +368,20 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
     return null;
   };
 
-  const labelOf = (el: Element): string | undefined => {
-    const link = composedClosest(el, "a[href]");
+  /** The names a picture carries itself, which `labelNamesOnlyTheLink` reads: alt, title, <title>, an image's file name. */
+  const ownNamesOf = (el: Element): (string | null)[] => {
+    const src = el.localName === "img" ? (el as HTMLImageElement).currentSrc || el.getAttribute("src") : null;
+    const file = src && !/^(?:data|blob):/i.test(src) ? decodeURIComponentSafe(src.split(/[?#]/)[0].split("/").pop() ?? "") : null;
+    return [el.getAttribute("alt"), el.getAttribute("title"), el.localName === "svg" ? svgTitle(el) : null, file];
+  };
+
+  /** The first label in order. `linkLabelOff` leaves out the link's, when it only says where the link goes. */
+  const labelOf = (el: Element, link: Element | null, linkLabelOff: boolean): string | undefined => {
     const title = el.localName === "svg" ? svgTitle(el) : null;
     const framer = composedClosest(el, "[data-framer-name]");
     for (const value of [
       el.getAttribute("aria-label"),
-      link?.getAttribute("aria-label"),
+      linkLabelOff ? null : link?.getAttribute("aria-label"),
       title,
       el.getAttribute("alt"),
       framer?.getAttribute("data-framer-name"),
@@ -542,7 +550,11 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
         if (similar >= 4) logoWall = true;
       }
     }
-    const label = labelOf(el);
+    // raisesummit.com: each speaker card is a link labelled "Open LinkedIn" around a headshot and a company logo. That
+    // label names the link, not either picture (profile-label.ts), and the text of a link to a profile names its owner:
+    // the headshot keeps it, while a picture with a logo word of its own is the company's and goes by its file name.
+    const profileLink = !!link && labelNamesOnlyTheLink(link.getAttribute("aria-label") ?? "", ownNamesOf(el));
+    const label = labelOf(el, link, profileLink);
     const info: ElementInfo = {
       context: {
         header: inBanner(el),
@@ -558,7 +570,7 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
       visible,
       rect: r.width > 0 && r.height > 0 ? { x, y, width: Math.round(r.width), height: Math.round(r.height) } : undefined,
       label,
-      linkText: link ? linkTextOf(el) : undefined,
+      linkText: link && !(profileLink && logoWord) ? linkTextOf(el) : undefined,
       hints: hintsOf(el, link, label),
     };
     infoCache.set(el, info);
@@ -1026,10 +1038,16 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
     // Computed styles that differ from a neutral rendering, top-down
     const hasText = !!svg.querySelector("text,tspan,textPath");
     const usesCurrentColor = /currentcolor/i.test(clone.outerHTML);
+    // Visibility is inherited, and the copy drops the root's (ROOT_SKIP, then the cleanup). chain.link's mega menu is
+    // `visibility: hidden` until it opens: every part of the logo in it computed hidden, its first child took that as
+    // its own, and the downloaded file rendered blank. A part that only repeats the visibility of a parent the copy
+    // drops it for gets none written, and keeps what its markup says (an attribute, a style attribute, the vector's
+    // <style>). A part that differs from its parent sets its own and keeps it. A page rule that hides part of a vector
+    // the page already hides as a whole reads like inheritance, and is the one case lost. Keyed by live element.
+    const outsideVisibility = new Map<Element, string>();
     // Part of the drawing hidden by visibility or opacity while the vector itself is not: the state a script left an
     // animation in. A vector the page hides as a whole (a closed menu) passes visibility down to every part, which
     // says nothing about the drawing.
-    const rootHidden = view.getComputedStyle(svg).visibility === "hidden";
     let partlyHidden = false;
     if (liveElements.length <= MAX_STYLED_SVG_ELEMENTS) {
       const box = getSandbox();
@@ -1051,13 +1069,17 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
           }
         }
         const liveStyle = view.getComputedStyle(live);
-        if (i > 0 && !partlyHidden && ((!rootHidden && liveStyle.visibility === "hidden") || liveStyle.opacity === "0")) {
+        const visibility = liveStyle.visibility;
+        const fromOutside = i === 0 ? visibility !== "visible" : outsideVisibility.get(live.parentElement!) === visibility;
+        if (fromOutside) outsideVisibility.set(live, visibility);
+        if (i > 0 && !partlyHidden && ((!fromOutside && visibility === "hidden") || liveStyle.opacity === "0")) {
           partlyHidden = !live.closest(SVG_DEFINITION);
         }
         const neutralStyle = box.view.getComputedStyle(neutral);
         const declarations: [string, string][] = [];
         for (const property of STYLE_PROPS) {
           if (i === 0 && ROOT_SKIP.has(property)) continue;
+          if (property === "visibility" && fromOutside) continue;
           if (!hasText && FONT_PROPS.has(property)) continue;
           if (property === "color" && !usesCurrentColor) continue;
           const value = liveStyle.getPropertyValue(property);
@@ -1358,7 +1380,9 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
     const current = location.href.split("#")[0];
     // The page in another language is the same page: trezor.io/press-and-media links its Czech, Japanese, German and
     // Spanish versions, which took four of the six brand link slots. The lookbehind keeps the trailing slash match linear.
-    const localeFree = (pathname: string) => pathname.replace(/(?<!\/)\/+$/, "").replace(/^\/[a-z]{2}(?:[-_][a-z]{2,4})?(?=\/|$)/i, "") || "/";
+    // The code has to lead somewhere: francefintech.org links its press releases at `/cp`, which read as its home page
+    // in another language. A switcher's link to a bare code has nothing but the language name to make it a brand link.
+    const localeFree = (pathname: string) => pathname.replace(/(?<!\/)\/+$/, "").replace(/^\/[a-z]{2}(?:[-_][a-z]{2,4})?(?=\/)/i, "") || "/";
     const currentPath = localeFree(location.pathname);
     // A brand, press or media kit page offers files whatever they are called: stellar.org/brand-resources names its
     // logo pack and its guidelines by content hash on cdn.sanity.io and labels them "View" and "Download".
@@ -1432,7 +1456,8 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
         });
         continue;
       }
-      if (url.href === current || seen.has(url.href) || strong.length >= options.maxBrandLinks) continue;
+      const key = linkKey(url);
+      if (url.href === current || seen.has(key) || strong.length >= options.maxBrandLinks) continue;
       const name = text || label;
       if (siteOf(url.hostname) === site) {
         if (localeFree(url.pathname) === currentPath) continue;
@@ -1444,7 +1469,7 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
         if (!isBrandWord(segment) && !isBrandWord(name)) continue;
         const list = isStrongBrandPhrase(name) || isStrongBrandPhrase(segment) ? strong : plain;
         if (list.length >= options.maxBrandLinks) continue;
-        seen.add(url.href);
+        seen.add(key);
         list.push({ href: url.href, text: name });
         continue;
       }
@@ -1455,7 +1480,7 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
         const caption = captionOf(el, "links");
         if (caption === undefined || !isStrongBrandPhrase(caption)) continue;
       }
-      seen.add(url.href);
+      seen.add(key);
       strong.push({ href: url.href, text: name });
     }
     brandLinks.push(...[...strong, ...plain].slice(0, options.maxBrandLinks));

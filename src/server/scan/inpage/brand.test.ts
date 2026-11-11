@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { brandFileType, isBrandFileWord, isBrandPortal, isBrandWord, isGenericLabel, isStrongBrandPhrase, siteOf } from "./brand";
+import { brandFileType, isBrandFileWord, isBrandPortal, isBrandWord, isGenericLabel, isStrongBrandPhrase, linkKey, siteOf } from "./brand";
 
 describe("siteOf", () => {
   it("keeps the registrable domain, three labels under a co.uk-like suffix, and addresses as they are", () => {
@@ -70,6 +70,27 @@ describe("isBrandPortal", () => {
     expect(portal("https://standards.site")).toBe(false);
     expect(portal("https://notstandards.site/kit")).toBe(false);
     expect(portal("https://drive.google.com/drive/folders/1PozkRBtCbjbqqQFChGFTc45xZe_kcjMT")).toBe(false);
+  });
+});
+
+describe("linkKey", () => {
+  const key = (url: string) => linkKey(new URL(url));
+
+  it("reads a path with and without its trailing slash as one link, and drops the fragment and credentials", () => {
+    // francefintech.org links its press releases both ways.
+    expect(key("https://francefintech.org/cp/")).toBe(key("https://francefintech.org/cp"));
+    expect(key("https://acme.frontify.com/d/kit/#logos")).toBe("https://acme.frontify.com/d/kit");
+    expect(key("https://user:secret@x.com/press/")).toBe("https://x.com/press");
+    expect(key("https://x.com/")).toBe("https://x.com/");
+    expect(key("https://x.com/press/?lang=fr")).toBe("https://x.com/press?lang=fr");
+  });
+
+  it("keeps everything else apart", () => {
+    expect(key("https://x.com/Press")).not.toBe(key("https://x.com/press"));
+    expect(key("https://x.com/press?lang=fr")).not.toBe(key("https://x.com/press"));
+    expect(key("https://x.com/press/index.html")).not.toBe(key("https://x.com/press"));
+    expect(key("http://x.com/press")).not.toBe(key("https://x.com/press"));
+    expect(key("https://x.com/press//")).not.toBe(key("https://x.com/press"));
   });
 });
 
