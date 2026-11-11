@@ -16,6 +16,8 @@ export function llmsText(origin: string): string {
 
 Assets Scraper opens a web page in a real browser and reports every SVG, image and font it actually uses, plus the
 brand palette. Two endpoints are meant for agents, and both answer one JSON document or one archive, never a stream.
+The same scans run on an agent's own machine through the MCP server and the assets-scraper command: ${origin}/agents
+says how to set them up.
 
 ## Authentication
 
