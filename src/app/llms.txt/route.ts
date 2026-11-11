@@ -42,7 +42,8 @@ Body: {"url": "stripe.com", "view": "summary"}
 
 "summary" answers { view, scanId, summary }. The summary is written to stay under 4 KB whatever the page holds: the
 page title and host, counts per kind, the palette hexes, one row per font family with its licence and whether it can
-be installed, and the logos with their format, dimensions and size. Read it first, then ask for what you need.
+be installed, the logos with their format, dimensions and size, and brandLinks, the page's own links to its brand,
+press or media kit pages, where official logo variants usually are. Read it first, then ask for what you need.
 
 "full" answers { view, scanId, summary, scan } where scan adds every asset and every font family, in the shapes of
 src/lib/contract.ts: assets carry id, kind, role, name, filename, format, dimensions, bytes and their source URLs.

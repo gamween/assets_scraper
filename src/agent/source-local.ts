@@ -90,6 +90,7 @@ export function createLocalScanSource(deps: LocalScanSourceDeps = {}): ScanSourc
           host: page.host,
           title: page.title,
           ...(page.siteName === undefined ? {} : { siteName: page.siteName }),
+          ...(page.brandLinks.length === 0 ? {} : { brandLinks: page.brandLinks }),
         },
         assets,
         fonts,

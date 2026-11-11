@@ -272,8 +272,9 @@ export function createAgentMcpServer(options: AgentMcpOptions = {}): McpServer {
     {
       title: "Scan a page",
       description:
-        "Scans a page and returns a short summary: the scan id, the counts per kind, the palette, the fonts and the logos. " +
-        "Never the whole asset list. Pass the scan id to the other tools. A scan of the same URL inside the hour is reused.",
+        "Scans a page and returns a short summary: the scan id, the counts per kind, the palette, the fonts, the logos and " +
+        "the page's links to its brand, press or media kit pages, where official logo variants usually are. Never the whole " +
+        "asset list. Pass the scan id to the other tools. A scan of the same URL inside the hour is reused.",
       inputSchema: {
         url: z.string().min(1).max(2048).describe("the page to scan, with or without a scheme"),
         refresh: z.boolean().optional().describe("scan again instead of reusing a cached scan of the same URL"),

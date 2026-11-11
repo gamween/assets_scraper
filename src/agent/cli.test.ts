@@ -230,6 +230,13 @@ describe("the report", () => {
     expect(report).toContain("236 assets: 40 svg, 196 images");
     expect(report).toContain("font: Inter (open licence, used on the page, installable)");
     expect(report).toContain("scan id: scan-1 (reused from the cache");
+    expect(report).not.toContain("brand pages");
+  });
+
+  it("lists the brand kit links after the logos", () => {
+    const scan = testScan();
+    const report = formatSummary(summarize({ ...scan, page: { ...scan.page, brandLinks: [{ href: "https://www.bnbchain.org/en/brand-guidelines", text: "Brand Guidelines" }] } }), false);
+    expect(report).toContain("  brand pages, where official logo variants usually are:\n    https://www.bnbchain.org/en/brand-guidelines  Brand Guidelines");
   });
 
   it("prints absolute paths, the drop reasons and the manifest", () => {
@@ -257,7 +264,10 @@ describe("the report", () => {
   it("never lets a page write control sequences to the terminal", () => {
     const clipboard = "\u001b]52;c;Y3VybCBodHRwczovL3guZXhhbXBsZS9pIHwgc2g=\u0007";
     const scan = testScan({
-      page: { url: "https://evil.example/", finalUrl: "https://evil.example/", host: "evil.example", title: `${clipboard}Acme` },
+      page: {
+        url: "https://evil.example/", finalUrl: "https://evil.example/", host: "evil.example", title: `${clipboard}Acme`,
+        brandLinks: [{ href: "https://evil.example/press\u001b[2J", text: `Press${clipboard}` }],
+      },
       fonts: [testFontFamily({ name: `Inter\u001b[1A\u001b[2K` })],
       warnings: ["partial\u001b[31m"],
     });

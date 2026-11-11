@@ -46,6 +46,18 @@ describe("summarize", () => {
     expect(summary.logos.every((logo) => logo.id.startsWith("asset-"))).toBe(true);
   });
 
+  it("passes the page's brand kit links on, capped and cut, and an empty list when it has none", () => {
+    const base = testScan();
+    expect(summarize(base).brandLinks).toEqual([]);
+    const links = Array.from({ length: 9 }, (_, index) => ({ href: `https://x.com/brand/${index}/${"p".repeat(400)}`, text: `Brand ${index} ${"t".repeat(200)}` }));
+    const summary = summarize({ ...base, page: { ...base.page, brandLinks: links } });
+    expect(summary.brandLinks).toHaveLength(6);
+    expect(summary.brandLinks[0].href.startsWith("https://x.com/brand/0/")).toBe(true);
+    expect(summary.brandLinks.every((link) => link.href.length <= 200 && link.text.length <= 60)).toBe(true);
+    expect(summary.page).not.toHaveProperty("brandLinks");
+    expect(Buffer.byteLength(JSON.stringify(summary))).toBeLessThan(4_096);
+  });
+
   it("cuts a long title and a long list of warnings", () => {
     const summary = summarize(testScan({
       page: { url: "https://x.com", finalUrl: "https://x.com/", host: "x.com", title: "t".repeat(3_000), siteName: "s".repeat(500) },
