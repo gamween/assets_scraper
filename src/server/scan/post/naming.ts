@@ -193,6 +193,22 @@ export function markupName(markup: string | undefined): string | undefined {
   return undefined;
 }
 
+/** The label with the logo words taken out, in lowercase: "Trezor logo" reads "trezor". */
+const withoutLogoWords = (text: string) => text.toLowerCase().replace(/\b(?:logo(?:type)?|wordmark)\b/g, " ").replace(/\s+/g, " ").trim();
+
+/**
+ * The text of the link, when the label only names the site and the link names one of its sub-brands. A page template
+ * that stamps "<site> logo" on every brand card names the site, not the card: trezor.visualbook.pro labels the Trezor
+ * Academy mark "Trezor logo", inside a link that reads "Trezor Academy". The site logo keeps the label, and so does a
+ * card whose link names something that is not the site's.
+ */
+function subBrandName(label: string | undefined, linkText: string | undefined, site: string | undefined, role: AssetRole): string | undefined {
+  if (!label || !linkText || !site || role === "site-logo") return undefined;
+  const name = withoutLogoWords(site);
+  const text = linkText.toLowerCase();
+  return withoutLogoWords(label) === name && text !== name && text.includes(name) ? linkText : undefined;
+}
+
 const ROLE_DEFAULT: Partial<Record<AssetRole, string>> = {
   "site-logo": "logo",
   favicon: "favicon",
@@ -203,6 +219,7 @@ export function displayName(input: NameInput): string {
   const site = usable(input.siteName);
   const roleDefault = site && ROLE_DEFAULT[input.role] ? `${site} ${ROLE_DEFAULT[input.role]}` : undefined;
   return (
+    subBrandName(usable(input.label), usable(input.linkText), site, input.role) ??
     usable(input.label) ??
     (input.jsonLdLogo && site ? `${site} logo` : undefined) ??
     roleDefault ??

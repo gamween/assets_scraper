@@ -21,6 +21,17 @@ describe("displayName", () => {
     expect(name({ role: "logo", linkText: "Customer", url: "https://linear.app/c.svg" })).toBe("Customer");
   });
 
+  it("names a sub-brand mark after its link when the label only names the site", () => {
+    // trezor.visualbook.pro labels every brand card "Trezor logo".
+    const card = { role: "logo" as const, siteName: "Trezor", label: "Trezor logo" };
+    expect(name({ ...card, linkText: "Trezor Academy" })).toBe("Trezor Academy");
+    expect(name({ ...card, linkText: "Trezor" })).toBe("Trezor logo");
+    // The site logo and a link to something else keep the label.
+    expect(name({ ...card, role: "site-logo", linkText: "Trezor Academy" })).toBe("Trezor logo");
+    expect(name({ ...card, linkText: "Learn more" })).toBe("Trezor logo");
+    expect(name({ ...card, label: "Trezor Safe 5", linkText: "Trezor Safe 5 and Trezor Academy" })).toBe("Trezor Safe 5");
+  });
+
   it("collapses whitespace, strips control characters and caps long labels", () => {
     expect(name({ label: "Acme\n\t  Corp\u0000" })).toBe("Acme Corp");
     expect(name({ label: "https://cdn.example/a.png", url: "https://cdn.example/a.png" })).toBe("a");
