@@ -392,7 +392,7 @@ Verification: `safeFetch` GET with `Range: bytes=0-262143`, `Accept: image/png,i
 - `site-logo`: score >= 6 and at most 120,000 px2, or a JSON-LD logo at any size. The score reaches 6 on position alone (link to home, header, top of the page), which is also what a hero picture under a nav looks like, and the logo signals are shared across a group, so past that area only an explicit declaration promotes.
 - `logo`: logo word, logo wall, or a label of at most 60 characters containing "logo", under the same 120,000 px2 limit. A longer label is a sentence about what the picture shows, not its name: stripe.com captions 2460x1060 photographs with one that mentions its own logo.
 - Logo size, for both roles: what the asset renders at. A vector that never rendered is not measured at all (its viewBox says nothing about the page), and neither is a raster the page itself treats as a logo, by a logo wall or a score at the promotion threshold: a mobile only header logo, a dark theme variant and a 2x raster are hidden in the scanned viewport and still real logos. A raster that never rendered with nothing but a word behind it is measured by its file.
-- `favicon`: icon links, meta icons, manifest icons, `/favicon.ico`.
+- `favicon`: icon links, meta icons, manifest icons, `/favicon.ico`, and an ICO file declared as the JSON-LD logo. ICO is the favicon format and never a logo, whatever points at it: bybit.com declares its 48x48 `/favicon.ico` as its logo.
 - `social`: `og:image`, `twitter:image`.
 - `icon`: longest rendered side <= 48 CSS px, or intrinsic side <= 48 px when not rendered. Logo and favicon roles are exempt. This is the single small-icon rule.
 - `sprite-symbol` for expanded symbols, `illustration` for SVGs above the icon size, `image` otherwise.

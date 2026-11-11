@@ -120,6 +120,16 @@ describe("assignRole", () => {
     expect(role({})).toBe("image");
   });
 
+  it("never makes an ICO file a logo", () => {
+    // bybit.com declares its 48x48 /favicon.ico as the JSON-LD logo.
+    expect(role({ foundIn: ["json-ld"], format: "ico", intrinsic: { width: 48, height: 48 } })).toBe("favicon");
+    expect(role({ foundIn: ["json-ld"], format: "png", intrinsic: { width: 48, height: 48 } })).toBe("site-logo");
+    // Another site's favicon shown as a picture is not this site's favicon, and no logo either.
+    const header = logoScore(context({ header: true, homeLink: true, logoWord: true }), true, { x: 0, y: 10, width: 16, height: 16 });
+    expect(role({ format: "ico", logoScore: header, logoWord: true, rendered: { width: 16, height: 16 } })).toBe("icon");
+    expect(role({ format: "ico", label: "Partner logo", rendered: { width: 64, height: 64 } })).toBe("image");
+  });
+
   it("never makes a favicon or a logo an icon, and labels sprite symbols", () => {
     expect(role({ foundIn: ["icon-link"], rendered: { width: 16, height: 16 } })).toBe("favicon");
     expect(role({ logoWord: true, intrinsic: { width: 16, height: 16 } })).toBe("logo");

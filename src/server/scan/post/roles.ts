@@ -1,4 +1,4 @@
-import type { AssetKind, AssetRole, FoundIn } from "@/lib/contract";
+import type { AssetFormat, AssetKind, AssetRole, FoundIn } from "@/lib/contract";
 import type { CandidateContext, Rect } from "../types";
 import { searchFrom } from "./search";
 
@@ -62,6 +62,7 @@ export function logoScore(context: CandidateContext, visible: boolean, rect?: Re
 
 export interface RoleInput {
   kind: AssetKind;
+  format?: AssetFormat;       // of the resolved file, when known
   foundIn: FoundIn[];
   logoScore: number;          // best score of all members
   logoWord: boolean;          // any member
@@ -110,11 +111,14 @@ const hasLogoEvidence = (input: RoleInput): boolean =>
 export function assignRole(input: RoleInput): AssetRole {
   const found = new Set(input.foundIn);
   const oversized = logoArea(input) > LOGO_MAX_AREA;
-  if (found.has("json-ld") || (input.logoScore >= LOGO_SCORE_PROMOTION && !oversized)) return "site-logo";
-  if (found.has("icon-link") || found.has("meta-icon") || found.has("manifest")) return "favicon";
+  // ICO is the favicon format, a few small bitmaps in one file, and never a logo whatever points at it: bybit.com
+  // declares its 48x48 /favicon.ico as the JSON-LD logo, which made it a site logo beside the header wordmark.
+  const ico = input.format === "ico";
+  if (!ico && (found.has("json-ld") || (input.logoScore >= LOGO_SCORE_PROMOTION && !oversized))) return "site-logo";
+  if (found.has("icon-link") || found.has("meta-icon") || found.has("manifest") || (ico && found.has("json-ld"))) return "favicon";
   if (found.has("og-image") || found.has("twitter-image")) return "social";
   // A logo is small. Past the same limit the site logo answers to, a picture that carries a logo word is a picture.
-  if (hasLogoEvidence(input) && !oversized) return "logo";
+  if (!ico && hasLogoEvidence(input) && !oversized) return "logo";
   if (input.spriteSymbol) return "sprite-symbol";
   // The single small-icon rule: the rendered size when the asset is on screen, else its intrinsic size.
   const side = input.rendered && longestSide(input.rendered) > 0 ? longestSide(input.rendered) : longestSide(input.intrinsic);
