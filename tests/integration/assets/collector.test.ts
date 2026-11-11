@@ -57,6 +57,20 @@ beforeAll(async () => {
         </svg></div>
       </body></html>`);
     },
+    // chain.link's mega menu: `visibility: hidden` until it opens, around the Chainlink logo, which downloaded blank. Next
+    // to it, a vector that hides a part of its drawing itself, in its markup and with a page rule.
+    "/hidden-menu.html": (_req, res) => {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(`<!doctype html><html><head><title>Hidden menu</title><style>
+        .mega-menu { visibility: hidden; opacity: 0 } .copied { visibility: hidden }
+      </style></head><body><nav>
+        <div class="mega-menu">
+          <svg width="925" height="235" viewBox="0 0 925 235" fill="none"><g clip-path="url(#menu-clip)"><path d="M101 0 0 58v118l101 58 102-58V58z" fill="#0847f7"/></g><defs><clipPath id="menu-clip"><rect width="925" height="235" fill="#fff"/></clipPath></defs></svg>
+          <svg width="24" height="24" viewBox="0 0 24 24"><path d="M0 0h24v24H0z"/><path visibility="hidden" d="M4 4h16v16H4z"/></svg>
+        </div>
+        <button><svg width="26" height="26" viewBox="0 0 26 26"><path d="M0 0h26v26H0z"/><path class="copied" d="M4 4h18v18H4z"/></svg></button>
+      </nav></body></html>`);
+    },
     "/labels.html": (_req, res) => {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       res.end(`<!doctype html><html><head><title>Labels</title></head><body>
@@ -283,6 +297,27 @@ describe("collector currentColor", () => {
     expect(white.markup).toContain('<path fill="rgb(255, 51, 102)"');
     expect(white.markup).toMatch(/<circle [^>]*fill="rgb\(255, 255, 255\)"/);
     expect(white.markup).not.toMatch(/currentcolor/i);
+  });
+});
+
+describe("collector visibility", () => {
+  it("leaves out the visibility a vector inherits from a hidden container and keeps the one it sets itself", async () => {
+    const { context, page } = await openPage(browser, `${server.origin}/hidden-menu.html`);
+    const menu = await runCollector(page, collectorOptions(server.host, "Fixture"));
+    await context.close();
+    const [logo] = menu.svgs.filter((s) => s.markup.includes('width="925"'));
+    const [own] = menu.svgs.filter((s) => s.markup.includes('width="24"'));
+    const [copied] = menu.svgs.filter((s) => s.markup.includes('width="26"'));
+    // The closed menu's `visibility: hidden` used to land on the logo's first child, and the file rendered blank.
+    expect(logo.visible).toBe(false);
+    expect(logo.markup).not.toMatch(/visibility/);
+    expect(logo.partlyHidden).toBeUndefined();
+    // A part the markup hides stays hidden, the rest of that vector gets nothing from the menu.
+    expect(own.markup).toContain('<path visibility="hidden" d="M4 4h16v16H4z"/>');
+    expect(own.markup.match(/visibility/g)).toHaveLength(1);
+    // Outside the menu, a part a page rule hides is the drawing's own, as before.
+    expect(copied.markup).toMatch(/<path [^>]*style="[^"]*visibility: hidden/);
+    expect(copied.partlyHidden).toBe(true);
   });
 });
 

@@ -1026,10 +1026,16 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
     // Computed styles that differ from a neutral rendering, top-down
     const hasText = !!svg.querySelector("text,tspan,textPath");
     const usesCurrentColor = /currentcolor/i.test(clone.outerHTML);
+    // Visibility is inherited, and the copy drops the root's (ROOT_SKIP, then the cleanup). chain.link's mega menu is
+    // `visibility: hidden` until it opens: every part of the logo in it computed hidden, its first child took that as
+    // its own, and the downloaded file rendered blank. A part that only repeats the visibility of a parent the copy
+    // drops it for gets none written, and keeps what its markup says (an attribute, a style attribute, the vector's
+    // <style>). A part that differs from its parent sets its own and keeps it. A page rule that hides part of a vector
+    // the page already hides as a whole reads like inheritance, and is the one case lost. Keyed by live element.
+    const outsideVisibility = new Map<Element, string>();
     // Part of the drawing hidden by visibility or opacity while the vector itself is not: the state a script left an
     // animation in. A vector the page hides as a whole (a closed menu) passes visibility down to every part, which
     // says nothing about the drawing.
-    const rootHidden = view.getComputedStyle(svg).visibility === "hidden";
     let partlyHidden = false;
     if (liveElements.length <= MAX_STYLED_SVG_ELEMENTS) {
       const box = getSandbox();
@@ -1051,13 +1057,17 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
           }
         }
         const liveStyle = view.getComputedStyle(live);
-        if (i > 0 && !partlyHidden && ((!rootHidden && liveStyle.visibility === "hidden") || liveStyle.opacity === "0")) {
+        const visibility = liveStyle.visibility;
+        const fromOutside = i === 0 ? visibility !== "visible" : outsideVisibility.get(live.parentElement!) === visibility;
+        if (fromOutside) outsideVisibility.set(live, visibility);
+        if (i > 0 && !partlyHidden && ((!fromOutside && visibility === "hidden") || liveStyle.opacity === "0")) {
           partlyHidden = !live.closest(SVG_DEFINITION);
         }
         const neutralStyle = box.view.getComputedStyle(neutral);
         const declarations: [string, string][] = [];
         for (const property of STYLE_PROPS) {
           if (i === 0 && ROOT_SKIP.has(property)) continue;
+          if (property === "visibility" && fromOutside) continue;
           if (!hasText && FONT_PROPS.has(property)) continue;
           if (property === "color" && !usesCurrentColor) continue;
           const value = liveStyle.getPropertyValue(property);
