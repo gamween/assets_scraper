@@ -85,6 +85,8 @@ describe("GET /llms.txt", () => {
     expect(examples.length).toBeGreaterThanOrEqual(2);
     expect(text).toContain("https://assets.example.com/api/v1/scan");
     expect(text).toContain("https://assets.example.com/api/v1/assets.zip");
+    // The page that sets up the MCP server and the command, for an agent that would rather run the scans itself.
+    expect(text).toContain("https://assets.example.com/agents\n");
     expect(text).not.toContain("assets-scraper.vercel.app");
   });
 

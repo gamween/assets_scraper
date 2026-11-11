@@ -516,7 +516,7 @@ The palette module is a port of the validated lab code (v2 with every fix enable
 
 - Scraped SVG markup is never inserted into the DOM. Previews use `<img src="blob:...">` built from the markup. Code is shown as text.
 - `blob:` URLs of scraped SVGs are never opened in a tab. "Open source" exists only for remote http(s) URLs, with `rel="noopener noreferrer"`.
-- App headers: CSP `default-src 'self'; img-src 'self' blob: data: https:; font-src 'self' blob: data:; connect-src 'self' https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'`, `X-Robots-Tag: noindex, nofollow`, `Referrer-Policy: strict-origin-when-cross-origin`. `robots.txt` disallows everything but `/llms.txt` and `/api/openapi.json`, which user-directed agent fetchers must be able to read.
+- App headers: CSP `default-src 'self'; img-src 'self' blob: data: https:; font-src 'self' blob: data:; connect-src 'self' https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'`, `X-Robots-Tag: noindex, nofollow`, `Referrer-Policy: strict-origin-when-cross-origin`. `robots.txt` disallows everything but `/llms.txt`, `/api/openapi.json` and the `/agents` page, which user-directed agent fetchers must be able to read.
 - ZIP entry names sanitized.
 
 ### 11.5 Low profile

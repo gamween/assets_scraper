@@ -5,6 +5,22 @@ import type { AgentScan, SelectionBudget } from "./types";
 
 /** Factories the agent tests build scans with. Not bundled into the CLI or the MCP server. */
 
+/**
+ * The tools the MCP server registers: the eight of spec section 6, and the brand file download, in their order.
+ * src/agent/mcp.test.ts holds the server to it, and src/components/agents/content.test.ts the `/agents` page.
+ */
+export const MCP_TOOL_NAMES = [
+  "scan_page",
+  "list_assets",
+  "download_assets",
+  "download_brand_files",
+  "read_svg",
+  "get_palette",
+  "install_fonts",
+  "list_installed_fonts",
+  "uninstall_fonts",
+];
+
 /** What a stubbed download reports when the test is not about the byte rules: no budget, nothing measured. */
 export const noBudget: SelectionBudget = { maxTotalBytes: 0, maxFileBytes: 0, keptBytes: 0 };
 
