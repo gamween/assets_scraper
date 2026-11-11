@@ -6,7 +6,7 @@ import type { Page } from "playwright-core";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { Asset, ScanEvent, type Palette } from "@/lib/contract";
 import { BusyError, withBrowser } from "@/server/browser/launch";
-import { SafeFetchError } from "@/server/net/safe-fetch";
+import { safeFetch, SafeFetchError } from "@/server/net/safe-fetch";
 import { createScanEngine, type ScanEngineDeps } from "@/server/scan/engine";
 import { buildFontFamilies } from "@/server/scan/fonts";
 import { assembleAssets } from "@/server/scan/post/assemble";
@@ -124,6 +124,16 @@ beforeAll(async () => {
         return res.end();
       }
       html(200, "<!doctype html><title>Welcome back</title><p>Hello</p>")(req, res);
+    },
+    // francefintech.org (11/11/2026): its nginx closes the connection, with no answer, on any "compatible;" user agent
+    "/drops-bot-agents": (req, res) => {
+      if (req.headers["user-agent"]?.includes("compatible;")) return req.socket.destroy();
+      html(200, "<!doctype html><title>Members</title><p>Our members</p>")(req, res);
+    },
+    // A firewall that drops any client but a browser, told here by the Upgrade-Insecure-Requests of Chrome's navigations
+    "/drops-non-browsers": (req, res) => {
+      if (req.headers["upgrade-insecure-requests"] !== "1") return req.socket.destroy();
+      html(200, "<!doctype html><title>Members</title><p>Our members</p>")(req, res);
     },
     "/download.bin": (_req, res) => {
       downloadHits += 1;
@@ -317,6 +327,16 @@ describe("scan engine", () => {
     expect(launches).toHaveBeenCalledTimes(1);
     expect(events.at(-1)).toMatchObject({ type: "done", partial: false });
     expect(events.find((event) => event.type === "page")).toMatchObject({ page: { title: "Welcome back", status: 200 } });
+  });
+
+  it("scans a page whose host closes the connection on the preflight's user agent or on any client but a browser", async () => {
+    // The real safeFetch: the fake one cannot tell a closed connection from a refused one.
+    vi.stubEnv("SCAN_TEST_ALLOW_HOSTS", fixture.host);
+    for (const pathname of ["/drops-bot-agents", "/drops-non-browsers"]) {
+      const events = await scan(testDeps({ fetch: safeFetch }).deps, `${fixture.origin}${pathname}`);
+      expect(events.at(-1), pathname).toMatchObject({ type: "done", partial: false });
+      expect(events.find((event) => event.type === "page"), pathname).toMatchObject({ page: { title: "Members", status: 200 } });
+    }
   });
 
   it("reports a bot wall as blocked with public-source assets", async () => {

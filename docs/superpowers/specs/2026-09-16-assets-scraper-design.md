@@ -290,7 +290,7 @@ The engine owns an `AbortController` tied to `request.signal` and to a hard dead
 
 | # | Phase | Step event | Cap |
 |---|---|---|---|
-| 1 | Preflight `safeFetch` of the URL (manual redirects, 1 MB cap). Maps DNS, connect and private-address failures to error codes. A non-HTML response gives `not-html` with the URL as a single asset. A 403, 429 or 503 does not stop the scan | `open` start | 8 s |
+| 1 | Preflight `safeFetch` of the URL (manual redirects, 1 MB cap, the browser's user agent). Maps DNS, connect and private-address failures to error codes. A non-HTML response gives `not-html` with the URL as a single asset. A 403, 429 or 503 does not stop the scan, nor does a host that closes the connection without an answer: the browser gets its try | `open` start | 8 s |
 | 2 | Semaphore (one scan per instance). Emits `step queue` while waiting | `queue` | 15 s, then `busy` |
 | 3 | Start the egress proxy, launch Chromium, then set up its context and page | `open` | 20 s, then 10 s for setup |
 | 4 | `goto(url, domcontentloaded)`, then `detectBlock` | `open` done | 25 s |

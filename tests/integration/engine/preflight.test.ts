@@ -4,7 +4,7 @@ import sharp from "sharp";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { Asset } from "@/lib/contract";
 import { ScanFailure } from "@/server/errors";
-import { SafeFetchError } from "@/server/net/safe-fetch";
+import { safeFetch, SafeFetchError } from "@/server/net/safe-fetch";
 import { buildFallback, directAsset } from "@/server/scan/fallback";
 import { parseHead, preflight } from "@/server/scan/preflight";
 import type { SafeFetch } from "@/server/scan/types";
@@ -59,6 +59,18 @@ beforeAll(async () => {
       res.write('<html><head><title>Endless</title><meta property="og:image" content="/og.png"></head><body>');
       const timer = setInterval(() => res.write("<p>more</p>".repeat(100)), 5);
       res.on("close", () => clearInterval(timer));
+    },
+    // francefintech.org (11/11/2026): its nginx closes the connection, with no answer, on any "compatible;" user agent
+    "/drops-bot-agents": (req, res) => {
+      if (req.headers["user-agent"]?.includes("compatible;")) return req.socket.destroy();
+      res.writeHead(200, { "content-type": "text/html" });
+      res.end('<html><head><title>Members</title><link rel="icon" href="/assets/touch.png"></head></html>');
+    },
+    // A firewall that drops any client but a browser, told here by the Upgrade-Insecure-Requests of Chrome's navigations
+    "/drops-non-browsers": (req, res) => {
+      if (req.headers["upgrade-insecure-requests"] !== "1") return req.socket.destroy();
+      res.writeHead(200, { "content-type": "text/html" });
+      res.end("<html><head><title>Members</title></head></html>");
     },
   });
   victim = await serveFixture({
@@ -119,6 +131,14 @@ describe("preflight", () => {
       throw new SafeFetchError("too-many-redirects", "More than 5 redirects");
     };
     expect(await preflight("https://example.com/", { fetch: looping, signal: signal() })).toEqual({ finalUrl: "https://example.com/", status: 0, contentType: "", headers: {}, head: null, file: false });
+  });
+
+  it("reads the page as the browser, and leaves a host that closes the connection without an answer to it", async () => {
+    vi.stubEnv("SCAN_TEST_ALLOW_HOSTS", fixture.host);
+    const read = await preflight(`${fixture.origin}/drops-bot-agents`, { fetch: safeFetch, signal: signal() });
+    expect(read).toMatchObject({ status: 200, head: { title: "Members", icons: [{ href: `${fixture.origin}/assets/touch.png`, rel: "icon" }] } });
+    const dropped = `${fixture.origin}/drops-non-browsers`;
+    expect(await preflight(dropped, { fetch: safeFetch, signal: signal() })).toEqual({ finalUrl: dropped, status: 0, contentType: "", headers: {}, head: null, file: false });
   });
 
   it("maps blocked addresses and DNS failures", async () => {

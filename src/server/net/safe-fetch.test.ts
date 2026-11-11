@@ -23,7 +23,6 @@ describe("safeFetch error mapping", () => {
     ["ECONNREFUSED", "connect ECONNREFUSED 93.184.216.34:443"],
     ["ECONNRESET", "read ECONNRESET"],
     ["EHOSTUNREACH", "connect EHOSTUNREACH 93.184.216.34:443"],
-    ["UND_ERR_SOCKET", "other side closed"],
     ["CERT_HAS_EXPIRED", "certificate has expired"],
     ["ERR_TLS_CERT_ALTNAME_INVALID", "Hostname/IP does not match certificate's altnames"],
     ["ERR_SSL_WRONG_VERSION_NUMBER", "wrong version number"],
@@ -31,6 +30,17 @@ describe("safeFetch error mapping", () => {
   ])("reports the socket or TLS failure %s as connect", async (code, message) => {
     undici.fetch.mockRejectedValue(fetchFailed(code, message));
     await expect(safeFetch("https://example.com/")).rejects.toMatchObject({ name: "SafeFetchError", code: "connect", message });
+  });
+
+  it.each([
+    // francefintech.org on a "compatible;" user agent: undici negotiates HTTP/2 and the host resets the stream
+    ["ERR_HTTP2_STREAM_ERROR", "Stream closed with error code NGHTTP2_PROTOCOL_ERROR"],
+    ["ERR_HTTP2_SESSION_ERROR", "Session closed with error code 2"],
+    // the same host over HTTP/1.1
+    ["UND_ERR_SOCKET", "other side closed"],
+  ])("reports a host that closed the exchange it accepted (%s) as closed, not as an unknown error", async (code, message) => {
+    undici.fetch.mockRejectedValue(fetchFailed(code, message));
+    await expect(safeFetch("https://example.com/")).rejects.toMatchObject({ name: "SafeFetchError", code: "closed", message });
   });
 
   it("rethrows errors that are not socket, TLS or DNS failures unchanged", async () => {
