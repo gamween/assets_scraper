@@ -385,16 +385,30 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
     return undefined;
   };
 
-  const linkTextOf = (el: Element): string | undefined => {
-    const link = composedClosest(el, "a[href]");
-    if (!link) return undefined;
-    let text = "";
-    const walker = link.ownerDocument.createTreeWalker(link, NodeFilter.SHOW_TEXT, {
+  /** Text nodes read for one link text or caption, blank or not: the bound that 200 characters of them used to set. */
+  const MAX_TEXT_NODES = 200;
+  /**
+   * The text under `root` a reader sees, outside vectors and scripts, up to 200 characters. Only text counts toward
+   * them. The indentation between tags used to: trezor.visualbook.pro indents its brand cards so deep that 236
+   * characters of it came before the card title "Trezor Academy", and the link was read as having no text at all.
+   */
+  const readText = (root: Element): string => {
+    const walker = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
       acceptNode: (node) =>
         node.parentElement?.closest("svg,script,style,noscript,template") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT,
     });
-    for (let node = walker.nextNode(); node && text.length < 200; node = walker.nextNode()) text += ` ${node.nodeValue ?? ""}`;
-    return collapse(text) || undefined;
+    let text = "";
+    let nodes = 0;
+    for (let node = walker.nextNode(); node && text.length < 200 && nodes < MAX_TEXT_NODES; node = walker.nextNode(), nodes++) {
+      const value = collapse(node.nodeValue, 200);
+      if (value) text += ` ${value}`;
+    }
+    return text;
+  };
+
+  const linkTextOf = (el: Element): string | undefined => {
+    const link = composedClosest(el, "a[href]");
+    return link ? collapse(readText(link)) || undefined : undefined;
   };
 
   /** Short enough to be a caption rather than a paragraph. A logo sits beside a name, not beside a story. */
@@ -427,13 +441,7 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
     let node = composedParent(el);
     for (let depth = 0; node && depth < HINT_DEPTH; depth++, node = composedParent(node)) {
       if (holdsAnotherPicture(node)) return undefined;
-      const walker = node.ownerDocument.createTreeWalker(node, NodeFilter.SHOW_TEXT, {
-        acceptNode: (text) =>
-          text.parentElement?.closest("svg,script,style,noscript,template") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT,
-      });
-      let text = "";
-      for (let found = walker.nextNode(); found && text.length < 200; found = walker.nextNode()) text += ` ${found.nodeValue ?? ""}`;
-      const caption = collapse(text, NEARBY_TEXT_CHARS + 1);
+      const caption = collapse(readText(node), NEARBY_TEXT_CHARS + 1);
       if (!caption) continue;
       return caption.length <= NEARBY_TEXT_CHARS && caption.split(" ").length <= NEARBY_TEXT_WORDS ? caption : undefined;
     }
