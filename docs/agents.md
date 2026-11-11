@@ -33,7 +33,7 @@ Tools, all returning compact JSON, never bytes:
 
 | Tool | Input | Output |
 | --- | --- | --- |
-| `scan_page` | `url`, optional `refresh` | `scanId`, the page, counts per kind, the palette, one row per font family, the logos, the page's links to its brand, press or media kit pages and to brand portals on other hosts (`brandLinks`), the files of its brand kit (`brandFiles`), and how many other assets there are |
+| `scan_page` | `url`, optional `refresh` | `scanId`, the page, counts per kind, the palette, one row per font family, the logos, the live text the page sets as its logo (`wordmark`), the page's links to its brand, press or media kit pages and to brand portals on other hosts (`brandLinks`), the files of its brand kit (`brandFiles`), and how many other assets there are |
 | `list_assets` | `scanId`, optional `kind`, `role`, `minLongSide`, `nameContains`, `limit` (40), `offset` | Compact rows: id, name, kind, role, dimensions, bytes |
 | `download_assets` | `scanId`, optional `ids`, `profile`, filters, `includeIcons`, `max`, `maxTotalBytes`, `maxFileBytes`, `dest` | The written paths, total bytes, the drop reasons, the destination and the manifest |
 | `download_brand_files` | `scanId`, optional `ids`, `extract`, `dest` | The written paths under `brand/`, what each archive gave and left out, what failed and why, and the manifest |
@@ -140,6 +140,19 @@ The point of the `deck` profile (the default) is that a download does not take e
 The `all` profile keeps everything the explicit filters allow: no role rule, no vector rule and no near duplicates, a size gate or a per-file ceiling only when the caller names one, and still byte-identical copies, the cap and the byte budget. Explicit `ids` win over every rule except the cap and path safety, and are never dropped for their size; every fetch is still capped at 25 MB, so a larger file ends under `failed`. A download also stops fetching past 300 MB (`maxDownloadBytes`), counting what it never fetched as `unavailable`.
 
 Every drop is counted by reason, so an agent can say why a file is not there: `filter`, `icon`, `sprite`, `extra-favicon`, `small`, `too-large`, `vector-preferred`, `duplicate`, `near-duplicate`, `cap`, `over-budget`, and `unavailable` for an asset with no way to fetch it or one the download never reached. A file whose fetch failed is not a drop: it is listed under `failed` with the reason.
+
+## Wordmarks
+
+Many logos are partly live text: a monogram or a mark beside the name set in the page's font, or the name alone. The asset list holds only the picture, so a scan also reports the text as `wordmark`, in the page and in the summary, and leaves it out when the page has none.
+
+- Which text: the visible text of a link to the site's home page (in the page's language, not a language switch) in the header or a nav near the top, the same link the site logo is scored on. Not a breadcrumb, not a footer.
+- What does not count: text a sighted reader never sees (hidden, transparent, screen-reader-only text clipped to a 1 px box, text pushed off screen), invisible characters, more than 40 characters, more than 4 colour runs, and a generic label ("Home", "Accueil", "Menu", a skip link).
+- What makes it a wordmark rather than a menu item: it is set apart from the other links and buttons of the header or nav, compared with the style most of them share (the body's when there are none). Its own family, a weight of 600 or more they do not have, its own tracking, its own case, a size 10 percent larger, or a picture beside it in the same link. A picture does not count when most of those links have one too: that is a menu of icons.
+- `text` is as written, before `transform`, with a line break (`\n`) where a piece of it starts a line of its own: investirday.fr stacks "Investir" over "Day" beside its monogram. `family` is the scan's name for the first family of the stack the page loaded (the same name as the `fonts` rows), or the first one as written when it is a system font. `weight` is the drawn weight, a variable font's `wght` axis included. `size` and `letterSpacing` are CSS px (divide by `size` for em).
+- `runs` cut the text into stretches of one colour, each the colour a reader sees: the text fill, or the first stop of a gradient the text is clipped to, over what is behind it, read through the same canvas conversion as the palette, so a run and a swatch of one colour have one hex.
+- `withLogo`, for a lockup: the id of the asset of the picture beside the text in the same link (an image, a CSS background, an inline SVG), and the `width` and `height` the page draws it at. It is left out when the picture became no asset (noise, the asset cap) and for a picture that is behind the text rather than beside it.
+
+In the summary the wordmark is dropped whole, after the brand links and files and before any logo row, when the 4 KB budget runs out.
 
 ## Brand kits
 

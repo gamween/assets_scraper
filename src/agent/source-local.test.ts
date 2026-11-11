@@ -4,7 +4,7 @@ import { ScanFailure } from "@/server/errors";
 import { BROWSER_USER_AGENT } from "@/server/net/safe-fetch";
 import type { SafeFetch, SafeFetchOptions, SafeResponse, ScanBackend } from "@/server/scan/types";
 import { createLocalScanSource, scanIdFor } from "./source-local";
-import { testAsset, testFontFamily, testFontFile } from "./testing";
+import { testAsset, testFontFamily, testFontFile, testWordmark } from "./testing";
 
 /** A backend that replays `events` and records what it was asked, so the folding can be watched without a browser. */
 const fakeBackend = (events: ScanEvent[]): ScanBackend & { calls: { url: string; signal: AbortSignal }[] } => {
@@ -56,6 +56,15 @@ describe("createLocalScanSource().scan", () => {
     const without = await createLocalScanSource({ backend: fakeBackend([{ type: "page", page: page({ brandFiles: [] }) }, done()]) }).scan("stripe.com");
     expect(without.page).not.toHaveProperty("brandLinks");
     expect(without.page).not.toHaveProperty("brandFiles");
+  });
+
+  it("keeps the wordmark of the last page event, and leaves the field out of a page without one", async () => {
+    const withWordmark = await createLocalScanSource({
+      backend: fakeBackend([{ type: "page", page: page() }, { type: "page", page: page({ wordmark: testWordmark() }) }, done()]),
+    }).scan("investirday.fr");
+    expect(withWordmark.page.wordmark).toEqual(testWordmark());
+    const without = await createLocalScanSource({ backend: fakeBackend([{ type: "page", page: page() }, done()]) }).scan("stripe.com");
+    expect(without.page).not.toHaveProperty("wordmark");
   });
 
   it("folds the event stream into one scan, the last page event winning", async () => {

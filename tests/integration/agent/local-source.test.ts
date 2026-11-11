@@ -94,6 +94,20 @@ describe("createScanSource, local", () => {
     expect(Buffer.byteLength(JSON.stringify(summary))).toBeLessThan(4_096);
   });
 
+  it("reports the text beside the header logo as the wordmark, tied to the logo row, through the cache too", async () => {
+    const logo = scan.assets.find((asset) => asset.role === "site-logo")!;
+    expect(scan.page.wordmark).toEqual({
+      text: "Fixture", family: "Inter", weight: 700, size: 16, letterSpacing: 1.28, transform: "uppercase",
+      runs: [{ text: "Fixture", hex: "#141e28" }],
+      withLogo: { id: logo.id, width: 120, height: 32 },
+    });
+    const summary = summarize(scan);
+    expect(summary.wordmark).toEqual(scan.page.wordmark);
+    expect(summary.logos.map((row) => row.id)).toContain(summary.wordmark?.withLogo?.id);
+    await saveScan(scan);
+    expect((await loadScan(scan.scanId))?.page.wordmark).toEqual(scan.page.wordmark);
+  });
+
   it("fetches the bytes of an asset and of a font file", async () => {
     const source = createScanSource();
     const svg = scan.assets.find((asset) => asset.kind === "svg" && asset.display?.url.endsWith(".svg"));

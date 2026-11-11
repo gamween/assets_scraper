@@ -68,6 +68,7 @@ describe("full scan of the fixture site", () => {
     expect(pages).toHaveLength(2);
     expect(pages[0]).toMatchObject({ host: server.host.split(":")[0], title: "Fixture Co", status: 200, brandLinks: [] });
     expect(pages[1].brandLinks).toContainEqual({ href: `${server.origin}/press`, text: "Press kit" });
+    expect(pages[0]).not.toHaveProperty("wordmark");
 
     const palette = events.find((event) => event.type === "palette");
     expect(palette?.type === "palette" && palette.palette).not.toBeNull();
@@ -85,6 +86,14 @@ describe("full scan of the fixture site", () => {
     expect(logos[0]).toMatchObject({ kind: "svg", display: null, original: null });
     expect(["Fixture home", "Fixture"]).toContain(logos[0].name);
     expect(logos[0].filename).toMatch(/^fixture-/);
+
+    // The header link holds the logo and live text beside it: the text half of the lockup, tied to the logo's asset.
+    const page = events.flatMap((event) => (event.type === "page" ? [event.page] : [])).at(-1);
+    expect(page?.wordmark).toEqual({
+      text: "Fixture", family: "Inter", weight: 700, size: 16, letterSpacing: 1.28, transform: "uppercase",
+      runs: [{ text: "Fixture", hex: "#141e28" }],
+      withLogo: { id: logos[0].id, width: 120, height: 32 },
+    });
 
     const photos = byUrl("photo-large.png");
     expect(photos).toHaveLength(1);

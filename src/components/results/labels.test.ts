@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
+import type { Wordmark } from "@/lib/contract";
 import { makeAsset, remoteSource } from "@/lib/client/testing";
-import { assetMetaParts, foundInLabel, hiddenSummary, roleBadge, roleLabel } from "./labels";
+import { assetMetaParts, foundInLabel, hiddenSummary, roleBadge, roleLabel, wordmarkCss, wordmarkSettings } from "./labels";
 
 describe("hiddenSummary", () => {
   it("names the reasons by count", () => {
@@ -51,5 +52,29 @@ describe("card labels", () => {
 
   it("names where an asset was found, meta icons as a meta tag", () => {
     expect(foundInLabel(["icon-link", "meta-icon"])).toBe('<link rel="icon">, Meta tag');
+  });
+});
+
+describe("wordmarkSettings and wordmarkCss", () => {
+  const investirday: Wordmark = {
+    text: "Investir\nDay", family: "Inter", weight: 700, size: 12, letterSpacing: 1.2, transform: "uppercase",
+    runs: [{ text: "Investir\n", hex: "#130d21" }, { text: "Day", hex: "#fb2189" }], withLogo: { id: "logo", width: 36, height: 36 },
+  };
+
+  it("gives the type settings with the tracking in em, and leaves out what the page left at its default", () => {
+    expect(wordmarkSettings(investirday)).toBe("Inter 700 · 12px · 0.1em · uppercase");
+    expect(wordmarkSettings({ ...investirday, letterSpacing: 0, transform: "none" })).toBe("Inter 700 · 12px");
+  });
+
+  it("copies the settings as CSS, the runs and their colours as a comment", () => {
+    expect(wordmarkCss(investirday)).toBe(
+      'font-family: "Inter";\nfont-weight: 700;\nfont-size: 12px;\nletter-spacing: 0.1em;\ntext-transform: uppercase;\nwhite-space: pre-line;\n/* Investir #130d21, Day #fb2189 */',
+    );
+  });
+
+  it("keeps a scraped family inside its quotes and a scraped run inside its comment", () => {
+    const css = wordmarkCss({ ...investirday, family: 'Evil"; } body { display: none', runs: [{ text: "x */ body { display: none } /*", hex: "#000000" }] });
+    expect(css).toContain('font-family: "Evil\\"; } body { display: none";');
+    expect(css.match(/\*\//g)).toHaveLength(1);
   });
 });

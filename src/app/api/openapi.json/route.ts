@@ -1,5 +1,5 @@
 import { agentLimits } from "@/agent/limits";
-import { AssetFormat, AssetKind, AssetRole, BrandFileType, ErrorCode, FontLicense } from "@/lib/contract";
+import { AssetFormat, AssetKind, AssetRole, BrandFileType, ErrorCode, FontLicense, WordmarkTransform } from "@/lib/contract";
 
 /**
  * `GET /api/openapi.json` (spec section 8): the same two endpoints `llms.txt` describes in prose, as OpenAPI 3.1, for
@@ -232,6 +232,31 @@ export function openApiDocument(origin: string): Record<string, unknown> {
                   width: { type: "number" },
                   height: { type: "number" },
                   bytes: { type: "integer", description: "When the scan measured it." },
+                },
+              },
+            },
+            wordmark: {
+              type: "object",
+              description:
+                "The live text the page sets as its logo, absent when it has none: the visible text of the home link in its header or nav, set apart from the links beside it. With withLogo it is the text half of a lockup: draw the withLogo asset at its width and height (CSS px) beside text in this family, weight and size (CSS px), with this letter spacing (CSS px; divide by size for em) and case, colouring each run. Without it, it is a text logo on its own. text is as written, before transform, with a line break where the page starts a new line (a stacked lockup).",
+              required: ["text", "family", "weight", "size", "letterSpacing", "transform", "runs"],
+              properties: {
+                text: { type: "string" },
+                family: { type: "string", description: "The scan's name for the family the page drew it in, as the fonts rows name it, or a system font as written." },
+                weight: { type: "number" },
+                size: { type: "number" },
+                letterSpacing: { type: "number" },
+                transform: { type: "string", enum: WordmarkTransform.options },
+                runs: {
+                  type: "array",
+                  description: "The text cut into stretches of one colour, in order, at most 4.",
+                  items: { type: "object", required: ["text", "hex"], properties: { text: { type: "string" }, hex: { type: "string" } } },
+                },
+                withLogo: {
+                  type: "object",
+                  description: "The asset beside the text in the same link, usually one of the logos rows, and the size the page draws it at.",
+                  required: ["id", "width", "height"],
+                  properties: { id: { type: "string" }, width: { type: "number" }, height: { type: "number" } },
                 },
               },
             },

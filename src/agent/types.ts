@@ -12,6 +12,7 @@ import type {
   FontLicense,
   Palette,
   ScanStats,
+  Wordmark,
 } from "@/lib/contract";
 import type { ArchiveSkipReason } from "./archive";
 
@@ -33,9 +34,19 @@ export interface AgentScan {
   /**
    * `brandLinks` are the page's links to its brand, press or media kit pages and to brand portals on other hosts (spec
    * 8.1), where the official logo variants usually live. `brandFiles` are the files of its kit: archives, guidelines,
-   * logo files. Each is absent from a scan that found none, and from a hosted app that predates it.
+   * logo files. `wordmark` is the live text the page sets as its logo, alone or beside a logo asset. Each is absent from
+   * a scan that found none, and from a hosted app that predates it.
    */
-  page: { url: string; finalUrl: string; host: string; title: string; siteName?: string; brandLinks?: BrandLink[]; brandFiles?: BrandFile[] };
+  page: {
+    url: string;
+    finalUrl: string;
+    host: string;
+    title: string;
+    siteName?: string;
+    brandLinks?: BrandLink[];
+    brandFiles?: BrandFile[];
+    wordmark?: Wordmark;
+  };
   assets: Asset[];
   fonts: FontFamily[];
   palette: Palette | null;
@@ -194,12 +205,17 @@ interface BrandLink {
 
 export interface ScanSummary {
   scanId: string;
-  page: Omit<AgentScan["page"], "brandLinks" | "brandFiles">;
+  page: Omit<AgentScan["page"], "brandLinks" | "brandFiles" | "wordmark">;
   counts: { assets: number; svg: number; images: number; fonts: number; hidden: number };
   palette: { hex: string; role?: string }[];
   fonts: { family: string; license: FontLicense["kind"]; usedOnPage: boolean; installable: boolean }[];
   /** `format` and `bytes` are there so a 4 MB photo the scan called a logo does not read like a wordmark. */
   logos: { id: string; name: string; kind: AssetKind; format: AssetFormat; width?: number; height?: number; bytes?: number }[];
+  /**
+   * The live text the page sets as its logo, absent when it has none: the text half of a lockup, whose `withLogo.id` is
+   * one of the `logos` rows (or another asset), or a text logo on its own.
+   */
+  wordmark?: Wordmark;
   /** Where to look next for the official logo variants: the page's brand, press and media kit links. */
   brandLinks: BrandLink[];
   /**

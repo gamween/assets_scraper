@@ -125,8 +125,30 @@ export interface RawCollectorOutput {
   blobs: { url: string; mime: string; base64: string }[];
   brandLinks: { href: string; text: string }[];
   brandFiles: RawBrandFileLink[];
+  /** Absent when no home link near the top holds text set apart as a logo. */
+  wordmark?: RawWordmark;
   noise: Partial<Record<HiddenReason, number>>;
   stats: { elements: number; ms: number; truncated: boolean };
+}
+
+/**
+ * The live text the page sets as its logo, as the collector reads it from the home link of its header or nav (spec
+ * 8.1): the colour runs in order, already normalized to hex in the page, and the typography of the first one as its
+ * computed style gives it. Post-processing names the family and ties `logo` to an asset (`post/wordmark.ts`).
+ */
+export interface RawWordmark {
+  runs: { text: string; hex: string }[];
+  /** The computed `font-family` stack, which post-processing reads against the scan's font families. */
+  stack: string;
+  weight: number;
+  size: number;                             // px
+  letterSpacing: number;                    // px, 0 for normal
+  transform: string;
+  /**
+   * The picture beside the text in the same home link, when there is one: the element group of its image candidates,
+   * or the hash of its inline SVG, and the size it is drawn at.
+   */
+  logo?: { group?: number; svg?: string; width: number; height: number };
 }
 
 /**
@@ -251,6 +273,11 @@ export interface AssetsOutput {
   warnings: WarningCode[];
   /** What happened to the CDN original candidates this scan tried (spec 8.4). */
   originals: OriginalProbes;
+  /**
+   * The id of the asset an element group of image candidates, or an inline SVG by its hash, ended up in, if one did:
+   * how page-level data points at an asset (the wordmark's logo). Absent when post-processing did not finish.
+   */
+  assetIdOf?: (source: { group?: number; svg?: string }) => string | undefined;
 }
 
 /**

@@ -311,6 +311,8 @@ export function createAgentMcpServer(options: AgentMcpOptions = {}): McpServer {
       title: "Scan a page",
       description:
         "Scans a page and returns a short summary: the scan id, the counts per kind, the palette, the fonts, the logos, " +
+        "the wordmark (the live text the page sets as its logo, with its font, weight, size, tracking, case and colour " +
+        "runs, and withLogo, the logo asset it sits beside and the size the page draws it at), " +
         "brandLinks (the page's links to its brand, press or media kit pages and to brand portals on other hosts, where " +
         "official logo variants usually are) and brandFiles (the archives, guidelines and logo files of its kit, which " +
         "download_brand_files fetches). Never the whole asset list. Pass the scan id to the other tools. A scan of the " +

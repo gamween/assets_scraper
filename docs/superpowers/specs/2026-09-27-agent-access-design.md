@@ -87,7 +87,7 @@ Tools, all returning compact JSON:
 
 | Tool | Input | Output |
 |---|---|---|
-| `scan_page` | `url`, optional `refresh` | `scanId`, page title and host, counts per kind, palette hexes with roles, fonts (family, licence kind, used on page), the logos (id, name, kind, dimensions), and the number of other assets. Never the full list |
+| `scan_page` | `url`, optional `refresh` | `scanId`, page title and host, counts per kind, palette hexes with roles, fonts (family, licence kind, used on page), the logos (id, name, kind, dimensions), the wordmark (the live text the page sets as its logo, its type settings and colour runs, and the logo asset it sits beside), and the number of other assets. Never the full list |
 | `list_assets` | `scanId`, optional `kind`, `role`, `minLongSide`, `nameContains`, `limit` (default 40), `offset` | Compact rows: id, name, kind, role, dimensions, bytes |
 | `download_assets` | `scanId`, optional `ids`, `profile` (default `deck`), filters, `maxTotalBytes`, `maxFileBytes`, `dest` | Written paths, total bytes, the drop reasons, and the destination directory |
 | `download_brand_files` | `scanId`, optional `ids`, `extract` (default true), `dest` | Written paths under `brand/`, what each archive gave and left out, what failed and why |
@@ -97,7 +97,7 @@ Tools, all returning compact JSON:
 | `list_installed_fonts` | | What this tool installed, with dates and sources |
 | `uninstall_fonts` | `families` | What was removed |
 
-The `scan_page` summary is held to 4 KB: every string it carries is cut and every list capped, and when a page at all those caps at once would still be wider than that (8 logos, 12 font families and 12 swatches with every name at its cap measure 4701 bytes together) it gives up rows, warnings first then fonts, logos and swatches, rather than the budget. The scan id, the counts and the page always survive, so an agent can still ask for everything else.
+The `scan_page` summary is held to 4 KB: every string it carries is cut and every list capped, and when a page at all those caps at once would still be wider than that (8 logos, 12 font families and 12 swatches with every name at its cap measure 4701 bytes together) it gives up rows, warnings first then fonts, brand links, brand files, the wordmark whole, logos and swatches, rather than the budget. The scan id, the counts and the page always survive, so an agent can still ask for everything else.
 
 A scan is cached in `~/.cache/assets-scraper/<scanId>.json` for one hour, so `download_assets` never rescans. `scan_page` on the same URL inside the hour reuses the cache unless `refresh` is true, and only a scan the same source produced: a remote run never reuses a local scan, and a remote run never reuses a scan of a different hosted app, so an answer marked `remote` came from the hosted app it names and from no other engine. Reuse inside the hour is still reuse: `refresh` is how a caller asks for a new scan.
 

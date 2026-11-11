@@ -66,6 +66,8 @@ type ToneJob = { svg: string } | { raster: Buffer; contentType: string; fallback
 
 interface Draft {
   asset: Asset;
+  groups?: number[];          // element groups of the candidates it was made of, for `assetIdOf`
+  svgHash?: string;           // the inline SVG it was made of, for `assetIdOf`
   url?: string;               // http(s) URL for the basename
   label?: string;
   linkText?: string;
@@ -222,7 +224,8 @@ export async function assembleAssets(input: PostInput): Promise<AssetsOutput> {
     const drafts = rank([...fileDrafts.filter((draft): draft is Draft => draft !== null), ...inlineSvgAssets(input, hide)], warnings);
     // Tones last, in relevance order: the time budget only counts tone work, never the fetches above.
     await applyTones(drafts, input.signal);
-    return { assets: finish(drafts, input, warnings), hidden, warnings: [...warnings], originals };
+    const assets = finish(drafts, input, warnings);
+    return { assets, hidden, warnings: [...warnings], originals, assetIdOf: assetIdLookup(drafts) };
   } finally {
     limiter.close();
   }
@@ -616,8 +619,8 @@ function fileAsset(members: UrlRecord[], best: UrlRecord, resolved: Extract<Reso
   const role = assignRole({ kind, format, ...facts, intrinsic: size, spriteSymbol: !!markup && isSpriteSheet(markup), cropped: asset.aspectChanged });
   const score = relevanceScore({ role, visible: facts.visible, renderedWidth: facts.rendered?.width, renderedHeight: facts.rendered?.height, order: facts.order });
   return {
-    asset: { ...asset, role, score, name: "", filename: "" }, url, label: facts.label, linkText: facts.linkText, hints: facts.hints, jsonLd: facts.jsonLd, toneJob,
-    inlineRasterBytes,
+    asset: { ...asset, role, score, name: "", filename: "" }, groups: [...new Set(members.flatMap((member) => [...member.groupSet]))], url,
+    label: facts.label, linkText: facts.linkText, hints: facts.hints, jsonLd: facts.jsonLd, toneJob, inlineRasterBytes,
   };
 }
 
@@ -666,7 +669,10 @@ function inlineSvgAssets(input: PostInput, hide: (reason: HiddenReason) => void)
       inline: { mime: "image/svg+xml" as const, text: svg.markup },
       hasLiveText: svg.hasLiveText || undefined,
     });
-    return { asset, label: svg.label, linkText: svg.linkText, hints: svg.hints, markup: svg.markup, jsonLd: false, toneJob: { svg: svg.markup }, inlineRasterBytes: 0 };
+    return {
+      asset, svgHash: svg.hash, label: svg.label, linkText: svg.linkText, hints: svg.hints, markup: svg.markup, jsonLd: false, toneJob: { svg: svg.markup },
+      inlineRasterBytes: 0,
+    };
   });
 }
 
@@ -707,6 +713,20 @@ async function applyTones(drafts: Draft[], signal: AbortSignal): Promise<void> {
       asset.tone = tone === "unknown" && "fallback" in job && job.fallback ? job.fallback : tone;
     }),
   );
+}
+
+/**
+ * `AssetsOutput.assetIdOf` over the final drafts, ids made unique: the asset each element group and each inline SVG went
+ * into, the most relevant one when there are several.
+ */
+function assetIdLookup(drafts: Draft[]): NonNullable<AssetsOutput["assetIdOf"]> {
+  const byGroup = new Map<number, string>();
+  const bySvg = new Map<string, string>();
+  for (const { asset, groups, svgHash } of drafts) {
+    for (const group of groups ?? []) if (!byGroup.has(group)) byGroup.set(group, asset.id);
+    if (svgHash !== undefined && !bySvg.has(svgHash)) bySvg.set(svgHash, asset.id);
+  }
+  return (source) => (source.svg !== undefined ? bySvg.get(source.svg) : source.group !== undefined ? byGroup.get(source.group) : undefined);
 }
 
 /**

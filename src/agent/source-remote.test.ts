@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { BROWSER_USER_AGENT } from "@/server/net/safe-fetch";
 import type { SafeFetch, SafeFetchOptions, SafeResponse } from "@/server/scan/types";
 import { RemoteScanError, createRemoteScanSource } from "./source-remote";
-import { testAsset, testScan } from "./testing";
+import { testAsset, testScan, testWordmark } from "./testing";
 import type { AgentScan } from "./types";
 
 /**
@@ -141,6 +141,16 @@ describe("createRemoteScanSource().scan", () => {
     expect((await source().scan("stripe.com")).page).not.toHaveProperty("brandFiles");
     answer = { status: 200, body: JSON.stringify(remoteScan({ page: { ...page, brandFiles: [{ ...files[0], type: "exe" as "zip" }] } })) };
     await expect(source().scan("monad.xyz")).rejects.toThrow(/brandFiles/);
+  });
+
+  it("reads the wordmark of the hosted scan, and a scan from an app that predates it", async () => {
+    const page = { url: "https://www.investirday.fr/", finalUrl: "https://www.investirday.fr/", host: "www.investirday.fr", title: "Investir Day", wordmark: testWordmark() };
+    answer = { status: 200, body: JSON.stringify(remoteScan({ page })) };
+    expect((await source().scan("investirday.fr")).page.wordmark).toEqual(testWordmark());
+    answer = { status: 200, body: JSON.stringify(remoteScan()) };
+    expect((await source().scan("stripe.com")).page).not.toHaveProperty("wordmark");
+    answer = { status: 200, body: JSON.stringify(remoteScan({ page: { ...page, wordmark: { ...testWordmark(), runs: [{ text: "Day", hex: "pink" }] } } })) };
+    await expect(source().scan("investirday.fr")).rejects.toThrow(/wordmark/);
   });
 
   /**

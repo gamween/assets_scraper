@@ -42,10 +42,12 @@ Body: {"url": "stripe.com", "view": "summary"}
 
 "summary" answers { view, scanId, summary }. The summary is written to stay under 4 KB whatever the page holds: the
 page title and host, counts per kind, the palette hexes, one row per font family with its licence and whether it can
-be installed, the logos with their format, dimensions and size, brandLinks, the page's links to its brand, press or
-media kit pages and to brand portals on other hosts, where official logo variants usually are, and brandFiles, the
-files of its kit (archives, guidelines and logo files it links or its code downloads), each with an id, a name, a type
-(zip, pdf, ai, eps, svg or png), the size its host announced and the URL. Read it first, then ask for what you need.
+be installed, the logos with their format, dimensions and size, the wordmark when the page sets its logo in live text
+(its text, family, weight, size, letter spacing and case, its colour runs, and withLogo, the logo asset it sits
+beside and the size the page draws it at), brandLinks, the page's links to its brand, press or media kit pages and to
+brand portals on other hosts, where official logo variants usually are, and brandFiles, the files of its kit
+(archives, guidelines and logo files it links or its code downloads), each with an id, a name, a type (zip, pdf, ai,
+eps, svg or png), the size its host announced and the URL. Read it first, then ask for what you need.
 
 This API reports brand files and does not download them: fetch a brand file's URL yourself. The CLI (assets-scraper
 brand <url>) and the MCP server (download_brand_files) download them on the agent's machine and unpack the logo files

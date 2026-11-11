@@ -62,7 +62,7 @@ export function createLocalScanSource(deps: LocalScanSourceDeps = {}): ScanSourc
             if (event.state === "start") options?.onStep?.(event.step);
             break;
           case "page":
-            // Sent twice: the last one carries the brand links and the signed favicon (contract).
+            // Sent twice: the last one carries the brand links, the wordmark and the signed favicon (contract).
             page = event.page;
             break;
           case "palette":
@@ -104,6 +104,7 @@ export function createLocalScanSource(deps: LocalScanSourceDeps = {}): ScanSourc
           ...(page.siteName === undefined ? {} : { siteName: page.siteName }),
           ...(page.brandLinks.length === 0 ? {} : { brandLinks: page.brandLinks }),
           ...(page.brandFiles === undefined || page.brandFiles.length === 0 ? {} : { brandFiles: page.brandFiles }),
+          ...(page.wordmark === undefined ? {} : { wordmark: page.wordmark }),
         },
         assets,
         fonts,

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { MAX_SUMMARY_BYTES, summarize } from "./summary";
+import { fit, MAX_SUMMARY_BYTES, summarize } from "./summary";
 import type { BrandFile, FontFamily, FontFile } from "@/lib/contract";
-import { testAsset, testFontFamily, testFontFile, testScan } from "./testing";
+import { testAsset, testFontFamily, testFontFile, testScan, testWordmark } from "./testing";
 
 describe("summarize", () => {
   it("stays small on a page with 236 assets", () => {
@@ -80,6 +80,35 @@ describe("summarize", () => {
     expect(Buffer.byteLength(JSON.stringify(summary))).toBeLessThan(4_096);
   });
 
+  it("passes the wordmark on, and leaves it out of a page that has none", () => {
+    const base = testScan();
+    expect(summarize(base)).not.toHaveProperty("wordmark");
+    const summary = summarize({ ...base, page: { ...base.page, wordmark: testWordmark() } });
+    expect(summary.wordmark).toEqual(testWordmark());
+    expect(summary.wordmark?.withLogo?.id).toBe(summary.logos[0].id);
+    expect(summary.page).not.toHaveProperty("wordmark");
+  });
+
+  it("cuts the wordmark's strings and caps its runs, whatever a hosted app sends", () => {
+    const base = testScan();
+    const wordmark = testWordmark({
+      text: "t".repeat(500),
+      family: "f".repeat(500),
+      runs: Array.from({ length: 9 }, (_, index) => ({ text: `${index}${"r".repeat(300)}`, hex: "#130d21" })),
+      withLogo: { id: "i".repeat(500), width: 36, height: 36 },
+    });
+    const summary = summarize({ ...base, page: { ...base.page, wordmark } });
+    expect(summary.wordmark?.text.length).toBeLessThanOrEqual(40);
+    expect(summary.wordmark?.family.length).toBeLessThanOrEqual(60);
+    // The runs share the text's 40 characters: the first takes them all here.
+    expect(summary.wordmark?.runs).toHaveLength(1);
+    expect(summary.wordmark?.runs[0].text).toHaveLength(40);
+    expect(summary.wordmark?.withLogo?.id.length).toBeLessThanOrEqual(60);
+    expect(Buffer.byteLength(JSON.stringify(summary.wordmark))).toBeLessThan(400);
+    const four = summarize({ ...base, page: { ...base.page, wordmark: testWordmark({ runs: Array.from({ length: 9 }, (_, index) => ({ text: `run${index}`, hex: "#130d21" })) }) } });
+    expect(four.wordmark?.runs.map((run) => run.text)).toEqual(["run0", "run1", "run2", "run3"]);
+  });
+
   it("cuts a long title and a long list of warnings", () => {
     const summary = summarize(testScan({
       page: { url: "https://x.com", finalUrl: "https://x.com/", host: "x.com", title: "t".repeat(3_000), siteName: "s".repeat(500) },
@@ -135,14 +164,54 @@ describe("summarize", () => {
     scan.page.brandFiles = Array.from({ length: 16 }, (_, index) => ({
       id: `${index}`.padStart(12, "0"), url: `https://x.com/${long(300)}/${index}.zip`, name: long(200), type: "zip" as const, foundIn: "link" as const, bytes: 123_456_789,
     }));
+    scan.page.wordmark = testWordmark({
+      text: long(40),
+      family: long(60),
+      runs: Array.from({ length: 4 }, (_, index) => ({ text: long(10), hex: `#00000${index}` })),
+      withLogo: { id: `${"a1b2c3d4".repeat(5)}0`, width: 36, height: 36 },
+    });
     const summary = summarize(scan);
     expect(Buffer.byteLength(JSON.stringify(summary))).toBeLessThanOrEqual(MAX_SUMMARY_BYTES);
     expect(summary.otherBrandFiles).toBe(16 - summary.brandFiles.length);
+    expect(summary.logos.length).toBeGreaterThan(0);
     // What an agent needs to ask for anything else survives, and the logos it gave up are counted with the rest.
     expect(summary.scanId).toBe("scan-1");
     expect(summary.counts.assets).toBe(308);
     expect(summary.page.host).toHaveLength(100);
     expect(summary.otherAssets).toBe(308 - summary.logos.length);
+  });
+});
+
+describe("fit", () => {
+  /**
+   * The caps keep a summary well under the budget once its brand rows are gone, so only a document wider than
+   * `summarize` makes reaches the wordmark: one with more palette rows than it keeps, here.
+   */
+  const wide = (swatches: number) => {
+    const base = summarize(testScan({ warnings: [], fonts: [] }));
+    return { ...base, wordmark: testWordmark(), palette: Array.from({ length: swatches }, () => ({ hex: "#635bff", role: "primary" })) };
+  };
+  const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
+
+  it("gives up the wordmark before any logo row, since it is the other half of a logo", () => {
+    let swatches = 0;
+    while (bytes(wide(swatches + 1)) <= MAX_SUMMARY_BYTES) swatches += 1;
+    // One swatch more than fits, and less than the wordmark weighs: dropping the wordmark is enough.
+    const summary = fit(wide(swatches + 1), 236, 0);
+    expect(summary.wordmark).toBeUndefined();
+    expect(summary.logos).toHaveLength(8);
+    expect(summary.palette).toHaveLength(swatches + 1);
+  });
+
+  it("gives up logo rows only once the wordmark is gone, and the palette last", () => {
+    let swatches = 0;
+    while (bytes(wide(swatches + 1)) <= MAX_SUMMARY_BYTES + 600) swatches += 1;
+    const summary = fit(wide(swatches), 236, 0);
+    expect(summary.wordmark).toBeUndefined();
+    expect(summary.logos.length).toBeLessThan(8);
+    expect(summary.palette).toHaveLength(swatches);
+    expect(summary.otherAssets).toBe(236 - summary.logos.length);
+    expect(bytes(summary)).toBeLessThanOrEqual(MAX_SUMMARY_BYTES);
   });
 });
 

@@ -165,9 +165,37 @@ export const BrandFile = z.object({
 });
 export type BrandFile = z.infer<typeof BrandFile>;
 
+export const WordmarkTransform = z.enum(["none", "uppercase", "lowercase", "capitalize"]);
+export type WordmarkTransform = z.infer<typeof WordmarkTransform>;
+
+/**
+ * The live text a page sets as its logo (spec 8.1): the visible text of the home link in its header or nav near the top
+ * of the page, when it is set apart from the links beside it. Alone in the link it is a text logo. Beside a picture in
+ * the same link it is the text half of a lockup, and `withLogo` names the asset of that picture with the size the page
+ * draws it at, so the two can be put back together: investirday.fr shows a 512x512 PNG at 36x36 beside "Investir" over
+ * "Day" in Inter 700 at 12 px, tracked 1.2 px, in capitals, with "Day" in its accent colour.
+ *
+ * `text` is as written, before `transform`, with a line break where the page starts a new line ("Investir\nDay").
+ * `size`, `letterSpacing` and the logo's `width` and `height` are CSS px at the page's own size. `family` is the scan's name for the first family of the stack that the page loaded, or the first
+ * one as written when it is a system font. `runs` cut `text` into stretches of one colour, each the colour a reader
+ * sees, in order.
+ */
+export const Wordmark = z.object({
+  text: z.string(),
+  family: z.string(),
+  weight: z.number(),
+  size: z.number(),
+  letterSpacing: z.number(),
+  transform: WordmarkTransform,
+  runs: z.array(z.object({ text: z.string(), hex: z.string().regex(/^#[0-9a-f]{6}$/) })),
+  withLogo: z.object({ id: z.string(), width: z.number(), height: z.number() }).optional(),
+});
+export type Wordmark = z.infer<typeof Wordmark>;
+
 /**
  * `brandLinks` are pages: the site's own brand, press and media kit pages, and brand portals on another host. Files are
  * never brand links, they are `brandFiles`, which the early `page` event and a server that predates them leave out.
+ * `wordmark` is absent from the early `page` event, from a page whose logo has no live text, and from an older server.
  */
 export const PageInfo = z.object({
   requestedUrl: z.string(),
@@ -179,6 +207,7 @@ export const PageInfo = z.object({
   status: z.number(),
   brandLinks: z.array(z.object({ href: z.string(), text: z.string() })),
   brandFiles: z.array(BrandFile).optional(),
+  wordmark: Wordmark.optional(),
 });
 export type PageInfo = z.infer<typeof PageInfo>;
 
@@ -254,9 +283,9 @@ export const ScanEvent = z.discriminatedUnion("type", [
   z.object({ type: z.literal("accepted"), scanId: z.string(), url: z.string() }),
   z.object({ type: z.literal("step"), step: StepId, state: z.enum(["start", "done"]) }),
   // Sent twice (spec 7.2). Early, after navigation, so the UI can show the site header: `brandLinks` is empty and
-  // there is no `favicon` and no `brandFiles`. Final, after post-processing and before `palette`: brand links and brand
-  // files from the collector and the signed favicon. The client replaces its page info with each `page` event, so the
-  // last one wins.
+  // there is no `favicon`, no `brandFiles` and no `wordmark`. Final, after post-processing and before `palette`: brand
+  // links, brand files and the wordmark from the collector and the signed favicon. The client replaces its page info
+  // with each `page` event, so the last one wins.
   z.object({ type: z.literal("page"), page: PageInfo }),
   z.object({ type: z.literal("palette"), palette: Palette.nullable() }),
   z.object({ type: z.literal("assets"), items: z.array(Asset) }),

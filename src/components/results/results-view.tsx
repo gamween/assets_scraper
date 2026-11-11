@@ -10,6 +10,7 @@ import { hiddenSummary } from "./labels";
 import { PaletteStrip } from "./palette-strip";
 import { ResultsHeader } from "./results-header";
 import { Sections } from "./sections";
+import { WordmarkStrip } from "./wordmark-strip";
 
 const EMPTY_TAB: Record<string, string> = {
   all: "No SVGs, images or fonts on this page",
@@ -69,7 +70,7 @@ function SectionsOrEmpty() {
   return <EmptyState title={EMPTY_TAB[tab]} />;
 }
 
-/** Spec 12.2 results: header, palette, brand links, sticky filters, sections, hidden noise footer. */
+/** Spec 12.2 results: header, palette and wordmark, brand links, sticky filters, sections, hidden noise footer. */
 export function ResultsView() {
   const tab = useApp((s) => s.tab);
   const partial = useApp((s) => s.done?.partial ?? false);
@@ -101,7 +102,10 @@ export function ResultsView() {
         {truncated ? <TruncatedNotice /> : null}
         <ResultsHeader />
         <div className="mt-6 flex flex-wrap items-start justify-between gap-x-12 gap-y-5">
-          <PaletteStrip />
+          <div className="flex min-w-0 flex-col gap-5">
+            <PaletteStrip />
+            <WordmarkStrip />
+          </div>
           <BrandLinks />
         </div>
       </div>

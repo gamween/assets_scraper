@@ -276,6 +276,19 @@ export function formatSummary(summary: ScanSummary, reused: boolean): string {
     }
   }
   if (summary.otherAssets > 0) rows.push(`  and ${formatCount(summary.otherAssets, "other asset")}`);
+  const wordmark = summary.wordmark;
+  if (wordmark) {
+    const style = [
+      `${wordmark.family} ${wordmark.weight}`,
+      `${wordmark.size}px`,
+      wordmark.letterSpacing === 0 ? "" : `letter-spacing ${wordmark.letterSpacing}px`,
+      wordmark.transform === "none" ? "" : wordmark.transform,
+    ].filter(Boolean);
+    const logo = wordmark.withLogo ? `, beside ${printable(wordmark.withLogo.id)} drawn at ${wordmark.withLogo.width}x${wordmark.withLogo.height}` : "";
+    // Quoted, so a stacked lockup's line break reads as `\n` and a run's trailing space stays visible.
+    rows.push(`  wordmark: ${printable(JSON.stringify(wordmark.text))} (${printable(style.join(", "))})${logo}`);
+    rows.push(`    colours: ${wordmark.runs.map((run) => `${printable(JSON.stringify(run.text))} ${run.hex}`).join(", ")}`);
+  }
   if (summary.brandLinks.length > 0) {
     rows.push("  brand pages, where official logo variants usually are:");
     for (const link of summary.brandLinks) rows.push(`    ${printable(link.href)}${link.text ? `  ${printable(link.text)}` : ""}`);
