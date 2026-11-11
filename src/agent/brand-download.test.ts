@@ -177,7 +177,8 @@ describe("brandFileName", () => {
   it("is the URL's file name unless it is a hash, with the extension of the type", () => {
     expect(brandFileName(kit)).toBe("Fixture Brand Kit.zip");
     expect(brandFileName(guide)).toBe("Discover the brand guide.pdf");
-    expect(brandFileName(file("id", "https://x.com/brand/logo.svg.exe", "Logo", "svg"))).toBe("logo.svg.svg");
+    expect(brandFileName(file("id", "https://x.com/brand/logo.svg.exe", "Logo", "svg"))).toBe("Logo.svg");
+    expect(brandFileName(file("id", "https://x.com/api/download?id=3", "Acme logos", "zip"))).toBe("Acme logos.zip");
     expect(brandFileName(file("id", "https://x.com/", "../../etc/passwd", "pdf"))).toBe("passwd.pdf");
   });
 });

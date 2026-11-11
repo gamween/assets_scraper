@@ -55,9 +55,10 @@ const archiveLimits = (): ArchiveLimits => ({
 });
 
 /**
- * The name a brand file is written under: its own file name, unless that is a hash, else the name the scan gave it, with
- * the extension of its type whatever the URL said. stellar.org's logo pack is `9ef5ab89...zip` on its CDN and lands as
- * `Stellar logo pack.zip`.
+ * The name a brand file is written under: the file name in its URL when that names a file of its type and is not a
+ * hash, else the name the scan gave it, with the extension of its type whatever the URL said. stellar.org's logo pack is
+ * `9ef5ab89...zip` on its CDN and lands as `Stellar logo pack.zip`, and a link to `/download?id=3` whose `download`
+ * attribute asks for `Acme logos.zip` lands under that name rather than as `download.zip`.
  */
 export function brandFileName(file: BrandFile): string {
   let segment = "";
@@ -66,8 +67,8 @@ export function brandFileName(file: BrandFile): string {
   } catch {
     segment = "";
   }
-  const stem = segment.replace(/\.[a-z0-9]{1,5}$/i, "").trim();
-  const name = safeFileName(stem && !isOpaqueName(stem) ? stem : file.name, file.id);
+  const own = segment.toLowerCase().endsWith(`.${file.type}`) ? segment.slice(0, -(file.type.length + 1)).trim() : "";
+  const name = safeFileName(own && !isOpaqueName(own) ? own : file.name, file.id);
   return `${name}.${file.type}`;
 }
 
