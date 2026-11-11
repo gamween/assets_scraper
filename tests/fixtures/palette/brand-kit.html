@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Brand kit</title>
+<style>
+  body { margin: 0; background: #f2f2f2; color: #05163d; font-family: sans-serif; }
+  .intro { height: 9000px; padding: 40px; }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; padding: 40px; }
+  .block { height: 330px; border-radius: 24px; padding: 24px; display: flex; flex-direction: column; justify-content: space-between; }
+  .chip { width: 48px; height: 48px; border-radius: 8px; }
+  code { background: #e8e8e8; }
+</style>
+</head>
+<body>
+  <!-- Modelled on arbitrum.io/brand-kit: the palette sits far below the first viewports the walk reads -->
+  <div class="intro">
+    <h1>Brand kit</h1>
+    <p>Our previous blue was #3355ff, retired in 2020.</p>
+    <p>Use <code>#ff0000</code> for errors only.</p>
+    <h3>Retired colors</h3>
+    <ul><li>#123456</li><li>#654321</li></ul>
+    <a href="#a1b2c3">#a1b2c3</a>
+  </div>
+  <section>
+    <h2>Primary palette</h2>
+    <div class="grid">
+      <div class="block" style="background:#05163d;color:#fff"><span>NAVY</span><div><span>HEX</span> <span>#05163D</span></div></div>
+      <div class="block" style="background:#016be5;color:#fff"><span>PRIMARY BLUE</span><div><span>HEX</span> <span>#016BE5</span></div></div>
+      <div class="block" style="background:#10e1ff"><span>TEAL</span><div><span>HEX</span> <span>#10E1FF</span></div></div>
+    </div>
+    <h2>Secondary palette</h2>
+    <div class="grid">
+      <div><div class="chip" style="background:#00e340"></div><p>Green</p><p>#00E340</p></div>
+      <table><tr><td>Yellow</td><td>#FFE103</td></tr></table>
+      <div class="block" style="background:#ff4400;display:none"><span>ORANGE</span><span>#FF4400</span></div>
+    </div>
+  </section>
+</body>
+</html>

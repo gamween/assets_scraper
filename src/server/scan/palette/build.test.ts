@@ -107,6 +107,31 @@ describe("buildPalette on recorded signals", () => {
   });
 });
 
+describe("buildPalette on a brand page", () => {
+  it("ranks the swatches the page prints as its brand colors, in the page's order", () => {
+    // arbitrum.io/brand-kit: its palette is printed 14 viewports down, where only the swatch reader goes
+    const palette = buildPalette(loadSignals("arbitrum.io-brand-kit"), screenshot(1440, 900, "#f2f2f2", [{ rect: [100, 400, 200, 60], hex: "#05163d" }]));
+    expect(palette.brand).toEqual(["#05163d", "#016be5", "#10e1ff", "#00e340", "#ffe103", "#ff4400"]);
+    expect(palette.colors[0].role).toBe("primary");
+    expect(palette.colors.find((c) => c.hex === "#f2f2f2")?.role).toBe("background");
+  });
+
+  it("puts declared swatches first and leaves the neutral roles to the page", () => {
+    const palette = buildPalette(
+      signals({
+        samples: [
+          ["bg", "#101010", 9000, 3], ["text", "#f0f0f0", 500, 40], ["cta", "#e11d48", 200, 3], ["link", "#e11d48", 20, 4],
+          ["swatch", "#2563eb", 1, 1], ["swatch", "#e11d48", 0.87, 1], ["swatch", "#ffffff", 0.77, 1],
+        ],
+      }),
+      screenshot(100, 100, "#101010", [{ rect: [10, 10, 20, 10], hex: "#e11d48" }]),
+    );
+    expect(palette.brand).toEqual(["#2563eb", "#e11d48"]);
+    expect(palette.colors.find((c) => c.role === "background")?.hex).toBe("#101010");
+    expect(palette.colors.find((c) => c.role === "text")?.hex).toBe("#f0f0f0");
+  });
+});
+
 describe("buildPalette rules", () => {
   it("returns an empty palette without signals", () => {
     const palette = buildPalette(signals(), null);
@@ -162,6 +187,21 @@ describe("buildPalette rules", () => {
     expect(hero.neutrals).toEqual(["#f5f5f7", "#333336", "#000000", "#ffffff", "#6e6e73"]);
     const flat = buildPalette(signals({ samples }), screenshot(100, 100, "#f5f5f7"));
     expect(flat.neutrals).toEqual(["#f5f5f7", "#333336", "#ffffff", "#6e6e73"]);
+  });
+
+  it("names the page background the DOM paints when a video hero covers the viewport", () => {
+    // signalweek.com: a full-viewport video the scan never plays, over its container's #222222, on a #e5e8e9 page
+    const samples: RawPaletteSignals["samples"] = [
+      ["bg", "#e5e8e9", 9000, 2], ["text", "#1c1c1c", 400, 200], ["cta", "#01505e", 120, 2], ["bg", "#01505e", 300, 2], ["text", "#58595a", 80, 14],
+    ];
+    const hero = screenshot(100, 100, "#222222", [{ rect: [70, 5, 20, 6], hex: "#01505e" }]);
+    const palette = buildPalette(signals({ samples, mediaRects: [[0, 0, 100, 100, "video"]] }), hero);
+    expect(palette.colors.find((c) => c.role === "background")?.hex).toBe("#e5e8e9");
+    expect(palette.colors.find((c) => c.role === "text")?.hex).toBe("#1c1c1c");
+    expect(palette.neutrals).not.toContain("#222222");
+    // Without the hero the screenshot still has its say: a DOM background that is nowhere on screen gets no role
+    const covered = buildPalette(signals({ samples }), screenshot(100, 100, "#222222"));
+    expect(covered.colors.some((c) => c.role === "background")).toBe(false);
   });
 
   it("pools a vivid glow spread over many pixel bins into one brand color", () => {

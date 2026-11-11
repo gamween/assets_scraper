@@ -3,7 +3,7 @@
  */
 
 export type PaletteSource =
-  | "bg" | "text" | "border" | "svg" | "cta" | "link" | "grad" | "logo" | "var" | "meta" | "icon" | "shot" | "pix";
+  | "bg" | "text" | "border" | "svg" | "cta" | "link" | "grad" | "logo" | "swatch" | "var" | "meta" | "icon" | "shot" | "pix";
 
 export interface PaletteSignalOptions {
   /** Hard cap on elements visited (DOM order, so the top of the page first). */
@@ -26,7 +26,7 @@ export interface RawPaletteSignals {
   vw: number;
   vh: number;
   docH: number;
-  /** Aggregated samples: [source, #rrggbb, weight, elementCount]. */
+  /** Aggregated samples: [source, #rrggbb, weight, elementCount]. `swatch` is a color the page prints as its own. */
   samples: [PaletteSource, string, number, number][];
   /** Brand-like CSS custom properties: [name, #rrggbb, nameScore]. */
   vars: [string, string, number][];
@@ -61,7 +61,7 @@ export interface PaletteInPage {
 
 const HEX = /^#[0-9a-f]{6}$/;
 /** Sources the in-page collector produces (`icon`, `shot` and `pix` are added in Node). */
-const INPAGE_SOURCES = new Set<string>(["bg", "text", "border", "svg", "cta", "link", "grad", "logo"]);
+const INPAGE_SOURCES = new Set<string>(["bg", "text", "border", "svg", "cta", "link", "grad", "logo", "swatch"]);
 const MEDIA_KINDS = new Set<string>(["img", "video", "canvas", "iframe", "bgimg"]);
 const MAX_SAMPLES = 20_000;
 const MAX_VARS = 400;

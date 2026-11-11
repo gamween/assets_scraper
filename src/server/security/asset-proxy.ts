@@ -51,7 +51,7 @@ function cacheHeaders(link: Link, length: number | undefined): Record<string, st
 const WOFF2_SIGNATURE_BYTES = 4;
 const FETCH_STATUS: Record<SafeFetchErrorCode, number> = {
   "invalid-url": 403, "blocked-address": 403, "own-host": 403, "unsupported-port": 403,
-  dns: 502, connect: 502, "too-many-redirects": 502, aborted: 502, timeout: 504, "too-large": 413,
+  dns: 502, connect: 502, closed: 502, "too-many-redirects": 502, aborted: 502, timeout: 504, "too-large": 413,
 };
 
 /**

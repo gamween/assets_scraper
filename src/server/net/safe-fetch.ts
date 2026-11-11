@@ -4,7 +4,9 @@ import { limits } from "@/server/config/limits";
 import type { SafeFetch, SafeFetchOptions, SafeResponse } from "@/server/scan/types";
 import { isOwnHost, isTestAllowed, pinnedLookup, privateHostReason, resolvePublicAddresses, SsrfError } from "./ip";
 
-export type SafeFetchErrorCode = "invalid-url" | "blocked-address" | "own-host" | "unsupported-port" | "dns" | "connect" | "timeout" | "too-large" | "too-many-redirects" | "aborted";
+export type SafeFetchErrorCode =
+  | "invalid-url" | "blocked-address" | "own-host" | "unsupported-port" | "dns" | "connect" | "closed" | "timeout" | "too-large" | "too-many-redirects"
+  | "aborted";
 
 export class SafeFetchError extends Error {
   constructor(readonly code: SafeFetchErrorCode, message: string) {
@@ -15,9 +17,9 @@ export class SafeFetchError extends Error {
 
 const DEFAULT_USER_AGENT = "Mozilla/5.0 (compatible; AssetsScraper/1.0; +https://github.com/gamween/assets_scraper)";
 /**
- * A normal desktop Chrome user agent, never "HeadlessChrome": what a request for a file of a scanned page sends, so it
- * is asked for the way the browser asked for it during the scan. Some edges refuse the default one above: bybit.com
- * answers it 403 for the favicon.ico it serves Chrome.
+ * A normal desktop Chrome user agent, never "HeadlessChrome", for a request that stands in for the page's browser:
+ * the preflight, and the fetch of a file the scan listed. Some edges refuse the default one above: bybit.com answers
+ * it 403 for the favicon.ico it serves Chrome, and francefintech.org closes the connection on any "compatible;" agent.
  */
 export const BROWSER_USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36";
@@ -27,8 +29,15 @@ const DNS_CODES = new Set(["ENOTFOUND", "EAI_AGAIN", "EAI_NONAME", "EAI_NODATA",
 /** A host that refuses, resets, drops or times out the connection (undici's own connect timeout included). */
 const SOCKET_CODES = new Set([
   "ECONNREFUSED", "ECONNRESET", "ECONNABORTED", "EHOSTUNREACH", "EHOSTDOWN", "ENETUNREACH", "ENETDOWN", "ETIMEDOUT", "EPIPE",
-  "EADDRNOTAVAIL", "EPROTO", "UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT",
+  "EADDRNOTAVAIL", "EPROTO", "UND_ERR_CONNECT_TIMEOUT",
 ]);
+/**
+ * A host that took the connection, then closed it (undici's "other side closed") or reset the HTTP/2 stream or session
+ * before the exchange ended. francefintech.org does this to any "compatible;" user agent: undici gets an HTTP/2
+ * PROTOCOL_ERROR on the stream, curl an empty reply over HTTP/1.1, and Chrome the page. `ECONNRESET` is not here, since
+ * Node also reports it for a TLS handshake the host cut, before anything was asked.
+ */
+const CLOSED_CODE = /^(?:UND_ERR_SOCKET|ERR_HTTP2_\w+)$/;
 /** TLS handshake and certificate failures, as Node and OpenSSL name them. */
 const TLS_CODE =
   /^(?:ERR_TLS_|ERR_SSL_|ERR_OSSL_|CERT_|CRL_|UNABLE_TO_|ERROR_IN_(?:CERT|CRL)_|(?:DEPTH_ZERO_SELF_SIGNED_CERT|SELF_SIGNED_CERT_IN_CHAIN|HOSTNAME_MISMATCH|INVALID_CA|PATH_LENGTH_EXCEEDED|INVALID_PURPOSE)$)/;
@@ -91,9 +100,10 @@ function parseUrl(value: string | URL, base?: URL): URL {
 }
 
 /**
- * The `SafeFetchError` for a failed exchange: SSRF refusals, DNS failures, socket and TLS failures (`connect`), and the
- * caller's abort or the exchange deadline. Anything else, such as a caller's invalid header value, an HTTP parser error
- * or an undici timeout, is not an unreachable host and comes back unchanged.
+ * The `SafeFetchError` for a failed exchange: SSRF refusals, DNS failures, socket and TLS failures (`connect`), a host
+ * that closed the exchange it accepted (`closed`), and the caller's abort or the exchange deadline. Anything else, such
+ * as a caller's invalid header value, an HTTP parser error or an undici timeout, is not an unreachable host and comes
+ * back unchanged.
  */
 function mapError(error: unknown, signal: AbortSignal, callerSignal: AbortSignal | undefined): unknown {
   if (error instanceof SafeFetchError) return error;
@@ -109,8 +119,10 @@ function mapError(error: unknown, signal: AbortSignal, callerSignal: AbortSignal
     const code = (current as { code?: unknown }).code;
     if (typeof code !== "string") continue;
     if (DNS_CODES.has(code)) return new SafeFetchError("dns", code);
+    const message = (current as { message?: string }).message || code;
+    if (CLOSED_CODE.test(code)) return new SafeFetchError("closed", message);
     // `timeout` is only the exchange deadline above, so a host that drops SYNs is `connect` too
-    if (SOCKET_CODES.has(code) || TLS_CODE.test(code)) return new SafeFetchError("connect", (current as { message?: string }).message || code);
+    if (SOCKET_CODES.has(code) || TLS_CODE.test(code)) return new SafeFetchError("connect", message);
   }
   return error;
 }

@@ -120,8 +120,8 @@ type Failure = typeof TRANSPORT_FAILURE | typeof DEAD_URL;
 /**
  * `safeFetch` codes that say nothing about the request headers: a name that does not resolve, an address the SSRF
  * rules refuse, a scheme or port that is never fetched, and a body already declared over the cap, which an un-ranged
- * request would only make bigger. A reset or a refused connection is not here: undici reports both as `connect`, and
- * the mid-body reset this retry exists for is one of them.
+ * request would only make bigger. A reset or a refused connection is not here: undici reports them as `connect` or
+ * `closed`, and the mid-body reset this retry exists for is one of them.
  */
 const DEAD_URL_CODES = new Set<SafeFetchErrorCode>(["dns", "blocked-address", "own-host", "unsupported-port", "invalid-url", "too-large"]);
 

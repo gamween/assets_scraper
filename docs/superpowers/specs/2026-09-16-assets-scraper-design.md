@@ -290,7 +290,7 @@ The engine owns an `AbortController` tied to `request.signal` and to a hard dead
 
 | # | Phase | Step event | Cap |
 |---|---|---|---|
-| 1 | Preflight `safeFetch` of the URL (manual redirects, 1 MB cap). Maps DNS, connect and private-address failures to error codes. A non-HTML response gives `not-html` with the URL as a single asset. A 403, 429 or 503 does not stop the scan | `open` start | 8 s |
+| 1 | Preflight `safeFetch` of the URL (manual redirects, 1 MB cap, the browser's user agent). Maps DNS, connect and private-address failures to error codes. A non-HTML response gives `not-html` with the URL as a single asset. A 403, 429 or 503 does not stop the scan, nor does a host that closes the connection without an answer: the browser gets its try | `open` start | 8 s |
 | 2 | Semaphore (one scan per instance). Emits `step queue` while waiting | `queue` | 15 s, then `busy` |
 | 3 | Start the egress proxy, launch Chromium, then set up its context and page | `open` | 20 s, then 10 s for setup |
 | 4 | `goto(url, domcontentloaded)`, then `detectBlock` | `open` done | 25 s |
@@ -448,9 +448,9 @@ The palette module is a port of the validated lab code (v2 with every fix enable
 
 `extractPalette(page, options)` owns its in-page execution: it opens its own isolated world (the main world only when that fails, as in 7.5) and evaluates a fresh copy of the palette bundle for each call, so nothing is installed on the page. The engine only calls it, before the collector.
 
-- In-page: hide consent overlays and dialogs (including hosts outside `<body>` and zero-size fixed hosts), detect the logo, walk the DOM (8,000 elements or 600 ms) and record weighted color samples by source (`bg`, `text`, `link`, `cta`, `grad` with exclusive area, `svg`, `border`, `var`, `meta`, logo), normalizing every color through a 1x1 canvas and compositing alpha over the effective backdrop. Restore everything afterwards.
-- Node: fetch the best icon and the web manifest through `safeFetch` (600 ms), take a viewport PNG screenshot while overlays are hidden, quantize it (5-bit histogram, media rects masked except full-viewport smooth backgrounds), pool vivid hues.
-- Post: normalize shares per source, split neutral vs chromatic in OKLCh, cluster perceptually, score brand evidence, pick at most 6 brand colors and 4 neutrals (plus one slot for a dominant neutral covering at least 20 percent of the viewport), label roles only when confident.
+- In-page: hide consent overlays and dialogs (including hosts outside `<body>` and zero-size fixed hosts), detect the logo, walk the DOM (8,000 elements or 600 ms) and record weighted color samples by source (`bg`, `text`, `link`, `cta`, `grad` with exclusive area, `svg`, `border`, `var`, `meta`, logo), plus the swatches a brand page prints anywhere on the page (`swatch`: a hex code on a block or next to a chip of its own color, or under a short color name; two at least), normalizing every color through a 1x1 canvas and compositing alpha over the effective backdrop. Restore everything afterwards.
+- Node: fetch the best icon and the web manifest through `safeFetch` (600 ms), take a viewport PNG screenshot while overlays are hidden, quantize it (5-bit histogram, images, videos and iframes masked except full-viewport smooth backgrounds), pool vivid hues. A video never plays in a scan (media requests are blocked), so it shows a poster or its container's fill, never the page.
+- Post: normalize shares per source, split neutral vs chromatic in OKLCh, cluster perceptually, score brand evidence, pick at most 6 brand colors (declared swatches first, in page order) and 4 neutrals (plus one slot for a dominant neutral covering at least 20 percent of the viewport), label roles only when confident. The page background is cross-checked on the screenshot only when at least 20 percent of the viewport is outside media; under a full-viewport hero the DOM decides.
 - Output: `Palette { brand, neutrals }`. Added cost is about 200 ms per scan.
 
 ## 11. Security and abuse

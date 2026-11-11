@@ -1,7 +1,7 @@
 import type { ErrorCode } from "@/lib/contract";
 import { limits } from "@/server/config/limits";
 import { ScanFailure } from "@/server/errors";
-import { SafeFetchError, type SafeFetchErrorCode } from "@/server/net/safe-fetch";
+import { BROWSER_USER_AGENT, SafeFetchError, type SafeFetchErrorCode } from "@/server/net/safe-fetch";
 import type { SafeFetch, SafeResponse } from "./types";
 
 export interface PageHead {
@@ -241,8 +241,12 @@ const HTML_TYPES = new Set(["text/html", "application/xhtml+xml"]);
 /** Statuses that often come with a bot wall: the browser still gets a chance (spec 7.2 phase 1). */
 const SCANNABLE_ERRORS = new Set([403, 429, 503]);
 
-/** `too-many-redirects` is not here: the browser gets its own try (see `preflight`). */
-const FAILURE: Record<Exclude<SafeFetchErrorCode, "too-many-redirects">, { code: ErrorCode; message: string }> = {
+/** Failures the browser gets its own try at (see `preflight`). */
+const BROWSER_RETRIES = ["too-many-redirects", "closed"] as const;
+type BrowserRetry = (typeof BROWSER_RETRIES)[number];
+const isBrowserRetry = (code: SafeFetchErrorCode): code is BrowserRetry => (BROWSER_RETRIES as readonly string[]).includes(code);
+
+const FAILURE: Record<Exclude<SafeFetchErrorCode, BrowserRetry>, { code: ErrorCode; message: string }> = {
   "invalid-url": { code: "invalid-url", message: "The address is not a valid web address" },
   "blocked-address": { code: "blocked-address", message: "Local and private network addresses are blocked" },
   "own-host": { code: "own-host", message: "The scanner cannot scan itself" },
@@ -256,7 +260,7 @@ const FAILURE: Record<Exclude<SafeFetchErrorCode, "too-many-redirects">, { code:
 
 function toScanFailure(error: unknown, signal: AbortSignal): unknown {
   if (signal.aborted) return signal.reason;
-  if (!(error instanceof SafeFetchError) || error.code === "too-many-redirects") return error;
+  if (!(error instanceof SafeFetchError) || isBrowserRetry(error.code)) return error;
   const { code, message } = FAILURE[error.code];
   return new ScanFailure(code, message);
 }
@@ -317,7 +321,10 @@ async function readStart(response: SafeResponse, maxBytes: number, signal: Abort
  * Only a successful response that is not HTML is a `file`: a bot wall often answers a 403, 429 or 503 in plain text or
  * JSON, and the browser still gets its chance. A redirect loop or a long redirect chain also goes on to the browser,
  * which keeps cookies (sites that set a cookie and redirect loop without one) and allows more hops; its egress proxy
- * checks every connection, and a real loop fails there as `connect`.
+ * checks every connection, and a real loop fails there as `connect`. A host that took the connection and closed it
+ * without an answer goes there too: a firewall that drops the clients it takes for bots (by user agent, headers or TLS
+ * fingerprint) still serves Chrome. The request carries the browser's user agent, so the head read here is the one the
+ * browser gets, and francefintech.org, which closes the connection on any "compatible;" agent, answers it.
  */
 export async function preflight(url: string, options: { fetch: SafeFetch; signal: AbortSignal }): Promise<PreflightResult> {
   const { signal } = options;
@@ -328,9 +335,15 @@ export async function preflight(url: string, options: { fetch: SafeFetch; signal
   try {
     // No byte cap in safeFetch: it refuses a body whose declared length is over its cap before the first byte, and the
     // head of a large page is still needed. `readStart` stops after `maxBytes` and cancels the rest.
-    response = await options.fetch(url, { method: "GET", headers: { accept: "text/html,*/*;q=0.8" }, maxBytes: Number.MAX_SAFE_INTEGER, timeoutMs: limits.preflightMs, signal: deadline });
+    response = await options.fetch(url, {
+      method: "GET",
+      headers: { accept: "text/html,*/*;q=0.8", "user-agent": BROWSER_USER_AGENT },
+      maxBytes: Number.MAX_SAFE_INTEGER,
+      timeoutMs: limits.preflightMs,
+      signal: deadline,
+    });
   } catch (error) {
-    if (!signal.aborted && error instanceof SafeFetchError && error.code === "too-many-redirects") {
+    if (!signal.aborted && error instanceof SafeFetchError && isBrowserRetry(error.code)) {
       return { finalUrl: url, status: 0, contentType: "", headers: {}, head: null, file: false };
     }
     throw toScanFailure(error, signal);
