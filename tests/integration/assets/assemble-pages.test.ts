@@ -163,6 +163,17 @@ beforeAll(async () => {
         <img class="logo" src="/assets/lazy.jpg" alt="Umbrella">
       </div>
     </body></html>`),
+    // ethglobal.com in miniature: a top bar of plain divs, then event cards far down the page that each open with a
+    // <header> holding the event logo, whose alt names the site and the word logo.
+    "/events.html": html(`</head><body style="margin:0">
+      <div style="height:60px"><a href="/"><svg width="160" height="60" viewBox="0 0 160 60"><path d="M0 0h160v60H0z"/></svg></a></div>
+      <div style="height:1800px"></div>
+      <div style="display:flex;gap:16px">
+        <div><header><img src="/assets/imgset-1x.png" width="56" height="56" alt="Pages Cannes 2027 logo"></header><p>Cannes</p></div>
+        <div><header><img src="/assets/pseudo.png" width="56" height="56" alt="Pages New York 2027 logo"></header><p>New York</p></div>
+        <div><header><img src="/assets/touch.png" width="56" height="56" alt="Pages Tokyo 2027 logo"></header><p>Tokyo</p></div>
+      </div>
+    </body></html>`),
     "/favicon.ico": (_req, res) => {
       if (faviconMissing) {
         res.writeHead(404, { "content-type": "text/html" });
@@ -229,6 +240,13 @@ describe("assembleAssets on purpose-built pages", () => {
     for (const card of ["Agent kit", "Swap example", "Wallet demo", "Bridge demo"]) expect(role(card)).toBe("image");
     // Cover-fitted too, but each box has its picture's shape: nothing is cut off, and the row is a logo wall.
     for (const logo of ["Acme", "Globex", "Initech", "Umbrella"]) expect(role(logo)).toBe("logo");
+  });
+
+  it("does not take the header of a card far down the page for the page header", async () => {
+    const { assets } = await scan("/events.html");
+    const role = (name: string) => assets.find((a) => a.name === name)?.role;
+    // Logo word and site word, but each sits in the <header> of an event card 1,800 px down, not in the site header.
+    for (const event of ["Pages Cannes 2027 logo", "Pages New York 2027 logo", "Pages Tokyo 2027 logo"]) expect(role(event)).toBe("logo");
   });
 
   it("adds web manifest icons, drops the ones that fail their probe and still probes /favicon.ico", async () => {

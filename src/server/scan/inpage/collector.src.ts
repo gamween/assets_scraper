@@ -291,6 +291,26 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
     for (let node: Element | null = el; node; node = composedParent(node)) if (node.matches(selector)) return node;
     return null;
   };
+  /**
+   * The page's banner: `[role=banner]`, or a `<header>` that starts within the first screen. Further down, a `<header>`
+   * heads a card or a section, not the page: ethglobal.com opens each event card with one 1,877 px down, and the event
+   * logos in them scored as if they sat in the site header (header 2, logo word 3, site word 2) and were each taken for
+   * the site logo, while the real one, in a top bar built from plain divs, was not.
+   */
+  const bannerCache = new Map<Element, boolean>();
+  const isBanner = (node: Element): boolean => {
+    let banner = bannerCache.get(node);
+    if (banner === undefined) {
+      const view = node.ownerDocument.defaultView ?? window;
+      banner = node.getAttribute("role") === "banner" || node.getBoundingClientRect().top + view.scrollY < view.innerHeight;
+      bannerCache.set(node, banner);
+    }
+    return banner;
+  };
+  const inBanner = (el: Element): boolean => {
+    for (let node: Element | null = el; node; node = composedParent(node)) if (node.matches("header,[role=banner]") && isBanner(node)) return true;
+    return false;
+  };
   const isHomeHref = (href: string | null, base: string) => {
     if (!href) return false;
     try {
@@ -513,7 +533,7 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
     const label = labelOf(el);
     const info: ElementInfo = {
       context: {
-        header: !!composedClosest(el, "header,[role=banner]"),
+        header: inBanner(el),
         nav: !!composedClosest(el, "nav,[role=navigation]"),
         footer: !!composedClosest(el, "footer,[role=contentinfo]"),
         homeLink: !!link && isHomeHref(link.getAttribute("href"), el.baseURI),
