@@ -121,13 +121,18 @@ describe("GET /api/openapi.json", () => {
     const wordmark = testAsset({ id: "wordmark", kind: "svg", format: "svg", role: "site-logo", width: 79.5, height: 24.25, bytes: 1_234, score: 100 });
     const scan = testScan();
     const brandFiles = [{ id: "4f1c2a9e8b7d", url: "https://monad.xyz/brand-page-assets/kit.zip", name: "Kit", type: "zip" as const, bytes: 29_679_666, foundIn: "script" as const }];
+    const text = {
+      text: "Investir\nDay", family: "Inter", weight: 700, size: 12, letterSpacing: 1.2, transform: "uppercase" as const,
+      runs: [{ text: "Investir\n", hex: "#130d21" }, { text: "Day", hex: "#fb2189" }], withLogo: { id: "wordmark", width: 36, height: 36 },
+    };
     const summary = summarize({
       ...scan,
-      page: { ...scan.page, brandLinks: [{ href: "https://live.standards.site/sui-media-kit", text: "Brand Kit" }], brandFiles },
+      page: { ...scan.page, brandLinks: [{ href: "https://live.standards.site/sui-media-kit", text: "Brand Kit" }], brandFiles, wordmark: text },
       assets: [wordmark, ...scan.assets],
       warnings: ["The page stopped the scan early"],
     });
     expect(summary.brandFiles[0]).toMatchObject({ id: "4f1c2a9e8b7d", type: "zip", bytes: 29_679_666 });
+    expect(summary.wordmark).toEqual(text);
     expect(summary.logos[0]).toMatchObject({ id: "wordmark", format: "svg", width: 79.5, bytes: 1_234 });
     expect(summary.fonts.length).toBeGreaterThan(0);
     expect(schemaErrors({ view: "summary", scanId: summary.scanId, summary }, { $ref: "#/components/schemas/ScanResponse" }, doc.components.schemas)).toEqual([]);

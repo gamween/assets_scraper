@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import * as z from "zod";
-import { Asset, BrandFile, Diagnostics, FontFamily, Palette, ScanStats } from "@/lib/contract";
+import { Asset, BrandFile, Diagnostics, FontFamily, Palette, ScanStats, Wordmark } from "@/lib/contract";
 import { buildIdentity } from "./build-id";
 import { agentLimits } from "./limits";
 import { normalizeScanUrl } from "./scan-url";
@@ -101,6 +101,7 @@ const AgentScanFile = z.object({
     siteName: z.string().optional(),
     brandLinks: z.array(z.object({ href: z.string(), text: z.string() })).optional(),
     brandFiles: z.array(BrandFile).optional(),
+    wordmark: Wordmark.optional(),
   }),
   assets: z.array(Asset),
   fonts: z.array(FontFamily),

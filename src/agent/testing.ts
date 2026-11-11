@@ -1,6 +1,6 @@
 import { crc32, deflateRawSync, deflateSync } from "node:zlib";
 import sharp from "sharp";
-import type { Asset, AssetRole, FontFamily, FontFile, Palette } from "@/lib/contract";
+import type { Asset, AssetRole, FontFamily, FontFile, Palette, Wordmark } from "@/lib/contract";
 import type { AgentScan, SelectionBudget } from "./types";
 
 /** Factories the agent tests build scans with. Not bundled into the CLI or the MCP server. */
@@ -45,6 +45,24 @@ export function testFontFamily(patch: Partial<FontFamily> & { name: string }): F
     usedOnPage: true,
     usage: 0.5,
     faces: [{ weight: "400", style: "normal", loaded: true, files: [testFontFile()] }],
+    ...patch,
+  };
+}
+
+/** investirday.fr's lockup as a scan reports it: "Investir" over "Day" beside its monogram, drawn at 36x36. */
+export function testWordmark(patch: Partial<Wordmark> = {}): Wordmark {
+  return {
+    text: "Investir\nDay",
+    family: "Inter",
+    weight: 700,
+    size: 12,
+    letterSpacing: 1.2,
+    transform: "uppercase",
+    runs: [
+      { text: "Investir\n", hex: "#130d21" },
+      { text: "Day", hex: "#fb2189" },
+    ],
+    withLogo: { id: "asset-0", width: 36, height: 36 },
     ...patch,
   };
 }

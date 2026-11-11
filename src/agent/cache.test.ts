@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildIdentity } from "./build-id";
 import { cacheDir, findRecentScan, loadScan, pruneScans, saveScan, scanCachePath } from "./cache";
-import { testScan } from "./testing";
+import { testScan, testWordmark } from "./testing";
 
 const trees: string[] = [];
 const makeTree = (): string => {
@@ -44,6 +44,7 @@ describe("saveScan and loadScan", () => {
     vi.stubEnv("XDG_CACHE_HOME", xdg);
     const scan = testScan();
     scan.page.brandFiles = [{ id: "4f1c2a9e8b7d", url: "https://monad.xyz/brand-page-assets/kit.zip", name: "Kit", type: "zip", bytes: 29_679_666, foundIn: "script" }];
+    scan.page.wordmark = testWordmark();
     const file = await saveScan(scan);
     expect(file).toBe(path.join(xdg, "assets-scraper", "scan-1.json"));
     expect(fs.existsSync(file)).toBe(true);

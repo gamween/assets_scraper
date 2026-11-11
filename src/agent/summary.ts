@@ -1,10 +1,10 @@
 import { isInstallableFamily } from "./font-candidates";
-import type { BrandFileType } from "@/lib/contract";
+import type { BrandFileType, Wordmark } from "@/lib/contract";
 import type { AgentScan, ScanSummary } from "./types";
 
 /**
- * What an agent reads after a scan (spec 2, context cost): counts, the palette, one row per font family, the logos, and
- * the page's brand kit links and files.
+ * What an agent reads after a scan (spec 2, context cost): counts, the palette, one row per font family, the logos, the
+ * wordmark, and the page's brand kit links and files.
  * Never the whole asset list, never bytes. The whole document stays a few hundred bytes wide whatever the page holds,
  * so every string it carries is cut and every list is capped.
  */
@@ -25,6 +25,12 @@ const MAX_SUMMARY_WARNINGS = 5;
 const MAX_SUMMARY_BRAND_LINKS = 6;
 /** Brand file rows a summary shows, of the 16 a scan keeps (`limits.maxBrandFiles`). */
 const MAX_SUMMARY_BRAND_FILES = 8;
+/**
+ * The engine keeps a wordmark of 40 characters in at most 4 runs (`inpage/wordmark.ts`); the caps are here too so a
+ * hosted app that sends more cannot widen this.
+ */
+const MAX_WORDMARK_CHARS = 40;
+const MAX_WORDMARK_RUNS = 4;
 /** Archives first, then documents, then single logo files: a kit's archive holds the rest. */
 const BRAND_FILE_ORDER: Record<BrandFileType, number> = { zip: 0, pdf: 1, ai: 1, eps: 1, svg: 2, png: 3 };
 /**
@@ -42,6 +48,31 @@ const MAX_WARNING_CHARS = 120;
 const cut = (text: string, max: number): string => (text.length <= max ? text : `${text.slice(0, max - 1)}…`);
 
 const LOGO_ROLES = new Set(["site-logo", "logo"]);
+
+/**
+ * A wordmark with every string cut and its runs capped, like every other row here. The runs are the text cut by colour,
+ * so they share its cap rather than taking one each.
+ */
+const summaryWordmark = (wordmark: Wordmark): Wordmark => {
+  const runs: Wordmark["runs"] = [];
+  let left = MAX_WORDMARK_CHARS;
+  for (const run of wordmark.runs.slice(0, MAX_WORDMARK_RUNS)) {
+    if (left <= 0) break;
+    const text = cut(run.text, left);
+    runs.push({ text, hex: run.hex });
+    left -= text.length;
+  }
+  return {
+    text: cut(wordmark.text, MAX_WORDMARK_CHARS),
+    family: cut(wordmark.family, MAX_NAME_CHARS),
+    weight: wordmark.weight,
+    size: wordmark.size,
+    letterSpacing: wordmark.letterSpacing,
+    transform: wordmark.transform,
+    runs,
+    ...(wordmark.withLogo === undefined ? {} : { withLogo: { ...wordmark.withLogo, id: cut(wordmark.withLogo.id, MAX_NAME_CHARS) } }),
+  };
+};
 
 export function summarize(scan: AgentScan): ScanSummary {
   const logos = scan.assets
@@ -93,6 +124,9 @@ export function summarize(scan: AgentScan): ScanSummary {
       installable: isInstallableFamily(family),
     })),
     logos,
+    // investirday.fr shows its monogram as a PNG beside "Investir" over "Day" in live text: without the text, the logo
+    // rows hold half of the lockup, and on 15/10/2026 it had to be put back together by hand.
+    ...(scan.page.wordmark === undefined ? {} : { wordmark: summaryWordmark(scan.page.wordmark) }),
     // The page's own way to its official files: bnbchain.org links its brand guidelines, where the white, yellow and
     // black logos are, while the home page itself only shows the yellow one.
     brandLinks: (scan.page.brandLinks ?? [])
@@ -114,17 +148,25 @@ export function summarize(scan: AgentScan): ScanSummary {
   }, scan.assets.length, brandFiles.length);
 }
 
-/** Rows a summary gives up, in the order it gives them up, when the caps alone leave the document too wide. */
-const TRIMMABLE = ["warnings", "fonts", "brandLinks", "brandFiles", "logos", "palette"] as const;
+/**
+ * What a summary gives up, in the order it gives it up, when the caps alone leave the document too wide: rows of the
+ * lists, and the wordmark whole, before the logos it is the other half of.
+ */
+const TRIMMABLE = ["warnings", "fonts", "brandLinks", "brandFiles", "wordmark", "logos", "palette"] as const;
 
 /**
  * Drops rows until the document fits `MAX_SUMMARY_BYTES`, least useful first, and keeps `otherAssets` and
  * `otherBrandFiles` honest about the rows it gave up. The counts, the page and the scan id are never dropped: an agent needs them to ask for anything
  * else. Only a page at every cap at once ever reaches this, and the lists are documented as capped either way.
  */
-function fit(summary: ScanSummary, assetCount: number, brandFileCount: number): ScanSummary {
+export function fit(summary: ScanSummary, assetCount: number, brandFileCount: number): ScanSummary {
+  const tooWide = () => Buffer.byteLength(JSON.stringify(summary)) > MAX_SUMMARY_BYTES;
   for (const list of TRIMMABLE) {
-    while (summary[list].length > 0 && Buffer.byteLength(JSON.stringify(summary)) > MAX_SUMMARY_BYTES) {
+    if (list === "wordmark") {
+      if (summary.wordmark !== undefined && tooWide()) delete summary.wordmark;
+      continue;
+    }
+    while (summary[list].length > 0 && tooWide()) {
       summary[list].pop();
       summary.otherAssets = Math.max(0, assetCount - summary.logos.length);
       summary.otherBrandFiles = Math.max(0, brandFileCount - summary.brandFiles.length);

@@ -147,6 +147,8 @@ describe("the summary the three paths report", () => {
     const body = (await response.json()) as { view: string; scanId: string; summary: ScanSummary };
 
     expect(fromCli.scanId).toBe(scan.scanId);
+    // The fixture's header logo has live text beside it, so the wordmark is part of what the three paths agree on.
+    expect(fromCli.wordmark).toMatchObject({ text: "Fixture", withLogo: { id: scan.page.wordmark?.withLogo?.id } });
     expect(fromMcpServer).toEqual(fromCli);
     expect(body.summary).toEqual(fromCli);
     expect(body.scanId).toBe(fromCli.scanId);

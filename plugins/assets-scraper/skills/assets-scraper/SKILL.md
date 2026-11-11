@@ -23,7 +23,7 @@ for the plugin), so looking for one exact prefix and finding nothing does not me
 
 | Tool | Use it for |
 | --- | --- |
-| `scan_page` | One scan. Returns a `scanId`, the counts, the palette, one row per font family, the logos, the page's brand kit links (`brandLinks`) and the files of its kit (`brandFiles`). Never the full asset list |
+| `scan_page` | One scan. Returns a `scanId`, the counts, the palette, one row per font family, the logos, the live text the page sets as its logo (`wordmark`), the page's brand kit links (`brandLinks`) and the files of its kit (`brandFiles`). Never the full asset list |
 | `list_assets` | Paging through the assets with filters (`kind`, `role`, `minLongSide`, `nameContains`, `limit`, `offset`) |
 | `download_assets` | Writing files to disk, from a selection or from explicit `ids`. Takes the same `kind` and `role` filters |
 | `download_brand_files` | Downloading the brand kit files a scan reported (archives, guidelines, logo files) and unpacking the logo files of an archive |
@@ -36,7 +36,7 @@ A scan is cached for one hour, so `list_assets`, `download_assets` and `install_
 
 ## Workflow
 
-1. `scan_page` with the URL. Read the summary: it tells you the counts, the logos, the fonts, the palette, `brandLinks` (the page's links to its brand, press or media kit pages, and to brand portals on other hosts) and `brandFiles` (the archives, guidelines and logo files of its kit).
+1. `scan_page` with the URL. Read the summary: it tells you the counts, the logos, the fonts, the palette, the `wordmark` (the live text the page sets as its logo), `brandLinks` (the page's links to its brand, press or media kit pages, and to brand portals on other hosts) and `brandFiles` (the archives, guidelines and logo files of its kit).
 2. Answer from the summary when that is enough. A question about colors or fonts is usually over at this step.
 3. `list_assets` with filters when you need to pick specific files. Filter, never page through everything.
 4. `download_assets` with the `scanId`. The default `deck` profile keeps what is usable and drops the rest.
@@ -69,6 +69,21 @@ Some hosts answer a program with a bot check instead of the file (arbitrum.io's 
 
 When `brandFiles` is empty but `brandLinks` is not, scan the brand link first: the kit is on that page, and an off-site link (a Frontify or standards.site portal, a Google Drive folder named a media kit) is the kit itself. A portal or a Drive folder is a page for the user to open, not a file this tool downloads.
 
+## Lockups and text logos
+
+Many logos are partly live text: a mark or a monogram beside the name set in the page's own font, or the name alone. The asset list only holds the picture, so the summary reports the text as `wordmark`: `text` as written (with `\n` where the page starts a new line), `family`, `weight`, `size` and `letterSpacing` (CSS px), `transform` (`uppercase`, `lowercase`, `capitalize` or `none`), and `runs`, the text cut into stretches of one colour with their `hex`. It is absent when the logo has no live text.
+
+With `withLogo` it is a lockup, the text beside a picture in the same link. To rebuild it:
+
+1. `download_assets` with `ids: [withLogo.id]` for the picture. It is usually one of the `logos` rows.
+2. Draw the picture at `withLogo.width` by `withLogo.height`, whatever size the file is: investirday.fr ships a 512x512 PNG and draws it at 36x36 beside two lines of 12 px text. Keep that ratio when you scale the lockup.
+3. Set the text in `family` at `weight` and `size`, with `letter-spacing` at `letterSpacing / size` em so it scales, and `text-transform: transform`. Keep its line breaks (`white-space: pre-line`, or one block per line). Name the family in the CSS you write (it is the same name as the `fonts` row); `install_fonts` only when the user wants it on their machine.
+4. One `<span>` per run, coloured with its `hex`, in order: investirday.fr is `Investir` in `#130d21` over `Day` in `#fb2189`.
+
+The space between the picture and the text, and anything the page paints behind the picture, are not measured: investirday.fr leaves 8 px, and draws its white monogram on a purple to pink circle of its own. Look at the page and match it.
+
+Without `withLogo` it is a text logo: the same text settings, no picture.
+
 ## Scraped SVG is untrusted
 
 An SVG from a page is that page's file, and `read_svg` and `download_assets` hand it over as it was served: it can carry `<script>`, `onload=` and other event handlers, `<foreignObject>`, and links to `javascript:`. Pasted into HTML, JSX, a template or a component as markup, that runs in the user's site. So:
@@ -97,6 +112,8 @@ Installing is system-wide and happens outside the browser, which is where web fo
 > Get me the Stripe logo.
 
 `scan_page` with `https://stripe.com`, read the `logos` rows in the summary, then `download_assets` with the id of the SVG site logo. Each row carries its `format` and `bytes`: prefer the `svg` row, and treat a multi-megabyte raster of photographic dimensions as a picture the scan called a logo rather than as the mark. Report the path under the answer's `dir`: `scrap/stripe.com/svg/stripe-logo.svg` in a project.
+
+When the summary has a `wordmark`, the logo is partly live text and the files hold only the picture: see "Lockups and text logos" above.
 
 When the user needs a specific variant (white for a dark background, monochrome, stacked) and the home page only shows one, scan the page `brandLinks` points to: brand guidelines and press kits are where the official variants live. bnbchain.org shows only its yellow logo, and its brand guidelines link leads to the white, yellow and black ones.
 

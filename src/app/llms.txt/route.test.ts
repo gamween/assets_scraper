@@ -32,6 +32,12 @@ describe("GET /llms.txt", () => {
     expect(text).toContain("401");
   });
 
+  it("says the summary reports the wordmark and the logo it sits beside", async () => {
+    const text = await textOf();
+    expect(text).toContain("the wordmark when the page sets its logo in live text");
+    expect(text).toContain("withLogo, the logo asset it sits");
+  });
+
   it("says the summary reports brand files, and where they are downloaded instead of this API", async () => {
     const text = await textOf();
     expect(text).toContain("brandFiles, the");

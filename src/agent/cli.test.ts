@@ -6,7 +6,7 @@ import { saveScan } from "./cache";
 import { DEFAULT_REMOTE, USAGE, UsageError, formatBrandDownload, formatDownload, formatDropped, formatSummary, openSource, scanPage, scanUrl, selectionFrom } from "./cli";
 import pkg from "../../package.json";
 import { summarize } from "./summary";
-import { noBudget, testFontFamily, testScan } from "./testing";
+import { noBudget, testFontFamily, testScan, testWordmark } from "./testing";
 import type { AgentScan, DownloadResult, ScanSource } from "./types";
 
 /**
@@ -233,6 +233,19 @@ describe("the report", () => {
     expect(report).not.toContain("brand pages");
   });
 
+  it("prints the wordmark after the logos: quoted text, type settings, colours and the logo it sits beside", () => {
+    const scan = testScan();
+    const report = formatSummary(summarize({ ...scan, page: { ...scan.page, wordmark: testWordmark() } }), false);
+    expect(report).toContain(
+      "  and 228 other assets\n" +
+        `  wordmark: "Investir\\nDay" (Inter 700, 12px, letter-spacing 1.2px, uppercase), beside asset-0 drawn at 36x36\n` +
+        `    colours: "Investir\\n" #130d21, "Day" #fb2189`,
+    );
+    const plain = formatSummary(summarize({ ...scan, page: { ...scan.page, wordmark: testWordmark({ text: "Julia Evans", letterSpacing: 0, transform: "none", runs: [{ text: "Julia Evans", hex: "#ff5e00" }], withLogo: undefined }) } }), false);
+    expect(plain).toContain(`  wordmark: "Julia Evans" (Inter 700, 12px)\n    colours: "Julia Evans" #ff5e00`);
+    expect(formatSummary(summarize(scan), false)).not.toContain("wordmark");
+  });
+
   it("lists the brand kit links after the logos", () => {
     const scan = testScan();
     const report = formatSummary(summarize({ ...scan, page: { ...scan.page, brandLinks: [{ href: "https://www.bnbchain.org/en/brand-guidelines", text: "Brand Guidelines" }] } }), false);
@@ -303,6 +316,10 @@ describe("the report", () => {
         url: "https://evil.example/", finalUrl: "https://evil.example/", host: "evil.example", title: `${clipboard}Acme`,
         brandLinks: [{ href: "https://evil.example/press\u001b[2J", text: `Press${clipboard}` }],
         brandFiles: [{ id: "abc\u001b[2J", url: "https://evil.example/kit.zip\u001b[2J", name: `Kit${clipboard}`, type: "zip", foundIn: "link" }],
+        wordmark: testWordmark({
+          text: `Acme${clipboard}\u009b2J`, family: `Inter\u001b[1A`, runs: [{ text: `Acme\u202e${clipboard}`, hex: "#130d21" }],
+          withLogo: { id: "logo\u001b[2J", width: 36, height: 36 },
+        }),
       },
       fonts: [testFontFamily({ name: `Inter\u001b[1A\u001b[2K` })],
       warnings: ["partial\u001b[31m"],
