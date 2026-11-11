@@ -37,6 +37,30 @@ const usable = (text: string | undefined): string | undefined => {
 const HEX_HASH = /[.\-_](?=[0-9a-f]*\d)[0-9a-f]{8,}$/i;
 const BUNDLER_HASH = /[.\-_](?=[A-Za-z0-9_]*\d)(?=[A-Za-z0-9_]*[A-Z])(?=[A-Za-z0-9_]*[a-z])[A-Za-z0-9_]{8}$/;
 const SIZE_SUFFIX = /(?:_(?:xsmall|small|medium|large|xlarge|xxlarge)(?:_[23]x)?|@[23]x|_[23]x|-scaled)$/i;
+/** The upload id Webflow puts before every file name: 6964d40aecc2aafdea1a8419_mcc-logo.svg. */
+const ID_PREFIX = /^(?=[0-9a-f]*\d)[0-9a-f]{16,}[-_](?=[^-_])/i;
+
+/**
+ * Letters no one would read as words: few vowels, five consonants in a row, or digits in more than one place with two
+ * capitals side by side. A name in camelCase (HeroBackground2x, iPhone15ProMax2x, RedStoneLogoSymbol) has none of
+ * these. "y" is left out of both sets, so a word like "rhythm" is not five consonants.
+ */
+const readsAsRandom = (run: string): boolean => {
+  const letters = run.toLowerCase().replace(/[^a-z]/g, "");
+  const vowels = letters.replace(/[^aeiou]/g, "").length;
+  return vowels / letters.length < 0.22 || /[bcdfghjklmnpqrstvwxz]{5}/i.test(run) || (/\d[A-Za-z]+\d/.test(run) && /[A-Z]{2}/.test(run));
+};
+
+/**
+ * A file name that is nothing but an id: a bare hash, an encoded blob (a run of 40 letters and digits is no word), or
+ * random letters and digits mixed in both cases, like the ids Frontify stores brand guideline images under
+ * (CDrbG9w8RVujxhmrDWHJ.png, eQ8ysJqywFHMaaTRFCoz.png on brand.ripple.com). "image 3" says as much and makes a cleaner
+ * file name.
+ */
+const isIdOnly = (base: string): boolean =>
+  /[A-Za-z0-9]{40}/.test(base) ||
+  /^(?=[0-9a-f]*\d)[0-9a-f]{16,}$/i.test(base) ||
+  (/^(?=[^a-z]*[a-z])(?=[^A-Z]*[A-Z])(?=\D*\d)[A-Za-z0-9]{16,}$/.test(base) && readsAsRandom(base));
 
 const NOTION_HOST = /(?:^|\.)(?:notion\.site|notion\.so|notionusercontent\.com)$/i;
 const NOTION_ATTACHMENT = /^attachment:[0-9a-f-]{36}:(.+)$/i;
@@ -75,10 +99,10 @@ export function cleanBasename(url: string): string | undefined {
   } catch {
     return undefined;
   }
-  let base = segment.replace(/\.[a-z0-9]{1,5}$/i, "");
+  let base = segment.replace(/\.[a-z0-9]{1,5}$/i, "").replace(ID_PREFIX, "");
   for (let i = 0; i < 2; i++) base = base.replace(HEX_HASH, "").replace(BUNDLER_HASH, "");
   base = base.replace(SIZE_SUFFIX, "");
-  return usable(base);
+  return isIdOnly(base) ? undefined : usable(base);
 }
 
 /**
