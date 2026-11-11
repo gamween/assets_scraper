@@ -74,6 +74,8 @@ describe("createScanSource, local", () => {
     const summary = summarize(scan);
     expect(summary.scanId).toBe(scan.scanId);
     expect(summary.counts.assets).toBe(scan.stats.assets);
+    // The footer links its press kit and another site's brand page: only the site's own is a place to look next.
+    expect(summary.brandLinks).toEqual([{ href: `${server.origin}/press`, text: "Press kit" }]);
     expect(Buffer.byteLength(JSON.stringify(summary))).toBeLessThan(4_096);
   });
 

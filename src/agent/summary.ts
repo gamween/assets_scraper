@@ -2,7 +2,8 @@ import { isInstallableFamily } from "./font-candidates";
 import type { AgentScan, ScanSummary } from "./types";
 
 /**
- * What an agent reads after a scan (spec 2, context cost): counts, the palette, one row per font family and the logos.
+ * What an agent reads after a scan (spec 2, context cost): counts, the palette, one row per font family, the logos and
+ * the page's brand kit links.
  * Never the whole asset list, never bytes. The whole document stays a few hundred bytes wide whatever the page holds,
  * so every string it carries is cut and every list is capped.
  */
@@ -19,6 +20,8 @@ const MAX_SUMMARY_LOGOS = 8;
 const MAX_SUMMARY_PALETTE = 12;
 const MAX_SUMMARY_FONTS = 12;
 const MAX_SUMMARY_WARNINGS = 5;
+/** The engine keeps 6 (`limits.maxBrandLinks`); the cap is here too so a hosted app that sends more cannot widen this. */
+const MAX_SUMMARY_BRAND_LINKS = 6;
 /**
  * URLs are cut like every other string here: `ScanRequest` allows 2048 characters and a redirect chain can make the
  * final URL as long again, which on its own blew the budget the rest of the document is cut to keep.
@@ -84,6 +87,11 @@ export function summarize(scan: AgentScan): ScanSummary {
       installable: isInstallableFamily(family),
     })),
     logos,
+    // The page's own way to its official files: bnbchain.org links its brand guidelines, where the white, yellow and
+    // black logos are, while the home page itself only shows the yellow one.
+    brandLinks: (scan.page.brandLinks ?? [])
+      .slice(0, MAX_SUMMARY_BRAND_LINKS)
+      .map((link) => ({ href: cut(link.href, MAX_URL_CHARS), text: cut(link.text, MAX_NAME_CHARS) })),
     otherAssets: Math.max(0, scan.assets.length - logos.length),
     warnings: scan.warnings.slice(0, MAX_SUMMARY_WARNINGS).map((warning) => cut(warning, MAX_WARNING_CHARS)),
     durationMs: scan.stats.durationMs,
@@ -91,7 +99,7 @@ export function summarize(scan: AgentScan): ScanSummary {
 }
 
 /** Rows a summary gives up, in the order it gives them up, when the caps alone leave the document too wide. */
-const TRIMMABLE = ["warnings", "fonts", "logos", "palette"] as const;
+const TRIMMABLE = ["warnings", "fonts", "brandLinks", "logos", "palette"] as const;
 
 /**
  * Drops rows until the document fits `MAX_SUMMARY_BYTES`, least useful first, and keeps `otherAssets` honest about the

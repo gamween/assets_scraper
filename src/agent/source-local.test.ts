@@ -44,6 +44,14 @@ const diagnostics: Diagnostics = {
 const done = (partial = false): ScanEvent => ({ type: "done", partial, stats, diagnostics });
 
 describe("createLocalScanSource().scan", () => {
+  it("keeps the brand kit links of the last page event, and leaves the field out when there are none", async () => {
+    const links = [{ href: "https://www.bnbchain.org/en/brand-guidelines", text: "Brand Guidelines" }];
+    const withLinks = await createLocalScanSource({ backend: fakeBackend([{ type: "page", page: page({ brandLinks: links }) }, done()]) }).scan("stripe.com");
+    expect(withLinks.page.brandLinks).toEqual(links);
+    const without = await createLocalScanSource({ backend: fakeBackend([{ type: "page", page: page() }, done()]) }).scan("stripe.com");
+    expect(without.page).not.toHaveProperty("brandLinks");
+  });
+
   it("folds the event stream into one scan, the last page event winning", async () => {
     const backend = fakeBackend([
       { type: "accepted", scanId: "engine-1", url: "stripe.com" },

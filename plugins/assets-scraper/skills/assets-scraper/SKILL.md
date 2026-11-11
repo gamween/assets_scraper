@@ -23,7 +23,7 @@ for the plugin), so looking for one exact prefix and finding nothing does not me
 
 | Tool | Use it for |
 | --- | --- |
-| `scan_page` | One scan. Returns a `scanId`, the counts, the palette, one row per font family and the logos. Never the full asset list |
+| `scan_page` | One scan. Returns a `scanId`, the counts, the palette, one row per font family, the logos and the page's brand kit links. Never the full asset list |
 | `list_assets` | Paging through the assets with filters (`kind`, `role`, `minLongSide`, `nameContains`, `limit`, `offset`) |
 | `download_assets` | Writing files to disk, from a selection or from explicit `ids`. Takes the same `kind` and `role` filters |
 | `read_svg` | The markup of one SVG, when you need to inspect or edit it. It is the page's file, unsanitized: see below before you inline it |
@@ -35,7 +35,7 @@ A scan is cached for one hour, so `list_assets`, `download_assets` and `install_
 
 ## Workflow
 
-1. `scan_page` with the URL. Read the summary: it tells you the counts, the logos, the fonts and the palette.
+1. `scan_page` with the URL. Read the summary: it tells you the counts, the logos, the fonts, the palette and `brandLinks`, the page's own links to its brand, press or media kit pages.
 2. Answer from the summary when that is enough. A question about colors or fonts is usually over at this step.
 3. `list_assets` with filters when you need to pick specific files. Filter, never page through everything.
 4. `download_assets` with the `scanId`. The default `deck` profile keeps what is usable and drops the rest.
@@ -86,6 +86,8 @@ Installing is system-wide and happens outside the browser, which is where web fo
 > Get me the Stripe logo.
 
 `scan_page` with `https://stripe.com`, read the `logos` rows in the summary, then `download_assets` with the id of the SVG site logo. Each row carries its `format` and `bytes`: prefer the `svg` row, and treat a multi-megabyte raster of photographic dimensions as a picture the scan called a logo rather than as the mark. Report the path: `scrap/stripe.com/svg/stripe-logo.svg`.
+
+When the user needs a specific variant (white for a dark background, monochrome, stacked) and the home page only shows one, scan the page `brandLinks` points to: brand guidelines and press kits are where the official variants live. bnbchain.org shows only its yellow logo, and its brand guidelines link leads to the white, yellow and black ones.
 
 ### The user is rebuilding a page
 

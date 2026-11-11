@@ -263,6 +263,10 @@ export function formatSummary(summary: ScanSummary, reused: boolean): string {
     }
   }
   if (summary.otherAssets > 0) rows.push(`  and ${formatCount(summary.otherAssets, "other asset")}`);
+  if (summary.brandLinks.length > 0) {
+    rows.push("  brand pages, where official logo variants usually are:");
+    for (const link of summary.brandLinks) rows.push(`    ${printable(link.href)}${link.text ? `  ${printable(link.text)}` : ""}`);
+  }
   for (const warning of summary.warnings) rows.push(`  warning: ${printable(warning)}`);
   rows.push(`  scan id: ${summary.scanId}${reused ? " (reused from the cache, --refresh to scan again)" : ""}`);
   return rows.join("\n");

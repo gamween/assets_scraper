@@ -175,7 +175,7 @@ export function openApiDocument(origin: string): Record<string, unknown> {
         ScanSummary: {
           type: "object",
           description: "Under 4 KB whatever the page holds: lists are capped and every string is cut.",
-          required: ["scanId", "page", "counts", "palette", "fonts", "logos", "otherAssets", "warnings", "durationMs"],
+          required: ["scanId", "page", "counts", "palette", "fonts", "logos", "brandLinks", "otherAssets", "warnings", "durationMs"],
           properties: {
             scanId: { type: "string" },
             page: {
@@ -234,6 +234,11 @@ export function openApiDocument(origin: string): Record<string, unknown> {
                   bytes: { type: "integer", description: "When the scan measured it." },
                 },
               },
+            },
+            brandLinks: {
+              type: "array",
+              description: "The page's links to its brand, press or media kit pages, where official logo variants usually are. Scan one of them next when the logos above are not the variant you need.",
+              items: { type: "object", required: ["href", "text"], properties: { href: { type: "string" }, text: { type: "string" } } },
             },
             otherAssets: { type: "integer" },
             warnings: { type: "array", items: { type: "string" } },

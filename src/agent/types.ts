@@ -27,7 +27,11 @@ export interface AgentScan {
    * scan is an answer to, not a detail of it: two hosted apps are two engines, so the cache tells them apart.
    */
   remote?: string;
-  page: { url: string; finalUrl: string; host: string; title: string; siteName?: string };
+  /**
+   * `brandLinks` are the page's own links to its brand, press or media kit pages (spec 8.1), where the official logo
+   * variants usually live. Absent from a scan that found none, and from a hosted app that predates them.
+   */
+  page: { url: string; finalUrl: string; host: string; title: string; siteName?: string; brandLinks?: BrandLink[] };
   assets: Asset[];
   fonts: FontFamily[];
   palette: Palette | null;
@@ -140,14 +144,21 @@ export interface FontInstall {
 }
 
 /** What an agent reads after a scan: counts and a few rows, never the whole asset list (spec 2, context cost). */
+interface BrandLink {
+  href: string;
+  text: string;
+}
+
 export interface ScanSummary {
   scanId: string;
-  page: AgentScan["page"];
+  page: Omit<AgentScan["page"], "brandLinks">;
   counts: { assets: number; svg: number; images: number; fonts: number; hidden: number };
   palette: { hex: string; role?: string }[];
   fonts: { family: string; license: FontLicense["kind"]; usedOnPage: boolean; installable: boolean }[];
   /** `format` and `bytes` are there so a 4 MB photo the scan called a logo does not read like a wordmark. */
   logos: { id: string; name: string; kind: AssetKind; format: AssetFormat; width?: number; height?: number; bytes?: number }[];
+  /** Where to look next for the official logo variants: the page's brand, press and media kit links. */
+  brandLinks: BrandLink[];
   otherAssets: number;
   warnings: string[];
   durationMs: number;

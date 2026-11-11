@@ -33,7 +33,7 @@ Tools, all returning compact JSON, never bytes:
 
 | Tool | Input | Output |
 | --- | --- | --- |
-| `scan_page` | `url`, optional `refresh` | `scanId`, the page, counts per kind, the palette, one row per font family, the logos, and how many other assets there are |
+| `scan_page` | `url`, optional `refresh` | `scanId`, the page, counts per kind, the palette, one row per font family, the logos, the page's links to its brand, press or media kit pages (`brandLinks`), and how many other assets there are |
 | `list_assets` | `scanId`, optional `kind`, `role`, `minLongSide`, `nameContains`, `limit` (40), `offset` | Compact rows: id, name, kind, role, dimensions, bytes |
 | `download_assets` | `scanId`, optional `ids`, `profile`, filters, `includeIcons`, `max`, `maxTotalBytes`, `maxFileBytes`, `dest` | The written paths, total bytes, the drop reasons, the destination and the manifest |
 | `read_svg` | `scanId`, `id` | `{ id, name, filename, markup }`, the page's own markup as text, unsanitized, refused past 256 KB |

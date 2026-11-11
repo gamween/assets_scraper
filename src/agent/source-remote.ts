@@ -54,6 +54,7 @@ const RemoteScanBody = z.object({
     host: z.string(),
     title: z.string(),
     siteName: z.string().optional(),
+    brandLinks: z.array(z.object({ href: z.string(), text: z.string() })).optional(),
   }),
   assets: z.array(Asset),
   fonts: z.array(FontFamily),
