@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import sharp from "sharp";
 import { MAX_INPUT_PIXELS, withRenderSlot } from "@/server/scan/post/render-slot";
+import { withoutRootSize } from "@/server/scan/inpage/svg-markup";
 
 /**
  * Hashes used to drop the same image twice (spec 4.4, 4.5): SHA-1 of the bytes for an exact duplicate, and a
@@ -82,7 +83,8 @@ const SVG_ID = /\bid\s*=\s*(["'])([^"']*)\1|\burl\(\s*#([^)\s"']+)\s*\)|\b(?:xli
  *
  * Every id-shaped token is renumbered rather than only the generated-looking ones: a declaration and its references fold
  * to the same placeholder because they carry the same text, and a document whose ids are already stable renumbers to an
- * equivalent of itself.
+ * equivalent of itself. The root's `width` and `height` are dropped when it has a viewBox, as the collector's hash does:
+ * an inline SVG carries the size it rendered at, which differs between two placements of one logo.
  */
 export function canonicalizeSvg(markup: string): string {
   const ids = new Map<string, string>();
@@ -93,7 +95,7 @@ export function canonicalizeSvg(markup: string): string {
     ids.set(raw, name);
     return name;
   };
-  return markup.replace(SVG_ID, (_match, _q: string, declared: string | undefined, inUrl: string | undefined, _q2: string, inHref: string | undefined) => {
+  return withoutRootSize(markup).replace(SVG_ID, (_match, _q: string, declared: string | undefined, inUrl: string | undefined, _q2: string, inHref: string | undefined) => {
     if (declared !== undefined) return `id="${placeholder(declared)}"`;
     if (inUrl !== undefined) return `url(#${placeholder(inUrl)})`;
     return `href="#${placeholder(inHref ?? "")}"`;

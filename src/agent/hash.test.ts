@@ -157,6 +157,11 @@ describe("canonicalizeSvg", () => {
     expect(canonicalizeSvg(mark("#101D51"))).toBe(mark("#101D51"));
   });
 
+  it("folds one logo written at two rendered sizes onto the same bytes", () => {
+    const logo = (width: number) => `<svg viewBox="0 0 137 24" xmlns="http://www.w3.org/2000/svg" width="${width}" height="24"><path d="M0 0h10v10z"/></svg>`;
+    expect(canonicalizeSvg(logo(136))).toBe(canonicalizeSvg(logo(137)));
+  });
+
   it("keeps two genuinely different drawings apart", () => {
     const one = '<svg xmlns="http://www.w3.org/2000/svg"><path id="a" d="M0 0h10v10H0z"/></svg>';
     const two = '<svg xmlns="http://www.w3.org/2000/svg"><path id="a" d="M0 0h20v10H0z"/></svg>';

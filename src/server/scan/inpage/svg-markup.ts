@@ -18,17 +18,36 @@ export function varFallback(value: string): string {
   return fallback.includes("var(") ? "" : fallback;
 }
 
+/** The open tag of the root `<svg>`, after any prolog, comment or doctype. */
+const ROOT_TAG = /<svg\b[^>]*>/i;
+/** A `width` or `height` attribute in either quote style. The name has to follow whitespace, so `stroke-width` stays. */
+const SIZE_ATTRIBUTE = /\s(?:width|height)\s*=\s*(?:"[^"]*"|'[^']*')/gi;
+
+/**
+ * Markup without the `width` and `height` of its root `<svg>` when that root has a viewBox. The collector writes the
+ * size an SVG rendered at onto its root, so one logo shown 136 px wide in the header and 137 px wide in a menu serialized
+ * to two markups and was reported as two logos (bnbchain.org). With a viewBox the drawing is the same whatever those two
+ * say. Without one they set the coordinate system, so they stay.
+ */
+export function withoutRootSize(markup: string): string {
+  const root = ROOT_TAG.exec(markup);
+  if (!root || !/\sviewBox\s*=/i.test(root[0])) return markup;
+  return markup.slice(0, root.index) + root[0].replace(SIZE_ATTRIBUTE, "") + markup.slice(root.index + root[0].length);
+}
+
 /** A declared id. */
 const ID = /\sid="([^"]+)"/g;
 /** A declared id or a reference to one, followed by a quote, a parenthesis or whitespace: `id="a"`, `url(#a)`, `href="#a"`. */
 const ID_OR_REFERENCE = /(id="|#)([^"')\s#]+)(?=["')\s])/g;
 
 /**
- * The form of serialized SVG markup the collector hashes to tell drawings apart: ids renamed in order of appearance,
- * so two copies of one icon with generated ids hash the same, and whitespace between tags collapsed. All ids are
- * renamed in one pass. A pass per id read the whole markup once for each of them, and an SVG of 70,000 ids took minutes.
+ * The form of serialized SVG markup the collector hashes to tell drawings apart: the root's rendered size dropped
+ * (`withoutRootSize`), ids renamed in order of appearance, so two copies of one icon with generated ids hash the same,
+ * and whitespace between tags collapsed. All ids are renamed in one pass. A pass per id read the whole markup once for
+ * each of them, and an SVG of 70,000 ids took minutes.
  */
-export function canonicalSvgMarkup(markup: string): string {
+export function canonicalSvgMarkup(serialized: string): string {
+  const markup = withoutRootSize(serialized);
   const ids = new Map<string, string>();
   for (const match of markup.matchAll(ID)) if (!ids.has(match[1])) ids.set(match[1], `i${ids.size}`);
   return markup
