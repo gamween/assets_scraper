@@ -417,6 +417,25 @@ describe("collector brand links", () => {
     ]);
   });
 
+  it("takes a bare two-letter path for a page of its own, not the home page in another language", async () => {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    // francefintech.org: the home page links its press releases at /cp, which read as the home page in another language.
+    await page.route("**/*", (route) =>
+      route.request().url() === "https://fintech.test/"
+        ? route.fulfill({
+            contentType: "text/html; charset=utf-8",
+            body: `<!doctype html><title>Fintech</title>
+              <a href="/cp">Communiqu\u00e9s de presse</a>`,
+          })
+        : route.fulfill({ status: 404 }),
+    );
+    await page.goto("https://fintech.test/");
+    const fintech = await runCollector(page, collectorOptions("fintech.test", ""));
+    await context.close();
+    expect(fintech.brandLinks).toEqual([{ href: "https://fintech.test/cp", text: "Communiqu\u00e9s de presse" }]);
+  });
+
   it("takes the press kit, not every article filed under it", async () => {
     const context = await browser.newContext();
     const page = await context.newPage();

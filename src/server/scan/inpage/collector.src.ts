@@ -1380,7 +1380,9 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
     const current = location.href.split("#")[0];
     // The page in another language is the same page: trezor.io/press-and-media links its Czech, Japanese, German and
     // Spanish versions, which took four of the six brand link slots. The lookbehind keeps the trailing slash match linear.
-    const localeFree = (pathname: string) => pathname.replace(/(?<!\/)\/+$/, "").replace(/^\/[a-z]{2}(?:[-_][a-z]{2,4})?(?=\/|$)/i, "") || "/";
+    // The code has to lead somewhere: francefintech.org links its press releases at `/cp`, which read as its home page
+    // in another language. A switcher's link to a bare code has nothing but the language name to make it a brand link.
+    const localeFree = (pathname: string) => pathname.replace(/(?<!\/)\/+$/, "").replace(/^\/[a-z]{2}(?:[-_][a-z]{2,4})?(?=\/)/i, "") || "/";
     const currentPath = localeFree(location.pathname);
     // A brand, press or media kit page offers files whatever they are called: stellar.org/brand-resources names its
     // logo pack and its guidelines by content hash on cdn.sanity.io and labels them "View" and "Download".
