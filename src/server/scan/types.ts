@@ -67,6 +67,8 @@ export interface RawSvg {
   usedCount: number;
   hasLiveText: boolean;
   elementCount: number;
+  /** Part of the drawing is hidden by visibility or opacity while the vector is not: a frame of an animation. */
+  partlyHidden?: boolean;
 }
 
 export interface RawFontFaceRule {

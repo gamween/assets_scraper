@@ -2,6 +2,7 @@ import type { FoundIn, HiddenReason } from "@/lib/contract";
 import { extractCssUrls, readCssUrls, readFontFaceSrc } from "./css-values";
 import { brandFileType, isBrandFileWord, isBrandPortal, isBrandWord, isStrongBrandPhrase, SECOND_LEVEL_LABELS, siteOf } from "./brand";
 import { OUTPUT_LISTS } from "./lists";
+import { LOGO_WORD } from "./logo-word";
 import { parseSrcset } from "./srcset";
 import { canonicalSvgMarkup, varFallback, withCurrentColor } from "./svg-markup";
 import type {
@@ -56,12 +57,6 @@ const MAX_CAPTION_CHARS = 80;
 const LAZY_ATTR =
   /^data-(?:lazy-?)?(?:src|srcset|original|original-set|hi-?res(?:-src)?|full(?:-src)?|large(?:-src)?|zoom(?:-src)?|fallback(?:-src)?|bg|background|background-image|image|img|echo|flickity-lazyload|lazy|srcset-lazy|pin-media|retina|2x)$/i;
 const LAZY_BACKGROUND_ATTR = /^data-(?:bg|background|background-image|bg-src|lazy-background|image-src)$/i;
-/**
- * "brand" only counts at the end of a token (navbar-brand, .brand, header__brand), never as a qualifier inside a
- * compound name, because a page wraps ordinary photos in names like
- * payments-graphic__checkout-item-card-brand-content and every one of them would be filed as a logo.
- */
-const LOGO_WORD = /logo|wordmark|logotype|brand(?:s|mark)?(?![a-z]|[-_][a-z])/;
 
 const STYLE_PROPS = [
   "fill", "fill-opacity", "fill-rule", "stroke", "stroke-width", "stroke-opacity", "stroke-linecap", "stroke-linejoin",
@@ -291,8 +286,34 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
     for (let node: Element | null = el; node; node = composedParent(node)) if (node.matches(selector)) return node;
     return null;
   };
+  /**
+   * The page's banner: `[role=banner]`, or a `<header>` that starts within the first screen. Further down, a `<header>`
+   * heads a card or a section, not the page: ethglobal.com opens each event card with one 1,877 px down, and the event
+   * logos in them scored as if they sat in the site header (header 2, logo word 3, site word 2) and were each taken for
+   * the site logo, while the real one, in a top bar built from plain divs, was not.
+   */
+  const bannerCache = new Map<Element, boolean>();
+  const isBanner = (node: Element): boolean => {
+    let banner = bannerCache.get(node);
+    if (banner === undefined) {
+      const view = node.ownerDocument.defaultView ?? window;
+      banner = node.getAttribute("role") === "banner" || node.getBoundingClientRect().top + view.scrollY < view.innerHeight;
+      bannerCache.set(node, banner);
+    }
+    return banner;
+  };
+  const inBanner = (el: Element): boolean => {
+    for (let node: Element | null = el; node; node = composedParent(node)) if (node.matches("header,[role=banner]") && isBanner(node)) return true;
+    return false;
+  };
+  /**
+   * A link to the home page of the site, in any language. A fragment or an empty href is not one, even though on the
+   * home page it resolves there: it points at a place on the page, and it is what a page builder writes on a link it
+   * never wired. raisesummit.com wraps each of its 113 sponsor logos in `<a href="#">`, and with that and a logo word
+   * every one of them was taken for the site logo and named "raisesummit logo".
+   */
   const isHomeHref = (href: string | null, base: string) => {
-    if (!href) return false;
+    if (!href?.trim() || href.trim().startsWith("#")) return false;
     try {
       const u = new URL(href, base);
       return u.hostname.replace(/^www\./, "") === hostname && /^\/(?:[a-z]{2}(?:[-_][a-z]{2,4})?\/?)?$/i.test(u.pathname);
@@ -364,16 +385,30 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
     return undefined;
   };
 
-  const linkTextOf = (el: Element): string | undefined => {
-    const link = composedClosest(el, "a[href]");
-    if (!link) return undefined;
-    let text = "";
-    const walker = link.ownerDocument.createTreeWalker(link, NodeFilter.SHOW_TEXT, {
+  /** Text nodes read for one link text or caption, blank or not: the bound that 200 characters of them used to set. */
+  const MAX_TEXT_NODES = 200;
+  /**
+   * The text under `root` a reader sees, outside vectors and scripts, up to 200 characters. Only text counts toward
+   * them. The indentation between tags used to: trezor.visualbook.pro indents its brand cards so deep that 236
+   * characters of it came before the card title "Trezor Academy", and the link was read as having no text at all.
+   */
+  const readText = (root: Element): string => {
+    const walker = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
       acceptNode: (node) =>
         node.parentElement?.closest("svg,script,style,noscript,template") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT,
     });
-    for (let node = walker.nextNode(); node && text.length < 200; node = walker.nextNode()) text += ` ${node.nodeValue ?? ""}`;
-    return collapse(text) || undefined;
+    let text = "";
+    let nodes = 0;
+    for (let node = walker.nextNode(); node && text.length < 200 && nodes < MAX_TEXT_NODES; node = walker.nextNode(), nodes++) {
+      const value = collapse(node.nodeValue, 200);
+      if (value) text += ` ${value}`;
+    }
+    return text;
+  };
+
+  const linkTextOf = (el: Element): string | undefined => {
+    const link = composedClosest(el, "a[href]");
+    return link ? collapse(readText(link)) || undefined : undefined;
   };
 
   /** Short enough to be a caption rather than a paragraph. A logo sits beside a name, not beside a story. */
@@ -406,13 +441,7 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
     let node = composedParent(el);
     for (let depth = 0; node && depth < HINT_DEPTH; depth++, node = composedParent(node)) {
       if (holdsAnotherPicture(node)) return undefined;
-      const walker = node.ownerDocument.createTreeWalker(node, NodeFilter.SHOW_TEXT, {
-        acceptNode: (text) =>
-          text.parentElement?.closest("svg,script,style,noscript,template") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT,
-      });
-      let text = "";
-      for (let found = walker.nextNode(); found && text.length < 200; found = walker.nextNode()) text += ` ${found.nodeValue ?? ""}`;
-      const caption = collapse(text, NEARBY_TEXT_CHARS + 1);
+      const caption = collapse(readText(node), NEARBY_TEXT_CHARS + 1);
       if (!caption) continue;
       return caption.length <= NEARBY_TEXT_CHARS && caption.split(" ").length <= NEARBY_TEXT_WORDS ? caption : undefined;
     }
@@ -489,11 +518,14 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
     let logoWord = false;
     let siteWord = false;
     let node: Element | null = el;
+    // The words of the element and of its own containers, up to the link or the button it belongs to: past a control
+    // the names are the region's. aave.com/brand keys each entry of its FAQ by the slug of the question
+    // (`brand-how-do-i-use-the-logo`), and the plus glyph of the button that opens it came back as a logo.
     for (let depth = 0; node && depth < 6; depth++, node = composedParent(node)) {
       const haystack = attributeHaystack(node);
       if (LOGO_WORD.test(haystack)) logoWord = true;
       for (const token of siteTokens) if (haystack.includes(token)) siteWord = true;
-      if (node.localName === "a" || node.localName === "section" || node.localName === "header") break;
+      if (node.localName === "a" || node.localName === "button" || node.localName === "section" || node.localName === "header") break;
     }
     let logoWall = false;
     if (r.height >= 10 && r.height <= 140 && r.width / r.height >= 1.3 && !isCropped(el, r, view)) {
@@ -513,7 +545,7 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
     const label = labelOf(el);
     const info: ElementInfo = {
       context: {
-        header: !!composedClosest(el, "header,[role=banner]"),
+        header: inBanner(el),
         nav: !!composedClosest(el, "nav,[role=navigation]"),
         footer: !!composedClosest(el, "footer,[role=contentinfo]"),
         homeLink: !!link && isHomeHref(link.getAttribute("href"), el.baseURI),
@@ -994,6 +1026,11 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
     // Computed styles that differ from a neutral rendering, top-down
     const hasText = !!svg.querySelector("text,tspan,textPath");
     const usesCurrentColor = /currentcolor/i.test(clone.outerHTML);
+    // Part of the drawing hidden by visibility or opacity while the vector itself is not: the state a script left an
+    // animation in. A vector the page hides as a whole (a closed menu) passes visibility down to every part, which
+    // says nothing about the drawing.
+    const rootHidden = view.getComputedStyle(svg).visibility === "hidden";
+    let partlyHidden = false;
     if (liveElements.length <= MAX_STYLED_SVG_ELEMENTS) {
       const box = getSandbox();
       const imported = box.doc.importNode(clone, true);
@@ -1014,6 +1051,9 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
           }
         }
         const liveStyle = view.getComputedStyle(live);
+        if (i > 0 && !partlyHidden && ((!rootHidden && liveStyle.visibility === "hidden") || liveStyle.opacity === "0")) {
+          partlyHidden = !live.closest(SVG_DEFINITION);
+        }
         const neutralStyle = box.view.getComputedStyle(neutral);
         const declarations: [string, string][] = [];
         for (const property of STYLE_PROPS) {
@@ -1124,7 +1164,10 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
 
     // Serialize, then hash a canonical form: ids renamed in order of appearance, whitespace collapsed
     const markup = new XMLSerializer().serializeToString(clone);
-    return { markup, hash: sha1Hex(canonicalSvgMarkup(markup)), elementCount: liveElements.length, hasLiveText: hasText && hasWebFontText(svg) };
+    return {
+      markup, hash: sha1Hex(canonicalSvgMarkup(markup)), elementCount: liveElements.length, hasLiveText: hasText && hasWebFontText(svg),
+      ...(partlyHidden ? { partlyHidden } : {}),
+    };
   };
 
   const addSvg = (entry: RawSvg) => {

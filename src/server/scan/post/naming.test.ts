@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cleanBasename, createFilenamer, displayName, hrefName, markupName, type NameInput } from "./naming";
+import { cleanBasename, createFilenamer, displayName, fileName, hrefName, markupName, type NameInput } from "./naming";
 
 const name = (patch: Partial<NameInput>) => displayName({ kind: "image", role: "image", index: 12, siteName: "Linear", ...patch });
 
@@ -14,11 +14,24 @@ describe("displayName", () => {
 
   it("names logos, favicons and social images after the site when nothing better exists", () => {
     expect(name({ role: "site-logo", jsonLdLogo: true, url: "https://linear.app/x.png" })).toBe("Linear logo");
+    // bybit.com declares its /favicon.ico as the JSON-LD logo, which makes it a favicon.
+    expect(name({ role: "favicon", jsonLdLogo: true, url: "https://www.bybit.com/favicon.ico", siteName: "bybit" })).toBe("bybit favicon");
     expect(name({ role: "site-logo", url: "https://linear.app/brand.svg" })).toBe("Linear logo");
     expect(name({ role: "favicon", url: "https://linear.app/favicon.ico" })).toBe("Linear favicon");
     expect(name({ role: "social", linkText: "x", url: "https://linear.app/og.png" })).toBe("Linear social image");
     expect(name({ role: "site-logo", label: "Linear wordmark" })).toBe("Linear wordmark");
     expect(name({ role: "logo", linkText: "Customer", url: "https://linear.app/c.svg" })).toBe("Customer");
+  });
+
+  it("names a sub-brand mark after its link when the label only names the site", () => {
+    // trezor.visualbook.pro labels every brand card "Trezor logo".
+    const card = { role: "logo" as const, siteName: "Trezor", label: "Trezor logo" };
+    expect(name({ ...card, linkText: "Trezor Academy" })).toBe("Trezor Academy");
+    expect(name({ ...card, linkText: "Trezor" })).toBe("Trezor logo");
+    // The site logo and a link to something else keep the label.
+    expect(name({ ...card, role: "site-logo", linkText: "Trezor Academy" })).toBe("Trezor logo");
+    expect(name({ ...card, linkText: "Learn more" })).toBe("Trezor logo");
+    expect(name({ ...card, label: "Trezor Safe 5", linkText: "Trezor Safe 5 and Trezor Academy" })).toBe("Trezor Safe 5");
   });
 
   it("collapses whitespace, strips control characters and caps long labels", () => {
@@ -111,6 +124,38 @@ describe("cleanBasename", () => {
     // Notion's own static files keep their plain name, and another host is read as before.
     expect(cleanBasename("https://ethglobal.notion.site/images/notion-logo-block-main.svg")).toBe("notion-logo-block-main");
     expect(cleanBasename("https://a.example/image/attachment%3Acf353582-4ab1-4745-854a-c87ed7d7c8b4%3ALogo.png")).toBe("attachment:cf353582-4ab1-4745-854a-c87ed7d7c8b4:Logo");
+  });
+
+  it("drops the upload id in front of a Webflow file name", () => {
+    expect(cleanBasename("https://cdn.prod.website-files.com/66f11b59c8366f8c2c21551f/697a5b66a5451b053d6dde00_Bloomberg-logo.svg")).toBe("Bloomberg-logo");
+    expect(cleanBasename("https://cdn.prod.website-files.com/a/68c9a39c128261b2128439c9_Docusign-dark-p-500.png")).toBe("Docusign-dark");
+    expect(cleanBasename("https://a.example/2025-annual-report.png")).toBe("2025-annual-report");
+  });
+
+  it("names nothing after a file name that is only an id", () => {
+    // brand.ripple.com: Frontify stores guideline images under random ids.
+    for (const id of ["CDrbG9w8RVujxhmrDWHJ", "9RDHFnfBtS5FiS9szDzF", "QM8iRPQg75AZuqCD6Ahr", "eQ8ysJqywFHMaaTRFCoz", "dn3Rqx5ehjCt6414Q1fQ",
+      "UqqveTsFV3gNU69w2nTS", "PwZxC5TQw1NYjXiHVqtx", "6964d40aecc2aafdea1a8419", "da39a3ee5e6b4b0d3255bfef95601890afd80709"]) {
+      expect(cleanBasename(`https://media.ffycdn.net/us/ripple/${id}.png?width=800`), id).toBeUndefined();
+    }
+    // A base64 path with a signature after it, which Frontify serves lazy loaded images under.
+    expect(cleanBasename("https://media.ffycdn.net/us/ripple/eyJwYXRoIjoicmlwcGxlXC9hY2NvdW50c1wvYTZcLzQwMDA5ODZcL3Byb2plY3RzXC82XC9hc3NldHNc:ripple:aZ9-C2NWnaT0Hvr?mod=v1/resize=770")).toBeUndefined();
+    expect(name({ url: "https://media.ffycdn.net/us/ripple/CDrbG9w8RVujxhmrDWHJ.png" })).toBe("image 12");
+    // Names in camelCase keep their digits and capitals.
+    for (const kept of ["HeroBackground2x", "iPhone15ProMax2x", "RedStoneLogoSymbol", "WhatsAppImage20260630", "Logo2026", "RhythmGame2026Hero", "NYSEWiredLogo2026"]) {
+      expect(cleanBasename(`https://a.example/${kept}.png`), kept).toBe(kept);
+    }
+  });
+});
+
+describe("fileName", () => {
+  it("reads the file a URL or an SVGR compiled vector came from", () => {
+    expect(fileName("https://www.redstone.finance/images/RedStoneLogoSymbol.svg")).toBe("RedStoneLogoSymbol");
+    expect(fileName("https://a.example/_next/image?url=%2Fimg%2Fpartner-logo.png&w=640&q=75")).toBe("partner-logo");
+    // ethglobal.com: SVGR prefixes the ids of an inline vector with the file it compiled.
+    expect(fileName(undefined, '<svg><g clip-path="url(#logo_svg__a)"><path/></g><clipPath id="logo_svg__a"/></svg>')).toBe("logo");
+    expect(fileName(undefined, '<svg><clipPath id="clip0_1_2"/></svg>')).toBeUndefined();
+    expect(fileName("data:image/png;base64,AAAA")).toBeUndefined();
   });
 });
 

@@ -1,4 +1,4 @@
-import type { AssetKind, AssetRole, FoundIn } from "@/lib/contract";
+import type { AssetFormat, AssetKind, AssetRole, FoundIn } from "@/lib/contract";
 import type { CandidateContext, Rect } from "../types";
 import { searchFrom } from "./search";
 
@@ -16,6 +16,13 @@ const LOGO_TOP_PX = 160;
  * stripe.com captions three 2460x1060 photographs with a sentence that mentions its own logo.
  */
 const LOGO_MAX_AREA = 120_000;
+/**
+ * Longest side over shortest side past which a picture is a line, not a logo. Long wordmarks stay well under it: the
+ * longest in the scans of the November 2026 audit is raisesummit.com's MACHINA wordmark, 193x13 or 14.8 to 1. sui.io's
+ * dashed divider, a 1175x3 vector drawn 1108x15 inside its row of partner logos, is 74 to 1, and the logo wall rule
+ * had listed it with them.
+ */
+const LOGO_MAX_ASPECT = 30;
 /** Score at which position alone makes an asset the site logo. */
 const LOGO_SCORE_PROMOTION = 6;
 const DRAWABLE = /<(?:path|circle|rect|ellipse|line|polyline|polygon|text|image|use)\b/i;
@@ -62,6 +69,7 @@ export function logoScore(context: CandidateContext, visible: boolean, rect?: Re
 
 export interface RoleInput {
   kind: AssetKind;
+  format?: AssetFormat;       // of the resolved file, when known
   foundIn: FoundIn[];
   logoScore: number;          // best score of all members
   logoWord: boolean;          // any member
@@ -70,6 +78,8 @@ export interface RoleInput {
   rendered?: { width: number; height: number };            // largest visible rendered size
   intrinsic?: { width?: number; height?: number };         // size of the file, when known
   spriteSymbol?: boolean;
+  cropped?: boolean;          // the page shows a crop of the file (`aspectChanged`)
+  partlyHidden?: boolean;     // an inline SVG that hides part of its own drawing
 }
 
 const longestSide = (size?: { width?: number; height?: number }) => Math.max(size?.width ?? 0, size?.height ?? 0);
@@ -92,6 +102,14 @@ const logoArea = (input: RoleInput): number => {
   return area(input.intrinsic);
 };
 
+/** Measured like the small-icon rule: the rendered box when the asset is on screen, else the file. */
+const isLine = (input: RoleInput): boolean => {
+  const box = area(input.rendered) > 0 ? input.rendered : input.intrinsic;
+  const long = longestSide(box);
+  const short = Math.min(box?.width ?? 0, box?.height ?? 0);
+  return short > 0 && long / short > LOGO_MAX_ASPECT;
+};
+
 /**
  * Prose, not a name: stripe.com describes a 2460x1060 photograph as "Aerial view of a street intersection where the
  * crosswalks form a slanted parallelogram, imitating the Stripe logo." The word "logo" in a sentence that long is
@@ -110,11 +128,25 @@ const hasLogoEvidence = (input: RoleInput): boolean =>
 export function assignRole(input: RoleInput): AssetRole {
   const found = new Set(input.foundIn);
   const oversized = logoArea(input) > LOGO_MAX_AREA;
-  if (found.has("json-ld") || (input.logoScore >= LOGO_SCORE_PROMOTION && !oversized)) return "site-logo";
-  if (found.has("icon-link") || found.has("meta-icon") || found.has("manifest")) return "favicon";
+  // ICO is the favicon format, a few small bitmaps in one file, and never a logo whatever points at it: bybit.com
+  // declares its 48x48 /favicon.ico as the JSON-LD logo, which made it a site logo beside the header wordmark.
+  const ico = input.format === "ico";
+  // A frame of something that moves is no logo, whatever it shows. A poster is a frame of a video: brand.ripple.com
+  // labels its logo animation "Header - Logo.mp4", and the still it opens on was listed as a logo. A vector that hides
+  // part of its own drawing is a frame of a scripted animation: signalweek.com keeps the stage of its intro animation
+  // in its header link, groups set to visibility: hidden and reveal masks at width 0, and that frame, which reads
+  // "SIGNAI", was its site logo.
+  const poster = input.foundIn.length > 0 && input.foundIn.every((where) => where === "video-poster");
+  const frame = poster || !!input.partlyHidden;
+  // A logo is shown whole. stellar.org/brand-resources has its CDN cut a 1800x1800 "Stellar logo pack" card to 16:9
+  // for a thumbnail, and the label made it a logo.
+  const logoShaped = !oversized && !isLine(input) && !frame && !input.cropped;
+  if (!ico && (found.has("json-ld") || (input.logoScore >= LOGO_SCORE_PROMOTION && logoShaped))) return "site-logo";
+  if (found.has("icon-link") || found.has("meta-icon") || found.has("manifest") || (ico && found.has("json-ld"))) return "favicon";
   if (found.has("og-image") || found.has("twitter-image")) return "social";
-  // A logo is small. Past the same limit the site logo answers to, a picture that carries a logo word is a picture.
-  if (hasLogoEvidence(input) && !oversized) return "logo";
+  // A logo is small and has a shape. Past the limits the site logo answers to, a picture that carries a logo word is a
+  // picture.
+  if (!ico && hasLogoEvidence(input) && logoShaped) return "logo";
   if (input.spriteSymbol) return "sprite-symbol";
   // The single small-icon rule: the rendered size when the asset is on screen, else its intrinsic size.
   const side = input.rendered && longestSide(input.rendered) > 0 ? longestSide(input.rendered) : longestSide(input.intrinsic);

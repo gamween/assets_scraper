@@ -120,6 +120,51 @@ describe("assignRole", () => {
     expect(role({})).toBe("image");
   });
 
+  it("does not take a line for a logo", () => {
+    // sui.io: a dashed divider in the row of partner logos, a 1175x3 vector drawn 1108x15.
+    expect(role({ kind: "svg", foundIn: ["inline-svg"], logoWall: true, rendered: { width: 1108, height: 15 }, intrinsic: { width: 1108, height: 14.83 } })).toBe("illustration");
+    expect(role({ kind: "svg", foundIn: ["inline-svg"], logoWall: true, intrinsic: { width: 1175, height: 3 } })).toBe("illustration");
+    const header = logoScore(context({ header: true, homeLink: true }), true, { x: 0, y: 70, width: 1440, height: 2 });
+    expect(role({ kind: "svg", foundIn: ["inline-svg"], logoScore: header, rendered: { width: 1440, height: 2 } })).toBe("illustration");
+    // A long wordmark is still a logo.
+    expect(role({ kind: "svg", foundIn: ["inline-svg"], logoWall: true, rendered: { width: 345, height: 30 } })).toBe("logo");
+    expect(role({ kind: "svg", foundIn: ["inline-svg"], logoWall: true, rendered: { width: 656, height: 48 } })).toBe("logo");
+  });
+
+  it("does not take the poster of a video for a logo", () => {
+    // brand.ripple.com: the poster of a logo animation, named by the label of its video.
+    const poster = { foundIn: ["video-poster"] as RoleInput["foundIn"], logoWord: true, label: "Header - Logo.mp4", rendered: { width: 800, height: 150 } };
+    expect(role(poster)).toBe("image");
+    expect(role({ ...poster, logoScore: 8 })).toBe("image");
+    // The same file shown as a picture of its own is judged as one.
+    expect(role({ ...poster, foundIn: ["video-poster", "img"] })).toBe("logo");
+  });
+
+  it("does not take a vector that hides part of its drawing for a logo", () => {
+    // signalweek.com: the stage of an intro animation, in a hidden link to home.
+    const header = logoScore(context({ homeLink: true, logoWord: true }), false);
+    const stage = { kind: "svg" as const, foundIn: ["inline-svg"] as RoleInput["foundIn"], logoScore: header, logoWord: true, intrinsic: { width: 1920, height: 480 } };
+    expect(role(stage)).toBe("site-logo");
+    expect(role({ ...stage, partlyHidden: true })).toBe("illustration");
+  });
+
+  it("does not take a cropped picture for a logo", () => {
+    // stellar.org/brand-resources: a 1800x1800 card the CDN cuts to 16:9 for its thumbnail.
+    const card = { label: "Stellar logo pack", logoWord: true, rendered: { width: 398, height: 224 }, intrinsic: { width: 1800, height: 1800 } };
+    expect(role(card)).toBe("logo");
+    expect(role({ ...card, cropped: true })).toBe("image");
+  });
+
+  it("never makes an ICO file a logo", () => {
+    // bybit.com declares its 48x48 /favicon.ico as the JSON-LD logo.
+    expect(role({ foundIn: ["json-ld"], format: "ico", intrinsic: { width: 48, height: 48 } })).toBe("favicon");
+    expect(role({ foundIn: ["json-ld"], format: "png", intrinsic: { width: 48, height: 48 } })).toBe("site-logo");
+    // Another site's favicon shown as a picture is not this site's favicon, and no logo either.
+    const header = logoScore(context({ header: true, homeLink: true, logoWord: true }), true, { x: 0, y: 10, width: 16, height: 16 });
+    expect(role({ format: "ico", logoScore: header, logoWord: true, rendered: { width: 16, height: 16 } })).toBe("icon");
+    expect(role({ format: "ico", label: "Partner logo", rendered: { width: 64, height: 64 } })).toBe("image");
+  });
+
   it("never makes a favicon or a logo an icon, and labels sprite symbols", () => {
     expect(role({ foundIn: ["icon-link"], rendered: { width: 16, height: 16 } })).toBe("favicon");
     expect(role({ logoWord: true, intrinsic: { width: 16, height: 16 } })).toBe("logo");

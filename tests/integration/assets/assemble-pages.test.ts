@@ -25,6 +25,10 @@ let noisePng: Buffer;
 let bigPng: Buffer;
 let faviconMissing = false;
 
+const svgFile = (text: string): http.RequestListener => (_req, res) => {
+  res.writeHead(200, { "content-type": "image/svg+xml" });
+  res.end(text);
+};
 const css = (text: string): http.RequestListener => (_req, res) => {
   res.writeHead(200, { "content-type": "text/css" });
   res.end(text);
@@ -163,6 +167,70 @@ beforeAll(async () => {
         <img class="logo" src="/assets/lazy.jpg" alt="Umbrella">
       </div>
     </body></html>`),
+    // ethglobal.com in miniature: a top bar of plain divs whose logo, drawn inline with no label, only says where it
+    // came from in the ids SVGR wrote, then event cards far down the page that each open with a <header> holding the
+    // event logo, whose alt names the site and the word logo.
+    "/events.html": html(`</head><body style="margin:0">
+      <div style="height:60px"><a href="/"><svg width="160" height="60" viewBox="0 0 160 60"><g clip-path="url(#logo_svg__a)"><path d="M0 0h160v60H0z"/></g><defs><clipPath id="logo_svg__a"><path d="M0 0h160v60H0z"/></clipPath></defs></svg></a></div>
+      <div style="height:1800px"></div>
+      <div style="display:flex;gap:16px">
+        <div><header><img src="/assets/imgset-1x.png" width="56" height="56" alt="Pages Cannes 2027 logo"></header><p>Cannes</p></div>
+        <div><header><img src="/assets/pseudo.png" width="56" height="56" alt="Pages New York 2027 logo"></header><p>New York</p></div>
+        <div><header><img src="/assets/touch.png" width="56" height="56" alt="Pages Tokyo 2027 logo"></header><p>Tokyo</p></div>
+      </div>
+    </body></html>`),
+    // redstone.finance/brand-kit in miniature: the symbol-only marks are labelled with the site name and a word that is
+    // not "logo", and only their file names say what they are.
+    "/brand-kit.html": html(`<style>.widget:hover { background-image: url(/brand/WidgetButton_LogoSmall.png) }</style></head><body>
+      <h1 style="height:400px">Brand kit</h1>
+      <div><img src="/brand/PagesLogoSymbol.svg" width="118" height="100" alt="Pages Symbol"></div>
+      <div><img src="/assets/logo.svg" width="118" height="35" alt="Pages wordmark"></div>
+      <div><img src="/brand/pages-hero-illustration.svg" width="236" height="200" alt="Pages Symbol on a dark field"></div>
+    </body></html>`),
+    "/brand/WidgetButton_LogoSmall.png": (_req, res) => {
+      res.writeHead(200, { "content-type": "image/png" });
+      res.end(readFileSync(path.join(SITE, "pseudo.png")));
+    },
+    "/brand/PagesLogoSymbol.svg": svgFile('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 118 100"><path d="M0 0h118L59 100z" fill="#e33"/></svg>'),
+    "/brand/pages-hero-illustration.svg": svgFile('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 236 200"><path d="M0 0h236v200H0z" fill="#123"/><path d="M60 50h118L119 150z" fill="#e33"/></svg>'),
+    // raisesummit.com in miniature, served where a link to "#" resolves to a home page: the site logo links to home,
+    // and each sponsor logo of the marquee below sits in a link block the page builder left at href="#".
+    "/fr/": html(`</head><body>
+      <div class="navbar"><a href="/fr/" aria-label="home"><img src="/assets/logo.svg" class="nav_logo" width="131" height="42" alt=""></a></div>
+      <h1 style="height:400px">Summit</h1>
+      <div class="section-logos" style="display:flex;gap:24px">
+        ${["Bloomberg", "Reuters", "Forbes", "Wired"].map((name, i) => `<a href="#" class="logos-box"><img class="logo-box-proof" src="/sponsors/${name}-logo.svg" width="${120 + i}" height="30" alt=""></a>`).join("")}
+      </div>
+    </body></html>`),
+    ...Object.fromEntries(["Bloomberg", "Reuters", "Forbes", "Wired"].map((name, i) => [
+      `/sponsors/${name}-logo.svg`,
+      svgFile(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${120 + i} 30"><path d="M0 0h${120 + i}v30H0z"/></svg>`),
+    ])),
+    // aave.com/brand in miniature: each FAQ entry is keyed by the slug of its question, and the button that opens it
+    // holds a plus glyph. The logos below sit in buttons too, and name themselves.
+    "/faq.html": html(`</head><body>
+      <h1 style="height:400px">Brand</h1>
+      <div id="brand-how-do-i-use-the-logo"><h3><button type="button"><svg width="52" height="52" viewBox="0 0 52 52"><path d="M19 25.5H33M26 18.5V32.5" stroke="#000" stroke-width="2"/></svg>How do I use the logo?</button></h3><div>Answer</div></div>
+      <div><button type="button" class="customer-logo"><svg width="150" height="36" viewBox="0 0 150 36" aria-label="Acme"><path d="M0 0h150v36H0z"/></svg></button></div>
+    </body></html>`),
+    // stellar.org/brand-resources in miniature: the CDN cuts a card to the thumbnail's shape, next to a logo it only
+    // scales.
+    "/resources.html": html(`</head><body>
+      <h1 style="height:400px">Brand resources</h1>
+      <img src="/_next/image?url=%2Fassets%2Fphoto-large.png&w=64&crop=1" width="224" height="224" alt="Pages logo pack">
+      <img src="/_next/image?url=%2Fassets%2Fshadow.png&w=64" width="120" height="60" alt="Partner logo">
+    </body></html>`),
+    // signalweek.com in miniature: beside the header logo, a hidden link to home holds the stage of an intro animation,
+    // with groups a script starts hidden. A closed menu holds a plain logo, hidden as a whole.
+    "/stage.html": html(`</head><body>
+      <div class="navbar">
+        <a href="/" class="logo w-nav-brand" aria-label="Home"><img src="/assets/shadow.png" width="185" height="46" alt=""></a>
+        <div class="anim_logos" style="display:none"><a href="/" class="logo w-nav-brand"><svg id="stage" width="1920" height="480" viewBox="0 0 1220 300" aria-label="Pages Week becomes Pages">
+          <g style="visibility:hidden"><path d="M0 0h100v40H0z"/></g><g opacity="0"><path d="M0 50h100v40H0z"/></g><g><path d="M0 100h300v60H0z"/></g>
+        </svg></a></div>
+        <div class="menu" style="visibility:hidden"><a href="/" class="menu-logo"><svg width="120" height="30" viewBox="0 0 120 30" aria-label="Pages"><g><path d="M0 0h120v30H0z"/></g></svg></a></div>
+      </div>
+    </body></html>`),
     "/favicon.ico": (_req, res) => {
       if (faviconMissing) {
         res.writeHead(404, { "content-type": "text/html" });
@@ -229,6 +297,60 @@ describe("assembleAssets on purpose-built pages", () => {
     for (const card of ["Agent kit", "Swap example", "Wallet demo", "Bridge demo"]) expect(role(card)).toBe("image");
     // Cover-fitted too, but each box has its picture's shape: nothing is cut off, and the row is a logo wall.
     for (const logo of ["Acme", "Globex", "Initech", "Umbrella"]) expect(role(logo)).toBe("logo");
+  });
+
+  it("does not take the header of a card far down the page for the page header", async () => {
+    const { assets } = await scan("/events.html");
+    const role = (name: string) => assets.find((a) => a.name === name)?.role;
+    // Logo word and site word, but each sits in the <header> of an event card 1,800 px down, not in the site header.
+    for (const event of ["Pages Cannes 2027 logo", "Pages New York 2027 logo", "Pages Tokyo 2027 logo"]) expect(role(event)).toBe("logo");
+  });
+
+  it("reads the logo word in the name of the file", async () => {
+    // The top bar logo has nothing but a link to home and its place at the top (score 4) and the ids SVGR wrote.
+    const { assets: events } = await scan("/events.html");
+    const top = events.find((a) => a.kind === "svg" && a.renderedWidth === 160)!;
+    expect(top.role).toBe("site-logo");
+    // The symbol mark is served as PagesLogoSymbol.svg. The illustration beside it has a name of its own and stays one.
+    const { assets } = await scan("/brand-kit.html");
+    const role = (name: string) => assets.find((a) => a.name === name)?.role;
+    expect(role("Pages Symbol")).toBe("logo");
+    expect(role("Pages wordmark")).toBe("logo");
+    expect(role("Pages Symbol on a dark field")).toBe("illustration");
+    // A file a stylesheet only declares is not on the page, whatever its name.
+    expect(assets.find((a) => a.foundIn.includes("stylesheet") && a.name.startsWith("WidgetButton"))?.role).toBe("image");
+  });
+
+  it("does not take a link to # on the home page for a link to home", async () => {
+    const { assets } = await scan("/fr/");
+    const logos = assets.filter((a) => a.role === "site-logo" || a.role === "logo");
+    expect(logos.filter((a) => a.role === "site-logo").map((a) => a.name)).toEqual(["home"]);
+    // Named after their files, not after the site.
+    expect(logos.filter((a) => a.role === "logo").map((a) => a.name).sort()).toEqual(["Bloomberg-logo", "Forbes-logo", "Reuters-logo", "Wired-logo"]);
+  });
+
+  it("reads the logo word up to the button a picture belongs to", async () => {
+    const { assets } = await scan("/faq.html");
+    const glyph = assets.find((a) => a.kind === "svg" && a.renderedWidth === 52)!;
+    expect(glyph.role).toBe("illustration");
+    expect(assets.find((a) => a.name === "Acme")?.role).toBe("logo");
+  });
+
+  it("does not take a picture the page shows cropped for a logo", async () => {
+    const { assets } = await scan("/resources.html");
+    const pack = assets.find((a) => a.name === "Pages logo pack")!;
+    expect(pack.aspectChanged).toBe(true);
+    expect(pack.role).toBe("image");
+    expect(assets.find((a) => a.name === "Partner logo")?.role).toBe("logo");
+  });
+
+  it("does not take the frame of an animation for a logo", async () => {
+    const { assets } = await scan("/stage.html");
+    const role = (name: string) => assets.find((a) => a.name === name)?.role;
+    expect(role("Pages Week becomes Pages")).toBe("illustration");
+    expect(role("Home")).toBe("site-logo");
+    // A vector hidden as a whole, with the menu it sits in, is not a frame.
+    expect(role("Pages")).toBe("site-logo");
   });
 
   it("adds web manifest icons, drops the ones that fail their probe and still probes /favicon.ico", async () => {

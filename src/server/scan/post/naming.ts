@@ -37,6 +37,30 @@ const usable = (text: string | undefined): string | undefined => {
 const HEX_HASH = /[.\-_](?=[0-9a-f]*\d)[0-9a-f]{8,}$/i;
 const BUNDLER_HASH = /[.\-_](?=[A-Za-z0-9_]*\d)(?=[A-Za-z0-9_]*[A-Z])(?=[A-Za-z0-9_]*[a-z])[A-Za-z0-9_]{8}$/;
 const SIZE_SUFFIX = /(?:_(?:xsmall|small|medium|large|xlarge|xxlarge)(?:_[23]x)?|@[23]x|_[23]x|-scaled)$/i;
+/** The upload id Webflow puts before every file name: 6964d40aecc2aafdea1a8419_mcc-logo.svg. */
+const ID_PREFIX = /^(?=[0-9a-f]*\d)[0-9a-f]{16,}[-_](?=[^-_])/i;
+
+/**
+ * Letters no one would read as words: few vowels, five consonants in a row, or digits in more than one place with two
+ * capitals side by side. A name in camelCase (HeroBackground2x, iPhone15ProMax2x, RedStoneLogoSymbol) has none of
+ * these. "y" is left out of both sets, so a word like "rhythm" is not five consonants.
+ */
+const readsAsRandom = (run: string): boolean => {
+  const letters = run.toLowerCase().replace(/[^a-z]/g, "");
+  const vowels = letters.replace(/[^aeiou]/g, "").length;
+  return vowels / letters.length < 0.22 || /[bcdfghjklmnpqrstvwxz]{5}/i.test(run) || (/\d[A-Za-z]+\d/.test(run) && /[A-Z]{2}/.test(run));
+};
+
+/**
+ * A file name that is nothing but an id: a bare hash, an encoded blob (a run of 40 letters and digits is no word), or
+ * random letters and digits mixed in both cases, like the ids Frontify stores brand guideline images under
+ * (CDrbG9w8RVujxhmrDWHJ.png, eQ8ysJqywFHMaaTRFCoz.png on brand.ripple.com). "image 3" says as much and makes a cleaner
+ * file name.
+ */
+const isIdOnly = (base: string): boolean =>
+  /[A-Za-z0-9]{40}/.test(base) ||
+  /^(?=[0-9a-f]*\d)[0-9a-f]{16,}$/i.test(base) ||
+  (/^(?=[^a-z]*[a-z])(?=[^A-Z]*[A-Z])(?=\D*\d)[A-Za-z0-9]{16,}$/.test(base) && readsAsRandom(base));
 
 const NOTION_HOST = /(?:^|\.)(?:notion\.site|notion\.so|notionusercontent\.com)$/i;
 const NOTION_ATTACHMENT = /^attachment:[0-9a-f-]{36}:(.+)$/i;
@@ -75,10 +99,26 @@ export function cleanBasename(url: string): string | undefined {
   } catch {
     return undefined;
   }
-  let base = segment.replace(/\.[a-z0-9]{1,5}$/i, "");
+  let base = segment.replace(/\.[a-z0-9]{1,5}$/i, "").replace(ID_PREFIX, "");
   for (let i = 0; i < 2; i++) base = base.replace(HEX_HASH, "").replace(BUNDLER_HASH, "");
   base = base.replace(SIZE_SUFFIX, "");
-  return usable(base);
+  return isIdOnly(base) ? undefined : usable(base);
+}
+
+/**
+ * SVGR, the SVG loader of Next.js, Vite and Create React App, prefixes every id of a vector with the file it compiled
+ * it from: `logo_svg__a` for logo.svg.
+ */
+const SVGR_ID = /\bid="([^"]+?)_svg__/;
+
+/**
+ * The name of the file an asset came from: the basename of its URL, and for an inline SVG the file SVGR compiled. It
+ * names the asset the way a class does: redstone.finance labels its symbol marks "RedStone Symbol" and serves them as
+ * RedStoneLogoSymbol.svg, and ethglobal.com draws its header logo inline with no label, class or alt, where only the
+ * ids (`logo_svg__a`) say it came from logo.svg.
+ */
+export function fileName(url: string | undefined, markup?: string): string | undefined {
+  return (url ? cleanBasename(url) : undefined) ?? (markup ? usable(SVGR_ID.exec(markup)?.[1]) : undefined);
 }
 
 /** Path segments that say what the page is about rather than which asset this is. */
@@ -153,6 +193,22 @@ export function markupName(markup: string | undefined): string | undefined {
   return undefined;
 }
 
+/** The label with the logo words taken out, in lowercase: "Trezor logo" reads "trezor". */
+const withoutLogoWords = (text: string) => text.toLowerCase().replace(/\b(?:logo(?:type)?|wordmark)\b/g, " ").replace(/\s+/g, " ").trim();
+
+/**
+ * The text of the link, when the label only names the site and the link names one of its sub-brands. A page template
+ * that stamps "<site> logo" on every brand card names the site, not the card: trezor.visualbook.pro labels the Trezor
+ * Academy mark "Trezor logo", inside a link that reads "Trezor Academy". The site logo keeps the label, and so does a
+ * card whose link names something that is not the site's.
+ */
+function subBrandName(label: string | undefined, linkText: string | undefined, site: string | undefined, role: AssetRole): string | undefined {
+  if (!label || !linkText || !site || role === "site-logo") return undefined;
+  const name = withoutLogoWords(site);
+  const text = linkText.toLowerCase();
+  return withoutLogoWords(label) === name && text !== name && text.includes(name) ? linkText : undefined;
+}
+
 const ROLE_DEFAULT: Partial<Record<AssetRole, string>> = {
   "site-logo": "logo",
   favicon: "favicon",
@@ -163,8 +219,10 @@ export function displayName(input: NameInput): string {
   const site = usable(input.siteName);
   const roleDefault = site && ROLE_DEFAULT[input.role] ? `${site} ${ROLE_DEFAULT[input.role]}` : undefined;
   return (
+    subBrandName(usable(input.label), usable(input.linkText), site, input.role) ??
     usable(input.label) ??
-    (input.jsonLdLogo && site ? `${site} logo` : undefined) ??
+    // Only while it is the site logo: an ICO declared there is the favicon (bybit.com), and named one.
+    (input.jsonLdLogo && site && input.role === "site-logo" ? `${site} logo` : undefined) ??
     roleDefault ??
     usable(input.linkText) ??
     (input.url ? cleanBasename(input.url) : undefined) ??

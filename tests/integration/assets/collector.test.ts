@@ -74,6 +74,8 @@ beforeAll(async () => {
         <section aria-label="Trusted by leading companies"><svg width="40" height="20"><rect width="40" height="20"/></svg><svg width="41" height="20"><rect width="41" height="20"/></svg></section>
         <div><a href="/customers/hertz?utm_source=nav&amp;ref=abc#logo"><svg width="42" height="42"><rect width="42" height="42"/></svg></a></div>
         <div class="brandbar"><a href="/"><img src="/assets/photo-small.png" width="40" height="40" alt="Fixture Corporation logo, click here to return to the home page."></a></div>
+        <a href="/brands/academy"><article>${Array.from({ length: 5 }, () => `<div>${" ".repeat(60)}</div>`).join("")}<div><img src="/assets/imgset-2x.png" width="50" height="50"></div>
+          ${Array.from({ length: 5 }, () => `<div>${" ".repeat(60)}</div>`).join("")}<div><span>${" ".repeat(60)}</span><h2><span>Fixture Academy</span></h2></div></article></a>
       </body></html>`);
     },
   });
@@ -488,6 +490,8 @@ describe("collector labels", () => {
     expect(hintsAt(33)?.ancestorLabel).toBeUndefined();
     // Only what names the asset: the query string and the hash of the link are never read and cost output budget.
     expect(hintsAt(42)?.linkHref).toBe(`${server.origin}/customers/hertz`);
+    // trezor.visualbook.pro: the indentation of a card comes before its title and is not its text.
+    expect(labels.candidates.find((c) => c.url === asset("imgset-2x.png"))?.linkText).toBe("Fixture Academy");
   });
 
   it("does not name every picture under one container after the container", async () => {
