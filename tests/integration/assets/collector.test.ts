@@ -368,7 +368,7 @@ describe("collector brand links", () => {
   });
 });
 
-describe("collector brand files", () => {
+describe("collector brand files and brand portals", () => {
   it("hands over the links to brand files apart from the brand links, with what the page says about each", async () => {
     const { context, page } = await openPage(browser, `${server.origin}/brand-kit.html`);
     const kit = await runCollector(page, collectorOptions(server.host, "Fixture"));
@@ -386,8 +386,13 @@ describe("collector brand files", () => {
       { href: `${server.origin}/assets/logo.svg`, text: "SVG" },
       { href: `${server.origin}/brandkit/fixture-wordmark.svg`, text: "Wordmark" },
     ]);
-    // Not one file among the brand links.
-    expect(kit.brandLinks).toEqual([{ href: `${server.origin}/press`, text: "Press" }]);
+    // Not one file among the brand links, and the kits kept on another host ahead of the site's own press page.
+    expect(kit.brandLinks).toEqual([
+      { href: "https://live.standards.site/fixture-media-kit", text: "Brand Kit" },
+      { href: "https://fixture.visualbook.pro/fixture", text: "Go to Visualbook" },
+      { href: "https://drive.google.com/drive/folders/1PozkRBtCbjbqqQFChGFTc45xZe_kcjMT?usp=drive_link", text: "Download the Media Kit" },
+      { href: `${server.origin}/press`, text: "Press" },
+    ]);
   });
 
   it("takes a file off a brand page only when it says it belongs to the brand", async () => {

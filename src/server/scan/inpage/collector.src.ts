@@ -1,6 +1,6 @@
 import type { FoundIn, HiddenReason } from "@/lib/contract";
 import { extractCssUrls, readCssUrls, readFontFaceSrc } from "./css-values";
-import { brandFileType, isBrandFileWord, isBrandWord, SECOND_LEVEL_LABELS, siteOf } from "./brand";
+import { brandFileType, isBrandFileWord, isBrandPortal, isBrandWord, isStrongBrandPhrase, SECOND_LEVEL_LABELS, siteOf } from "./brand";
 import { OUTPUT_LISTS } from "./lists";
 import { parseSrcset } from "./srcset";
 import { canonicalSvgMarkup, varFallback, withCurrentColor } from "./svg-markup";
@@ -47,7 +47,7 @@ const MAX_CANVAS_PIXELS = 4_000_000;
 const CROP_TOLERANCE = 1.05;
 /** The time a canvas re-encode needs left before it starts. */
 const CANVAS_MIN_MS = 500;
-/** Links to files a scan reads the heading of: each costs a walk up a few ancestors. */
+/** Links a scan reads the heading of, per kind (files, links out): each costs a walk up a few ancestors. */
 const MAX_LINK_CAPTIONS = 100;
 /** Ancestors a link's caption is looked for in, and the longest heading that still reads as a name. */
 const CAPTION_DEPTH = 5;
@@ -1316,6 +1316,9 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
     // A brand, press or media kit page offers files whatever they are called: stellar.org/brand-resources names its
     // logo pack and its guidelines by content hash on cdn.sanity.io and labels them "View" and "Download".
     const brandPage = location.pathname.split("/").some((segment) => isBrandWord(decodeURIComponentSafe(segment)));
+    /** Links whose phrase or host says brand kit on their own, kept ahead of the plain ones when the cap bites. */
+    const strong: RawCollectorOutput["brandLinks"] = [];
+    const plain: RawCollectorOutput["brandLinks"] = [];
     const seen = new Set<string>();
 
     /** Whether an element holds links to more than one target, cached: every link of a card asks about the same nodes. */
@@ -1331,15 +1334,17 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
       manyTargets.set(node, targets.size > 1);
       return targets.size > 1;
     };
-    let captionsLeft = MAX_LINK_CAPTIONS;
+    /** Separate budgets, so the links out of a long footer cannot spend the captions the brand files need. */
+    const captions = { files: MAX_LINK_CAPTIONS, links: MAX_LINK_CAPTIONS };
     /**
      * The heading of the card a link sits in alone: stellar.org puts its "Download" button under "Discover the brand
-     * guide", arbitrum.io its "DOWNLOAD PNG + SVG" under the name of the variant. An ancestor that holds a link to
-     * anything else is a list, and its heading names the list, so the walk stops there.
+     * guide", arbitrum.io its "DOWNLOAD PNG + SVG" under the name of the variant, trezor.io "Go to Visualbook" under
+     * `<h2>Brand manual</h2>`. An ancestor that holds a link to anything else is a list, and its heading names the list,
+     * so the walk stops there.
      */
-    const captionOf = (link: Element): string | undefined => {
-      if (captionsLeft <= 0) return undefined;
-      captionsLeft -= 1;
+    const captionOf = (link: Element, budget: keyof typeof captions): string | undefined => {
+      if (captions[budget] <= 0) return undefined;
+      captions[budget] -= 1;
       let node = composedParent(link);
       for (let depth = 0; node && depth < CAPTION_DEPTH; depth++, node = composedParent(node)) {
         if (holdsOtherLinks(node)) return undefined;
@@ -1367,7 +1372,7 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
       const fileType = brandFileType(path) ?? (download ? brandFileType(download) : undefined);
       if (fileType) {
         if (brandFiles.length >= options.maxBrandFiles) continue;
-        const caption = captionOf(el);
+        const caption = captionOf(el, "files");
         // Off a brand page, a file has to say it belongs to the brand: a blog's PDFs and a gallery's PNGs do not.
         const said = [path, text, label, download, caption].some((value) => value !== undefined && isBrandFileWord(value));
         if (!brandPage && !said) continue;
@@ -1380,17 +1385,32 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
         });
         continue;
       }
-      if (brandLinks.length >= options.maxBrandLinks || siteOf(url.hostname) !== site || url.href === current || seen.has(url.href)) continue;
-      // Only the last path segment counts, not the whole path: `/newsroom/news/<headline>` is one press release out of
-      // many, not the press kit, and matching anywhere in the path filled stripe.com's row with five news articles.
-      // The lookbehind lets only the first slash of a trailing run start a match: `\/+$` alone tried from every slash
-      // of a run that does not end the path, which was quadratic in its length.
-      const segment = decodeURIComponentSafe(url.pathname.replace(/(?<!\/)\/+$/, "").split("/").pop() ?? "");
+      if (url.href === current || seen.has(url.href) || strong.length >= options.maxBrandLinks) continue;
       const name = text || label;
-      if (!isBrandWord(segment) && !isBrandWord(name)) continue;
+      if (siteOf(url.hostname) === site) {
+        // Only the last path segment counts, not the whole path: `/newsroom/news/<headline>` is one press release out of
+        // many, not the press kit, and matching anywhere in the path filled stripe.com's row with five news articles.
+        // The lookbehind lets only the first slash of a trailing run start a match: `\/+$` alone tried from every slash
+        // of a run that does not end the path, which was quadratic in its length.
+        const segment = decodeURIComponentSafe(url.pathname.replace(/(?<!\/)\/+$/, "").split("/").pop() ?? "");
+        if (!isBrandWord(segment) && !isBrandWord(name)) continue;
+        const list = isStrongBrandPhrase(name) || isStrongBrandPhrase(segment) ? strong : plain;
+        if (list.length >= options.maxBrandLinks) continue;
+        seen.add(url.href);
+        list.push({ href: url.href, text: name });
+        continue;
+      }
+      // Another site's page is a brand link only when it is a brand portal, or when the link, its path or the heading
+      // over it says brand kit in so many words. sui.io keeps its kit on live.standards.site, raisesummit.com in a Google
+      // Drive folder, trezor.io on a Visualbook; a link to a partner's brand or a newspaper's press page says less.
+      if (!isBrandPortal(url) && !isStrongBrandPhrase(name) && !isStrongBrandPhrase(path)) {
+        const caption = captionOf(el, "links");
+        if (caption === undefined || !isStrongBrandPhrase(caption)) continue;
+      }
       seen.add(url.href);
-      brandLinks.push({ href: url.href, text: name });
+      strong.push({ href: url.href, text: name });
     }
+    brandLinks.push(...[...strong, ...plain].slice(0, options.maxBrandLinks));
   }
 
   // Cut like the engine does (one character over the cap, so it still sees an over-long text) before the output is

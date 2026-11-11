@@ -2,7 +2,8 @@ import type { BrandFileType } from "@/lib/contract";
 
 /**
  * The brand rules of spec 8.1, in one file the in-page collector bundles and post-processing reads in Node: which words
- * make a link a brand link, which files a brand kit is made of, and which labels say nothing about the file behind them. Pure string work, no DOM, so the unit tests read it directly.
+ * make a link a brand link, which off-site links lead to a brand portal, which files a brand kit is made of, and which
+ * labels say nothing about the file behind them. Pure string work, no DOM, so the unit tests read it directly.
  */
 
 /** Second-level labels under a two-letter country code that are public suffixes: shop.co.uk, shop.com.au. */
@@ -33,6 +34,38 @@ export const isBrandWord = (text: string): boolean => BRAND_WORD.test(text) || B
  * in a `/brand-page-assets/` folder, and token2049.com files its lockups under `/Brandkit/`.
  */
 export const isBrandFileWord = (text: string): boolean => isBrandWord(text) || /wordmark|lockup/i.test(text);
+
+/**
+ * What a link to another site has to say to be a brand link: a whole phrase, never one word. "Brand" or "Press" alone
+ * on a link out is a partner's brand or a newspaper, and the fixture's "Other brand" stays out, while sui.io's
+ * "Brand Kit", raisesummit.com's "Download the Media Kit" and signalweekhq.com's "Official logo files on Drive" are the
+ * kits those sites keep on another host.
+ */
+const STRONG_BRAND =
+  /(?:^|[^a-z])(?:(?:brand|media|press|logo)[- _]?(?:kits?|packs?|assets?|resources?|guidelines?|guides?|books?|manuals?|portals?|hubs?|cent(?:er|re)s?|files?|toolkits?)|(?:brand|visual)[- _]identity|identity[- _]guidelines?)(?![a-z])/i;
+export const isStrongBrandPhrase = (text: string): boolean => STRONG_BRAND.test(text) || STRONG_BRAND.test(camelSplit(text));
+
+/**
+ * Hosts that only serve brand books, so a link to one is a brand link whatever it says: trezor.io's press page links
+ * `satoshilabs.visualbook.pro/trezor` as "Go to Visualbook", and sui.io its kit on `live.standards.site`.
+ */
+const BRAND_PORTAL_HOSTS = [
+  "frontify.com", "standards.site", "visualbook.pro", "brandfolder.com", "brandfolder.io", "brandpad.io", "corebook.io",
+  "lingoapp.com", "bynder.com",
+];
+
+/**
+ * True for a page on a brand portal host. A portal lives on a subdomain (`acme.frontify.com`) or under a path of the
+ * vendor's host (`brandfolder.com/acme`); the vendor's own home page, which a "Powered by Frontify" footer links, is not
+ * one.
+ */
+export function isBrandPortal(url: URL): boolean {
+  const host = url.hostname.toLowerCase();
+  const vendor = BRAND_PORTAL_HOSTS.find((name) => host === name || host.endsWith(`.${name}`));
+  if (!vendor) return false;
+  if (host !== vendor && host !== `www.${vendor}`) return true;
+  return url.pathname.replace(/\/+$/, "") !== "";
+}
 
 /** What a brand kit is made of: archives, documents, and the vector or raster logos it links one by one. */
 const BRAND_FILE_EXTENSION = /\.(zip|pdf|ai|eps|svg|png)$/i;

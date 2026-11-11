@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { brandFileType, isBrandFileWord, isBrandWord, isGenericLabel, siteOf } from "./brand";
+import { brandFileType, isBrandFileWord, isBrandPortal, isBrandWord, isGenericLabel, isStrongBrandPhrase, siteOf } from "./brand";
 
 describe("siteOf", () => {
   it("keeps the registrable domain, three labels under a co.uk-like suffix, and addresses as they are", () => {
     expect(siteOf("www.stellar.org")).toBe("stellar.org");
-    expect(siteOf("cdn.fixture.co.uk")).toBe("fixture.co.uk");
+    expect(siteOf("live.standards.site")).toBe("standards.site");
     expect(siteOf("assets.shop.co.uk")).toBe("shop.co.uk");
     expect(siteOf("127.0.0.1")).toBe("127.0.0.1");
     expect(siteOf("localhost")).toBe("localhost");
@@ -25,6 +25,51 @@ describe("isBrandWord", () => {
     expect(isBrandFileWord("Wordmark.svg")).toBe(true);
     expect(isBrandFileWord("primary-lockup.png")).toBe(true);
     expect(isBrandFileWord("discord.svg")).toBe(false);
+  });
+});
+
+describe("isStrongBrandPhrase", () => {
+  it("takes the phrases real pages use for a kit kept on another host", () => {
+    for (const text of [
+      "Brand Kit", // sui.io, to live.standards.site
+      "Download the Media Kit", // raisesummit.com/media, to a Google Drive folder
+      "Brand manual", // trezor.io/press-and-media, the heading over its Visualbook link
+      "Official logo files on Drive →", // signalweekhq.com, to a Google Drive folder
+      "Press kit",
+      "Brand guidelines",
+      "Brand Resource Hub",
+      "brandkit",
+      "MediaKit",
+      "sui-media-kit",
+      "Logo pack",
+      "Visual identity",
+    ]) {
+      expect(isStrongBrandPhrase(text), text).toBe(true);
+    }
+  });
+
+  it("refuses one word, and phrases that only start like a kit", () => {
+    for (const text of ["Other brand", "Their brand", "Brand", "Press", "Press release", "Academic research awards", "Brand new", "branding", "Media coverage"]) {
+      expect(isStrongBrandPhrase(text), text).toBe(false);
+    }
+  });
+});
+
+describe("isBrandPortal", () => {
+  const portal = (url: string) => isBrandPortal(new URL(url));
+
+  it("takes a portal on a vendor subdomain, or under a path of the vendor's host", () => {
+    expect(portal("https://live.standards.site/sui-media-kit")).toBe(true);
+    expect(portal("https://satoshilabs.visualbook.pro/trezor")).toBe(true);
+    expect(portal("https://acme.frontify.com/d/abc123/brand-guidelines")).toBe(true);
+    expect(portal("https://brandfolder.com/acme")).toBe(true);
+  });
+
+  it("refuses the vendor's own home page and every other host", () => {
+    expect(portal("https://www.frontify.com/")).toBe(false);
+    expect(portal("https://standards.site")).toBe(false);
+    expect(portal("https://notstandards.site/kit")).toBe(false);
+    expect(portal("https://drive.google.com/drive/folders/1PozkRBtCbjbqqQFChGFTc45xZe_kcjMT")).toBe(false);
   });
 });
 
