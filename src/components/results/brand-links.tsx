@@ -35,6 +35,13 @@ const fileLabel = (file: BrandFile): string => (file.name.length > 32 ? `${file.
 /** `ZIP · 29.7 MB`, or the type alone when the host did not say how large the file is. */
 const fileMeta = (file: BrandFile): string => [file.type.toUpperCase(), file.bytes === undefined ? "" : formatBytes(file.bytes)].filter(Boolean).join(" · ");
 
+/**
+ * What the selector answers for a page with no brand files, which is most of them and every page of an older server.
+ * One array for all of them: a fresh `[]` on each read is a new snapshot for the store every time, and React renders
+ * again until it gives up, which took the whole results view down.
+ */
+const NO_FILES: BrandFile[] = [];
+
 /** Chips that fit beside the palette on one line. The rest wait behind a `+N`. */
 const INLINE_CHIPS = 3;
 
@@ -50,7 +57,7 @@ const INLINE_CHIPS = 3;
  */
 export function BrandLinks() {
   const links = useApp((s) => s.page?.brandLinks ?? []);
-  const files = useApp((s) => s.page?.brandFiles ?? []);
+  const files = useApp((s) => s.page?.brandFiles ?? NO_FILES);
   const [expanded, setExpanded] = useState(false);
   const count = links.length + files.length;
   if (!count) return null;
