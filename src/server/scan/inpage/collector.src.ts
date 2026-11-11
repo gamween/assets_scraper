@@ -3,6 +3,7 @@ import { extractCssUrls, readCssUrls, readFontFaceSrc } from "./css-values";
 import { brandFileType, isBrandFileWord, isBrandPortal, isBrandWord, isStrongBrandPhrase, SECOND_LEVEL_LABELS, siteOf } from "./brand";
 import { OUTPUT_LISTS } from "./lists";
 import { LOGO_WORD } from "./logo-word";
+import { labelNamesOnlyTheLink } from "./profile-label";
 import { parseSrcset } from "./srcset";
 import { canonicalSvgMarkup, varFallback, withCurrentColor } from "./svg-markup";
 import type {
@@ -367,13 +368,20 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
     return null;
   };
 
-  const labelOf = (el: Element): string | undefined => {
-    const link = composedClosest(el, "a[href]");
+  /** The names a picture carries itself, which `labelNamesOnlyTheLink` reads: alt, title, <title>, an image's file name. */
+  const ownNamesOf = (el: Element): (string | null)[] => {
+    const src = el.localName === "img" ? (el as HTMLImageElement).currentSrc || el.getAttribute("src") : null;
+    const file = src && !/^(?:data|blob):/i.test(src) ? decodeURIComponentSafe(src.split(/[?#]/)[0].split("/").pop() ?? "") : null;
+    return [el.getAttribute("alt"), el.getAttribute("title"), el.localName === "svg" ? svgTitle(el) : null, file];
+  };
+
+  /** The first label in order. `linkLabelOff` leaves out the link's, when it only says where the link goes. */
+  const labelOf = (el: Element, link: Element | null, linkLabelOff: boolean): string | undefined => {
     const title = el.localName === "svg" ? svgTitle(el) : null;
     const framer = composedClosest(el, "[data-framer-name]");
     for (const value of [
       el.getAttribute("aria-label"),
-      link?.getAttribute("aria-label"),
+      linkLabelOff ? null : link?.getAttribute("aria-label"),
       title,
       el.getAttribute("alt"),
       framer?.getAttribute("data-framer-name"),
@@ -542,7 +550,11 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
         if (similar >= 4) logoWall = true;
       }
     }
-    const label = labelOf(el);
+    // raisesummit.com: each speaker card is a link labelled "Open LinkedIn" around a headshot and a company logo. That
+    // label names the link, not either picture (profile-label.ts), and the text of a link to a profile names its owner:
+    // the headshot keeps it, while a picture with a logo word of its own is the company's and goes by its file name.
+    const profileLink = !!link && labelNamesOnlyTheLink(link.getAttribute("aria-label") ?? "", ownNamesOf(el));
+    const label = labelOf(el, link, profileLink);
     const info: ElementInfo = {
       context: {
         header: inBanner(el),
@@ -558,7 +570,7 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
       visible,
       rect: r.width > 0 && r.height > 0 ? { x, y, width: Math.round(r.width), height: Math.round(r.height) } : undefined,
       label,
-      linkText: link ? linkTextOf(el) : undefined,
+      linkText: link && !(profileLink && logoWord) ? linkTextOf(el) : undefined,
       hints: hintsOf(el, link, label),
     };
     infoCache.set(el, info);

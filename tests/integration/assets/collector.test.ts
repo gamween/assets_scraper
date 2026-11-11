@@ -71,6 +71,19 @@ beforeAll(async () => {
         <button><svg width="26" height="26" viewBox="0 0 26 26"><path d="M0 0h26v26H0z"/><path class="copied" d="M4 4h18v18H4z"/></svg></button>
       </nav></body></html>`);
     },
+    // raisesummit.com's speaker cards: a link to the speaker's LinkedIn, labelled "Open LinkedIn", around a headshot and
+    // the company logo, both with an empty alt. Beside them, the network's own marks in links labelled the same way.
+    "/speakers.html": (_req, res) => {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(`<!doctype html><html><head><title>Speakers</title></head><body>
+        <a aria-label="Open LinkedIn" href="https://www.linkedin.com/in/ada-lovelace/" class="speak_block"><div class="speak_image-wrapper">
+          <img src="/assets/photo-large.png" alt="" class="speak_image" width="240" height="260">
+          <div class="speak_logo-wrapper"><img src="/assets/logo.svg" alt="" class="speak_logo" width="120" height="30"></div>
+        </div><div>Ada Lovelace</div><p>Founder, Engines</p></a>
+        <a aria-label="Follow us on LinkedIn" href="https://www.linkedin.com/company/fixture/"><svg width="20" height="20"><rect width="20" height="20"/></svg></a>
+        <a aria-label="Follow us on X" href="https://x.com/fixture"><img src="/assets/touch.png" alt="X" width="20" height="20"></a>
+      </body></html>`);
+    },
     "/labels.html": (_req, res) => {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       res.end(`<!doctype html><html><head><title>Labels</title></head><body>
@@ -527,6 +540,22 @@ describe("collector labels", () => {
     expect(hintsAt(42)?.linkHref).toBe(`${server.origin}/customers/hertz`);
     // trezor.visualbook.pro: the indentation of a card comes before its title and is not its text.
     expect(labels.candidates.find((c) => c.url === asset("imgset-2x.png"))?.linkText).toBe("Fixture Academy");
+  });
+
+  it("leaves out a link's label that only says where it goes, and a profile's text on a logo", async () => {
+    const { context, page } = await openPage(browser, `${server.origin}/speakers.html`);
+    const speakers = await runCollector(page, collectorOptions(server.host, "Fixture"));
+    await context.close();
+    const shown = (name: string) => speakers.candidates.find((c) => c.url === asset(name) && !c.declaredOnly)!;
+    // The card's text names the speaker the headshot shows, not the company whose logo sits beside it.
+    expect(shown("photo-large.png").label).toBeUndefined();
+    expect(shown("photo-large.png").linkText).toBe("Ada Lovelace Founder, Engines");
+    expect(shown("logo.svg").label).toBeUndefined();
+    expect(shown("logo.svg").linkText).toBeUndefined();
+    expect(shown("logo.svg").context.logoWord).toBe(true);
+    // The network's own marks keep it: a vector with no name to say otherwise, an image whose alt is the network.
+    expect(speakers.svgs.find((s) => s.rect?.width === 20)?.label).toBe("Follow us on LinkedIn");
+    expect(shown("touch.png").label).toBe("Follow us on X");
   });
 
   it("does not name every picture under one container after the container", async () => {
