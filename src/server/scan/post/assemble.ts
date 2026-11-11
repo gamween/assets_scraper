@@ -303,7 +303,9 @@ async function buildRecords(input: PostInput, baseUrl: string, limiter: Limiter,
     }
     record.linkText ??= candidate.linkText;
     record.hints ??= candidate.hints;
-    const context = record.fileWord ? { ...candidate.context, logoWord: true } : candidate.context;
+    // Only for a file the page puts on an element. One a stylesheet merely declares is not on the page: bybit.com's
+    // sheets name telegram.org/img/WidgetButton_LogoSmall.png, and nothing on the page shows it.
+    const context = record.fileWord && !candidate.declaredOnly ? { ...candidate.context, logoWord: true } : candidate.context;
     record.logoScore = Math.max(record.logoScore, logoScore(context, candidate.visible, candidate.rect));
     record.logoWord ||= context.logoWord;
     record.logoWall ||= candidate.context.logoWall;

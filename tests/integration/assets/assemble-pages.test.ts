@@ -181,12 +181,16 @@ beforeAll(async () => {
     </body></html>`),
     // redstone.finance/brand-kit in miniature: the symbol-only marks are labelled with the site name and a word that is
     // not "logo", and only their file names say what they are.
-    "/brand-kit.html": html(`</head><body>
+    "/brand-kit.html": html(`<style>.widget:hover { background-image: url(/brand/WidgetButton_LogoSmall.png) }</style></head><body>
       <h1 style="height:400px">Brand kit</h1>
       <div><img src="/brand/PagesLogoSymbol.svg" width="118" height="100" alt="Pages Symbol"></div>
       <div><img src="/assets/logo.svg" width="118" height="35" alt="Pages wordmark"></div>
       <div><img src="/brand/pages-hero-illustration.svg" width="236" height="200" alt="Pages Symbol on a dark field"></div>
     </body></html>`),
+    "/brand/WidgetButton_LogoSmall.png": (_req, res) => {
+      res.writeHead(200, { "content-type": "image/png" });
+      res.end(readFileSync(path.join(SITE, "pseudo.png")));
+    },
     "/brand/PagesLogoSymbol.svg": svgFile('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 118 100"><path d="M0 0h118L59 100z" fill="#e33"/></svg>'),
     "/brand/pages-hero-illustration.svg": svgFile('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 236 200"><path d="M0 0h236v200H0z" fill="#123"/><path d="M60 50h118L119 150z" fill="#e33"/></svg>'),
     // raisesummit.com in miniature, served where a link to "#" resolves to a home page: the site logo links to home,
@@ -313,6 +317,8 @@ describe("assembleAssets on purpose-built pages", () => {
     expect(role("Pages Symbol")).toBe("logo");
     expect(role("Pages wordmark")).toBe("logo");
     expect(role("Pages Symbol on a dark field")).toBe("illustration");
+    // A file a stylesheet only declares is not on the page, whatever its name.
+    expect(assets.find((a) => a.foundIn.includes("stylesheet") && a.name.startsWith("WidgetButton"))?.role).toBe("image");
   });
 
   it("does not take a link to # on the home page for a link to home", async () => {
