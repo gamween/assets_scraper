@@ -24,6 +24,13 @@ const MAX_URL_LENGTH = 2_048;
 const MAX_VAR_NAME_LENGTH = 100;
 /** Colors read from one gradient or paint server (real ones have a handful of stops). */
 const MAX_PAINT_COLORS = 64;
+/** Text nodes read while looking for declared swatches: a test of their length, and a regex on the short ones. */
+const MAX_SWATCH_TEXT_NODES = 50_000;
+/** Hex codes checked against their block, chips and label (each costs a few computed styles), and swatches kept. */
+const MAX_SWATCH_CANDIDATES = 120;
+const MAX_SWATCHES = 24;
+/** Elements of one caption checked for a chip painted in its color. */
+const MAX_CHIP_ELEMENTS = 24;
 
 function collect(opts: PaletteSignalOptions = {}): RawPaletteSignals {
   const t0 = performance.now();
@@ -491,7 +498,90 @@ function collect(opts: PaletteSignalOptions = {}): RawPaletteSignals {
     if (g) for (const hx of g) add("grad", hx, recArea[i] / g.length);
   }
 
-  // ---------- 4. CSS custom properties ----------
+  // ---------- 4. declared swatches ----------
+  // Brand pages print their palette: a block painted in each color with its hex code on it, or a chip next to the code,
+  // or a code under the color's name. arbitrum.io/brand-kit prints "PRIMARY BLUE / HEX / #016BE5" on a #016be5 block 14
+  // viewports down, where the walk never goes, and that blue was missing from its palette. Only a text node that is a
+  // hex code and nothing else is read, so a code quoted in running text never counts, and the code needs a block or a
+  // chip of its own color, or a short name, next to it. A page needs two such colors: a palette is never one color.
+  if (document.body) {
+    const CODE = /^(?:hex(?:\s*code)?\s*:?\s*#?|#)([0-9a-f]{6}|[0-9a-f]{3})$/i;
+    const LABEL_NOISE = /#[0-9a-f]{3,8}\b|\b(?:hex(?:\s*code)?|rgba?|hsla?|cmyk|pantone|pms|ral|oklch|[rgbcmyk])\b|[\d.,:;%/()+-]+/gi;
+    const near = (a: RGBA, b: RGBA) => Math.abs(a[0] - b[0]) <= 2 && Math.abs(a[1] - b[1]) <= 2 && Math.abs(a[2] - b[2]) <= 2;
+    const paints = (el: Element, color: RGBA) => {
+      const bg = parse(getComputedStyle(el).backgroundColor);
+      return bg && bg[3] >= 0.95 ? near(bg, color) : null;
+    };
+    // The block the code is printed on is its first painted ancestor; a chip is a painted element of the caption
+    const onSwatch = (el: Element, color: RGBA) => {
+      for (let a: Element | null = el, d = 0; a && a !== document.body && d < 5; a = a.parentElement, d++) {
+        const painted = paints(a, color);
+        if (painted !== null) {
+          if (painted) return true;
+          break;
+        }
+      }
+      // A tree walker goes only as far as it is read, so a caption inside a large subtree costs no more
+      let checked = 0;
+      for (let a = el.parentElement, d = 0; a && a !== document.body && d < 3; a = a.parentElement, d++) {
+        const inside = document.createTreeWalker(a, NodeFilter.SHOW_ELEMENT);
+        for (let chip = inside.nextNode() as Element | null; chip; chip = inside.nextNode() as Element | null) {
+          if (++checked > MAX_CHIP_ELEMENTS) return false;
+          if (chip.contains(el) || chip.childElementCount) continue;
+          const r = chip.getBoundingClientRect();
+          if (r.width >= 12 && r.height >= 12 && paints(chip, color)) return true;
+        }
+      }
+      return false;
+    };
+    // A name of one to four words around the code, in a caption that holds no running text and no other code (a list of
+    // codes under a heading names none of them). Its text nodes are read one by one: textContent runs "NAVY", "HEX" and
+    // "#05163D" together.
+    const captionText = (a: Element) => {
+      const texts: string[] = [];
+      let length = 0;
+      const inner = document.createTreeWalker(a, NodeFilter.SHOW_TEXT);
+      for (let t = inner.nextNode(); t && texts.length < 16 && length <= 160; t = inner.nextNode()) {
+        const value = (t.nodeValue || "").trim();
+        if (!value) continue;
+        texts.push(value);
+        length += value.length;
+      }
+      return length <= 160 ? texts.join(" ") : null;
+    };
+    const named = (el: Element) => {
+      for (let a = el.parentElement, d = 0; a && a !== document.body && d < 3; a = a.parentElement, d++) {
+        if (a.childElementCount > 8) return false;
+        for (let n = a.firstChild; n; n = n.nextSibling) if (n.nodeType === 3 && /[a-z]{2}/i.test(n.nodeValue || "")) return false;
+        const text = captionText(a);
+        if (text === null || (text.match(/#[0-9a-f]{3}(?:[0-9a-f]{3})?\b/gi) || []).length > 1) return false;
+        const label = text.replace(LABEL_NOISE, " ").replace(/\s+/g, " ").trim();
+        if (label) return label.split(" ").length <= 4 && /[a-z]/i.test(label) && !/[.!?]$/.test(label);
+      }
+      return false;
+    };
+    const found = new Map<string, number>();
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    let nodes = 0, candidates = 0;
+    for (let n = walker.nextNode(); n && ++nodes <= MAX_SWATCH_TEXT_NODES && found.size < MAX_SWATCHES; n = walker.nextNode()) {
+      const value = n.nodeValue || "";
+      if (value.length > 24) continue;
+      const m = CODE.exec(value.trim());
+      const el = n.parentElement;
+      if (!m || !el || SKIP.has(el.localName) || el.closest(`[${HIDDEN_ATTRIBUTE}]`)) continue;
+      if (++candidates > MAX_SWATCH_CANDIDATES) break;
+      const digits = m[1].length === 3 ? m[1].replace(/./g, "$&$&") : m[1];
+      const color = parse("#" + digits);
+      const hx = color && hex(color);
+      if (!color || !hx || found.has(hx) || !el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) continue;
+      // A painted block is the stronger declaration; later swatches are the secondary palettes
+      const weight = onSwatch(el, color) ? 1 : named(el) ? 0.5 : 0;
+      if (weight) found.set(hx, weight / (1 + 0.15 * found.size));
+    }
+    if (found.size >= 2) for (const [hx, weight] of found) add("swatch", hx, weight);
+  }
+
+  // ---------- 5. CSS custom properties ----------
   const vars: [string, string, number][] = [];
   {
     const EXCLUDE = /(^|[-_])(text|fg|foreground|font|border|line|stroke|outline|shadow|overlay|scrim|backdrop|hover|hovered|active|pressed|focus|focused|visited|disabled|placeholder|muted|subtle|subdued|soft|tint|weak|faint|alpha|transparent|error|danger|warning|warn|success|info|destructive|critical|positive|negative|caution|attention|gray|grey|neutral|slate|zinc|stone|black|white|inverse|inverted|contrast|shade|ring|selection|scrollbar|code|syntax|chart|shiki|prism|hljs|skeleton|shimmer)(?=[-_A-Z0-9]|$)/i;
@@ -528,7 +618,7 @@ function collect(opts: PaletteSignalOptions = {}): RawPaletteSignals {
     }
   }
 
-  // ---------- 5. meta, manifest and icons ----------
+  // ---------- 6. meta, manifest and icons ----------
   const meta: RawPaletteSignals["meta"] = { themeColor: null, tileColor: null, maskIconColor: null, manifestTheme: null, manifestBackground: null };
   const toHex = (s: string | null | undefined) => {
     const c = parse(s);

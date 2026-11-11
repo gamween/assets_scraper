@@ -14,6 +14,7 @@ import type { SafeFetch } from "@/server/scan/types";
 import { serveFixture, type FixtureServer } from "../../fixtures/serve";
 
 const CONSENT_HTML = readFileSync(path.join(import.meta.dirname, "../../fixtures/palette/consent.html"));
+const BRAND_KIT_HTML = readFileSync(path.join(import.meta.dirname, "../../fixtures/palette/brand-kit.html"));
 /** Same value as RESTORE_WAIT_MS in extractPalette. */
 const RESTORE_WAIT_MS = 500;
 /** Slack for wall-clock assertions on a loaded CI runner. */
@@ -94,6 +95,10 @@ beforeAll(async () => {
     "/consent.html": (_req, res) => {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       res.end(CONSENT_HTML);
+    },
+    "/brand-kit.html": (_req, res) => {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(BRAND_KIT_HTML);
     },
   });
   browser = await chromium.launch({ executablePath: localExecutablePath(), headless: true });
@@ -373,6 +378,52 @@ describe("in-page collect", () => {
     expect(signals.vars).toEqual([["--brand", "#2f5bea", 1]]);
     expect(signals.iconUrls.every((url) => url.length <= 2048)).toBe(true);
     expect(JSON.stringify(signals).length).toBeLessThan(50_000);
+  });
+
+  it("reads the swatches a brand page prints, and no code of running text, of a list or of a hidden block", async () => {
+    await page.goto(`${server.origin}/brand-kit.html`, { waitUntil: "load" });
+    await page.evaluate(PALETTE_SOURCE);
+
+    const signals = await collect({ hideOverlays: false });
+
+    // Painted blocks, then a chip next to its code, then a code under its name (half the weight), in page order
+    expect(signals.samples.filter((s) => s[0] === "swatch")).toEqual([
+      ["swatch", "#05163d", 1, 1], ["swatch", "#016be5", 0.87, 1], ["swatch", "#10e1ff", 0.77, 1], ["swatch", "#00e340", 0.69, 1],
+      ["swatch", "#ffe103", 0.31, 1],
+    ]);
+  });
+
+  it("needs two swatches before it calls them a palette", async () => {
+    await page.setContent('<div style="background:#016be5;height:300px"><span>PRIMARY BLUE</span> <span>#016BE5</span></div>');
+    await page.evaluate(PALETTE_SOURCE);
+
+    const signals = await collect({ hideOverlays: false });
+
+    expect(signals.samples.filter((s) => s[0] === "swatch")).toEqual([]);
+  });
+
+  it("checks a bounded number of hex codes, however many the page prints", async () => {
+    const computedStyles = async (codes: number) => {
+      // Below the walk, so only the swatch reader reads them. A fresh document each time, with a fresh window.
+      await page.goto(`${server.origin}/consent.html`);
+      await page.setContent(`<div style="height:9000px"></div><div>${"<div><span>#a1b2c3</span></div>".repeat(codes)}</div>`);
+      await page.evaluate(() => {
+        const counted = window as unknown as { calls: number };
+        const original = window.getComputedStyle;
+        counted.calls = 0;
+        window.getComputedStyle = (...args) => {
+          counted.calls += 1;
+          return original(...args);
+        };
+      });
+      await page.evaluate(PALETTE_SOURCE);
+      await collect({ hideOverlays: false });
+      return page.evaluate(() => (window as unknown as { calls: number }).calls);
+    };
+
+    const few = await computedStyles(1_000);
+    expect(few).toBeGreaterThan(100);
+    expect(await computedStyles(10_000)).toBe(few);
   });
 
   it("clamps out of range rgb() channels and ignores malformed ones, like the browser", async () => {

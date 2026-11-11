@@ -107,6 +107,31 @@ describe("buildPalette on recorded signals", () => {
   });
 });
 
+describe("buildPalette on a brand page", () => {
+  it("ranks the swatches the page prints as its brand colors, in the page's order", () => {
+    // arbitrum.io/brand-kit: its palette is printed 14 viewports down, where only the swatch reader goes
+    const palette = buildPalette(loadSignals("arbitrum.io-brand-kit"), screenshot(1440, 900, "#f2f2f2", [{ rect: [100, 400, 200, 60], hex: "#05163d" }]));
+    expect(palette.brand).toEqual(["#05163d", "#016be5", "#10e1ff", "#00e340", "#ffe103", "#ff4400"]);
+    expect(palette.colors[0].role).toBe("primary");
+    expect(palette.colors.find((c) => c.hex === "#f2f2f2")?.role).toBe("background");
+  });
+
+  it("puts declared swatches first and leaves the neutral roles to the page", () => {
+    const palette = buildPalette(
+      signals({
+        samples: [
+          ["bg", "#101010", 9000, 3], ["text", "#f0f0f0", 500, 40], ["cta", "#e11d48", 200, 3], ["link", "#e11d48", 20, 4],
+          ["swatch", "#2563eb", 1, 1], ["swatch", "#e11d48", 0.87, 1], ["swatch", "#ffffff", 0.77, 1],
+        ],
+      }),
+      screenshot(100, 100, "#101010", [{ rect: [10, 10, 20, 10], hex: "#e11d48" }]),
+    );
+    expect(palette.brand).toEqual(["#2563eb", "#e11d48"]);
+    expect(palette.colors.find((c) => c.role === "background")?.hex).toBe("#101010");
+    expect(palette.colors.find((c) => c.role === "text")?.hex).toBe("#f0f0f0");
+  });
+});
+
 describe("buildPalette rules", () => {
   it("returns an empty palette without signals", () => {
     const palette = buildPalette(signals(), null);

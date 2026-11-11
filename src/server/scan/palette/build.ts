@@ -33,7 +33,7 @@ export interface PaletteConfig {
 }
 
 export const DEFAULT_CONFIG: PaletteConfig = {
-  brandWeights: { cta: 3, logo: 2, icon: 1, meta: 1, var: 1.5, link: 1, bg: 1, text: 0.5, grad: 0.5, svg: 0.5, border: 0.3, shot: 0.8 },
+  brandWeights: { swatch: 3, cta: 3, logo: 2, icon: 1, meta: 1, var: 1.5, link: 1, bg: 1, text: 0.5, grad: 0.5, svg: 0.5, border: 0.3, shot: 0.8 },
   neutralWeights: { bg: 1, text: 1, pix: 0.6, border: 0.15, cta: 0.3, svg: 0.1, logo: 0.2 },
   maskKinds: ["img", "bgimg", "iframe"],
   chromaMergeDist: 0.09,
@@ -97,12 +97,12 @@ const GENERATOR_DEFAULTS = new Set([
 
 /** Independent evidence families: a color seen through a single family must score higher to be kept. */
 const FAMILY: Partial<Record<PaletteSource, string>> = {
-  var: "declared", meta: "declared", icon: "declared", logo: "identity", cta: "action",
+  var: "declared", meta: "declared", icon: "declared", logo: "identity", swatch: "identity", cta: "action",
   text: "content", link: "content", svg: "content", border: "content", bg: "surface", grad: "surface", shot: "pixels",
 };
 
-/** Sources that prove a color is painted on the page. */
-const RENDERED: PaletteSource[] = ["bg", "text", "border", "svg", "cta", "link", "grad", "logo"];
+/** Sources that prove a color is painted on the page, or shown to its reader as the brand's own (a swatch). */
+const RENDERED: PaletteSource[] = ["bg", "text", "border", "svg", "cta", "link", "grad", "logo", "swatch"];
 
 const EPS = 0.004;
 
@@ -365,6 +365,9 @@ export function buildPalette(sig: RawPaletteSignals, pixels: Pixels | null, cfg:
           (c === brandClusters[0] || !leadPainted || seenOrPainted(c)) &&
           (families(c) >= 2 || c.score >= cfg.singleFamilyMinScore || c.varName >= 1 || ((c.share.shot ?? 0) >= 0.04 && c.lch.c >= 0.12))),
     )
+    // A page that prints its palette (a brand page) states its brand colors and their order, first swatch first
+    // (arbitrum.io/brand-kit: navy, primary blue, teal, then green, yellow, orange): those lead, the others keep their rank
+    .sort((a, b) => (b.share.swatch ?? 0) - (a.share.swatch ?? 0))
     .slice(0, cfg.maxBrand);
 
   // 5. Neutral selection: background, text, dominant, secondary surface, muted text, then fill (L* separated)
@@ -422,7 +425,8 @@ export function buildPalette(sig: RawPaletteSignals, pixels: Pixels | null, cfg:
   // 6. Brand roles
   if (brand.length) {
     const p = brand[0];
-    const backed = (p.share.cta ?? 0) + (p.share.logo ?? 0) + (p.share.link ?? 0) > 0.01 || (p.share.var ?? 0) + (p.share.meta ?? 0) + (p.share.icon ?? 0) > 0.05;
+    const declared = (p.share.var ?? 0) + (p.share.meta ?? 0) + (p.share.icon ?? 0) + (p.share.swatch ?? 0);
+    const backed = (p.share.cta ?? 0) + (p.share.logo ?? 0) + (p.share.link ?? 0) > 0.01 || declared > 0.05;
     const lead = brand[1] ? p.score / brand[1].score : Infinity;
     if (backed && p.score >= 0.3 && lead >= 1.25) roles.set(p, "primary");
     for (const b of brand) if (!roles.has(b) && b.score >= 0.2 && sourcesOf(b).some((k) => RENDERED.includes(k))) roles.set(b, "accent");
