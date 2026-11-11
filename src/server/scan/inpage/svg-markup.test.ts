@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canonicalSvgMarkup, varFallback, withoutRootSize } from "./svg-markup";
+import { canonicalSvgMarkup, varFallback, withCurrentColor, withoutRootSize } from "./svg-markup";
 
 describe("varFallback", () => {
   it("replaces each var() by its fallback, or gives nothing when one has none", () => {
@@ -13,6 +13,27 @@ describe("varFallback", () => {
     // `,\s*` before the fallback matched the same spaces as the fallback: 400,000 of them took minutes in the page.
     expect(varFallback(`var(--a,${" ".repeat(400_000)}`)).toBe("");
     expect(varFallback(`var(--a,${" ".repeat(400_000)}red)`)).toBe("red");
+  });
+});
+
+describe("withCurrentColor", () => {
+  const white = () => "rgb(255, 255, 255)";
+
+  it("replaces currentColor in any case, and only the keyword", () => {
+    expect(withCurrentColor("currentColor", white)).toBe("rgb(255, 255, 255)");
+    expect(withCurrentColor("currentcolor", white)).toBe("rgb(255, 255, 255)");
+    // A paint server with a fallback colour keeps its reference.
+    expect(withCurrentColor("url(#grad) CURRENTCOLOR", white)).toBe("url(#grad) rgb(255, 255, 255)");
+    expect(withCurrentColor("url(#currentColor-grad)", white)).toBeNull();
+    expect(withCurrentColor("url(#currentColor)", white)).toBeNull();
+    expect(withCurrentColor("--currentcolor", white)).toBeNull();
+  });
+
+  it("gives nothing and never reads the colour when there is no currentColor", () => {
+    let reads = 0;
+    expect(withCurrentColor("#1d1f23", () => `${++reads}`)).toBeNull();
+    expect(withCurrentColor("none", () => `${++reads}`)).toBeNull();
+    expect(reads).toBe(0);
   });
 });
 

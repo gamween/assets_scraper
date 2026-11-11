@@ -2,7 +2,7 @@ import type { FoundIn, HiddenReason } from "@/lib/contract";
 import { extractCssUrls, readCssUrls, readFontFaceSrc } from "./css-values";
 import { OUTPUT_LISTS } from "./lists";
 import { parseSrcset } from "./srcset";
-import { canonicalSvgMarkup, varFallback } from "./svg-markup";
+import { canonicalSvgMarkup, varFallback, withCurrentColor } from "./svg-markup";
 import type {
   CandidateContext,
   CollectorOptions,
@@ -75,6 +75,8 @@ const STYLE_PROPS = [
   "cy", "r", "rx", "ry",
 ];
 const STYLE_PROP_SET = new Set(STYLE_PROPS);
+/** The properties that take a colour, where `currentColor` stands for the element's own `color`. */
+const PAINT_PROPS = ["fill", "stroke", "stop-color", "flood-color", "lighting-color"];
 const FONT_PROPS = new Set(["font-family", "font-size", "font-weight", "font-style", "letter-spacing", "text-anchor", "dominant-baseline"]);
 const ROOT_SKIP = new Set(["opacity", "visibility", "display", "transform", "transform-origin", "transform-box", "mix-blend-mode", "x", "y", "filter", "clip-path", "mask"]);
 const ROOT_STYLE_CLEANUP = [
@@ -1097,6 +1099,28 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
           const url = abs(attribute.value, svg.baseURI);
           if (url && /^https?:/.test(url)) attribute.value = url;
           else node.removeAttributeNode(attribute);
+        }
+      }
+    }
+
+    // currentColor, written as the colour it drew on the page. The computed-style pass leaves it in place and puts the
+    // inherited `color` on the root, which a browser follows and a design tool does not: trezor.io's header logo is
+    // `fill="currentColor"` with white coming from the page CSS on its dark band, and the downloaded file came out
+    // black in Figma. A clone element sits at the index of the live element it was cloned from, whose computed `color`
+    // is what its currentColor stood for. It runs after the cleanup so a `var(--x, currentColor)` fallback is resolved
+    // too. Definitions copied in from elsewhere on the page have no live twin here and keep currentColor, which the
+    // root's `color` still resolves for a renderer that reads it.
+    if (usesCurrentColor) {
+      for (let i = 0; i < cloneElements.length; i++) {
+        const out = cloneElements[i] as SVGElement;
+        let color: string | undefined;
+        const resolve = (value: string | null | undefined) =>
+          value ? withCurrentColor(value, () => (color ??= view.getComputedStyle(liveElements[i]).color)) : null;
+        for (const property of PAINT_PROPS) {
+          const attribute = resolve(out.getAttribute(property));
+          if (attribute) out.setAttribute(property, attribute);
+          const declared = resolve(out.style?.getPropertyValue(property));
+          if (declared) out.style.setProperty(property, declared, out.style.getPropertyPriority(property));
         }
       }
     }

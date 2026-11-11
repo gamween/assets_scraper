@@ -39,6 +39,24 @@ beforeAll(async () => {
         <a itemprop="image" href="/assets/hero.jpg">Product</a>
       </body></html>`);
     },
+    // trezor.io's header logo: `fill="currentColor"` with the colour in the page CSS, dark on the white header and white
+    // on the dark band, plus the other places currentColor reaches a paint.
+    "/current-color.html": (_req, res) => {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(`<!doctype html><html><head><title>Current color</title><style>
+        .light { color: rgb(29, 31, 35) } .band { background: #1d1f23; color: #fff } .accent { color: #ff3366 }
+      </style></head><body>
+        <div class="light"><svg viewBox="0 0 40 10" width="120" height="30" fill="none"><path fill="currentColor" d="M0 0h10v10H0z"/></svg></div>
+        <div class="band"><svg viewBox="0 0 40 10" width="160" height="40" fill="none">
+          <defs><linearGradient id="cc-grad"><stop offset="0" stop-color="currentColor"/><stop offset="1" stop-color="#00f"/></linearGradient></defs>
+          <path fill="currentColor" d="M0 0h10v10H0z"/>
+          <path style="stroke: currentColor" stroke-width="2" d="M12 0h10v10H12z"/>
+          <g class="accent"><path fill="currentColor" d="M24 0h6v10h-6z"/></g>
+          <rect x="32" width="8" height="10" fill="url(#cc-grad)"/>
+          <circle cx="36" cy="5" r="2" fill="var(--unset, currentColor)"/>
+        </svg></div>
+      </body></html>`);
+    },
     "/labels.html": (_req, res) => {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       res.end(`<!doctype html><html><head><title>Labels</title></head><body>
@@ -87,6 +105,7 @@ describe("collector on the fixture page", () => {
     // currentColor comes from the wrapping link, whose UA color is not the body color
     expect(headerLogoColor).toBe("rgb(0, 0, 238)");
     expect(logo.markup).toContain(`color: ${headerLogoColor}`);
+    expect(logo.markup).toContain(`<path fill="${headerLogoColor}"`);
     expect(logo.markup).toMatch(/^<svg[^>]* xmlns="http:\/\/www\.w3\.org\/2000\/svg"/);
     expect(logo.markup).not.toContain("class=");
     expect(logo).toMatchObject({ source: "inline", visible: true, usedCount: 1, hasLiveText: false });
@@ -242,6 +261,26 @@ describe("collector noise and edge cases", () => {
     const logoWordOf = (name: string) => edge.candidates.find((c) => c.url.endsWith(name) && !c.declaredOnly)?.context.logoWord;
     expect(logoWordOf("photo-small.png")).toBe(false);
     expect(logoWordOf("touch.png")).toBe(true);
+  });
+});
+
+describe("collector currentColor", () => {
+  it("writes currentColor as the colour it drew on the page", async () => {
+    const { context, page } = await openPage(browser, `${server.origin}/current-color.html`);
+    const colored = await runCollector(page, collectorOptions(server.host, "Fixture"));
+    await context.close();
+    const [dark] = colored.svgs.filter((s) => s.markup.includes('width="120"'));
+    const [white] = colored.svgs.filter((s) => s.markup.includes("cc-grad"));
+    // The root's `color` was all a file had: a browser follows it, Figma drew the white logo black.
+    expect(dark.markup).toContain('<path fill="rgb(29, 31, 35)"');
+    expect(dark.markup).not.toMatch(/currentcolor/i);
+    expect(white.markup).toContain('<path fill="rgb(255, 255, 255)"');
+    expect(white.markup).toContain("stroke: rgb(255, 255, 255)");
+    expect(white.markup).toContain('<stop offset="0" stop-color="rgb(255, 255, 255)"');
+    // An element with a colour of its own resolves to that one, and a var() fallback is resolved like an attribute.
+    expect(white.markup).toContain('<path fill="rgb(255, 51, 102)"');
+    expect(white.markup).toMatch(/<circle [^>]*fill="rgb\(255, 255, 255\)"/);
+    expect(white.markup).not.toMatch(/currentcolor/i);
   });
 });
 

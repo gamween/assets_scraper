@@ -18,6 +18,19 @@ export function varFallback(value: string): string {
   return fallback.includes("var(") ? "" : fallback;
 }
 
+/** `currentColor` as a whole keyword, in any case: CSS keywords are case-insensitive, and Chrome serializes it lower case. */
+const CURRENT_COLOR = /(?<![\w#-])currentcolor(?![\w-])/gi;
+
+/**
+ * A paint value with each `currentColor` replaced by `color()`, or null when it has none. `fill="currentColor"` draws in
+ * whatever `color` the page gave the element, and a standalone file has no page around it. The colour is asked for
+ * only when there is one to replace, since the collector reads it from a computed style.
+ */
+export function withCurrentColor(value: string, color: () => string): string | null {
+  const resolved = value.replace(CURRENT_COLOR, color);
+  return resolved === value ? null : resolved;
+}
+
 /** The open tag of the root `<svg>`, after any prolog, comment or doctype. */
 const ROOT_TAG = /<svg\b[^>]*>/i;
 /** A `width` or `height` attribute in either quote style. The name has to follow whitespace, so `stroke-width` stays. */
