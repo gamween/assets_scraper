@@ -78,6 +78,7 @@ export interface RoleInput {
   rendered?: { width: number; height: number };            // largest visible rendered size
   intrinsic?: { width?: number; height?: number };         // size of the file, when known
   spriteSymbol?: boolean;
+  cropped?: boolean;          // the page shows a crop of the file (`aspectChanged`)
 }
 
 const longestSide = (size?: { width?: number; height?: number }) => Math.max(size?.width ?? 0, size?.height ?? 0);
@@ -132,7 +133,9 @@ export function assignRole(input: RoleInput): AssetRole {
   // A poster is a frame of a video, whatever the video shows: brand.ripple.com labels its logo animation
   // "Header - Logo.mp4", and the still it opens on was listed as a logo.
   const poster = input.foundIn.length > 0 && input.foundIn.every((where) => where === "video-poster");
-  const logoShaped = !oversized && !isLine(input) && !poster;
+  // A logo is shown whole. stellar.org/brand-resources has its CDN cut a 1800x1800 "Stellar logo pack" card to 16:9
+  // for a thumbnail, and the label made it a logo.
+  const logoShaped = !oversized && !isLine(input) && !poster && !input.cropped;
   if (!ico && (found.has("json-ld") || (input.logoScore >= LOGO_SCORE_PROMOTION && logoShaped))) return "site-logo";
   if (found.has("icon-link") || found.has("meta-icon") || found.has("manifest") || (ico && found.has("json-ld"))) return "favicon";
   if (found.has("og-image") || found.has("twitter-image")) return "social";

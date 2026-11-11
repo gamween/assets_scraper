@@ -140,6 +140,13 @@ describe("assignRole", () => {
     expect(role({ ...poster, foundIn: ["video-poster", "img"] })).toBe("logo");
   });
 
+  it("does not take a cropped picture for a logo", () => {
+    // stellar.org/brand-resources: a 1800x1800 card the CDN cuts to 16:9 for its thumbnail.
+    const card = { label: "Stellar logo pack", logoWord: true, rendered: { width: 398, height: 224 }, intrinsic: { width: 1800, height: 1800 } };
+    expect(role(card)).toBe("logo");
+    expect(role({ ...card, cropped: true })).toBe("image");
+  });
+
   it("never makes an ICO file a logo", () => {
     // bybit.com declares its 48x48 /favicon.ico as the JSON-LD logo.
     expect(role({ foundIn: ["json-ld"], format: "ico", intrinsic: { width: 48, height: 48 } })).toBe("favicon");

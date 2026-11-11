@@ -209,6 +209,13 @@ beforeAll(async () => {
       <div id="brand-how-do-i-use-the-logo"><h3><button type="button"><svg width="52" height="52" viewBox="0 0 52 52"><path d="M19 25.5H33M26 18.5V32.5" stroke="#000" stroke-width="2"/></svg>How do I use the logo?</button></h3><div>Answer</div></div>
       <div><button type="button" class="customer-logo"><svg width="150" height="36" viewBox="0 0 150 36" aria-label="Acme"><path d="M0 0h150v36H0z"/></svg></button></div>
     </body></html>`),
+    // stellar.org/brand-resources in miniature: the CDN cuts a card to the thumbnail's shape, next to a logo it only
+    // scales.
+    "/resources.html": html(`</head><body>
+      <h1 style="height:400px">Brand resources</h1>
+      <img src="/_next/image?url=%2Fassets%2Fphoto-large.png&w=64&crop=1" width="224" height="224" alt="Pages logo pack">
+      <img src="/_next/image?url=%2Fassets%2Fshadow.png&w=64" width="120" height="60" alt="Partner logo">
+    </body></html>`),
     "/favicon.ico": (_req, res) => {
       if (faviconMissing) {
         res.writeHead(404, { "content-type": "text/html" });
@@ -310,6 +317,14 @@ describe("assembleAssets on purpose-built pages", () => {
     const glyph = assets.find((a) => a.kind === "svg" && a.renderedWidth === 52)!;
     expect(glyph.role).toBe("illustration");
     expect(assets.find((a) => a.name === "Acme")?.role).toBe("logo");
+  });
+
+  it("does not take a picture the page shows cropped for a logo", async () => {
+    const { assets } = await scan("/resources.html");
+    const pack = assets.find((a) => a.name === "Pages logo pack")!;
+    expect(pack.aspectChanged).toBe(true);
+    expect(pack.role).toBe("image");
+    expect(assets.find((a) => a.name === "Partner logo")?.role).toBe("logo");
   });
 
   it("adds web manifest icons, drops the ones that fail their probe and still probes /favicon.ico", async () => {

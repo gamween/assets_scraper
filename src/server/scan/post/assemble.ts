@@ -611,7 +611,7 @@ function fileAsset(members: UrlRecord[], best: UrlRecord, resolved: Extract<Reso
   }
 
   // A file that only defines symbols (an external sprite sheet) draws nothing on a tile: it ranks with sprite symbols.
-  const role = assignRole({ kind, format, ...facts, intrinsic: size, spriteSymbol: !!markup && isSpriteSheet(markup) });
+  const role = assignRole({ kind, format, ...facts, intrinsic: size, spriteSymbol: !!markup && isSpriteSheet(markup), cropped: asset.aspectChanged });
   const score = relevanceScore({ role, visible: facts.visible, renderedWidth: facts.rendered?.width, renderedHeight: facts.rendered?.height, order: facts.order });
   return {
     asset: { ...asset, role, score, name: "", filename: "" }, url, label: facts.label, linkText: facts.linkText, hints: facts.hints, jsonLd: facts.jsonLd, toneJob,
