@@ -9,7 +9,7 @@ import type { DownloadManifest } from "@/agent/download";
 import { createAgentMcpServer } from "@/agent/mcp";
 import type { ScanSummary } from "@/agent/types";
 import type { FixtureServer } from "../../fixtures/serve";
-import { serveAssetsFixture } from "../assets/harness";
+import { brandKitRoutes, serveAssetsFixture } from "../assets/harness";
 
 /**
  * The MCP server against the fixture site through the SDK's in-memory transport (plan Task G3.2): the tools an agent
@@ -48,7 +48,7 @@ beforeAll(async () => {
   setEnv("XDG_CACHE_HOME", path.join(home, "cache"));
   setEnv("ASSETS_SCRAPER_FONT_DIR", fontDir);
   setEnv("ASSETS_SCRAPER_STATE_DIR", path.join(home, "state"));
-  server = await serveAssetsFixture();
+  server = await serveAssetsFixture(brandKitRoutes());
 
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   client = new Client({ name: "test", version: "0" });
@@ -87,9 +87,9 @@ const json = <T>(result: CallToolResult): T => {
 let scanId: string;
 
 describe("the assets-scraper MCP server", () => {
-  it("lists the eight tools with their schemas", async () => {
+  it("lists the nine tools with their schemas", async () => {
     const { tools } = await client.listTools();
-    expect(tools).toHaveLength(8);
+    expect(tools).toHaveLength(9);
     for (const tool of tools) {
       expect(tool.description, tool.name).toBeTruthy();
       expect(tool.inputSchema.type).toBe("object");
@@ -169,6 +169,25 @@ describe("the assets-scraper MCP server", () => {
     expect(result.isError).toBe(true);
     expect(text(result)).toContain("scrap");
     expect(fs.existsSync(path.join(project, "src"))).toBe(false);
+  });
+
+  it("downloads the brand files of a brand page into the project scrap directory, unpacking its kit", async () => {
+    const brand = json<ScanSummary>(await call("scan_page", { url: `${server.origin}/brand-kit.html` }));
+    const kit = brand.brandFiles.find((file) => file.name === "Download all Fixture logo variations");
+    if (!kit) throw new Error("expected the fixture's logo archive among the brand files");
+
+    const result = json<{ dir: string; manifest: string; files: { id: string; file: string; type: string; from?: string }[]; archives: { id: string; files: number }[] }>(
+      await call("download_brand_files", { scanId: brand.scanId, ids: [kit.id] }),
+    );
+
+    expect(result.dir).toBe(path.join(project, "scrap", "127.0.0.1", "brand"));
+    expect(result.files.map(({ file, type, from }) => ({ file, type, from }))).toEqual([
+      { file: "Fixture_Logo_all/Fixture Logo.svg", type: "svg", from: kit.id },
+      { file: "Fixture_Logo_all/Fixture Mark.png", type: "png", from: kit.id },
+    ]);
+    for (const file of result.files) expect(fs.existsSync(path.join(result.dir, file.file))).toBe(true);
+    expect(result.archives).toMatchObject([{ id: kit.id, files: 2 }]);
+    expect(JSON.parse(fs.readFileSync(result.manifest, "utf8"))).toMatchObject({ tool: "assets-scraper", kind: "brand-files" });
   });
 
   it("installs and uninstalls the page fonts", async () => {

@@ -33,9 +33,10 @@ Tools, all returning compact JSON, never bytes:
 
 | Tool | Input | Output |
 | --- | --- | --- |
-| `scan_page` | `url`, optional `refresh` | `scanId`, the page, counts per kind, the palette, one row per font family, the logos, the page's links to its brand, press or media kit pages (`brandLinks`), and how many other assets there are |
+| `scan_page` | `url`, optional `refresh` | `scanId`, the page, counts per kind, the palette, one row per font family, the logos, the page's links to its brand, press or media kit pages and to brand portals on other hosts (`brandLinks`), the files of its brand kit (`brandFiles`), and how many other assets there are |
 | `list_assets` | `scanId`, optional `kind`, `role`, `minLongSide`, `nameContains`, `limit` (40), `offset` | Compact rows: id, name, kind, role, dimensions, bytes |
 | `download_assets` | `scanId`, optional `ids`, `profile`, filters, `includeIcons`, `max`, `maxTotalBytes`, `maxFileBytes`, `dest` | The written paths, total bytes, the drop reasons, the destination and the manifest |
+| `download_brand_files` | `scanId`, optional `ids`, `extract`, `dest` | The written paths under `brand/`, what each archive gave and left out, what failed and why, and the manifest |
 | `read_svg` | `scanId`, `id` | `{ id, name, filename, markup }`, the page's own markup as text, unsanitized, refused past 256 KB |
 | `get_palette` | `scanId` | The palette hexes with their roles |
 | `install_fonts` | `scanId`, optional `families` | Installed families with their licence and paths, and what could not be installed and why, names and licences cut to a line |
@@ -64,6 +65,7 @@ node dist/cli.mjs scan stripe.com
 ```
 assets-scraper scan <url> [options]
 assets-scraper get <url> [options]
+assets-scraper brand <url> [options]
 assets-scraper fonts install <url> [options]
 assets-scraper fonts list [options]
 assets-scraper fonts uninstall <family> [options]
@@ -80,6 +82,8 @@ assets-scraper fonts uninstall <family> [options]
 --name-contains TEXT  Only assets whose name holds TEXT
 --include-icons       Keep icons the deck profile would drop, at any size. --role icon does the same
 --families "A,B"      Font families to install or remove, as scan reported them
+--ids a,b             Brand files to download, by the id scan printed. Default: every one
+--no-extract          Write an archive as it is instead of unpacking its logo files
 --json                Print JSON instead of a report
 --refresh             Scan again instead of reusing a scan of the last hour
 --remote              Scan on the hosted app. Needs ASSETS_SCRAPER_TOKEN
@@ -137,6 +141,25 @@ The `all` profile keeps everything the explicit filters allow: no role rule, no 
 
 Every drop is counted by reason, so an agent can say why a file is not there: `filter`, `icon`, `sprite`, `extra-favicon`, `small`, `too-large`, `vector-preferred`, `duplicate`, `near-duplicate`, `cap`, `over-budget`, and `unavailable` for an asset with no way to fetch it or one the download never reached. A file whose fetch failed is not a drop: it is listed under `failed` with the reason.
 
+## Brand kits
+
+A page's own files are only part of a brand: the official variants usually sit in its kit, which the page links or downloads on a click. A scan reports both sides of that.
+
+- `brandLinks`, up to 6: the site's own links to its brand, press or media kit pages, and links to another host when that host is a brand portal (Frontify, standards.site, Visualbook, Brandfolder, Brandpad, Corebook, Lingo, Bynder) or when the link, its path or the heading of its card says brand kit in a whole phrase ("Brand Kit", "Media Kit", "Brand manual", "Logo files"). One word is not enough: a link out that says "brand" or "press" is a partner or a newspaper. Phrases and portals come first when the slots run out.
+- `brandFiles`, up to 16 in a scan and 8 in the summary: the archives, guidelines and logo files (`zip`, `pdf`, `ai`, `eps`, `svg`, `png`) the page links, on any host, and on a page whose URL names a brand, press or media kit page, the ones its own scripts download on a click. Off such a page a file has to say it belongs to the brand (in its name, its link or the heading over it). Each has an `id`, a `name` (the link's label unless it only says "Download", else the file name unless it is a hash, else the heading over the link), a `type`, the URL, and `bytes` when its host announced a size to a ranged request made during the scan. A vector or a raster the page also shows is an asset, not a brand file.
+
+`download_brand_files` (and `assets-scraper brand <url>`) downloads them into `<destination>/brand/`, with a `manifest.json` of its own. A brand file goes from its host to this machine through the same SSRF guard as every other fetch, never through the hosted app, whichever source scanned the page. A ZIP is unpacked into a folder named after it, its common top folder dropped, and the archive itself is not kept unless `extract` is false (`--no-extract`). Only the `svg`, `png`, `pdf`, `ai` and `eps` files of an archive are written, each checked by its first bytes:
+
+- never a nested archive, a symbolic link, macOS metadata (`__MACOSX/`, `._*`, `.DS_Store`), an encrypted entry or one compressed with anything but deflate,
+- never a name that is absolute, holds a drive letter, a `..` or `.` segment or a control character, or nests deeper than 9 folders,
+- every file inflated into a buffer of its declared size, which has to fit the per-file cap and what is left of the archive's budget before a byte is inflated, the declared size of every entry tried counting against that budget. A stream that inflates to anything but its declared size, or whose CRC differs, is skipped as corrupt. That bounds a zip bomb, deep (a small stream that inflates without end) or wide (many entries over one stream), to the archive budget.
+
+An archive the reader cannot open (split over several files, cut short) is written as it is. A host that answers with an HTML page instead of the file, which is what a bot check looks like to a program, is reported as such: open the URL in a browser.
+
+The hosted API reports brand files in `summary.brandFiles` and `scan.page.brandFiles` and does not download them. A shared function would spend its daily byte budget (75 MB per client) on one kit, unpack archives from any host for anyone holding a token, and hold the bytes past the 25 MB a proxied file may take; the URLs are public, so an HTTP agent fetches them itself.
+
+A Google Drive folder named a kit is a brand link for the user to open, not a list of brand files: the only way to list a public folder without a Google API key is an undocumented page (`drive.google.com/embeddedfolderview`), real kits nest folders (RedStone's holds `Fonts`, `Logos`, `Logotypes` and `RED Token`), so a listing is a crawl, and Drive's own "Download all" already gives the whole folder as one ZIP.
+
 ## Where the files go
 
 Files land in `scrap/<host>/` inside the current project, or in `~/Downloads/assets-scraper/<host>/` when there is no project, as `svg/`, `images/` and a `manifest.json` recording every file with its name, source URL, dimensions, bytes, role and why it was kept.
@@ -184,6 +207,12 @@ Agent limits live in `src/agent/limits.ts` and each one is overridden by the SCR
 | `downloadConcurrency` | 6 |
 | `maxDownloadBytes` | 300 MB per download |
 | `fontInstallMaxBytes` | 8 MB per font file |
+| `brandFileMaxBytes` | 64 MB per brand file, above the 25 MB a proxied file may take: a kit goes from its host to this machine only (monad.xyz's is 29.7 MB) |
+| `brandFileTimeoutMs` | 2 minutes per brand file |
+| `archiveMaxEntries` | 5,000 entries listed by one archive, metadata included |
+| `archiveMaxFiles` | 500 files out of one archive |
+| `archiveMaxFileBytes` | 64 MB per file out of an archive (monad.xyz's guidelines PDF is 51.6 MB) |
+| `archiveMaxBytes` | 128 MB inflated per archive, the bound on a zip bomb's work |
 
 Every v1 limit still applies to the scan itself: 90 s for the whole scan, at most 1,500 assets, 1 MB per SVG, 25 MB per proxied file. See the limits section of the README.
 

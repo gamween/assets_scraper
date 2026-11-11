@@ -1,5 +1,6 @@
 import type http from "node:http";
 import { chromium, type Browser, type Page } from "playwright-core";
+import { buildZip, TEST_PNG, TEST_SVG } from "@/agent/testing";
 import { localExecutablePath } from "@/server/browser/launch";
 import { limits } from "@/server/config/limits";
 import { safeFetch } from "@/server/net/safe-fetch";
@@ -100,6 +101,40 @@ export async function openPage(browser: Browser, url: string) {
   await page.evaluate(() => document.fonts.ready.then(() => undefined));
   const capture = { settle: (): Promise<CapturedNetwork> => handle.settle(SETTLE_MS) };
   return { context, page, capture };
+}
+
+/** The kit archive the brand kit fixture page links, laid out as macOS zips a folder, with one entry trying to leave. */
+export const FIXTURE_KIT = buildZip([
+  { name: "Fixture Logos/" },
+  { name: "__MACOSX/Fixture Logos/._Fixture Logo.svg", data: "metadata" },
+  { name: "Fixture Logos/Fixture Logo.svg", data: TEST_SVG },
+  { name: "Fixture Logos/Fixture Mark.png", data: TEST_PNG },
+  { name: "Fixture Logos/../../escape.svg", data: TEST_SVG },
+]);
+
+/**
+ * The files `brand-kit.html` links or names in its script, as a kit host serves them: one honours a range, as S3 and
+ * the CDNs do, so the scan's size probe reads `content-range`; the other answers whole, with its length.
+ */
+export function brandKitRoutes(): Record<string, http.RequestListener> {
+  const serve = (body: Buffer, type: string, ranges: boolean): http.RequestListener => (request, response) => {
+    const range = ranges ? /^bytes=0-(\d+)$/.exec(request.headers.range ?? "") : null;
+    if (range) {
+      const end = Math.min(Number(range[1]), body.length - 1);
+      response.writeHead(206, { "content-type": type, "content-range": `bytes 0-${end}/${body.length}`, "content-length": String(end + 1) });
+      response.end(body.subarray(0, end + 1));
+      return;
+    }
+    response.writeHead(200, { "content-type": type, "content-length": String(body.length) });
+    response.end(body);
+  };
+  return {
+    "/brandkit/downloads/Fixture_Logo_all.zip": serve(FIXTURE_KIT, "application/zip", true),
+    "/brandkit/downloads/Fixture_Logo_FullColor.zip": serve(FIXTURE_KIT, "application/zip", false),
+    "/brand-page-assets/Fixture Brand and Media Kit.zip": serve(FIXTURE_KIT, "application/octet-stream", true),
+    "/brand-page-assets/Logomark.svg": serve(Buffer.from(TEST_SVG), "image/svg+xml", true),
+    "/brandkit/fixture-wordmark.svg": serve(Buffer.from(TEST_SVG), "image/svg+xml", true),
+  };
 }
 
 /** Serves the fixture site plus extra routes, and allows its host for `safeFetch` in tests (spec 11.1). */

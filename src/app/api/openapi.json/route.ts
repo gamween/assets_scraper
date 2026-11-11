@@ -244,7 +244,7 @@ export function openApiDocument(origin: string): Record<string, unknown> {
             brandFiles: {
               type: "array",
               description:
-                "The files of the page's brand kit: archives, guidelines and logo files it links or its code downloads, archives first, at most 8.",
+                "The files of the page's brand kit: archives, guidelines and logo files it links or its code downloads, archives first, at most 8. This API reports them and does not download them: fetch url yourself, or use the CLI or the MCP server, which download and unpack them on your machine.",
               items: {
                 type: "object",
                 required: ["id", "name", "type", "url"],

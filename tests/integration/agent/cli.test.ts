@@ -5,9 +5,9 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { DownloadManifest } from "@/agent/download";
-import type { AgentScan, DownloadResult, ScanSummary } from "@/agent/types";
+import type { AgentScan, BrandDownloadResult, DownloadResult, ScanSummary } from "@/agent/types";
 import type { FixtureServer } from "../../fixtures/serve";
-import { serveAssetsFixture } from "../assets/harness";
+import { brandKitRoutes, serveAssetsFixture } from "../assets/harness";
 
 /**
  * The `assets-scraper` command as an agent runs it (plan Task G2.3): the built bundle, driven against the fixture site
@@ -58,7 +58,7 @@ const cachedScan = (): AgentScan => {
 beforeAll(async () => {
   work = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agent-cli-")));
   cache = path.join(work, "cache");
-  server = await serveAssetsFixture();
+  server = await serveAssetsFixture(brandKitRoutes());
   await execFileAsync(process.execPath, [path.join(ROOT, "scripts/build-agent.mjs")], { cwd: ROOT });
 }, 120_000);
 
@@ -145,6 +145,62 @@ describe("assets-scraper get", () => {
   }, 60_000);
 });
 
+describe("assets-scraper brand", () => {
+  /** A cache of its own, so `cachedScan` above keeps reading the home page's scan. */
+  const brandCache = () => path.join(work, "brand-cache");
+  const files = (root: string): string[] =>
+    (fs.readdirSync(root, { recursive: true, withFileTypes: true }) as fs.Dirent[])
+      .filter((entry) => entry.isFile())
+      .map((entry) => path.relative(root, path.join(entry.parentPath, entry.name)).split(path.sep).join("/"))
+      .sort();
+
+  it("downloads the kit a brand page offers and unpacks its logo files, nothing outside the folder", async () => {
+    const out = path.join(work, "out-brand");
+    const summary = JSON.parse((await run(["scan", `${server.origin}/brand-kit.html`, "--json"], { XDG_CACHE_HOME: brandCache() })).stdout) as ScanSummary;
+    const local = summary.brandFiles.filter((file) => file.url.startsWith(server.origin));
+    const kit = local.find((file) => file.name === "Fixture Brand and Media Kit");
+    const wordmark = local.find((file) => file.name === "Wordmark");
+    if (!kit || !wordmark) throw new Error("expected the script kit and the wordmark among the brand files");
+
+    const result = await run(["brand", `${server.origin}/brand-kit.html`, "--ids", `${kit.id},${wordmark.id}`, "--out", out, "--json"], { XDG_CACHE_HOME: brandCache() });
+
+    expect(result.code).toBe(0);
+    const download = JSON.parse(result.stdout) as BrandDownloadResult & { scanId: string };
+    expect(download.scanId).toBe(summary.scanId);
+    expect(download.dir).toBe(path.join(out, "brand"));
+    expect(files(out)).toEqual([
+      "brand/Fixture Brand and Media Kit/Fixture Logo.svg",
+      "brand/Fixture Brand and Media Kit/Fixture Mark.png",
+      "brand/fixture-wordmark.svg",
+      "brand/manifest.json",
+    ]);
+    expect(download.archives).toEqual([{ id: kit.id, name: "Fixture Brand and Media Kit", files: 2, skipped: { metadata: 1, "unsafe-path": 1 } }]);
+    expect(download.failed).toEqual([]);
+  }, 150_000);
+
+  it("reports a host it cannot reach, and writes an archive as it is on --no-extract, in a readable report", async () => {
+    const out = path.join(work, "out-brand-raw");
+    const result = await run(["brand", `${server.origin}/brand-kit.html`, "--no-extract", "--out", out], { XDG_CACHE_HOME: brandCache() });
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain(path.join(out, "brand", "Fixture Brand and Media Kit.zip"));
+    expect(result.stdout).toContain("failed: Fixture logo pack (");
+    expect(result.stdout).toContain(`manifest: ${path.join(out, "brand", "manifest.json")}`);
+    expect(result.stdout).not.toMatch(/[\u2013\u2014]/);
+    expect(fs.existsSync(path.join(out, "brand", "Fixture_Logo_FullColor.zip"))).toBe(true);
+  }, 150_000);
+
+  it("exits 1 for an id the page does not have, and for a page with no brand files", async () => {
+    const unknown = await run(["brand", `${server.origin}/brand-kit.html`, "--ids", "nope"], { XDG_CACHE_HOME: brandCache() });
+    expect(unknown.code).toBe(1);
+    expect(unknown.stderr).toContain('no brand file "nope" on this page');
+
+    const none = await run(["brand", `${server.origin}/`]);
+    expect(none.code).toBe(1);
+    expect(none.stderr).toContain("offers no brand files");
+  }, 150_000);
+});
+
 describe("assets-scraper failures", () => {
   it("exits 1 with one line for a URL it cannot scan", async () => {
     const result = await run(["scan", "not a url"]);
@@ -181,5 +237,6 @@ describe("assets-scraper failures", () => {
     expect(help.code).toBe(0);
     expect(help.stdout).toContain("assets-scraper scan");
     expect(help.stdout).toContain("assets-scraper get");
+    expect(help.stdout).toContain("assets-scraper brand");
   }, 30_000);
 });

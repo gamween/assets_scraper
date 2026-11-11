@@ -3,6 +3,8 @@ import pkg from "../../package.json";
 import { AssetKind, AssetRole } from "@/lib/contract";
 import { formatBytes, formatCount, formatDimensions, formatDuration } from "@/lib/format";
 import { ScanFailure } from "@/server/errors";
+import type { ArchiveSkipReason } from "./archive";
+import { downloadBrandFiles } from "./brand-download";
 import { findRecentScan, saveScan } from "./cache";
 import { downloadAssets } from "./download";
 import { isEntry } from "./entry";
@@ -14,7 +16,7 @@ import { normalizeScanUrl } from "./scan-url";
 import { createScanSource, remoteBaseUrl } from "./source";
 import { summarize } from "./summary";
 import { printable, terminalText } from "./terminal";
-import type { AgentScan, DownloadResult, DropReason, ScanSource, ScanSummary, SelectionOptions, SelectionProfile } from "./types";
+import type { AgentScan, BrandDownloadResult, DownloadResult, DropReason, ScanSource, ScanSummary, SelectionOptions, SelectionProfile } from "./types";
 
 /**
  * The `assets-scraper` command (spec 7). Human output by default, `--json` for agents, one line on stderr and exit 1 on
@@ -35,6 +37,9 @@ Usage
       Scan a page and download a selection into scrap/<host> inside the current project, or into
       ~/Downloads/assets-scraper/<host> when there is no project. <host> is the page's host without www.:
       www.redstone.finance lands in redstone.finance.
+  assets-scraper brand <url> [options]
+      Scan a page and download the brand kit files it offers (archives, guidelines, logo files) into the
+      brand folder of that same destination, unpacking the logo files of an archive.
   assets-scraper fonts install <url> [options]
       Scan a page, convert its fonts to TTF and install them in the user font directory.
   assets-scraper fonts list [options]
@@ -56,6 +61,8 @@ Options
   --name-contains TEXT  Only assets whose name holds TEXT
   --include-icons       Keep icons the deck profile would drop, at any size. --role icon does the same
   --families "A,B"      Font families to install or remove, as scan reported them
+  --ids a,b             Brand files to download, by the id scan printed. Default: every one
+  --no-extract          Write an archive as it is instead of unpacking its logo files
   --json                Print JSON instead of a report
   --refresh             Scan again instead of reusing a scan of the last hour
   --remote              Scan on the hosted app. Needs ASSETS_SCRAPER_TOKEN
@@ -68,6 +75,7 @@ Examples
   assets-scraper scan stripe.com
   assets-scraper get stripe.com --role logo,site-logo --json
   assets-scraper get stripe.com --profile all --kind svg --out ./brand
+  assets-scraper brand monad.xyz/brand-and-media-kit
   assets-scraper fonts install stripe.com --families "Söhne"
 `;
 
@@ -99,6 +107,8 @@ const OPTIONS = {
   "name-contains": { type: "string" },
   "include-icons": { type: "boolean" },
   families: { type: "string" },
+  ids: { type: "string" },
+  "no-extract": { type: "boolean" },
   json: { type: "boolean" },
   refresh: { type: "boolean" },
   remote: { type: "boolean" },
@@ -271,7 +281,7 @@ export function formatSummary(summary: ScanSummary, reused: boolean): string {
     for (const link of summary.brandLinks) rows.push(`    ${printable(link.href)}${link.text ? `  ${printable(link.text)}` : ""}`);
   }
   if (summary.brandFiles.length > 0) {
-    rows.push("  brand files, the kit itself:");
+    rows.push("  brand files, the kit itself (assets-scraper brand <url> downloads them):");
     for (const file of summary.brandFiles) {
       const size = file.bytes === undefined ? file.type : `${file.type}, ${formatBytes(file.bytes)}`;
       rows.push(`    ${printable(file.id)}  ${printable(file.name)}  ${size}  ${printable(file.url)}`);
@@ -289,6 +299,39 @@ export function formatDownload(result: DownloadResult): string {
   for (const file of result.files) rows.push(`  ${printable(file.path)}`);
   const missed = total(result.dropped);
   if (missed > 0) rows.push(`dropped ${missed}: ${formatDropped(result.dropped)}`);
+  for (const failure of result.failed) rows.push(`failed: ${printable(failure.name)} (${printable(failure.reason)})`);
+  rows.push(`manifest: ${printable(result.manifestPath)}`);
+  return rows.join("\n");
+}
+
+/** How the report names each reason an archive entry was not written. */
+const SKIP_LABELS: Record<ArchiveSkipReason, string> = {
+  metadata: "macOS metadata",
+  "other-type": "other file types",
+  "nested-archive": "nested archives",
+  symlink: "links",
+  "unsafe-path": "names that leave the folder",
+  encrypted: "encrypted",
+  "unsupported-compression": "unsupported compression",
+  "too-large": "too big for one file",
+  "over-budget": "over the archive budget",
+  cap: "past the file count",
+  corrupt: "corrupt",
+  mismatch: "not what their name says",
+};
+
+export function formatBrandDownload(result: BrandDownloadResult): string {
+  const rows: string[] = [];
+  rows.push(`wrote ${formatCount(result.files.length, "file")}, ${formatBytes(result.totalBytes)} into ${printable(result.dir)}`);
+  for (const file of result.files) rows.push(`  ${printable(file.path)}`);
+  for (const archive of result.archives) {
+    const skipped = (Object.entries(archive.skipped) as [ArchiveSkipReason, number][])
+      .sort((a, b) => b[1] - a[1])
+      .map(([reason, count]) => `${count} ${SKIP_LABELS[reason] ?? reason}`)
+      .join(", ");
+    const outcome = archive.error ? `kept as it is: ${archive.error}` : `${formatCount(archive.files, "file")} unpacked${skipped ? `, left out ${skipped}` : ""}`;
+    rows.push(`archive ${printable(archive.name)}: ${printable(outcome)}`);
+  }
   for (const failure of result.failed) rows.push(`failed: ${printable(failure.name)} (${printable(failure.reason)})`);
   rows.push(`manifest: ${printable(result.manifestPath)}`);
   return rows.join("\n");
@@ -364,6 +407,27 @@ async function runGet(url: string | undefined, values: Values): Promise<number> 
   return 0;
 }
 
+async function runBrand(url: string | undefined, values: Values): Promise<number> {
+  if (!url) throw new UsageError("brand needs a URL: assets-scraper brand monad.xyz/brand-and-media-kit");
+  const target = scanUrl(url);
+  const ids = asString(values, "ids")?.split(",").map((id) => id.trim()).filter(Boolean);
+  if (ids !== undefined && ids.length === 0) throw new UsageError("--ids takes a comma separated list of brand file ids, as scan printed them");
+  const { scan } = await scanPage(target, openSource(values), values);
+  const files = scan.page.brandFiles ?? [];
+  if (files.length === 0) throw new UsageError(`${scan.page.finalUrl} offers no brand files. Scan one of its brand pages, or use get for the files it shows`);
+  const unknown = ids?.filter((id) => !files.some((file) => file.id === id)) ?? [];
+  if (unknown.length > 0) throw new UsageError(`no brand file ${unknown.map((id) => JSON.stringify(id)).join(", ")} on this page. It has ${files.map((file) => file.id).join(", ")}`);
+  const out = asString(values, "out");
+  const result = await downloadBrandFiles(scan, {
+    ...(ids === undefined ? {} : { ids }),
+    ...(values["no-extract"] === true ? { extract: false } : {}),
+    ...(out === undefined ? {} : { dest: out }),
+  });
+  if (values.json === true) line(JSON.stringify({ scanId: scan.scanId, page: { url: scan.page.url, finalUrl: scan.page.finalUrl, host: scan.page.host, title: scan.page.title }, ...result }), true);
+  else line(`${pageLine(scan.page)}\n${formatBrandDownload(result)}`);
+  return 0;
+}
+
 async function main(argv: string[]): Promise<number> {
   let values: Values;
   let positionals: string[];
@@ -392,6 +456,8 @@ async function main(argv: string[]): Promise<number> {
       return await runScan(positionals[1], values);
     case "get":
       return await runGet(positionals[1], values);
+    case "brand":
+      return await runBrand(positionals[1], values);
     case "fonts":
       return await runFonts(positionals, values);
     default:

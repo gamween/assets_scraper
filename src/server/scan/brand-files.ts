@@ -84,12 +84,13 @@ const clean = (text: string | undefined): string =>
 
 /** A content hash or a UUID: stellar.org's `c155385509c73b245ff4f752ade94048a06245bc.pdf` says nothing about the file. */
 const OPAQUE = /^(?:[0-9a-f]{16,}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
+export const isOpaqueName = (stem: string): boolean => OPAQUE.test(stem);
 
 /** A file name as a name: `1225_Arbitrum_Logo_FullColorNavy.zip` reads `1225 Arbitrum Logo FullColorNavy`. */
 function readableStem(fileName: string | undefined): string | undefined {
   if (!fileName) return undefined;
   const stem = (fileName.split(/[\\/]/).pop() ?? "").replace(/\.[a-z0-9]{1,5}$/i, "").trim();
-  if (!stem || OPAQUE.test(stem)) return undefined;
+  if (!stem || isOpaqueName(stem)) return undefined;
   return clean(stem.replace(/[-_]+/g, " ")) || undefined;
 }
 

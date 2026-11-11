@@ -47,6 +47,10 @@ media kit pages and to brand portals on other hosts, where official logo variant
 files of its kit (archives, guidelines and logo files it links or its code downloads), each with an id, a name, a type
 (zip, pdf, ai, eps, svg or png), the size its host announced and the URL. Read it first, then ask for what you need.
 
+This API reports brand files and does not download them: fetch a brand file's URL yourself. The CLI (assets-scraper
+brand <url>) and the MCP server (download_brand_files) download them on the agent's machine and unpack the logo files
+of an archive, which a shared function should not do for anyone who asks.
+
 "full" answers { view, scanId, summary, scan } where scan adds every asset and every font family, in the shapes of
 src/lib/contract.ts: assets carry id, kind, role, name, filename, format, dimensions, bytes and their source URLs.
 Ask for it from a program that writes the answer to a file, not to read into a context: a page with a few hundred

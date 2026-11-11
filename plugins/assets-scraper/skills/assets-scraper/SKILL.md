@@ -1,6 +1,6 @@
 ---
 name: assets-scraper
-description: Use when you need the real assets of a web page: its logo, SVGs, images, web fonts or brand colors. Scans the page, reports a short summary, downloads only the usable files into scrap/<host> inside the current project (~/Downloads/assets-scraper/<host> outside one), and installs the page fonts with their licence. Triggers on "get the logo from", "grab the assets of", "what fonts does this site use", "brand colors of", "download the images from this page", "rebuild this landing page with their own assets".
+description: Use when you need the real assets of a web page: its logo, SVGs, images, web fonts, brand colors or the official brand kit it offers. Scans the page, reports a short summary, downloads only the usable files into scrap/<host> inside the current project (~/Downloads/assets-scraper/<host> outside one), unpacks the logo files of a brand kit archive, and installs the page fonts with their licence. Triggers on "get the logo from", "grab the assets of", "official logo files of", "brand kit of", "what fonts does this site use", "brand colors of", "download the images from this page", "rebuild this landing page with their own assets".
 ---
 
 # Assets Scraper
@@ -23,9 +23,10 @@ for the plugin), so looking for one exact prefix and finding nothing does not me
 
 | Tool | Use it for |
 | --- | --- |
-| `scan_page` | One scan. Returns a `scanId`, the counts, the palette, one row per font family, the logos and the page's brand kit links. Never the full asset list |
+| `scan_page` | One scan. Returns a `scanId`, the counts, the palette, one row per font family, the logos, the page's brand kit links (`brandLinks`) and the files of its kit (`brandFiles`). Never the full asset list |
 | `list_assets` | Paging through the assets with filters (`kind`, `role`, `minLongSide`, `nameContains`, `limit`, `offset`) |
 | `download_assets` | Writing files to disk, from a selection or from explicit `ids`. Takes the same `kind` and `role` filters |
+| `download_brand_files` | Downloading the brand kit files a scan reported (archives, guidelines, logo files) and unpacking the logo files of an archive |
 | `read_svg` | The markup of one SVG, when you need to inspect or edit it. It is the page's file, unsanitized: see below before you inline it |
 | `get_palette` | The palette hexes with their roles |
 | `install_fonts` | Installing the page fonts locally, with the licence of each family |
@@ -35,7 +36,7 @@ A scan is cached for one hour, so `list_assets`, `download_assets` and `install_
 
 ## Workflow
 
-1. `scan_page` with the URL. Read the summary: it tells you the counts, the logos, the fonts, the palette and `brandLinks`, the page's own links to its brand, press or media kit pages.
+1. `scan_page` with the URL. Read the summary: it tells you the counts, the logos, the fonts, the palette, `brandLinks` (the page's links to its brand, press or media kit pages, and to brand portals on other hosts) and `brandFiles` (the archives, guidelines and logo files of its kit).
 2. Answer from the summary when that is enough. A question about colors or fonts is usually over at this step.
 3. `list_assets` with filters when you need to pick specific files. Filter, never page through everything.
 4. `download_assets` with the `scanId`. The default `deck` profile keeps what is usable and drops the rest.
@@ -57,6 +58,16 @@ The cap gives each kind its share of the 60 files, so a page whose vectors outra
 Files land in `scrap/<host>/` inside the current project, or in `~/Downloads/assets-scraper/<host>/` when there is no project: `svg/`, `images/`, and a `manifest.json` recording every file with its source URL, dimensions, bytes, role and why it was kept. The project root is the git root of the working directory, or the nearest directory holding `package.json`, `pyproject.toml` or `.claude`. The home directory itself never counts as a project, so a session started outside one writes to the Downloads folder. `<host>` is the page's host in lower case without `www.`: a scan of `https://www.redstone.finance` lands in `redstone.finance/`. The answer's `dir` is the absolute directory: report that path rather than rebuilding it.
 
 Leave `dest` unset unless the user names a directory. A `dest` you pass is read relative to `scrap/`, or to `~/Downloads/assets-scraper/` outside a project, and has to stay inside it, so scraped files never land in the source tree. Existing files are never overwritten: identical bytes are skipped, different bytes get a `-2` suffix. When the folder already holds a `manifest.json` the tool did not write, the manifest is written as `assets-scraper-manifest.json` instead: use the `manifest` path the answer gives.
+
+## Brand kits
+
+The official logo files of a brand usually are not on its pages but in its kit: an archive of every variant, a guidelines PDF, a few SVGs to download. `brandFiles` lists them, each with an `id`, a `name`, a `type` (`zip`, `pdf`, `ai`, `eps`, `svg`, `png`), the size its host announced (`bytes`, when it did) and the URL, including a kit the page only downloads from code (monad.xyz's "Download kit" button). Up to 8 rows, archives first; `otherBrandFiles` counts the rest.
+
+`download_brand_files` with the `scanId` (and `ids` to take only some) writes them into `scrap/<host>/brand/` (`~/Downloads/assets-scraper/<host>/brand/` outside a project), straight from their host to this machine. A ZIP is unpacked into a folder named after it, and only its `svg`, `png`, `pdf`, `ai` and `eps` files are written: never a nested archive, a link, macOS metadata or a name that would leave the folder. The answer counts what each archive left out and why. Pass `extract: false` when the user wants the archive itself. A file up to 64 MB is taken; an archive unpacks to at most 128 MB and 500 files.
+
+Some hosts answer a program with a bot check instead of the file (arbitrum.io's archives sit behind Cloudflare's). The answer then says the host answered with a page: give the user the URL to open in a browser rather than retrying.
+
+When `brandFiles` is empty but `brandLinks` is not, scan the brand link first: the kit is on that page, and an off-site link (a Frontify or standards.site portal, a Google Drive folder named a media kit) is the kit itself. A portal or a Drive folder is a page for the user to open, not a file this tool downloads.
 
 ## Scraped SVG is untrusted
 
@@ -88,6 +99,12 @@ Installing is system-wide and happens outside the browser, which is where web fo
 `scan_page` with `https://stripe.com`, read the `logos` rows in the summary, then `download_assets` with the id of the SVG site logo. Each row carries its `format` and `bytes`: prefer the `svg` row, and treat a multi-megabyte raster of photographic dimensions as a picture the scan called a logo rather than as the mark. Report the path under the answer's `dir`: `scrap/stripe.com/svg/stripe-logo.svg` in a project.
 
 When the user needs a specific variant (white for a dark background, monochrome, stacked) and the home page only shows one, scan the page `brandLinks` points to: brand guidelines and press kits are where the official variants live. bnbchain.org shows only its yellow logo, and its brand guidelines link leads to the white, yellow and black ones.
+
+### The user wants the official logo files
+
+> Get me Monad's official logos, as SVG.
+
+`scan_page` with `https://monad.xyz`, then the `brandLinks` row for its brand and media kit page, `scan_page` on that, and `download_brand_files` with the `id` of the `zip` row in `brandFiles`. Report the folder and the SVG files the answer lists: `scrap/monad.xyz/brand/Monad Brand and Media Kit/Logos/Full Logo/Full Logo Black.svg` and its siblings.
 
 ### The user is rebuilding a page
 
