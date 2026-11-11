@@ -8,10 +8,12 @@ import { sanitizeHost } from "./names";
  *
  * The rule, strongest first: an explicit `dest`, then `ASSETS_SCRAPER_OUT`, then `<project root>/scrap/<host>` where
  * the project root is the git root of the working directory or the nearest directory holding `package.json`,
- * `pyproject.toml` or `.claude`, and finally `~/Downloads/assets-scraper/<host>` when there is no project. The home
- * directory itself is never a project root, so a session started outside one lands in the fallback rather than writing
- * into the top of the user's home. A `dest` that came from an agent goes through `restrictToProject`, which confines it
- * to the scrap directory.
+ * `pyproject.toml` or `.claude`, and finally `~/Downloads/assets-scraper/<host>` when there is no project. `<host>` is
+ * `sanitizeHost` of the scanned host, so lower case and without `www.`: www.redstone.finance and redstone.finance share
+ * a folder. The tool description, the CLI help, SKILL.md and docs/agents.md all say so, and their tests hold them to
+ * it. The home directory itself is never a project root, so a session started outside one lands in the fallback rather
+ * than writing into the top of the user's home. A `dest` that came from an agent goes through `restrictToProject`,
+ * which confines it to the scrap directory.
  *
  * The project rule and the fallback are confined too, after their symbolic links are resolved: a repository that
  * commits `scrap -> /somewhere/else` (or `scrap/<host>` pointing out) would otherwise have a download write into that

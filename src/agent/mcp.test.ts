@@ -97,6 +97,14 @@ describe("the tools", () => {
     const { tools } = await client.listTools();
     expect(tools.map((tool) => tool.name).sort()).toEqual([...MCP_TOOL_NAMES].sort());
   });
+
+  it("say where download_assets writes when there is no project, and what <host> is", async () => {
+    // It said `scrap/<host>` alone, and two auditors filed ~/Downloads/assets-scraper/redstone.finance as a bug.
+    const { tools } = await client.listTools();
+    const download = tools.find((tool) => tool.name === "download_assets");
+    expect(download?.description).toContain("~/Downloads/assets-scraper/<host> when there is no project");
+    expect(download?.description).toContain("without www.: www.redstone.finance lands in redstone.finance");
+  });
 });
 
 describe("the server version", () => {

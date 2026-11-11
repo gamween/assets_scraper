@@ -54,7 +54,13 @@ export interface ScanSource {
   /** The hosted app this source reads, with no trailing slash, and undefined when `kind` is "local". */
   readonly remote?: string;
   scan(url: string, options?: { signal?: AbortSignal; onStep?: (step: string) => void }): Promise<AgentScan>;
-  fetchBytes(target: AssetSource | FontFile, options?: { signal?: AbortSignal }): Promise<Buffer>;
+  fetchBytes(target: AssetSource | FontFile, options?: FetchBytesOptions): Promise<Buffer>;
+}
+
+export interface FetchBytesOptions {
+  signal?: AbortSignal;
+  /** The page the file was found on, sent as the referrer like the scan's own request for it was. */
+  referer?: string;
 }
 
 export type SelectionProfile = "deck" | "all";

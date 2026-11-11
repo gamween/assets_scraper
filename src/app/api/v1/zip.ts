@@ -4,7 +4,7 @@ import { bytesSource, inlineAssetBytes, type ManifestFile, manifestRow } from "@
 import { agentLimits } from "@/agent/limits";
 import { assetFileName, sanitizeHost, uniqueName } from "@/agent/names";
 import { selectAssets } from "@/agent/select";
-import type { AgentScan, DropReason, ScanSource, SelectionOptions } from "@/agent/types";
+import type { AgentScan, DropReason, FetchBytesOptions, ScanSource, SelectionOptions } from "@/agent/types";
 import type { Asset } from "@/lib/contract";
 import { meterProxyBytes, type ProxyBytesMeter } from "@/server/security/budget";
 import { zipMaxBytes } from "./limits";
@@ -55,12 +55,12 @@ export interface BuildZipOptions {
  * displayed. The naming, the inline check and the manifest row are the local download's own (`src/agent/download.ts`),
  * so unzipping an archive into a project gives the names and the manifest `assets-scraper get` would have written.
  */
-async function assetBytes(asset: Asset, source: ScanSource, signal?: AbortSignal): Promise<Buffer> {
+async function assetBytes(asset: Asset, source: ScanSource, options: FetchBytesOptions): Promise<Buffer> {
   const inline = inlineAssetBytes(asset);
   if (inline) return inline;
   const target = bytesSource(asset);
   if (!target) throw new Error("no bytes to fetch");
-  return source.fetchBytes(target, signal ? { signal } : {});
+  return source.fetchBytes(target, options);
 }
 
 const reasonOf = (error: unknown): string => (error instanceof Error ? error.message : "could not be fetched").slice(0, 200);
@@ -74,7 +74,7 @@ const reasonOf = (error: unknown): string => (error instanceof Error ? error.mes
 async function fetchSelection(
   keep: Asset[],
   source: ScanSource,
-  options: { maxBytes: number; concurrency: number; meter: ProxyBytesMeter; signal?: AbortSignal },
+  options: { maxBytes: number; concurrency: number; meter: ProxyBytesMeter; referer: string; signal?: AbortSignal },
 ): Promise<{ bytes: Map<string, Buffer>; failed: ZipManifest["failed"]; truncated: boolean; unavailable: number }> {
   const bytes = new Map<string, Buffer>();
   const failed: ZipManifest["failed"] = [];
@@ -93,7 +93,7 @@ async function fetchSelection(
       }
       let buffer: Buffer;
       try {
-        buffer = await assetBytes(asset, source, options.signal);
+        buffer = await assetBytes(asset, source, { referer: options.referer, ...(options.signal ? { signal: options.signal } : {}) });
       } catch (error) {
         if (options.signal?.aborted) {
           truncated = true;
@@ -147,6 +147,7 @@ export async function buildAssetsZip(
       maxBytes: options.maxBytes ?? zipMaxBytes(),
       concurrency: options.concurrency ?? agentLimits.downloadConcurrency,
       meter,
+      referer: scan.page.finalUrl,
       ...(options.signal ? { signal: options.signal } : {}),
     });
   } finally {

@@ -116,6 +116,16 @@ beforeAll(async () => {
     "/chunked-2mib": streamed(2 * MiB),
     "/chunked-cut": streamed(2 * MiB, { cutAfter: 256 * 1024 }),
     "/sized-2mib": streamed(2 * MiB, { sized: true }),
+    // bybit.com's edge, which answers anything but a browser 403 for its favicon.
+    "/browser-only.png": (q, s) => {
+      if (!/ Chrome\/\d/.test(q.headers["user-agent"] ?? "")) {
+        s.writeHead(403, { "content-type": "text/html" });
+        s.end("<!doctype html><title>Access denied</title>");
+        return;
+      }
+      s.writeHead(200, { "content-type": "image/png" });
+      s.end(png);
+    },
     "/referer": (q, s) => { s.writeHead(200, { "content-type": "image/svg+xml" }); s.end(`<svg xmlns="http://www.w3.org/2000/svg"><title>${q.headers.referer}</title></svg>`); },
   };
   for (const [name, [, bytes]] of Object.entries(MAGIC)) {
@@ -612,6 +622,12 @@ describe("handleAssetRequest", () => {
     const direct = createSigner().sign(`${victim.origin}/secret.png`);
     expect(await errorOf(await handleAssetRequest(new Request(`https://app.local${direct}`, { headers: SAME_ORIGIN })))).toMatchObject({ status: 403, code: "blocked-address" });
     expect(victimHits).toBe(0);
+  });
+
+  it("asks for the file the way the scan's browser did", async () => {
+    const response = await handleAssetRequest(proxied("/browser-only.png"));
+    expect(response.status).toBe(200);
+    expect(Buffer.from(await response.arrayBuffer()).equals(png)).toBe(true);
   });
 
   it("sends the asset origin as Referer", async () => {

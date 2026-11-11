@@ -32,7 +32,9 @@ Usage
   assets-scraper scan <url> [options]
       Scan a page and print what is on it: counts, palette, fonts, logos.
   assets-scraper get <url> [options]
-      Scan a page and download a selection into scrap/<host> inside the current project.
+      Scan a page and download a selection into scrap/<host> inside the current project, or into
+      ~/Downloads/assets-scraper/<host> when there is no project. <host> is the page's host without www.:
+      www.redstone.finance lands in redstone.finance.
   assets-scraper fonts install <url> [options]
       Scan a page, convert its fonts to TTF and install them in the user font directory.
   assets-scraper fonts list [options]
@@ -41,7 +43,8 @@ Usage
       Remove the files install wrote for these families.
 
 Options
-  --out DIR             Where to write. Default: <project root>/scrap/<host>, or ~/Downloads/assets-scraper/<host>
+  --out DIR             Where to write, as is. Default: $ASSETS_SCRAPER_OUT/<host> when that is set, else
+                        <project root>/scrap/<host>, else ~/Downloads/assets-scraper/<host>
   --profile deck|all    deck (default) drops icons, thumbnails, small images and duplicates. all keeps everything
   --kind svg,image      Only these kinds
   --role logo,site-logo Only these roles
@@ -302,7 +305,7 @@ async function runFonts(positionals: string[], values: Values): Promise<number> 
       const source = openSource(values);
       const { scan } = await scanPage(scanUrl(url), source, values);
       const report = await installFonts(scan.fonts, {
-        fetchBytes: (file, fetchOptions) => source.fetchBytes(file, fetchOptions),
+        fetchBytes: (file, fetchOptions) => source.fetchBytes(file, { ...fetchOptions, referer: scan.page.finalUrl }),
         pageHost: scan.page.host,
         ...(named === undefined ? {} : { only: named }),
       });

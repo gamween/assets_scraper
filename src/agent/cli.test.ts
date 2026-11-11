@@ -297,4 +297,10 @@ describe("the report", () => {
     expect(USAGE).not.toMatch(/\p{Extended_Pictographic}/u);
     expect(USAGE).toContain("assets-scraper get <url>");
   });
+
+  it("says where get writes when there is no project, and what <host> is", () => {
+    expect(USAGE).toContain("~/Downloads/assets-scraper/<host> when there is no project");
+    expect(USAGE).toContain("www.redstone.finance lands in redstone.finance");
+    expect(USAGE).toContain("Default: $ASSETS_SCRAPER_OUT/<host> when that is set");
+  });
 });

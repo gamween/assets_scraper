@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import type { Asset, FontFamily, PageInfo, Palette, ScanStats } from "@/lib/contract";
 import { limits } from "@/server/config/limits";
 import { ScanFailure } from "@/server/errors";
-import { safeFetch } from "@/server/net/safe-fetch";
+import { BROWSER_USER_AGENT, safeFetch } from "@/server/net/safe-fetch";
 import { scanEngine } from "@/server/scan/engine";
 import type { SafeFetch, ScanBackend } from "@/server/scan/types";
 import { assertDeclaredType, assertSupportedBytes, declaredType, inlineFileBytes } from "./bytes";
@@ -21,6 +21,18 @@ export interface LocalScanSourceDeps {
   /** Used by `fetchBytes`. Every URL came from a scanned page, so it is always a guarded fetch. */
   fetch?: SafeFetch;
 }
+
+/**
+ * The headers a file of a scanned page is fetched with: the ones the scan's own requests for it carried (`verifyUrl`), a
+ * desktop Chrome user agent and the page as the referrer. Without them `safeFetch` sends its own user agent, which names
+ * this tool, and bybit.com answers that 403 for the favicon.ico the scan had just read as the site logo, so
+ * `download_assets` failed on the one file it was asked for. The scan's cookies are not here: the browser that held them
+ * is gone by the time a download runs.
+ */
+export const pageFileHeaders = (referer: string | undefined): Record<string, string> => ({
+  "user-agent": BROWSER_USER_AGENT,
+  ...(referer ? { referer } : {}),
+});
 
 /** `stripe.com-m1kq2z-4f9a1c`: the host of the final URL, when the scan ran, and enough randomness to be unique. */
 export const scanIdFor = (host: string, at: number = Date.now()): string =>
@@ -110,6 +122,7 @@ export function createLocalScanSource(deps: LocalScanSourceDeps = {}): ScanSourc
       const url = target.url;
       if (!url) throw new Error("this file has no URL to fetch");
       const response = await fetch(url, {
+        headers: pageFileHeaders(options?.referer),
         maxBytes: limits.proxyMaxBytes,
         timeoutMs: limits.proxyTimeoutMs,
         maxRedirects: limits.proxyMaxRedirects,

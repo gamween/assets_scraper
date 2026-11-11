@@ -14,6 +14,13 @@ export class SafeFetchError extends Error {
 }
 
 const DEFAULT_USER_AGENT = "Mozilla/5.0 (compatible; AssetsScraper/1.0; +https://github.com/gamween/assets_scraper)";
+/**
+ * A normal desktop Chrome user agent, never "HeadlessChrome": what a request for a file of a scanned page sends, so it
+ * is asked for the way the browser asked for it during the scan. Some edges refuse the default one above: bybit.com
+ * answers it 403 for the favicon.ico it serves Chrome.
+ */
+export const BROWSER_USER_AGENT =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36";
 
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 const DNS_CODES = new Set(["ENOTFOUND", "EAI_AGAIN", "EAI_NONAME", "EAI_NODATA", "EAI_FAIL"]);

@@ -1,6 +1,6 @@
 {
   "name": "assets-scraper",
-  "description": "Scan a web page for its SVGs, images, fonts and brand palette, download the usable ones into scrap/ inside the current project, and install the page fonts with their licence.",
+  "description": "Scan a web page for its SVGs, images, fonts and brand palette, download the usable ones into scrap/<host> inside the current project (~/Downloads/assets-scraper/<host> outside one), and install the page fonts with their licence.",
   "version": "0.1.0",
   "author": {
     "name": "gamween",

@@ -1,7 +1,8 @@
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { SafeFetch, SafeResponse } from "@/server/scan/types";
+import { BROWSER_USER_AGENT } from "@/server/net/safe-fetch";
+import type { SafeFetch, SafeFetchOptions, SafeResponse } from "@/server/scan/types";
 import { RemoteScanError, createRemoteScanSource } from "./source-remote";
 import { testAsset, testScan } from "./testing";
 import type { AgentScan } from "./types";
@@ -91,10 +92,12 @@ afterAll(async () => {
 const source = (patch: { token?: string } = {}) => createRemoteScanSource({ remote: origin, token: "agent-token", ...patch });
 
 /** A `SafeFetch` that answers every URL with `body`, or fails, and records what it was asked. */
-const fakeFetch = (body: Buffer | null, contentType = "image/png"): SafeFetch & { urls: string[] } => {
+const fakeFetch = (body: Buffer | null, contentType = "image/png"): SafeFetch & { urls: string[]; headers: Record<string, string>[] } => {
   const urls: string[] = [];
-  const fetch = (url: string): Promise<SafeResponse> => {
+  const headers: Record<string, string>[] = [];
+  const fetch = (url: string, options?: SafeFetchOptions): Promise<SafeResponse> => {
     urls.push(url);
+    headers.push(options?.headers ?? {});
     if (!body) return Promise.reject(new Error("the CDN refused"));
     return Promise.resolve({
       url,
@@ -108,7 +111,7 @@ const fakeFetch = (body: Buffer | null, contentType = "image/png"): SafeFetch & 
       cancel: () => Promise.resolve(),
     } satisfies SafeResponse);
   };
-  return Object.assign(fetch, { urls });
+  return Object.assign(fetch, { urls, headers });
 };
 
 describe("createRemoteScanSource().scan", () => {
@@ -282,6 +285,16 @@ describe("createRemoteScanSource().fetchBytes", () => {
     expect(bytes).toEqual(DIRECT_PNG);
     expect(fetch.urls).toEqual(["https://cdn.example.com/hero.png"]);
     expect(calls).toHaveLength(0);
+  });
+
+  it("asks for a file directly the way the scan's browser did", async () => {
+    // The local source's headers: bybit.com refuses safeFetch's own user agent for its favicon.ico.
+    const fetch = fakeFetch(DIRECT_PNG);
+    await createRemoteScanSource({ remote: origin, token: "agent-token" }, { fetch }).fetchBytes(
+      { url: "https://www.bybit.com/favicon.ico", proxy: "/api/asset?id=favicon", format: "png" },
+      { referer: "https://www.bybit.com/" },
+    );
+    expect(fetch.headers).toEqual([{ "user-agent": BROWSER_USER_AGENT, referer: "https://www.bybit.com/" }]);
   });
 
   it("falls back to the hosted proxy when the direct fetch fails", async () => {
