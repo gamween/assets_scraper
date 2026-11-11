@@ -1,4 +1,4 @@
-import type { Asset, FoundIn, HiddenReason } from "@/lib/contract";
+import type { Asset, FoundIn, HiddenReason, Wordmark } from "@/lib/contract";
 import { formatBytes, formatCount, formatDimensions } from "@/lib/format";
 import { assetBytes, type SectionId } from "@/lib/client/filters";
 
@@ -129,3 +129,35 @@ const FOUND_IN_LABELS: Record<FoundIn, string> = {
 };
 
 export const foundInLabel = (foundIn: FoundIn[]) => foundIn.map((item) => FOUND_IN_LABELS[item]).join(", ");
+
+/** Tracking in em, so it reads at any size: investirday.fr's 1.2 px at 12 px is `0.1em`. */
+const trackingEm = (wordmark: Wordmark): string => `${Math.round((wordmark.letterSpacing / wordmark.size) * 1000) / 1000}em`;
+
+/** `Inter 700 · 12px · 0.1em · uppercase`: the type settings, without the ones the page leaves at their default. */
+export function wordmarkSettings(wordmark: Wordmark): string {
+  return [
+    `${wordmark.family} ${wordmark.weight}`,
+    `${wordmark.size}px`,
+    wordmark.letterSpacing === 0 ? "" : trackingEm(wordmark),
+    wordmark.transform === "none" ? "" : wordmark.transform,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+/**
+ * What `Copy CSS` puts on the clipboard: the type settings as declarations, and the runs with their colours in a
+ * comment. Scraped strings, so the family is quoted with its quotes escaped and a run cannot close the comment.
+ */
+export function wordmarkCss(wordmark: Wordmark): string {
+  const runs = wordmark.runs.map((run) => `${run.text.replace(/\s+/g, " ").trim()} ${run.hex}`.replace(/\*\//g, "* /")).join(", ");
+  return [
+    `font-family: "${wordmark.family.replace(/["\\]/g, "\\$&")}";`,
+    `font-weight: ${wordmark.weight};`,
+    `font-size: ${wordmark.size}px;`,
+    ...(wordmark.letterSpacing === 0 ? [] : [`letter-spacing: ${trackingEm(wordmark)};`]),
+    ...(wordmark.transform === "none" ? [] : [`text-transform: ${wordmark.transform};`]),
+    ...(wordmark.text.includes("\n") ? ["white-space: pre-line;"] : []),
+    `/* ${runs} */`,
+  ].join("\n");
+}

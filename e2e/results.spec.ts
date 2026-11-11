@@ -410,6 +410,29 @@ test.describe("results", () => {
     await expect(links.first()).toHaveAttribute("rel", "noopener noreferrer");
   });
 
+  test("the wordmark sits under the palette as plain text with its colours, and copies as CSS", async ({ page, context }) => {
+    await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+    await openResults(page);
+    await expect(page.getByRole("region", { name: "Palette" })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Wordmark" })).toHaveCount(0);
+
+    // investirday.fr's lockup: "Investir" over "Day" beside a monogram drawn at 36x36.
+    const wordmark = {
+      text: "Investir\nDay", family: "Inter", weight: 700, size: 12, letterSpacing: 1.2, transform: "uppercase" as const,
+      runs: [{ text: "Investir\n", hex: "#130d21" }, { text: "Day", hex: "#fb2189" }], withLogo: { id: "monogram", width: 36, height: 36 },
+    };
+    const events = linear.map((event) => (event.type === "page" ? { ...event, page: { ...event.page, wordmark } } : event));
+    await openResults(page, { events });
+    const region = page.getByRole("region", { name: "Wordmark" });
+    await expect(region.getByTestId("wordmark-run")).toHaveText([/^Investir\s*#130d21$/, /^Day\s*#fb2189$/]);
+    await expect(region.getByTestId("wordmark-settings")).toHaveText("Inter 700 · 12px · 0.1em · uppercase · beside a 36×36 logo");
+    await region.getByRole("button", { name: "Copy CSS" }).click();
+    await expect(page.getByTestId("toast")).toHaveText(/CSS copied/);
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
+      'font-family: "Inter";\nfont-weight: 700;\nfont-size: 12px;\nletter-spacing: 0.1em;\ntext-transform: uppercase;\nwhite-space: pre-line;\n/* Investir #130d21, Day #fb2189 */',
+    );
+  });
+
   test.describe("on a phone", () => {
     test.use({ viewport: { width: 390, height: 844 } });
 
