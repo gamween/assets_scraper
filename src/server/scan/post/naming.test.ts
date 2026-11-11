@@ -99,6 +99,19 @@ describe("cleanBasename", () => {
     expect(cleanBasename("https://a.example/")).toBeUndefined();
     expect(cleanBasename("data:image/png;base64,AAAA")).toBeUndefined();
   });
+
+  it("reads the name a file was uploaded to Notion with, whichever way Notion serves it", () => {
+    // ethglobal.notion.site/Brand-493ce449e63444288d5b9c0ed59123ca: three logos that used to be one name cut short.
+    const space = "6594f729-d57b-4ace-a6ca-ef7eca93bb9d";
+    const block = "table=block&id=391d62f1-a412-8070-8626-e588c938f96b&spaceId=6594f729-d57b-4ace-a6ca-ef7eca93bb9d&width=470&userId=&cache=v2";
+    expect(cleanBasename(`https://ethglobal.notion.site/image/attachment%3Acf353582-4ab1-4745-854a-c87ed7d7c8b4%3AETHGlobal-Horizontal-Colour.png?${block}`)).toBe("ETHGlobal-Horizontal-Colour");
+    expect(cleanBasename(`https://ethglobal.notion.site/image/attachment%3A8e1366cb-6149-47f6-a4d5-5a6ed86adf1b%3AETHGlobal-Vertical-Colour.png?${block}`)).toBe("ETHGlobal-Vertical-Colour");
+    expect(cleanBasename(`https://img.notionusercontent.com/s3/prod-files-secure%2F${space}%2F53d5d914-1641-47b8-a0ef-ddca4447d653%2FETHGlobal-Logomark-Colour.png/size/w=250?tok=eyJhbGciOiJFUzI1NiIs`)).toBe("ETHGlobal-Logomark-Colour");
+    expect(cleanBasename(`https://www.notion.so/image/https%3A%2F%2Fs3-us-west-2.amazonaws.com%2Fsecure.notion-static.com%2F53d5d914-1641-47b8-a0ef-ddca4447d653%2FPress_Kit_Logo.svg?${block}`)).toBe("Press_Kit_Logo");
+    // Notion's own static files keep their plain name, and another host is read as before.
+    expect(cleanBasename("https://ethglobal.notion.site/images/notion-logo-block-main.svg")).toBe("notion-logo-block-main");
+    expect(cleanBasename("https://a.example/image/attachment%3Acf353582-4ab1-4745-854a-c87ed7d7c8b4%3ALogo.png")).toBe("attachment:cf353582-4ab1-4745-854a-c87ed7d7c8b4:Logo");
+  });
 });
 
 describe("createFilenamer", () => {
