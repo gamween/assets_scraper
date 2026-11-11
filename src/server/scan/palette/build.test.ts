@@ -189,6 +189,21 @@ describe("buildPalette rules", () => {
     expect(flat.neutrals).toEqual(["#f5f5f7", "#333336", "#ffffff", "#6e6e73"]);
   });
 
+  it("names the page background the DOM paints when a video hero covers the viewport", () => {
+    // signalweek.com: a full-viewport video the scan never plays, over its container's #222222, on a #e5e8e9 page
+    const samples: RawPaletteSignals["samples"] = [
+      ["bg", "#e5e8e9", 9000, 2], ["text", "#1c1c1c", 400, 200], ["cta", "#01505e", 120, 2], ["bg", "#01505e", 300, 2], ["text", "#58595a", 80, 14],
+    ];
+    const hero = screenshot(100, 100, "#222222", [{ rect: [70, 5, 20, 6], hex: "#01505e" }]);
+    const palette = buildPalette(signals({ samples, mediaRects: [[0, 0, 100, 100, "video"]] }), hero);
+    expect(palette.colors.find((c) => c.role === "background")?.hex).toBe("#e5e8e9");
+    expect(palette.colors.find((c) => c.role === "text")?.hex).toBe("#1c1c1c");
+    expect(palette.neutrals).not.toContain("#222222");
+    // Without the hero the screenshot still has its say: a DOM background that is nowhere on screen gets no role
+    const covered = buildPalette(signals({ samples }), screenshot(100, 100, "#222222"));
+    expect(covered.colors.some((c) => c.role === "background")).toBe(false);
+  });
+
   it("pools a vivid glow spread over many pixel bins into one brand color", () => {
     const width = 300, height = 100;
     const glow = screenshot(width, height, "#000000");
