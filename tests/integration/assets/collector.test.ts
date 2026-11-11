@@ -345,6 +345,28 @@ describe("collector brand links", () => {
     ]);
   });
 
+  it("leaves out the page itself in other languages", async () => {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    await page.route("**/*", (route) =>
+      route.request().url() === "https://wallet.test/press-and-media"
+        ? route.fulfill({
+            contentType: "text/html",
+            body: `<!doctype html><title>Press</title>
+              <a href="/cs/press-and-media">\u010ce\u0161tina</a> <a href="/ja/press-and-media/">\u65e5\u672c\u8a9e</a> <a href="/pt-br/press-and-media">Portugu\u00eas</a>
+              <a href="/press-and-media/logos">Logos</a> <a href="/de/brand">Marke</a>`,
+          })
+        : route.fulfill({ status: 404 }),
+    );
+    await page.goto("https://wallet.test/press-and-media");
+    const press = await runCollector(page, collectorOptions("wallet.test", ""));
+    await context.close();
+    expect(press.brandLinks).toEqual([
+      { href: "https://wallet.test/press-and-media/logos", text: "Logos" },
+      { href: "https://wallet.test/de/brand", text: "Marke" },
+    ]);
+  });
+
   it("takes the press kit, not every article filed under it", async () => {
     const context = await browser.newContext();
     const page = await context.newPage();
