@@ -32,7 +32,7 @@ The main use is building pitch decks, and the main destination is Figma. The too
 - Images: every rendered and lazy source, CSS images, icons, manifest icons, social images, JSON-LD logos, network-only images, `blob:` and `data:` images. Size variants merged. Originals recovered behind image CDNs and verified.
 - Fonts: families with clean names, faces, files, licence, used or only declared. Specimen rendered with the real font. TTF download only for open licences.
 - Brand palette: brand colors and neutrals, click to copy hex.
-- Brand resource links found on the page (press kit, brand, logos), one click to scan them.
+- Brand resource links found on the page (press kit, brand, logos, brand portals on other hosts), one click to scan them, and the brand kit files the page offers (archives, guidelines, logo files), one click to download them.
 - Results UI: sections, tabs, search, sort, preview background control, detail view, grid selection, ZIP of the selection, single downloads, Copy SVG code, shareable `/?url=` link, recent scans.
 - Security: SSRF protection for Chromium and every server fetch, signed asset proxy, rate limit, bot protection, scan budget, kill switch.
 - Blocked sites: honest error plus assets from public sources (favicon service, Wikidata logo, readable page head).
@@ -229,6 +229,16 @@ export interface PageInfo {
   favicon?: AssetSource;
   status: number;
   brandLinks: { href: string; text: string }[];
+  brandFiles?: BrandFile[];   // absent from the early page event
+}
+
+export interface BrandFile {
+  id: string;             // first 12 hex characters of the sha1 of the URL
+  url: string;
+  name: string;
+  type: "zip" | "pdf" | "ai" | "eps" | "svg" | "png";
+  bytes?: number;         // the size the host announced to a ranged request
+  foundIn: "link" | "script";
 }
 
 export interface ScanStats {
@@ -346,7 +356,8 @@ Walk every element in the document, in every open shadow root and in every reada
 - `blob:` URLs: network body first, then `fetch` inside the page, then canvas `toDataURL` for a still-loaded image.
 - `data:` URIs: decoded. SVG data URIs join the SVG kind.
 - Network-only images: every captured image response is a candidate.
-- Brand links: same-site `<a>` whose href or text matches `/brand|press|media[- ]?kit|newsroom|logos?|guidelines/i`, at most 6.
+- Brand links: same-site `<a>` whose last path segment or text holds a brand word (`brand`, `press`, `media kit`, `newsroom`, `identity`, `logo`, `guidelines`), and links to another host that is a brand portal (Frontify, standards.site, Visualbook, Brandfolder, Brandpad, Corebook, Lingo, Bynder, the vendor's home page excepted) or whose text, path or card heading says brand kit in a whole phrase (`brand kit`, `media kit`, `press kit`, `brand guidelines`, `brand manual`, `logo files` and the like). Phrases and portals first, then page order, at most 6. A link to a file is never a brand link.
+- Brand files: `<a>` whose path or `download` attribute ends in `.zip`, `.pdf`, `.ai`, `.eps`, `.svg` or `.png`, on any host. On a brand page (a path segment holds a brand word) every one counts; elsewhere the path, the text, the label, the `download` name or the card heading has to hold a brand word. On a brand page the capture also reads the page's own scripts (same site, at most 80, 4 MB each, 16 MB in all) for quoted paths with those extensions, and keeps the archives and documents whose path holds a brand word and the images in a folder whose name does. Post-processing names each file (a label that is not a download verb, the `download` name, the file name unless it is a hash, the card heading, the type), merges links to one URL, drops a vector or raster the scan holds as an asset, keeps at most 16, and asks each host for the size with `GET` and `Range: bytes=0-0` through `safeFetch` (3 s each, 6 at once, within the verification window).
 
 ### 8.2 Noise (dropped, counted by reason in `stats.hidden`)
 
@@ -509,7 +520,7 @@ No analytics, no public listing, `noindex` everywhere, no server-side storage of
 
 - Header: favicon, page title, mono meta `linear.app · 48 assets · 11s`, actions `Copy link`, `Rescan`, `Download all 48`.
 - Palette strip: brand swatches then neutrals, each a 32 px square with its hex in mono under it, click copies the hex, `Copy all` copies one `#hex role` per line.
-- Brand links: `Brand resources on this site` chips that start a scan of that page.
+- Brand links: `Brand resources on this site` chips that start a scan of that page, then brand file chips (name, type, size) that open the file's URL.
 - Sticky filter row: tabs `All`, `SVG`, `Images`, `Fonts` with counts, search `Filter by name or URL` (key `/`), sort (`Relevance`, `Page order`, `Largest`, `File size`, `Name`), background control `Auto · Light · Dark · Grid`.
 - Sections in `All`: `Logos` (site-logo, logo, favicon), `SVG`, `Images` (social images lead with an `OG image` badge), `Fonts`, `Small icons` (collapsed, `Show`), `In stylesheets` (declared-only, collapsed), `Declared, not used` (fonts, collapsed). The type tabs show the same assets without the `Logos` section, with a `Logo` badge. A footer line counts hidden noise: `9 hidden: tracking pixels and spacer images`.
 - Partial results show a banner: `Partial results. The page didn't finish loading.`
@@ -618,6 +629,7 @@ All in `src/server/config/limits.ts`, env-overridable.
 | Collector output | 32,000,000 JSON characters; over it, repeated candidate URLs go first, then the largest items (12 MB of SVG plus 16 MB of blobs no longer always fits whole) |
 | Font metadata parsing | 5 MB each, 1,500 ms and 40 files per scan (past them a font is hashed without metadata) |
 | Assets per scan | 1,500 |
+| Brand links and brand files per scan | 6 and 16; brand page scripts 80, 4 MB each, 16 MB in all; size probes 3 s |
 | Signed URLs per scan | 2,000 |
 | Verification and probes | 8 s, 16 concurrent, 150 declared probes, 2,000 unloaded stylesheet URLs |
 | Proxy response | 25 MB, 20 s |

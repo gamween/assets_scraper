@@ -28,6 +28,26 @@ const defaults = {
   maxDownloadBytes: 300 * MB,
   /** Bytes of one font file the installer accepts, before and after conversion. */
   fontInstallMaxBytes: 8 * MB,
+  /**
+   * Bytes of one brand file a download fetches. Above the 25 MB a proxied asset may take (`proxyMaxBytes`), which is
+   * the hosted app's per-request bound: a brand file only ever goes from its host to this machine, and kits are large,
+   * monad.xyz's 29.7 MB (every logo in SVG and a 51 MB guidelines PDF, compressed), stellar.org's 6.3 MB, token2049.com's
+   * 3.1 MB. The bytes are held in memory to read the archive's directory, so this is also the memory one file takes.
+   */
+  brandFileMaxBytes: 64 * MB,
+  /** How long one brand file may take to arrive: 64 MB at 5 Mbit/s is under two minutes. */
+  brandFileTimeoutMs: 120_000,
+  /** Entries an archive's directory may list, metadata included (token2049.com's logomarks: 160). More is refused. */
+  archiveMaxEntries: 5_000,
+  /** Files one archive writes. */
+  archiveMaxFiles: 500,
+  /** Bytes one file out of an archive may inflate to: monad.xyz's guidelines PDF is 51.6 MB. */
+  archiveMaxFileBytes: 64 * MB,
+  /**
+   * Bytes all the files of one archive may inflate to, the bound on a zip bomb's work and on the disk one archive takes:
+   * monad.xyz's kit inflates to 51.8 MB, token2049.com's to 34 MB.
+   */
+  archiveMaxBytes: 128 * MB,
 };
 
 export type AgentLimitName = keyof typeof defaults;

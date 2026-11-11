@@ -90,6 +90,7 @@ Tools, all returning compact JSON:
 | `scan_page` | `url`, optional `refresh` | `scanId`, page title and host, counts per kind, palette hexes with roles, fonts (family, licence kind, used on page), the logos (id, name, kind, dimensions), and the number of other assets. Never the full list |
 | `list_assets` | `scanId`, optional `kind`, `role`, `minLongSide`, `nameContains`, `limit` (default 40), `offset` | Compact rows: id, name, kind, role, dimensions, bytes |
 | `download_assets` | `scanId`, optional `ids`, `profile` (default `deck`), filters, `maxTotalBytes`, `maxFileBytes`, `dest` | Written paths, total bytes, the drop reasons, and the destination directory |
+| `download_brand_files` | `scanId`, optional `ids`, `extract` (default true), `dest` | Written paths under `brand/`, what each archive gave and left out, what failed and why |
 | `read_svg` | `scanId`, `id` | The SVG markup as text |
 | `get_palette` | `scanId` | Hexes with roles |
 | `install_fonts` | `scanId`, optional `families` | Installed families with their licence, the paths, and what could not be installed and why |
@@ -108,6 +109,7 @@ Each entry is stamped with the build that wrote it, the package version plus a d
 assets-scraper scan <url> [--json] [--remote]
 assets-scraper get <url> [--out DIR] [--profile deck|all] [--kind svg,image] [--role logo]
                          [--min-long-side 600] [--max 60] [--name-contains x] [--json] [--remote]
+assets-scraper brand <url> [--ids a,b] [--no-extract] [--out DIR] [--json]
 assets-scraper fonts install <url> [--families "Inter,Söhne"] [--json]
 assets-scraper fonts list [--json]
 assets-scraper fonts uninstall <family> [--json]
@@ -138,6 +140,7 @@ Install: `claude plugin marketplace add ~/Development/tools/assets_scraper` then
 - Local mode inherits every v1 guard: the scan engine runs Chromium behind the egress proxy, and every fetch goes through `safeFetch`.
 - The CLI and MCP write only inside the resolved destination directory: the path is resolved, symlinks are refused, and anything outside the project root or the fallback directory is an error. A destination that came from an agent is held to the narrower rule: it must be inside `<project root>/scrap` (the fallback directory when there is no project), so an agent-supplied path cannot drop scraped files into the source tree.
 - Font installs write only into the user font directory, only files this tool created, and are reversible through the manifest.
+- Brand files are fetched on the agent's machine through `safeFetch`, never through the hosted app, up to 64 MB each, and held to their type by their first bytes. A ZIP is read from its central directory (at most 5,000 entries) and only its `svg`, `png`, `pdf`, `ai` and `eps` files are written: never a nested archive, a symbolic link, macOS metadata, an encrypted entry, or a name that is absolute, holds a drive letter, `..`, `.` or a control character. Each file is inflated into a buffer of its declared size, which has to fit 64 MB and what is left of the archive's 128 MB before a byte is inflated, the declared size of every entry tried counting against it, so a zip bomb, deep or wide, costs at most that. The hosted API reports brand files and does not download them.
 - Agent tokens are compared in constant time, are never logged, and live only in env.
 - The ZIP endpoint applies the v1 asset caps, the proxy byte budget and the content-type allowlist.
 

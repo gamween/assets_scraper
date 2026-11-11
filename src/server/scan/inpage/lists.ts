@@ -14,6 +14,7 @@ export const OUTPUT_LISTS = [
   "unreadableSheets",
   "blobs",
   "brandLinks",
+  "brandFiles",
 ] as const satisfies readonly (keyof RawCollectorOutput)[];
 
 /** Every list on `RawCollectorOutput` is named above: a list added there and forgotten here is a compile error. */

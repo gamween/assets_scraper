@@ -103,6 +103,7 @@ export interface CollectorOptions {
   blobFetchMs: number;                      // fetch of one `blob:` image (limits.blobFetchMs)
   maxTextNodes: number;                     // text nodes read for font usage (limits.collectorMaxTextNodes)
   maxBrandLinks: number;                    // spec 8.1
+  maxBrandFiles: number;                    // links to brand files handed over, before post-processing keeps limits.maxBrandFiles
   maxBlobBytes: number;                     // bytes of one `blob:` image before base64 (spec 7.4, limits.blobMaxBytes)
   maxBlobTotalBytes: number;                // all `blobs` together before base64 (spec 7.4, limits.blobTotalBytes)
   maxOutputChars: number;                   // JSON characters of the whole output; lists are cut to fit (limits.collectorMaxOutputChars)
@@ -121,8 +122,22 @@ export interface RawCollectorOutput {
   unreadableSheets: string[];
   blobs: { url: string; mime: string; base64: string }[];
   brandLinks: { href: string; text: string }[];
+  brandFiles: RawBrandFileLink[];
   noise: Partial<Record<HiddenReason, number>>;
   stats: { elements: number; ms: number; truncated: boolean };
+}
+
+/**
+ * A link to a file a brand kit could be made of (spec 8.1), with everything the page says about it: the link's own text
+ * and label, the file name its `download` attribute asks for, and the heading of the card the link sits in alone.
+ * Post-processing decides which are brand files and what they are called (`brand-files.ts`).
+ */
+export interface RawBrandFileLink {
+  href: string;
+  text: string;
+  label?: string;
+  download?: string;
+  caption?: string;
 }
 
 export interface FontBinaryMeta {
@@ -171,6 +186,11 @@ export interface CapturedNetwork {
   images: CapturedImage[];
   fonts: CapturedFont[];
   sheets: CapturedSheet[];
+  /**
+   * Paths and URLs of brand files quoted in the page's first-party scripts, as written, read only on a brand page
+   * (`CaptureOptions.scripts`). Absent when no script was read.
+   */
+  scriptFiles?: string[];
   bodyTimeouts: number;
   skippedBodies: number;
 }

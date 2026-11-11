@@ -1,4 +1,4 @@
-import { deflateSync } from "node:zlib";
+import { crc32, deflateRawSync, deflateSync } from "node:zlib";
 import sharp from "sharp";
 import type { Asset, AssetRole, FontFamily, FontFile, Palette } from "@/lib/contract";
 import type { AgentScan, SelectionBudget } from "./types";
@@ -157,3 +157,107 @@ export function woffFromSfnt(sfnt: Buffer): Buffer {
   });
   return woff;
 }
+
+/** One entry of a test archive. Every field past `name` lets a test write the lie a hostile archive would. */
+export interface ZipEntrySpec {
+  name: string;
+  data?: Buffer | string;
+  /** 8 (deflate, the default) or 0 (stored); any other number is written as it is. */
+  method?: number;
+  /** The raw stream written for the entry, instead of `data` compressed. */
+  stream?: Buffer;
+  /** The uncompressed size the directory claims, instead of the real one. */
+  declaredSize?: number;
+  /** Written into the directory with the Unix symlink mode. */
+  symlink?: boolean;
+  /** The encryption flag. */
+  encrypted?: boolean;
+  /** The local header this entry's directory record points at, by index, instead of its own. */
+  pointsAt?: number;
+  /** The UTF-8 flag. Off by default, as macOS writes it. */
+  utf8?: boolean;
+}
+
+/**
+ * A ZIP archive built byte by byte, so a test can hand the reader what no archiver would write: a stream that inflates
+ * past its declared size, entries sharing one stream, a `..` name, a symbolic link, a ZIP64 directory.
+ */
+export function buildZip(specs: ZipEntrySpec[], options: { zip64?: boolean } = {}): Buffer {
+  const chunks: Buffer[] = [];
+  const locals: { offset: number; crc: number; size: number; compressed: number; method: number }[] = [];
+  let offset = 0;
+  for (const spec of specs) {
+    const data = typeof spec.data === "string" ? Buffer.from(spec.data) : (spec.data ?? Buffer.alloc(0));
+    const method = spec.method ?? 8;
+    const stream = spec.stream ?? (method === 8 ? deflateRawSync(data) : data);
+    const name = Buffer.from(spec.name, "utf8");
+    const header = Buffer.alloc(30);
+    header.writeUInt32LE(0x04034b50, 0);
+    header.writeUInt16LE(20, 4);
+    header.writeUInt16LE((spec.encrypted ? 0x0001 : 0) | (spec.utf8 ? 0x0800 : 0), 6);
+    header.writeUInt16LE(method, 8);
+    header.writeUInt32LE(crc32(data), 14);
+    header.writeUInt32LE(stream.length, 18);
+    header.writeUInt32LE(spec.declaredSize ?? data.length, 22);
+    header.writeUInt16LE(name.length, 26);
+    locals.push({ offset, crc: crc32(data), size: spec.declaredSize ?? data.length, compressed: stream.length, method });
+    chunks.push(header, name, stream);
+    offset += header.length + name.length + stream.length;
+  }
+  const directoryStart = offset;
+  specs.forEach((spec, index) => {
+    const local = locals[spec.pointsAt ?? index];
+    const name = Buffer.from(spec.name, "utf8");
+    const extra = options.zip64 ? Buffer.alloc(4 + 24) : Buffer.alloc(0);
+    if (options.zip64) {
+      extra.writeUInt16LE(0x0001, 0);
+      extra.writeUInt16LE(24, 2);
+      extra.writeBigUInt64LE(BigInt(local.size), 4);
+      extra.writeBigUInt64LE(BigInt(local.compressed), 12);
+      extra.writeBigUInt64LE(BigInt(local.offset), 20);
+    }
+    const record = Buffer.alloc(46);
+    record.writeUInt32LE(0x02014b50, 0);
+    record.writeUInt16LE(spec.symlink ? (3 << 8) | 20 : 20, 4);
+    record.writeUInt16LE(20, 6);
+    record.writeUInt16LE((spec.encrypted ? 0x0001 : 0) | (spec.utf8 ? 0x0800 : 0), 8);
+    record.writeUInt16LE(local.method, 10);
+    record.writeUInt32LE(local.crc, 16);
+    record.writeUInt32LE(options.zip64 ? 0xffffffff : local.compressed, 20);
+    record.writeUInt32LE(options.zip64 ? 0xffffffff : local.size, 24);
+    record.writeUInt16LE(name.length, 28);
+    record.writeUInt16LE(extra.length, 30);
+    record.writeUInt32LE((spec.symlink ? 0o120777 : 0o100644) * 0x10000, 38);
+    record.writeUInt32LE(options.zip64 ? 0xffffffff : local.offset, 42);
+    chunks.push(record, name, extra);
+    offset += record.length + name.length + extra.length;
+  });
+  const directorySize = offset - directoryStart;
+  if (options.zip64) {
+    const record = Buffer.alloc(56);
+    record.writeUInt32LE(0x06064b50, 0);
+    record.writeBigUInt64LE(BigInt(44), 4);
+    record.writeBigUInt64LE(BigInt(specs.length), 24);
+    record.writeBigUInt64LE(BigInt(specs.length), 32);
+    record.writeBigUInt64LE(BigInt(directorySize), 40);
+    record.writeBigUInt64LE(BigInt(directoryStart), 48);
+    const locator = Buffer.alloc(20);
+    locator.writeUInt32LE(0x07064b50, 0);
+    locator.writeBigUInt64LE(BigInt(offset), 8);
+    locator.writeUInt32LE(1, 16);
+    chunks.push(record, locator);
+  }
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(options.zip64 ? 0xffff : specs.length, 8);
+  end.writeUInt16LE(options.zip64 ? 0xffff : specs.length, 10);
+  end.writeUInt32LE(options.zip64 ? 0xffffffff : directorySize, 12);
+  end.writeUInt32LE(options.zip64 ? 0xffffffff : directoryStart, 16);
+  chunks.push(end);
+  return Buffer.concat(chunks);
+}
+
+/** A small SVG and a 1x1 PNG, the logo files of a test kit. */
+export const TEST_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10"/></svg>';
+export const TEST_PNG = Buffer.from("89504e470d0a1a0a0000000d4948445200000001000000010806000000" + "1f15c4890000000d4944415478da63f8cfc0f01f0005000201" + "e5ab6b6c0000000049454e44ae426082", "hex");
+

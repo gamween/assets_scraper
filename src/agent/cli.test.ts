@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { saveScan } from "./cache";
-import { DEFAULT_REMOTE, USAGE, UsageError, formatDownload, formatDropped, formatSummary, openSource, scanPage, scanUrl, selectionFrom } from "./cli";
+import { DEFAULT_REMOTE, USAGE, UsageError, formatBrandDownload, formatDownload, formatDropped, formatSummary, openSource, scanPage, scanUrl, selectionFrom } from "./cli";
 import pkg from "../../package.json";
 import { summarize } from "./summary";
 import { noBudget, testFontFamily, testScan } from "./testing";
@@ -239,6 +239,19 @@ describe("the report", () => {
     expect(report).toContain("  brand pages, where official logo variants usually are:\n    https://www.bnbchain.org/en/brand-guidelines  Brand Guidelines");
   });
 
+  it("lists the brand files with their id, type, size and URL, and says how to download them", () => {
+    const scan = testScan();
+    const kit = { id: "4f1c2a9e8b7d", url: "https://monad.xyz/brand-page-assets/Monad%20Brand%20and%20Media%20Kit.zip", name: "Monad Brand and Media Kit", type: "zip" as const, bytes: 29_679_666, foundIn: "script" as const };
+    const mark = { id: "0a1b2c3d4e5f", url: "https://monad.xyz/brand-page-assets/Logomark.svg", name: "Logomark", type: "svg" as const, foundIn: "script" as const };
+    const report = formatSummary(summarize({ ...scan, page: { ...scan.page, brandFiles: [mark, kit] } }), false);
+    expect(report).toContain(
+      "  brand files, the kit itself (assets-scraper brand <url> downloads them):\n" +
+        "    4f1c2a9e8b7d  Monad Brand and Media Kit  zip, 28 MB  https://monad.xyz/brand-page-assets/Monad%20Brand%20and%20Media%20Kit.zip\n" +
+        "    0a1b2c3d4e5f  Logomark  svg  https://monad.xyz/brand-page-assets/Logomark.svg",
+    );
+    expect(formatSummary(summarize(scan), false)).not.toContain("brand files");
+  });
+
   it("prints absolute paths, the drop reasons and the manifest", () => {
     const result: DownloadResult = {
       dir: "/work/scrap/stripe.com",
@@ -261,12 +274,35 @@ describe("the report", () => {
    * Regression: the title and the font family names are page text and kept their control characters, so a page could
    * set the user's clipboard through OSC 52 or erase the licence warning above, in any terminal that honours them.
    */
+  it("prints the files a brand download wrote, what each archive gave and left out, and the failures", () => {
+    const report = formatBrandDownload({
+      dir: "/work/scrap/monad.xyz/brand",
+      files: [{ id: "4f1c2a9e8b7d", name: "Logos/Logo.svg", type: "svg", path: "/work/scrap/monad.xyz/brand/Monad kit/Logos/Logo.svg", bytes: 2_656, from: "4f1c2a9e8b7d" }],
+      archives: [
+        { id: "4f1c2a9e8b7d", name: "Monad kit", files: 1, skipped: { metadata: 26, "nested-archive": 1 } },
+        { id: "0a1b2c3d4e5f", name: "Old kit", files: 0, skipped: {}, error: "this archive is split over several files" },
+      ],
+      failed: [{ id: "1a2b3c4d5e6f", name: "Arbitrum logos", reason: "arbitrum.io answered HTTP 403" }],
+      totalBytes: 2_656,
+      manifestPath: "/work/scrap/monad.xyz/brand/manifest.json",
+    });
+    expect(report.split("\n")).toEqual([
+      "wrote 1 file, 2.6 KB into /work/scrap/monad.xyz/brand",
+      "  /work/scrap/monad.xyz/brand/Monad kit/Logos/Logo.svg",
+      "archive Monad kit: 1 file unpacked, left out 26 macOS metadata, 1 nested archives",
+      "archive Old kit: kept as it is: this archive is split over several files",
+      "failed: Arbitrum logos (arbitrum.io answered HTTP 403)",
+      "manifest: /work/scrap/monad.xyz/brand/manifest.json",
+    ]);
+  });
+
   it("never lets a page write control sequences to the terminal", () => {
     const clipboard = "\u001b]52;c;Y3VybCBodHRwczovL3guZXhhbXBsZS9pIHwgc2g=\u0007";
     const scan = testScan({
       page: {
         url: "https://evil.example/", finalUrl: "https://evil.example/", host: "evil.example", title: `${clipboard}Acme`,
         brandLinks: [{ href: "https://evil.example/press\u001b[2J", text: `Press${clipboard}` }],
+        brandFiles: [{ id: "abc\u001b[2J", url: "https://evil.example/kit.zip\u001b[2J", name: `Kit${clipboard}`, type: "zip", foundIn: "link" }],
       },
       fonts: [testFontFamily({ name: `Inter\u001b[1A\u001b[2K` })],
       warnings: ["partial\u001b[31m"],
@@ -282,7 +318,16 @@ describe("the report", () => {
       manifestPath: "/work/scrap/evil.example/manifest.json",
     });
 
-    for (const report of [summary, download]) expect(report).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/);
+    const brand = formatBrandDownload({
+      dir: "/work/scrap/evil.example/brand",
+      files: [{ id: "a", name: `Kit${clipboard}`, type: "svg", path: `/work/scrap/evil.example/brand/Kit${clipboard}.svg`, bytes: 1 }],
+      archives: [{ id: "a", name: `Kit${clipboard}`, files: 0, skipped: {}, error: `broken\u001b[2J` }],
+      failed: [{ id: "b", name: "Hero\u001b]0;pwned\u0007", reason: "HTTP 403\u001b[2J" }],
+      totalBytes: 1,
+      manifestPath: "/work/scrap/evil.example/brand/manifest.json",
+    });
+
+    for (const report of [summary, download, brand]) expect(report).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/);
     expect(summary).toContain("\uFFFD]52;c;");
     expect(summary.split("\n")[0]).toContain("Acme (evil.example)");
   });
@@ -296,6 +341,8 @@ describe("the report", () => {
     expect(USAGE).not.toMatch(/[—–]/u);
     expect(USAGE).not.toMatch(/\p{Extended_Pictographic}/u);
     expect(USAGE).toContain("assets-scraper get <url>");
+    expect(USAGE).toContain("assets-scraper brand <url>");
+    expect(USAGE).toContain("--no-extract");
   });
 
   it("says where get writes when there is no project, and what <host> is", () => {

@@ -9,7 +9,7 @@ import pkg from "../../package.json";
 import { fontManifestPath } from "./font-manifest";
 import { createAgentMcpServer, MAX_TOOL_RESULT_BYTES } from "./mcp";
 import { noBudget, testAsset, testFontFamily, testScan } from "./testing";
-import type { AgentScan, ScanSource, SelectionOptions } from "./types";
+import type { AgentScan, BrandDownloadResult, ScanSource, SelectionOptions } from "./types";
 
 /**
  * The MCP server against a scan source that answers from memory, so the tool behavior an agent depends on is pinned
@@ -80,11 +80,12 @@ function text(result: CallToolResult): string {
   return block.text;
 }
 
-/** The eight tools of spec section 6. */
+/** The eight tools of spec section 6, and the brand file download. */
 const MCP_TOOL_NAMES = [
   "scan_page",
   "list_assets",
   "download_assets",
+  "download_brand_files",
   "read_svg",
   "get_palette",
   "install_fonts",
@@ -93,7 +94,7 @@ const MCP_TOOL_NAMES = [
 ];
 
 describe("the tools", () => {
-  it("are the eight tools of the spec, once each", async () => {
+  it("are the tools of the spec and the brand file download, once each", async () => {
     const { tools } = await client.listTools();
     expect(tools.map((tool) => tool.name).sort()).toEqual([...MCP_TOOL_NAMES].sort());
   });
@@ -268,6 +269,65 @@ describe("download_assets", () => {
     await call(wired, "download_assets", { scanId, ids: ["hero"] });
 
     expect(seen).toEqual([{ dir: path.join(home, "scrap", "stripe.com"), ids: ["hero"] }]);
+    await wired.close();
+  });
+});
+
+describe("download_brand_files", () => {
+  const kit = { id: "4f1c2a9e8b7d", url: "https://monad.xyz/brand-page-assets/Kit.zip", name: "Monad kit", type: "zip" as const, bytes: 29_679_666, foundIn: "script" as const };
+  const guide = { id: "0a1b2c3d4e5f", url: "https://monad.xyz/brand-page-assets/Guide.pdf", name: "Guide", type: "pdf" as const, foundIn: "script" as const };
+  // An id of its own: the cache file of a scan is named by its id, and the shared scan's must not be replaced.
+  const brandScan: AgentScan = { ...scan, scanId: "monad-brand-scan", page: { url: "https://monad.xyz/brand", finalUrl: "https://monad.xyz/brand", host: "monad.xyz", title: "Monad", brandFiles: [kit, guide] } };
+  const brandSource: ScanSource = { ...source, scan: async () => brandScan };
+
+  /** A server whose brand downloader records what it was asked and writes nothing. */
+  async function wiredForBrand(answer: (dest: string) => BrandDownloadResult = (dest) => ({ dir: `${dest}/brand`, files: [], archives: [], failed: [], totalBytes: 0, manifestPath: `${dest}/brand/manifest.json` })) {
+    const seen: { dest: string; ids?: string[]; extract?: boolean }[] = [];
+    const wired = await connect({
+      source: brandSource,
+      downloadBrandFiles: async (_scan, options) => {
+        seen.push({ dest: options.dest, ...(options.ids === undefined ? {} : { ids: options.ids }), ...(options.extract === undefined ? {} : { extract: options.extract }) });
+        return answer(options.dest);
+      },
+    });
+    const { scanId: brandScanId } = JSON.parse(text(await call(wired, "scan_page", { url: "https://monad.xyz/brand" }))) as { scanId: string };
+    return { wired, seen, brandScanId };
+  }
+
+  it("hands the confined destination, the ids and extract to the downloader, and answers relative paths", async () => {
+    const { wired, seen, brandScanId } = await wiredForBrand((dest) => ({
+      dir: path.join(dest, "brand"),
+      files: [{ id: kit.id, name: "Logos/Logo.svg", type: "svg", path: path.join(dest, "brand", "Monad kit", "Logos", "Logo.svg"), bytes: 2_656, from: kit.id }],
+      archives: [{ id: kit.id, name: "Monad kit", files: 1, skipped: { metadata: 26 } }],
+      failed: [{ id: guide.id, name: "Guide", reason: "monad.xyz answered HTTP 404" }],
+      totalBytes: 2_656,
+      manifestPath: path.join(dest, "brand", "manifest.json"),
+    }));
+    const answer = JSON.parse(text(await call(wired, "download_brand_files", { scanId: brandScanId, ids: [kit.id, "gone"], extract: true })));
+    expect(seen).toEqual([{ dest: path.join(home, "scrap", "monad.xyz"), ids: [kit.id, "gone"], extract: true }]);
+    expect(answer).toMatchObject({
+      dir: path.join(home, "scrap", "monad.xyz", "brand"),
+      count: 1,
+      files: [{ id: kit.id, file: "Monad kit/Logos/Logo.svg", type: "svg", bytes: 2_656, from: kit.id }],
+      archives: [{ id: kit.id, files: 1, skipped: { metadata: 26 } }],
+      failed: [{ id: guide.id, reason: "monad.xyz answered HTTP 404" }],
+      unknownIds: ["gone"],
+    });
+    await wired.close();
+  });
+
+  it("says so when the scan has no brand files, or none of the ids, and when the destination leaves the scrap folder", async () => {
+    const { wired, seen, brandScanId } = await wiredForBrand();
+    const none = await call(client, "download_brand_files", { scanId });
+    expect(none.isError).toBe(true);
+    expect(text(none)).toContain("found no brand files");
+    const unknown = await call(wired, "download_brand_files", { scanId: brandScanId, ids: ["nope"] });
+    expect(unknown.isError).toBe(true);
+    expect(text(unknown)).toContain(`Its brand files are ${kit.id}, ${guide.id}`);
+    const escape = await call(wired, "download_brand_files", { scanId: brandScanId, dest: "../../outside" });
+    expect(escape.isError).toBe(true);
+    expect(text(escape)).toContain("refusing to write outside");
+    expect(seen).toEqual([]);
     await wired.close();
   });
 });

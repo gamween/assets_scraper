@@ -97,6 +97,20 @@ const defaults = {
   collectorMaxTextNodes: 20_000,
   maxBrandLinks: 6,
   /**
+   * Brand files one scan reports (spec 8.1). monad.xyz's kit page offers 11 through its code and token2049.com 4
+   * through links; the collector hands over four times this many links, so the rule that keeps them has room to choose.
+   */
+  maxBrandFiles: 16,
+  /** How long post-processing waits for the host of a brand file to announce its size. */
+  brandFileProbeMs: 3_000,
+  /**
+   * The first-party scripts a brand page scan reads for downloads its code starts on a click (spec 8.1): monad.xyz loads
+   * 24 chunks, 1.3 MB together. Only on a page whose URL names a brand, press or media kit page, so no other scan pays.
+   */
+  brandScriptMaxFiles: 80,
+  brandScriptMaxBytes: 4 * MB,
+  brandScriptTotalBytes: 16 * MB,
+  /**
    * JSON characters of the whole collector output. Node holds the result several times while Playwright and the engine
    * parse it, so this bounds the memory a page can make the scan use. The collector cuts its lists to stay under it.
    */

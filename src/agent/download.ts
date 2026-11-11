@@ -80,7 +80,7 @@ const MAX_MANIFEST_BYTES = 16 * 1024 * 1024;
 const oneLine = (error: unknown): string =>
   (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ").trim().slice(0, 200) || "unknown error";
 
-interface WrittenFile {
+export interface WrittenFile {
   path: string;
   /** True when the file was already on disk with these exact bytes, so nothing was written. */
   reused: boolean;
@@ -92,7 +92,7 @@ interface WrittenFile {
  * without case like the archive's rule (`nameCandidates`), so two assets that sanitize to one name get a file each on
  * every file system.
  */
-function writeUnique(root: string, folder: string, name: string, data: Buffer, taken: Set<string>): WrittenFile {
+export function writeUnique(root: string, folder: string, name: string, data: Buffer, taken: Set<string>): WrittenFile {
   let attempts = 0;
   for (const candidateName of nameCandidates(name)) {
     if (++attempts > MAX_NAME_ATTEMPTS) break;
@@ -121,8 +121,19 @@ function writeUnique(root: string, folder: string, name: string, data: Buffer, t
   throw new Error(`no free name for ${folder}/${name} after ${MAX_NAME_ATTEMPTS} attempts`);
 }
 
+/**
+ * What every manifest this tool writes has: an asset download's (`kind` absent, as before brand files existed) or a
+ * brand file download's, and the files it lists, each by its path inside the folder.
+ */
+interface ToolManifest {
+  tool: "assets-scraper";
+  manifestVersion: 1;
+  kind?: "brand-files";
+  files: { file: string }[];
+}
+
 /** Whether a manifest row names a file that is still on disk inside `dir`. */
-const stillThere = (dir: string, row: ManifestFile): boolean => {
+const stillThere = (dir: string, row: { file: string }): boolean => {
   const full = path.resolve(dir, row.file);
   if (!full.startsWith(dir + path.sep)) return false;
   try {
@@ -132,8 +143,12 @@ const stillThere = (dir: string, row: ManifestFile): boolean => {
   }
 };
 
-/** What sits at a manifest path: nothing, a manifest this tool wrote, or anything else, which is never touched. */
-function existingManifest(file: string): { kind: "none" } | { kind: "ours"; manifest: DownloadManifest } | { kind: "foreign" } {
+/**
+ * What sits at a manifest path: nothing, a manifest this tool wrote for the same kind of download, or anything else,
+ * which is never touched. An asset manifest and a brand file manifest are foreign to each other, so neither download
+ * ever merges the other's rows.
+ */
+function existingManifest<M extends ToolManifest>(file: string, kind: M["kind"]): { kind: "none" } | { kind: "ours"; manifest: M } | { kind: "foreign" } {
   let stats: fs.Stats;
   try {
     stats = fs.lstatSync(file);
@@ -142,8 +157,10 @@ function existingManifest(file: string): { kind: "none" } | { kind: "ours"; mani
   }
   if (!stats.isFile() || stats.size > MAX_MANIFEST_BYTES) return { kind: "foreign" };
   try {
-    const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as Partial<DownloadManifest>;
-    if (parsed.tool === "assets-scraper" && parsed.manifestVersion === 1 && Array.isArray(parsed.files)) return { kind: "ours", manifest: parsed as DownloadManifest };
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as Partial<ToolManifest>;
+    if (parsed.tool === "assets-scraper" && parsed.manifestVersion === 1 && Array.isArray(parsed.files) && parsed.kind === kind) {
+      return { kind: "ours", manifest: parsed as M };
+    }
   } catch {
     // Not JSON, so not ours.
   }
@@ -160,12 +177,12 @@ function existingManifest(file: string): { kind: "none" } | { kind: "ours"; mani
  * `FALLBACK_MANIFEST_NAME` instead. The new document is written to a temporary name and renamed into place, so a
  * reader never sees half of it, and the rename replaces a name rather than following it.
  */
-function writeDownloadManifest(dir: string, manifest: DownloadManifest): string {
+export function writeManifest<M extends ToolManifest>(dir: string, manifest: M): string {
   let target = path.join(dir, MANIFEST_NAME);
-  let existing = existingManifest(target);
+  let existing = existingManifest<M>(target, manifest.kind);
   if (existing.kind === "foreign") {
     target = path.join(dir, FALLBACK_MANIFEST_NAME);
-    existing = existingManifest(target);
+    existing = existingManifest<M>(target, manifest.kind);
     if (existing.kind === "foreign") throw new Error(`${dir} already holds a ${MANIFEST_NAME} and a ${FALLBACK_MANIFEST_NAME} this tool did not write`);
   }
   const written = new Set(manifest.files.map((row) => row.file));
@@ -315,7 +332,7 @@ export async function downloadAssets(scan: AgentScan, source: ScanSource, option
     budget: selected.budget,
     failed,
   };
-  const manifestPath = writeDownloadManifest(dir, manifest);
+  const manifestPath = writeManifest(dir, manifest);
 
   return { dir, files, totalBytes, dropped, budget: selected.budget, failed, manifestPath };
 }

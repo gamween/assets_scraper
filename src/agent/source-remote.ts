@@ -1,5 +1,5 @@
 import * as z from "zod";
-import { Asset, Diagnostics, FontFamily, Palette, ScanStats } from "@/lib/contract";
+import { Asset, BrandFile, Diagnostics, FontFamily, Palette, ScanStats } from "@/lib/contract";
 import { limits } from "@/server/config/limits";
 import { safeFetch } from "@/server/net/safe-fetch";
 import type { SafeFetch } from "@/server/scan/types";
@@ -55,6 +55,7 @@ const RemoteScanBody = z.object({
     title: z.string(),
     siteName: z.string().optional(),
     brandLinks: z.array(z.object({ href: z.string(), text: z.string() })).optional(),
+    brandFiles: z.array(BrandFile).optional(),
   }),
   assets: z.array(Asset),
   fonts: z.array(FontFamily),

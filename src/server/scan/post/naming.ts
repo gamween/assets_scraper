@@ -38,14 +38,40 @@ const HEX_HASH = /[.\-_](?=[0-9a-f]*\d)[0-9a-f]{8,}$/i;
 const BUNDLER_HASH = /[.\-_](?=[A-Za-z0-9_]*\d)(?=[A-Za-z0-9_]*[A-Z])(?=[A-Za-z0-9_]*[a-z])[A-Za-z0-9_]{8}$/;
 const SIZE_SUFFIX = /(?:_(?:xsmall|small|medium|large|xlarge|xxlarge)(?:_[23]x)?|@[23]x|_[23]x|-scaled)$/i;
 
+const NOTION_HOST = /(?:^|\.)(?:notion\.site|notion\.so|notionusercontent\.com)$/i;
+const NOTION_ATTACHMENT = /^attachment:[0-9a-f-]{36}:(.+)$/i;
+
+/**
+ * The name a file was uploaded to Notion with. Notion serves it under names that bury it: `attachment:<uuid>:<name>` in
+ * a page's own `/image/` path, the S3 key `prod-files-secure/<space>/<uuid>/<name>` encoded into one segment of
+ * img.notionusercontent.com and followed by `/size/w=470`, and an encoded S3 URL in older pages. Read as a plain last
+ * segment, ETHGlobal's brand page named its Horizontal-Colour, Vertical-Colour and Logomark-Colour logos
+ * `attachment-<uuid>-ethgloba` (cut at 80 characters) and their resized copies `w=470`, so the downloads could not be
+ * told apart. The name is the last part of the last segment that has an extension.
+ */
+function notionFileName(url: URL): string | undefined {
+  if (!NOTION_HOST.test(url.hostname)) return undefined;
+  for (const raw of url.pathname.split("/").filter(Boolean).reverse()) {
+    let segment: string;
+    try {
+      segment = decodeURIComponent(raw);
+    } catch {
+      continue;
+    }
+    const name = (NOTION_ATTACHMENT.exec(segment)?.[1] ?? segment).split("/").pop() ?? "";
+    if (/\.[a-z0-9]{2,5}$/i.test(name)) return name;
+  }
+  return undefined;
+}
+
 /** File name of an http(s) URL without extension, build hashes and size suffixes, after unwrapping CDN rewrites. */
 export function cleanBasename(url: string): string | undefined {
   if (!/^https?:/i.test(url)) return undefined;
   const target = originalCandidates(url)[0] ?? url;
   let segment: string;
   try {
-    segment = new URL(target).pathname.split("/").filter(Boolean).pop() ?? "";
-    segment = decodeURIComponent(segment);
+    const parsed = new URL(target);
+    segment = notionFileName(parsed) ?? decodeURIComponent(parsed.pathname.split("/").filter(Boolean).pop() ?? "");
   } catch {
     return undefined;
   }

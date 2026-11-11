@@ -4,6 +4,7 @@ import sharp from "sharp";
 import type { Tone } from "@/lib/contract";
 import { timeoutAfter } from "@/server/async";
 import { limits } from "@/server/config/limits";
+import { MAX_SCRIPT_FILE_PATHS, quotedFilePaths } from "./brand-files";
 import { parseFontBinary } from "./fonts";
 import { svgSize } from "./post/parse";
 import { withRenderSlot } from "./post/render-slot";
@@ -24,6 +25,11 @@ export interface CaptureOptions {
   /** Replaces the tone renderer, for tests. Capture still applies the tone caps around it. */
   toneFromBytes?: (buffer: Buffer, contentType: string, signal: AbortSignal) => Promise<Tone>;
   parseFontBinary?: (buffer: Buffer) => FontBinaryMeta | null;
+  /**
+   * Reads the scripts this says are the page's own for the brand files they quote (`brand-files.ts`), within
+   * `limits.brandScript*`. Left out, which is every scan of a page that is not a brand page, no script body is read.
+   */
+  scripts?: { reads: (url: string) => boolean };
 }
 
 /**
@@ -39,6 +45,7 @@ const ENCODED_EXPANSION = 4;
 const FONT_TYPE = /font|woff|opentype|truetype|sfnt/i;
 const FONT_EXTENSION = /\.(woff2?|ttf|otf|eot)(?:[?#]|$)/i;
 const SVG = (url: string, contentType: string) => /image\/svg/i.test(contentType) || /\.svgz?(?:[?#]|$)/i.test(url);
+const SCRIPT_TYPE = /javascript|ecmascript/i;
 
 class BodyTimeout extends Error {}
 
@@ -72,6 +79,10 @@ export function startCapture(page: Page, options: CaptureOptions): CaptureHandle
   const images = new Map<string, CapturedImage>();
   const fonts = new Map<string, CapturedFont>();
   const sheets = new Map<string, CapturedSheet>();
+  /** Script URLs read or queued, and the brand file paths their bodies quote. */
+  const scripts = new Set<string>();
+  const scriptFiles = new Set<string>();
+  let scriptBytes = 0;
   const jobs = new Set<Promise<void>>();
   const queue: { reserve: number; start: () => void; drop: () => void }[] = [];
   let reading = 0;
@@ -97,7 +108,7 @@ export function startCapture(page: Page, options: CaptureOptions): CaptureHandle
    * the per-body cap, or over what is left of the total, is skipped without a read. Reads still queued when capture
    * stops never start.
    */
-  const schedule = (response: Response, read: (body: Buffer) => Promise<void> | void) => {
+  const schedule = (response: Response, read: (body: Buffer) => Promise<void> | void, maxBody: number = limits.bodyMaxBytes) => {
     const headers = response.headers();
     // A multipart response (an MJPEG webcam) is a stream by design: its body never ends and would hold a slot and a
     // reservation until the browser closes.
@@ -110,7 +121,7 @@ export function startCapture(page: Page, options: CaptureOptions): CaptureHandle
     const known = Number.isFinite(declared);
     const encoding = headers["content-encoding"]?.trim().toLowerCase();
     const encoded = Boolean(encoding) && encoding !== "identity";
-    const maxDeclared = encoded ? limits.bodyMaxBytes / ENCODED_EXPANSION : limits.bodyMaxBytes;
+    const maxDeclared = encoded ? maxBody / ENCODED_EXPANSION : maxBody;
     if (known && (declared > maxDeclared || bytesRead + declared > limits.bodyTotalBytes)) {
       skippedBodies += 1;
       return;
@@ -250,6 +261,13 @@ export function startCapture(page: Page, options: CaptureOptions): CaptureHandle
     record.cssText = body.toString("utf8");
   };
 
+  /** Keeps the brand file paths a script quotes and drops its text, within the script caps. */
+  const captureScript = (body: Buffer) => {
+    if (body.length > limits.brandScriptMaxBytes || scriptBytes + body.length > limits.brandScriptTotalBytes) return;
+    scriptBytes += body.length;
+    for (const path of quotedFilePaths(body.toString("utf8"), MAX_SCRIPT_FILE_PATHS - scriptFiles.size)) scriptFiles.add(path);
+  };
+
   const onResponse = (response: Response) => {
     if (isStopped()) return;
     const url = response.url();
@@ -288,6 +306,11 @@ export function startCapture(page: Page, options: CaptureOptions): CaptureHandle
       const record: CapturedSheet = { url, status, cssText: "" };
       sheets.set(url, record);
       if (readable) schedule(response, (body) => captureSheet(record, body));
+    } else if (options.scripts && readable && (resourceType === "script" || SCRIPT_TYPE.test(contentType))) {
+      // Only the page's own scripts, once each, and never past the caps: a brand page's bundle is the whole site's.
+      if (scripts.has(url) || scripts.size >= limits.brandScriptMaxFiles || !options.scripts.reads(url)) return;
+      scripts.add(url);
+      schedule(response, captureScript, limits.brandScriptMaxBytes);
     }
   };
 
@@ -306,6 +329,7 @@ export function startCapture(page: Page, options: CaptureOptions): CaptureHandle
         images: [...images.values()].map((record) => ({ ...record })),
         fonts: [...fonts.values()].map((record) => ({ ...record })),
         sheets: [...sheets.values()].map((record) => ({ ...record })),
+        ...(options.scripts ? { scriptFiles: [...scriptFiles] } : {}),
         bodyTimeouts,
         skippedBodies,
       };

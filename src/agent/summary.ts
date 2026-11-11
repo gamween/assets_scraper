@@ -1,9 +1,10 @@
 import { isInstallableFamily } from "./font-candidates";
+import type { BrandFileType } from "@/lib/contract";
 import type { AgentScan, ScanSummary } from "./types";
 
 /**
- * What an agent reads after a scan (spec 2, context cost): counts, the palette, one row per font family, the logos and
- * the page's brand kit links.
+ * What an agent reads after a scan (spec 2, context cost): counts, the palette, one row per font family, the logos, and
+ * the page's brand kit links and files.
  * Never the whole asset list, never bytes. The whole document stays a few hundred bytes wide whatever the page holds,
  * so every string it carries is cut and every list is capped.
  */
@@ -22,6 +23,10 @@ const MAX_SUMMARY_FONTS = 12;
 const MAX_SUMMARY_WARNINGS = 5;
 /** The engine keeps 6 (`limits.maxBrandLinks`); the cap is here too so a hosted app that sends more cannot widen this. */
 const MAX_SUMMARY_BRAND_LINKS = 6;
+/** Brand file rows a summary shows, of the 16 a scan keeps (`limits.maxBrandFiles`). */
+const MAX_SUMMARY_BRAND_FILES = 8;
+/** Archives first, then documents, then single logo files: a kit's archive holds the rest. */
+const BRAND_FILE_ORDER: Record<BrandFileType, number> = { zip: 0, pdf: 1, ai: 1, eps: 1, svg: 2, png: 3 };
 /**
  * URLs are cut like every other string here: `ScanRequest` allows 2048 characters and a redirect chain can make the
  * final URL as long again, which on its own blew the budget the rest of the document is cut to keep.
@@ -61,6 +66,7 @@ export function summarize(scan: AgentScan): ScanSummary {
     .map((swatch) => (swatch.role === undefined ? { hex: swatch.hex } : { hex: swatch.hex, role: swatch.role }));
 
   const hidden = Object.values(scan.stats.hidden).reduce((total, count) => total + count, 0);
+  const brandFiles = (scan.page.brandFiles ?? []).slice().sort((a, b) => BRAND_FILE_ORDER[a.type] - BRAND_FILE_ORDER[b.type]);
 
   return fit({
     scanId: scan.scanId,
@@ -92,25 +98,36 @@ export function summarize(scan: AgentScan): ScanSummary {
     brandLinks: (scan.page.brandLinks ?? [])
       .slice(0, MAX_SUMMARY_BRAND_LINKS)
       .map((link) => ({ href: cut(link.href, MAX_URL_CHARS), text: cut(link.text, MAX_NAME_CHARS) })),
+    // monad.xyz shows its logo as an animation and keeps the 29.7 MB kit, every logo in SVG, behind a button: the files
+    // are where the official vectors are, and the asset list never holds them.
+    brandFiles: brandFiles.slice(0, MAX_SUMMARY_BRAND_FILES).map((file) => ({
+      id: cut(file.id, MAX_NAME_CHARS),
+      name: cut(file.name, MAX_NAME_CHARS),
+      type: file.type,
+      ...(file.bytes === undefined ? {} : { bytes: file.bytes }),
+      url: cut(file.url, MAX_URL_CHARS),
+    })),
+    otherBrandFiles: Math.max(0, brandFiles.length - MAX_SUMMARY_BRAND_FILES),
     otherAssets: Math.max(0, scan.assets.length - logos.length),
     warnings: scan.warnings.slice(0, MAX_SUMMARY_WARNINGS).map((warning) => cut(warning, MAX_WARNING_CHARS)),
     durationMs: scan.stats.durationMs,
-  }, scan.assets.length);
+  }, scan.assets.length, brandFiles.length);
 }
 
 /** Rows a summary gives up, in the order it gives them up, when the caps alone leave the document too wide. */
-const TRIMMABLE = ["warnings", "fonts", "brandLinks", "logos", "palette"] as const;
+const TRIMMABLE = ["warnings", "fonts", "brandLinks", "brandFiles", "logos", "palette"] as const;
 
 /**
- * Drops rows until the document fits `MAX_SUMMARY_BYTES`, least useful first, and keeps `otherAssets` honest about the
- * logos it gave up. The counts, the page and the scan id are never dropped: an agent needs them to ask for anything
+ * Drops rows until the document fits `MAX_SUMMARY_BYTES`, least useful first, and keeps `otherAssets` and
+ * `otherBrandFiles` honest about the rows it gave up. The counts, the page and the scan id are never dropped: an agent needs them to ask for anything
  * else. Only a page at every cap at once ever reaches this, and the lists are documented as capped either way.
  */
-function fit(summary: ScanSummary, assetCount: number): ScanSummary {
+function fit(summary: ScanSummary, assetCount: number, brandFileCount: number): ScanSummary {
   for (const list of TRIMMABLE) {
     while (summary[list].length > 0 && Buffer.byteLength(JSON.stringify(summary)) > MAX_SUMMARY_BYTES) {
       summary[list].pop();
       summary.otherAssets = Math.max(0, assetCount - summary.logos.length);
+      summary.otherBrandFiles = Math.max(0, brandFileCount - summary.brandFiles.length);
     }
   }
   return summary;

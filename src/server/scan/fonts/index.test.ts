@@ -156,6 +156,7 @@ function inputOf(parts: Parts): PostInput {
       unreadableSheets: [],
       blobs: [],
       brandLinks: [],
+      brandFiles: [],
       noise: {},
       stats: { elements: 1, ms: 1, truncated: false },
     },

@@ -345,6 +345,28 @@ describe("collector brand links", () => {
     ]);
   });
 
+  it("leaves out the page itself in other languages", async () => {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    await page.route("**/*", (route) =>
+      route.request().url() === "https://wallet.test/press-and-media"
+        ? route.fulfill({
+            contentType: "text/html",
+            body: `<!doctype html><title>Press</title>
+              <a href="/cs/press-and-media">\u010ce\u0161tina</a> <a href="/ja/press-and-media/">\u65e5\u672c\u8a9e</a> <a href="/pt-br/press-and-media">Portugu\u00eas</a>
+              <a href="/press-and-media/logos">Logos</a> <a href="/de/brand">Marke</a>`,
+          })
+        : route.fulfill({ status: 404 }),
+    );
+    await page.goto("https://wallet.test/press-and-media");
+    const press = await runCollector(page, collectorOptions("wallet.test", ""));
+    await context.close();
+    expect(press.brandLinks).toEqual([
+      { href: "https://wallet.test/press-and-media/logos", text: "Logos" },
+      { href: "https://wallet.test/de/brand", text: "Marke" },
+    ]);
+  });
+
   it("takes the press kit, not every article filed under it", async () => {
     const context = await browser.newContext();
     const page = await context.newPage();
@@ -365,6 +387,59 @@ describe("collector brand links", () => {
       { href: "https://news.test/brand", text: "Brand" },
       { href: "https://news.test/newsroom", text: "Newsroom" },
     ]);
+  });
+});
+
+describe("collector brand files and brand portals", () => {
+  it("hands over the links to brand files apart from the brand links, with what the page says about each", async () => {
+    const { context, page } = await openPage(browser, `${server.origin}/brand-kit.html`);
+    const kit = await runCollector(page, collectorOptions(server.host, "Fixture"));
+    await context.close();
+    const cdn = "https://cdn.fixture.test/files";
+    expect(kit.brandFiles).toEqual([
+      // arbitrum.io: the heading of the card names the archive its button does not.
+      { href: `${server.origin}/brandkit/downloads/Fixture_Logo_FullColor.zip`, text: "DOWNLOAD PNG + SVG", caption: "Full color" },
+      { href: `${server.origin}/brandkit/downloads/Fixture_Logo_all.zip`, text: "Download all Fixture logo variations" },
+      // stellar.org: two links to one pack, one of them labelled, and a hashed PDF under its heading.
+      { href: `${cdn}/9ef5ab890833c2571489b41a23a0ffc29307300c.zip`, text: "", label: "Fixture logo pack" },
+      { href: `${cdn}/9ef5ab890833c2571489b41a23a0ffc29307300c.zip`, text: "View" },
+      { href: `${cdn}/c155385509c73b245ff4f752ade94048a06245bc.pdf`, text: "Download", caption: "Discover the brand guide" },
+      // On a brand page every linked file counts; post-processing drops the one the page also shows.
+      { href: `${server.origin}/assets/logo.svg`, text: "SVG" },
+      { href: `${server.origin}/brandkit/fixture-wordmark.svg`, text: "Wordmark" },
+    ]);
+    // Not one file among the brand links, and the kits kept on another host ahead of the site's own press page.
+    expect(kit.brandLinks).toEqual([
+      { href: "https://live.standards.site/fixture-media-kit", text: "Brand Kit" },
+      { href: "https://fixture.visualbook.pro/fixture", text: "Go to Visualbook" },
+      { href: "https://drive.google.com/drive/folders/1PozkRBtCbjbqqQFChGFTc45xZe_kcjMT?usp=drive_link", text: "Download the Media Kit" },
+      { href: `${server.origin}/press`, text: "Press" },
+    ]);
+  });
+
+  it("takes a file off a brand page only when it says it belongs to the brand", async () => {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    await page.route("**/*", (route) =>
+      route.request().url() === "https://blog.test/"
+        ? route.fulfill({
+            contentType: "text/html",
+            body: `<!doctype html><title>Blog</title>
+              <a href="/files/annual-letter.pdf">Annual letter</a> <a href="/gallery/team.png">Team</a>
+              <a href="/files/acme-logos.zip">Logos</a> <a href="/files/b81f.pdf">Brand guidelines</a>
+              <section><h2>Press kit</h2><a href="/files/9ef5ab890833c2571489b41a23a0ffc29307300c.zip">Download</a></section>`,
+          })
+        : route.fulfill({ status: 404 }),
+    );
+    await page.goto("https://blog.test/");
+    const blog = await runCollector(page, collectorOptions("blog.test", ""));
+    await context.close();
+    expect(blog.brandFiles.map((file) => file.href)).toEqual([
+      "https://blog.test/files/acme-logos.zip",
+      "https://blog.test/files/b81f.pdf",
+      "https://blog.test/files/9ef5ab890833c2571489b41a23a0ffc29307300c.zip",
+    ]);
+    expect(blog.brandLinks).toEqual([]);
   });
 });
 

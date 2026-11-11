@@ -103,6 +103,7 @@ export function createLocalScanSource(deps: LocalScanSourceDeps = {}): ScanSourc
           title: page.title,
           ...(page.siteName === undefined ? {} : { siteName: page.siteName }),
           ...(page.brandLinks.length === 0 ? {} : { brandLinks: page.brandLinks }),
+          ...(page.brandFiles === undefined || page.brandFiles.length === 0 ? {} : { brandFiles: page.brandFiles }),
         },
         assets,
         fonts,

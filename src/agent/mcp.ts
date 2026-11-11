@@ -9,6 +9,7 @@ import { untilAborted } from "@/server/async";
 import { ScanFailure } from "@/server/errors";
 import { sniffContentType } from "@/server/security/sniff";
 import { findRecentScan, loadScan, type ScanOrigin, saveScan } from "./cache";
+import { type BrandDownloadOptions, downloadBrandFiles } from "./brand-download";
 import { resolveDestination } from "./dest";
 import { downloadAssets } from "./download";
 import { bytesSource } from "./entries";
@@ -19,7 +20,7 @@ import { agentLimits } from "./limits";
 import { normalizeScanUrl } from "./scan-url";
 import { createScanSource, scanOrigin } from "./source";
 import { summarize } from "./summary";
-import type { AgentScan, DownloadResult, FontInstall, ScanSource, SelectionOptions } from "./types";
+import type { AgentScan, BrandDownloadResult, DownloadResult, FontInstall, ScanSource, SelectionOptions } from "./types";
 
 /**
  * The MCP server an agent talks to over stdio (spec section 6). Every tool answers with one JSON text block and nothing
@@ -52,6 +53,9 @@ type DownloadAssetsPort = (
   options: { dir: string; source: ScanSource; selection?: SelectionOptions; signal?: AbortSignal },
 ) => Promise<DownloadResult>;
 
+/** Writes brand files to disk (`brand-download.ts`), behind a port for the same reason as `DownloadAssetsPort`. */
+type DownloadBrandFilesPort = (scan: AgentScan, options: BrandDownloadOptions & { dest: string }) => Promise<BrandDownloadResult>;
+
 export interface AgentMcpOptions {
   /** Where scans run. Defaults to the local engine, or the hosted app when `ASSETS_SCRAPER_REMOTE` is set. */
   source?: ScanSource;
@@ -59,6 +63,8 @@ export interface AgentMcpOptions {
   cwd?: string;
   /** Stands in for the real downloader in a test. Defaults to `downloadAssets`. */
   downloadAssets?: DownloadAssetsPort;
+  /** Stands in for the real brand file downloader in a test. Defaults to `downloadBrandFiles`. */
+  downloadBrandFiles?: DownloadBrandFilesPort;
 }
 
 const ok = (value: unknown): CallToolResult => ({ content: [{ type: "text", text: JSON.stringify(value) }] });
@@ -229,6 +235,37 @@ function downloadAnswer(result: DownloadResult, unknownIds: string[]): CallToolR
   }));
 }
 
+/** Brand file ids one `download_brand_files` call may name: a scan reports at most 16 (`limits.maxBrandFiles`). */
+const MAX_BRAND_FILE_IDS = 50;
+
+/**
+ * What `download_brand_files` answers: where the files are, what each archive gave and why some did not come, never
+ * the bytes. Paths are relative to `dir`, as `download_assets` gives them.
+ */
+function brandDownloadAnswer(result: BrandDownloadResult, unknownIds: string[]): CallToolResult {
+  const rows = result.files.map((file) => ({
+    id: file.id,
+    file: path.relative(result.dir, file.path).split(path.sep).join("/"),
+    type: file.type,
+    bytes: file.bytes,
+    ...(file.from === undefined ? {} : { from: file.from }),
+  }));
+  return okRows(rows, (files, omitted) => ({
+    dir: result.dir,
+    manifest: result.manifestPath,
+    count: result.files.length,
+    totalBytes: result.totalBytes,
+    files,
+    ...(omitted > 0 ?
+      { filesOmitted: omitted, hint: `${omitted} more files are on disk and in ${path.basename(result.manifestPath)}. Read that file if you need every row.` }
+    : {}),
+    archives: result.archives.map((archive) => ({ ...archive, name: cut(archive.name, MAX_FAMILY_CHARS), ...(archive.error === undefined ? {} : { error: cut(archive.error, MAX_LICENCE_CHARS) }) })),
+    failed: result.failed.slice(0, MAX_FAILED_ROWS).map((row) => ({ ...row, name: cut(row.name, MAX_FAMILY_CHARS) })),
+    ...(result.failed.length > MAX_FAILED_ROWS ? { failedOmitted: result.failed.length - MAX_FAILED_ROWS } : {}),
+    ...(unknownIds.length > 0 ? { unknownIds: unknownIds.slice(0, 20) } : {}),
+  }));
+}
+
 /**
  * The size gate of spec 4.2: a vector has no size to gate on, and an asset the scan could measure nothing for is kept
  * rather than silently dropped, so an agent listing with `minLongSide` to find usable art does not lose the vector logos
@@ -254,6 +291,7 @@ export function createAgentMcpServer(options: AgentMcpOptions = {}): McpServer {
   const originOf = (): ScanOrigin => opened ?? scanOrigin();
   const cwd = options.cwd ?? process.cwd();
   const download = options.downloadAssets ?? downloadThroughCore;
+  const downloadBrand = options.downloadBrandFiles ?? downloadBrandFiles;
   const server = new McpServer({ name: "assets-scraper", version: SERVER_VERSION });
 
   /** The cached scan, or the answer that tells the agent what to do about it. */
@@ -272,9 +310,11 @@ export function createAgentMcpServer(options: AgentMcpOptions = {}): McpServer {
     {
       title: "Scan a page",
       description:
-        "Scans a page and returns a short summary: the scan id, the counts per kind, the palette, the fonts, the logos and " +
-        "the page's links to its brand, press or media kit pages, where official logo variants usually are. Never the whole " +
-        "asset list. Pass the scan id to the other tools. A scan of the same URL inside the hour is reused.",
+        "Scans a page and returns a short summary: the scan id, the counts per kind, the palette, the fonts, the logos, " +
+        "brandLinks (the page's links to its brand, press or media kit pages and to brand portals on other hosts, where " +
+        "official logo variants usually are) and brandFiles (the archives, guidelines and logo files of its kit, which " +
+        "download_brand_files fetches). Never the whole asset list. Pass the scan id to the other tools. A scan of the " +
+        "same URL inside the hour is reused.",
       inputSchema: {
         url: z.string().min(1).max(2048).describe("the page to scan, with or without a scheme"),
         refresh: z.boolean().optional().describe("scan again instead of reusing a cached scan of the same URL"),
@@ -427,6 +467,53 @@ export function createAgentMcpServer(options: AgentMcpOptions = {}): McpServer {
         const destination = resolveDestination({ host: scan.page.host, cwd, restrictToProject: true, ...(dest === undefined ? {} : { dest }) });
         const result = await download(scan, { dir: destination.dir, source: openSource(), selection, signal });
         return downloadAnswer(result, unknownIds);
+      }),
+  );
+
+  server.registerTool(
+    "download_brand_files",
+    {
+      title: "Download brand files",
+      description:
+        "Downloads the brand kit files a scan reported (brandFiles in scan_page: archives, guidelines, logo files) into " +
+        "scrap/<host>/brand inside the current project, straight from their host to this machine. A ZIP is unpacked into a " +
+        "folder named after it: its svg, png, pdf, ai and eps files are written, never a nested archive, a link, macOS " +
+        "metadata or anything outside the folder, and the archive itself is not kept unless extract is false. Returns the " +
+        "paths, what each archive gave and why a file did not come, never the bytes.",
+      inputSchema: {
+        scanId: z.string().describe("the id scan_page returned"),
+        ids: z.array(z.string()).max(MAX_BRAND_FILE_IDS).optional().describe("brand file ids from scan_page. Left out, every brand file of the scan"),
+        extract: z.boolean().optional().describe("unpack the logo files of an archive (default), or write the archive as it is when false"),
+        dest: z
+          .string()
+          .max(1024)
+          .optional()
+          .describe("a directory inside the project scrap folder, relative to it. Left out, it is scrap/<host>; the files go in its brand folder"),
+      },
+    },
+    async ({ scanId, ids, extract, dest }, { signal }) =>
+      withScan(scanId, async (scan) => {
+        const files = scan.page.brandFiles ?? [];
+        if (files.length === 0) {
+          return fail(`scan ${JSON.stringify(scanId)} found no brand files. Scan a page from brandLinks, where a kit usually is, or download_assets for the files the page shows.`);
+        }
+        const known = new Set(files.map((file) => file.id));
+        const unknownIds = ids?.filter((id) => !known.has(id)) ?? [];
+        if (ids !== undefined && unknownIds.length === ids.length) {
+          return fail(
+            `none of those ids are brand files of scan ${JSON.stringify(scanId)}: ${unknownIds.slice(0, 5).map((id) => JSON.stringify(id)).join(", ")}. ` +
+              `Its brand files are ${files.slice(0, 8).map((file) => file.id).join(", ")}.`,
+          );
+        }
+        // The same rule as download_assets: an agent's destination stays inside the project's scrap folder.
+        const destination = resolveDestination({ host: scan.page.host, cwd, restrictToProject: true, ...(dest === undefined ? {} : { dest }) });
+        const result = await downloadBrand(scan, {
+          dest: destination.dir,
+          signal,
+          ...(ids === undefined ? {} : { ids }),
+          ...(extract === undefined ? {} : { extract }),
+        });
+        return brandDownloadAnswer(result, unknownIds);
       }),
   );
 

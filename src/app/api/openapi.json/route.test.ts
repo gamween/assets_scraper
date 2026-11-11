@@ -120,7 +120,14 @@ describe("GET /api/openapi.json", () => {
     const doc = await document();
     const wordmark = testAsset({ id: "wordmark", kind: "svg", format: "svg", role: "site-logo", width: 79.5, height: 24.25, bytes: 1_234, score: 100 });
     const scan = testScan();
-    const summary = summarize({ ...scan, assets: [wordmark, ...scan.assets], warnings: ["The page stopped the scan early"] });
+    const brandFiles = [{ id: "4f1c2a9e8b7d", url: "https://monad.xyz/brand-page-assets/kit.zip", name: "Kit", type: "zip" as const, bytes: 29_679_666, foundIn: "script" as const }];
+    const summary = summarize({
+      ...scan,
+      page: { ...scan.page, brandLinks: [{ href: "https://live.standards.site/sui-media-kit", text: "Brand Kit" }], brandFiles },
+      assets: [wordmark, ...scan.assets],
+      warnings: ["The page stopped the scan early"],
+    });
+    expect(summary.brandFiles[0]).toMatchObject({ id: "4f1c2a9e8b7d", type: "zip", bytes: 29_679_666 });
     expect(summary.logos[0]).toMatchObject({ id: "wordmark", format: "svg", width: 79.5, bytes: 1_234 });
     expect(summary.fonts.length).toBeGreaterThan(0);
     expect(schemaErrors({ view: "summary", scanId: summary.scanId, summary }, { $ref: "#/components/schemas/ScanResponse" }, doc.components.schemas)).toEqual([]);

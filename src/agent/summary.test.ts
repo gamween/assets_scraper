@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { MAX_SUMMARY_BYTES, summarize } from "./summary";
-import type { FontFamily, FontFile } from "@/lib/contract";
+import type { BrandFile, FontFamily, FontFile } from "@/lib/contract";
 import { testAsset, testFontFamily, testFontFile, testScan } from "./testing";
 
 describe("summarize", () => {
@@ -58,6 +58,28 @@ describe("summarize", () => {
     expect(Buffer.byteLength(JSON.stringify(summary))).toBeLessThan(4_096);
   });
 
+  it("lists the brand files archives first, at most 8, cut, and counts the rest", () => {
+    const base = testScan();
+    expect(summarize(base)).toMatchObject({ brandFiles: [], otherBrandFiles: 0 });
+    const file = (index: number, type: BrandFile["type"]): BrandFile => ({
+      id: `f${index}`.padEnd(12, "0"),
+      url: `https://monad.xyz/brand-page-assets/${index}/${"p".repeat(400)}.${type}`,
+      name: `Logo ${index} ${"n".repeat(200)}`,
+      type,
+      foundIn: "script",
+      ...(index === 0 ? { bytes: 29_679_666 } : {}),
+    });
+    const files = [file(1, "svg"), file(2, "png"), file(3, "svg"), file(4, "pdf"), file(0, "zip"), ...Array.from({ length: 7 }, (_, index) => file(10 + index, "svg"))];
+    const summary = summarize({ ...base, page: { ...base.page, brandFiles: files } });
+    expect(summary.brandFiles.map((row) => row.type)).toEqual(["zip", "pdf", "svg", "svg", "svg", "svg", "svg", "svg"]);
+    expect(summary.brandFiles[0]).toMatchObject({ id: "f00000000000", bytes: 29_679_666 });
+    expect(summary.brandFiles[1]).not.toHaveProperty("bytes");
+    expect(summary.brandFiles.every((row) => row.url.length <= 200 && row.name.length <= 60)).toBe(true);
+    expect(summary.otherBrandFiles).toBe(files.length - 8);
+    expect(summary.page).not.toHaveProperty("brandFiles");
+    expect(Buffer.byteLength(JSON.stringify(summary))).toBeLessThan(4_096);
+  });
+
   it("cuts a long title and a long list of warnings", () => {
     const summary = summarize(testScan({
       page: { url: "https://x.com", finalUrl: "https://x.com/", host: "x.com", title: "t".repeat(3_000), siteName: "s".repeat(500) },
@@ -110,8 +132,12 @@ describe("summarize", () => {
       stats: { assets: 308, svg: 8, images: 300, fonts: 20, hidden: { tracker: 3 }, durationMs: 12_345 },
       warnings: Array.from({ length: 40 }, () => long(400)),
     });
+    scan.page.brandFiles = Array.from({ length: 16 }, (_, index) => ({
+      id: `${index}`.padStart(12, "0"), url: `https://x.com/${long(300)}/${index}.zip`, name: long(200), type: "zip" as const, foundIn: "link" as const, bytes: 123_456_789,
+    }));
     const summary = summarize(scan);
     expect(Buffer.byteLength(JSON.stringify(summary))).toBeLessThanOrEqual(MAX_SUMMARY_BYTES);
+    expect(summary.otherBrandFiles).toBe(16 - summary.brandFiles.length);
     // What an agent needs to ask for anything else survives, and the logos it gave up are counted with the rest.
     expect(summary.scanId).toBe("scan-1");
     expect(summary.counts.assets).toBe(308);

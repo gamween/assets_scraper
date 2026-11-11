@@ -7,9 +7,10 @@ import { createScanSource } from "@/agent/source";
 import { summarize } from "@/agent/summary";
 import type { AgentScan } from "@/agent/types";
 import { Asset, FontFamily } from "@/lib/contract";
+import { TEST_SVG as TEST_SVG_TEXT } from "@/agent/testing";
 import { ScanFailure } from "@/server/errors";
 import type { FixtureServer } from "../../fixtures/serve";
-import { serveAssetsFixture } from "../assets/harness";
+import { brandKitRoutes, FIXTURE_KIT, serveAssetsFixture } from "../assets/harness";
 
 /**
  * The agent core against the fixture site with the real engine (plan Task G1.5): one local scan folded into an
@@ -28,6 +29,7 @@ beforeAll(async () => {
   cache = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agent-local-")));
   process.env.XDG_CACHE_HOME = cache;
   server = await serveAssetsFixture({
+    ...brandKitRoutes(),
     // bybit.com's edge: the favicon.ico it serves Chrome is a 403 for any other user agent, this tool's own included.
     "/browser-only/favicon.ico": (req, res) => {
       if (!/ Chrome\/\d/.test(req.headers["user-agent"] ?? "")) {
@@ -112,6 +114,31 @@ describe("createScanSource, local", () => {
     const bytes = await createScanSource().fetchBytes(favicon, { referer: scan.page.finalUrl });
     expect(bytes.equals(fs.readFileSync(path.join(import.meta.dirname, "../../fixtures/site/assets/favicon.ico")))).toBe(true);
     expect(browserOnlyReferer).toBe(`${server.origin}/`);
+  });
+
+  it("reports a brand page's kit: its linked files and the one its code downloads, named and sized, with its portals", async () => {
+    const kit = await createScanSource().scan(`${server.origin}/brand-kit.html`);
+    const cdn = "https://cdn.fixture.test/files";
+    expect(kit.page.brandFiles?.map(({ url, name, type, foundIn, bytes }) => ({ url, name, type, foundIn, bytes }))).toEqual([
+      // A button that names only formats: the file name says which variant it is. This host answers whole.
+      { url: `${server.origin}/brandkit/downloads/Fixture_Logo_FullColor.zip`, name: "Fixture Logo FullColor", type: "zip", foundIn: "link", bytes: FIXTURE_KIT.length },
+      // This one honours the probe's range.
+      { url: `${server.origin}/brandkit/downloads/Fixture_Logo_all.zip`, name: "Download all Fixture logo variations", type: "zip", foundIn: "link", bytes: FIXTURE_KIT.length },
+      // A host that does not answer leaves a file without a size, never out of the list.
+      { url: `${cdn}/9ef5ab890833c2571489b41a23a0ffc29307300c.zip`, name: "Fixture logo pack", type: "zip", foundIn: "link", bytes: undefined },
+      { url: `${cdn}/c155385509c73b245ff4f752ade94048a06245bc.pdf`, name: "Discover the brand guide", type: "pdf", foundIn: "link", bytes: undefined },
+      // The logo the page shows and links is an asset, not a brand file. The one it only links is.
+      { url: `${server.origin}/brandkit/fixture-wordmark.svg`, name: "Wordmark", type: "svg", foundIn: "link", bytes: Buffer.byteLength(TEST_SVG_TEXT) },
+      // monad.xyz's case: the kit and a logo only the page's script names, and not the social icon beside them.
+      { url: `${server.origin}/brand-page-assets/Fixture%20Brand%20and%20Media%20Kit.zip`, name: "Fixture Brand and Media Kit", type: "zip", foundIn: "script", bytes: FIXTURE_KIT.length },
+      { url: `${server.origin}/brand-page-assets/Logomark.svg`, name: "Logomark", type: "svg", foundIn: "script", bytes: Buffer.byteLength(TEST_SVG_TEXT) },
+    ]);
+
+    const summary = summarize(kit);
+    expect(summary.brandFiles.map((file) => file.type)).toEqual(["zip", "zip", "zip", "zip", "pdf", "svg", "svg"]);
+    expect(summary.brandLinks.map((link) => link.text)).toEqual(["Brand Kit", "Go to Visualbook", "Download the Media Kit", "Press"]);
+    await saveScan(kit);
+    expect((await loadScan(kit.scanId))?.page.brandFiles).toEqual(kit.page.brandFiles);
   });
 
   it("rejects an unreachable URL with the engine's failure", async () => {

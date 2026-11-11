@@ -394,6 +394,22 @@ test.describe("results", () => {
     await expect(group.getByRole("button")).toHaveText(many.map((link) => link.text));
   });
 
+  test("brand files follow the brand pages as download links, with their type and size", async ({ page }) => {
+    const files = [
+      { id: "4f1c2a9e8b7d", url: "https://linear.app/brand/Linear%20Brand%20Kit.zip", name: "Linear Brand Kit", type: "zip" as const, bytes: 29_679_666, foundIn: "script" as const },
+      { id: "0a1b2c3d4e5f", url: "https://cdn.example/files/c155385509c73b245ff4f752ade94048a06245bc.pdf", name: "Discover the brand guide", type: "pdf" as const, foundIn: "link" as const },
+    ];
+    const events = linear.map((event) => (event.type === "page" ? { ...event, page: { ...event.page, brandFiles: files } } : event));
+    await openResults(page, { events });
+    const group = page.getByRole("group", { name: "Brand resources on this site" });
+    await expect(group.getByRole("button")).toHaveText(["Brand"]);
+    const links = group.getByRole("link");
+    // A file the scan never held the bytes of: its chip opens the file's own URL, which downloads it.
+    await expect(links).toHaveText([/^Linear Brand Kit\s*ZIP · 28 MB$/, /^Discover the brand guide\s*PDF$/]);
+    await expect(links.first()).toHaveAttribute("href", files[0].url);
+    await expect(links.first()).toHaveAttribute("rel", "noopener noreferrer");
+  });
+
   test.describe("on a phone", () => {
     test.use({ viewport: { width: 390, height: 844 } });
 
