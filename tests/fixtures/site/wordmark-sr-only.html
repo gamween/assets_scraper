@@ -1,0 +1,21 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Hidden labels</title>
+<link rel="stylesheet" href="/assets/style.css">
+<style>
+  /* Text a sighted reader never sees, beside the real name: an image replacement link that pushes "Fixture Inc." off
+     screen, and in the logo link a label for screen readers clipped to a 1 px box, as apple.com and react.dev label
+     their logos. */
+  header { display: flex; align-items: center; gap: 24px; padding: 20px; }
+  .ir { display: block; width: 120px; height: 32px; background: url(/assets/logo.svg) no-repeat; text-indent: -9999px; overflow: hidden; }
+  .home { display: flex; align-items: center; gap: 10px; text-decoration: none; }
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+  .name { font-size: 18px; font-weight: 600; color: #0a7d5a; }
+  nav { display: flex; gap: 16px; }
+  nav a { font-size: 14px; color: #333333; text-decoration: none; }
+</style></head><body>
+<header>
+  <a class="ir" href="/">Fixture Inc.</a>
+  <a class="home" href="/"><svg width="28" height="28" viewBox="0 0 28 28"><circle cx="14" cy="14" r="14" fill="#0a7d5a"/></svg><span class="sr-only">Go to the Fixture home page</span><span class="name">Fixture</span></a>
+  <nav><a href="/docs">Docs</a><a href="/blog">Blog</a></nav>
+</header>
+<main><p>Plain text in the body font.</p></main>
+</body></html>

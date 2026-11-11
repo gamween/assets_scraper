@@ -68,6 +68,17 @@ describe("assembleAssets on the fixture page", () => {
     expect(output.warnings).toEqual([]);
   });
 
+  it("says which asset the header picture and an image candidate's element group became", () => {
+    const logo = output.assets.find((asset) => asset.role === "site-logo")!;
+    const svg = input.collector.wordmark?.logo?.svg;
+    expect(svg).toBeDefined();
+    expect(output.assetIdOf?.({ svg })).toBe(logo.id);
+    const shown = input.collector.candidates.find((candidate) => candidate.url.endsWith("/assets/photo-small.png") && candidate.visible)!;
+    expect(output.assetIdOf?.({ group: shown.group })).toBe(byUrl("photo-large.png")[0].id);
+    expect(output.assetIdOf?.({ group: -1 })).toBeUndefined();
+    expect(output.assetIdOf?.({})).toBeUndefined();
+  });
+
   it("merges size variants and keeps the displayed version for tiles", () => {
     const photos = byUrl("photo-large.png");
     expect(photos).toHaveLength(1);

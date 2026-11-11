@@ -1,0 +1,17 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Text logo</title>
+<link rel="stylesheet" href="/assets/style.css">
+<style>
+  /* A text logo, no picture: the name in a family of its own at twice the menu's size, its second word set in
+     transparent text clipped to a gradient as overreacted.io does, and the menu in the body font. */
+  header { display: flex; align-items: baseline; gap: 32px; padding: 24px; }
+  .name { font-family: "Brand Serif", serif; font-size: 28px; color: oklch(0.45 0.15 260); text-decoration: none; }
+  .name em { font-style: normal; background: linear-gradient(90deg, #0a7d5a, #0057ff); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  nav { display: flex; gap: 16px; }
+  nav a { font-size: 14px; color: #333333; text-decoration: none; }
+</style></head><body>
+<header>
+  <a class="name" href="/">Fixture <em>Journal</em></a>
+  <nav><a href="/archive">Archive</a><a href="/about">About</a><a href="/feed">Feed</a></nav>
+</header>
+<main><p>Plain text in the body font.</p></main>
+</body></html>

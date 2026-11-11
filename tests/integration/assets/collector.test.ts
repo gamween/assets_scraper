@@ -799,3 +799,123 @@ describe("collector limits and hostile pages", () => {
     expect(huge.candidates.filter((c) => c.url.startsWith("data:image/png;base64,AAAA")).length).toBeGreaterThan(0);
   }, 120_000);
 });
+
+describe("collector wordmark", () => {
+  const collectFixture = async (pathname: string): Promise<RawCollectorOutput> => {
+    const { context, page } = await openPage(browser, `${server.origin}${pathname}`);
+    try {
+      return await runCollector(page, collectorOptions(server.host, "Fixture"));
+    } finally {
+      await context.close();
+    }
+  };
+
+  /** A page served at `url` with its pictures as data URIs, so nothing else has to answer. */
+  const collectHtml = async (url: string, body: string): Promise<RawCollectorOutput> => {
+    const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    const page = await context.newPage();
+    await page.route("**/*", (route) => (route.request().url() === url ? route.fulfill({ contentType: "text/html", body }) : route.fulfill({ status: 404 })));
+    await page.goto(url);
+    try {
+      return await runCollector(page, collectorOptions(new URL(url).host, ""));
+    } finally {
+      await context.close();
+    }
+  };
+
+  it("reads a lockup: two stacked runs beside the picture, their lab() colours through the canvas, no zero-width span", async () => {
+    const lockup = await collectFixture("/wordmark-lockup.html");
+    const monogram = lockup.candidates.find((candidate) => candidate.url === asset("touch.png") && candidate.visible);
+    expect(monogram).toBeDefined();
+    expect(lockup.wordmark).toEqual({
+      runs: [
+        { text: "Investir\n", hex: "#130d21" },
+        { text: "Day", hex: "#fb2189" },
+      ],
+      stack: expect.stringContaining("__Inter_d65c78"),
+      weight: 700,
+      size: 12,
+      letterSpacing: 1.2,
+      transform: "uppercase",
+      logo: { group: monogram!.group, width: 36, height: 36 },
+    });
+  });
+
+  it("reads a text logo with no picture, a run clipped to a gradient taking its first stop", async () => {
+    const text = await collectFixture("/wordmark-text.html");
+    expect(text.wordmark).toEqual({
+      runs: [
+        // oklch(0.45 0.15 260), through the canvas.
+        { text: "Fixture ", hex: "#1c50a7" },
+        { text: "Journal", hex: "#0a7d5a" },
+      ],
+      stack: expect.stringContaining("Brand Serif"),
+      weight: 400,
+      size: 28,
+      letterSpacing: 0,
+      transform: "none",
+    });
+  });
+
+  it("passes over a Home menu item and the site's name set as a plain menu item, for the brand link set apart", async () => {
+    const home = await collectFixture("/wordmark-home.html");
+    expect(home.wordmark).toEqual({
+      runs: [
+        { text: "Fixture ", hex: "#111111" },
+        { text: "Labs", hex: "#e4572e" },
+      ],
+      stack: expect.stringContaining("__Inter_d65c78"),
+      weight: 800,
+      size: 20,
+      letterSpacing: 0,
+      transform: "none",
+    });
+  });
+
+  it("reads none of the text a sighted reader never sees: off screen, or clipped to a 1 px box for screen readers", async () => {
+    const hidden = await collectFixture("/wordmark-sr-only.html");
+    const mark = hidden.svgs.find((svg) => svg.markup.includes('<circle cx="14"'));
+    expect(mark).toBeDefined();
+    expect(hidden.wordmark).toEqual({
+      runs: [{ text: "Fixture", hex: "#0a7d5a" }],
+      stack: expect.stringContaining("__Inter_d65c78"),
+      weight: 600,
+      size: 18,
+      letterSpacing: 0,
+      transform: "none",
+      logo: { svg: mark!.hash, width: 28, height: 28 },
+    });
+  });
+
+  it("finds no wordmark in a logo whose only text is for screen readers, as on apple.com and react.dev", async () => {
+    const apple = await collectHtml(
+      "https://www.fruit.test/",
+      `<!doctype html><title>Fruit</title><style>.sr { position: absolute; width: 1px; height: 44px; overflow: hidden; clip: rect(1px, 1px, 1px, 1px) }</style>
+      <header><nav><a href="/" aria-label="Fruit"><svg width="14" height="44"><path d="M0 0h14v44H0z"/></svg><span class="sr">Fruit</span></a>
+      <a href="/store">Store</a> <a href="/mac">Mac</a></nav></header>`,
+    );
+    expect(apple.svgs.some((svg) => svg.context.homeLink)).toBe(true);
+    expect(apple.wordmark).toBeUndefined();
+  });
+
+  it("finds none in a language switch, a menu of pictures, a breadcrumb or a Home item beside a picture-only logo", async () => {
+    const icon = (fill: string) => `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><rect width="24" height="24" fill="${fill}"/></svg>`)}`;
+    const pages: [string, string][] = [
+      // lemonde.fr: "FR" leads to `/?preferred_lang=fr` in a list beside "EN", in a font of its own.
+      ["https://www.news.test/", `<header><ul><li><a href="/?preferred_lang=fr" style="font-family: serif; font-weight: 700">FR</a></li><li><a href="/en/" style="font-family: serif">EN</a></li></ul>
+        <nav><a href="/world">World</a> <a href="/sport">Sport</a></nav></header>`],
+      // notion.com: its header offers the home page in another language.
+      ["https://www.notes.test/", `<header><a href="/en-gb" style="font-weight: 700">Change to English (UK)</a><nav><a href="/product">Product</a> <a href="/pricing">Pricing</a></nav></header>`],
+      // airbnb.com: category tabs, each a picture over a word, the first leading home.
+      ["https://www.stay.test/", `<header><nav><a href="/"><img src="${icon("#d93")}" width="24" height="24" alt="">All</a>
+        <a href="/homes"><img src="${icon("#3a7")}" width="24" height="24" alt="">Homes</a> <a href="/hotels"><img src="${icon("#37d")}" width="24" height="24" alt="">Hotels</a></nav></header>`],
+      ["https://www.docs.test/guide", `<nav aria-label="Breadcrumb"><a href="/" style="font-weight: 700">Docs Fixture</a> / <a href="/guide">Guide</a></nav>`],
+      // ilovechickpea.ca: the logo is a picture alone, and "HOME" is the first item of the menu.
+      ["https://www.chickpea.test/", `<header><a href="/"><img src="${icon("#5bf")}" width="200" height="40" alt="Chickpea"></a>
+        <nav><a href="/" style="text-transform: uppercase; color: #55c3f2">Home</a> <a href="/menu" style="text-transform: uppercase">Menu</a></nav></header>`],
+    ];
+    for (const [url, body] of pages) {
+      expect((await collectHtml(url, `<!doctype html><title>Page</title>${body}`)).wordmark, url).toBeUndefined();
+    }
+  });
+});

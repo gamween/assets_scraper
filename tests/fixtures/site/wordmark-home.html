@@ -1,0 +1,18 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Home links</title>
+<link rel="stylesheet" href="/assets/style.css">
+<style>
+  /* Three home links in the header, in the order a mobile-first page writes them: "Home" in the menu (ilovechickpea.ca's
+     "HOME"), the site's name as one more plain item of a second menu, and only then the brand link, set apart. */
+  header { display: flex; align-items: center; gap: 24px; padding: 20px; }
+  nav { display: flex; gap: 16px; }
+  nav a { font-size: 14px; color: #333333; text-decoration: none; }
+  .brand { order: -1; font-size: 20px; font-weight: 800; color: #111111; text-decoration: none; }
+  .brand b { color: #e4572e; }
+</style></head><body>
+<header>
+  <nav aria-label="Main"><a href="/">Home</a><a href="/blog">Blog</a><a href="/about">About</a></nav>
+  <nav aria-label="Sites"><a href="/">Fixture</a><a href="/shop">Shop</a><a href="/help">Help</a></nav>
+  <a class="brand" href="/">Fixture <b>Labs</b></a>
+</header>
+<main><p>Plain text in the body font.</p></main>
+</body></html>

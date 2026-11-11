@@ -9,4 +9,5 @@
 .masked { -webkit-mask-image: url(mask.svg); mask-image: url(mask.svg); background: #e33; width: 16px; height: 16px; }
 .page-icons path { fill: #0a7; }
 body { font-family: "__Inter_d65c78", sans-serif; color: rgb(20, 30, 40); --brand: #ff3366; }
+.wordmark { font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: rgb(20, 30, 40); }
 @media (max-width: 600px) { .hero-bg { background-image: url(photo-small.png); } }

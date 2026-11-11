@@ -1,0 +1,22 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Lockup</title>
+<link rel="stylesheet" href="/assets/style.css">
+<style>
+  /* Modelled on investirday.fr: a monogram drawn at 36x36 in a round badge, beside two stacked words in Inter 700,
+     12px, tracked 0.1em, in capitals, "Day" in the accent colour, both computed to lab() as Tailwind v4 writes them,
+     and a zero-width space in its own span at the end. */
+  header { padding: 20px; }
+  nav { display: flex; align-items: center; gap: 24px; }
+  .home { display: flex; align-items: center; gap: 8px; text-decoration: none; }
+  .badge { width: 36px; height: 36px; border-radius: 50%; overflow: hidden; background: linear-gradient(135deg, #7933e0, #fb2189); }
+  .badge img { display: block; width: 100%; height: 100%; }
+  .stack { display: flex; flex-direction: column; line-height: 1; }
+  .word { font-weight: 700; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase; color: lab(4.8647 5.89541 -12.118); }
+  .accent { color: lab(56.2517 80.3767 1.26251); }
+  nav > a:not(.home) { font-size: 13px; font-weight: 500; color: #333333; text-decoration: none; }
+</style></head><body>
+<header><nav>
+  <a class="home" href="/"><div class="badge"><img src="/assets/touch.png" alt="Logo Fixture Day"></div><span class="stack"><span class="word">Investir</span><span class="word accent">Day <span style="font-family: sans-serif">&#8203;</span></span></span></a>
+  <a href="/programme">Programme</a><a href="/speakers">Speakers</a><a href="/exhibitors">Exhibitors</a>
+</nav></header>
+<main><p>Plain text in the body font.</p></main>
+</body></html>

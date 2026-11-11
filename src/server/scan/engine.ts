@@ -20,6 +20,7 @@ import { InPageTimeoutError, runInPage } from "./inpage/run";
 import { loadAndScroll, MAX_TITLE_CHARS, openPage, prepareForCollection, readPageFacts, type NavigationResult } from "./navigate";
 import { extractPalette } from "./palette";
 import { assembleAssets } from "./post/assemble";
+import { buildWordmark } from "./post/wordmark";
 import { cutText, MAX_SITE_NAME_CHARS, preflight, type PreflightResult } from "./preflight";
 import { NO_ORIGINAL_PROBES } from "./types";
 import type { AssetsOutput, CapturedNetwork, CollectorOptions, FontsOutput, PageContext, PostInput, RawCandidate, RawCollectorOutput, RawSvg, SafeFetch, ScanBackend, Signer } from "./types";
@@ -512,6 +513,11 @@ function emitResults(results: ScanResults, emit: (event: ScanEvent) => void): vo
   const faviconAsset = assets.find((asset) => asset.role === "favicon" && (asset.display ?? asset.original));
   const assetUrls = new Set(assets.flatMap((asset) => [asset.display?.url, asset.original?.url]).filter((value): value is string => Boolean(value)));
   const brandFiles = withoutAssets(results.brandFiles ?? [], assetUrls);
+  const wordmark = buildWordmark(collector.wordmark, {
+    families: fontsOut.families,
+    assetIdOf: assetsOut.assetIdOf,
+    assetIds: new Set(assets.map((asset) => asset.id)),
+  });
   const page: PageInfo = {
     requestedUrl: url,
     finalUrl: context.finalUrl,
@@ -522,6 +528,7 @@ function emitResults(results: ScanResults, emit: (event: ScanEvent) => void): vo
     status: nav.status,
     brandLinks: safeBrandLinks(collector.brandLinks),
     ...(brandFiles.length > 0 ? { brandFiles } : {}),
+    ...(wordmark ? { wordmark } : {}),
   };
   emit({ type: "page", page });
   emit({ type: "palette", palette: results.palette });

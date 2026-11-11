@@ -230,6 +230,18 @@ export interface PageInfo {
   status: number;
   brandLinks: { href: string; text: string }[];
   brandFiles?: BrandFile[];   // absent from the early page event
+  wordmark?: Wordmark;        // absent from the early page event and from a logo with no live text
+}
+
+export interface Wordmark {
+  text: string;           // as written, before `transform`, "\n" where the page starts a new line
+  family: string;         // the scan's family name, or a system font as written
+  weight: number;
+  size: number;           // CSS px
+  letterSpacing: number;  // CSS px, 0 for normal
+  transform: "none" | "uppercase" | "lowercase" | "capitalize";
+  runs: { text: string; hex: string }[];               // the text cut by colour, at most 4
+  withLogo?: { id: string; width: number; height: number };  // the asset beside it and the size it is drawn at
 }
 
 export interface BrandFile {
@@ -312,7 +324,7 @@ The engine owns an `AbortController` tied to `request.signal` and to a hard dead
 | 10 | Post-processing in Node, including original verification and declared URL probes | `process` | 8 s for network work |
 | 11 | Emit `page`, `palette`, `assets` batches, `fonts`, `done` | | |
 
-`page` is emitted twice. The first one goes out as soon as the title and final URL are known (after phase 4), so the UI can show the site header early; it has empty `brandLinks` and no `favicon`, which only exist after collection and post-processing. The second one, in phase 11, carries the brand links and the signed favicon. The client replaces its page info with each `page` event.
+`page` is emitted twice. The first one goes out as soon as the title and final URL are known (after phase 4), so the UI can show the site header early; it has empty `brandLinks` and no `favicon` or `wordmark`, which only exist after collection and post-processing. The second one, in phase 11, carries the brand links, the wordmark and the signed favicon. The client replaces its page info with each `page` event.
 
 ### 7.3 Browser
 
@@ -357,6 +369,7 @@ Walk every element in the document, in every open shadow root and in every reada
 - `data:` URIs: decoded. SVG data URIs join the SVG kind.
 - Network-only images: every captured image response is a candidate.
 - Brand links: same-site `<a>` whose last path segment or text holds a brand word (`brand`, `press`, `media kit`, `newsroom`, `identity`, `logo`, `guidelines`), and links to another host that is a brand portal (Frontify, standards.site, Visualbook, Brandfolder, Brandpad, Corebook, Lingo, Bynder, the vendor's home page excepted) or whose text, path or card heading says brand kit in a whole phrase (`brand kit`, `media kit`, `press kit`, `brand guidelines`, `brand manual`, `logo files` and the like). Phrases and portals first, then page order, at most 6. A link to a file is never a brand link. The page itself is not one, in any language: a first path segment of two letters (with a region or script, `/pt-br`) is a language when the path goes on after it (`/cs/press-and-media`), while a bare `/cp` is a page of its own (francefintech.org's press releases). A trailing slash makes no other link: `/cp` and `/cp/` are one brand link, and the same rule merges brand portals and brand files. A query or another case still can.
+- Wordmark: the visible text of a link to the site's home page in the header or a nav near the top, the link the site logo is scored on, when it is set apart from the other links and buttons there (its own family, a weight of 600 or more they lack, its own tracking or case, a size 10 percent larger, or a picture beside it in the same link unless most of them have one too). Not a link to the home page in another language, one that names a language, one in a list of them, a breadcrumb or a footer; not hidden, transparent, off-screen or screen-reader-only text; not a generic label (`Home`, `Accueil`, `Menu`, a skip link); at most 40 characters in at most 4 colour runs. Each run's colour is the text fill or the first stop of the gradient the text is clipped to, through the opacity and backgrounds behind it, read on a canvas like the palette's. Post-processing names the family against the scan's fonts and ties the picture beside the text to its asset.
 - Brand files: `<a>` whose path or `download` attribute ends in `.zip`, `.pdf`, `.ai`, `.eps`, `.svg` or `.png`, on any host. On a brand page (a path segment holds a brand word) every one counts; elsewhere the path, the text, the label, the `download` name or the card heading has to hold a brand word. On a brand page the capture also reads the page's own scripts (same site, at most 80, 4 MB each, 16 MB in all) for quoted paths with those extensions, and keeps the archives and documents whose path holds a brand word and the images in a folder whose name does. Post-processing names each file (a label that is not a download verb, the `download` name, the file name unless it is a hash, the card heading, the type), merges links to one URL, drops a vector or raster the scan holds as an asset, keeps at most 16, and asks each host for the size with `GET` and `Range: bytes=0-0` through `safeFetch` (3 s each, 6 at once, within the verification window).
 
 ### 8.2 Noise (dropped, counted by reason in `stats.hidden`)
@@ -527,6 +540,7 @@ No analytics, no public listing, `noindex` everywhere, no server-side storage of
 
 - Header: favicon, page title, mono meta `linear.app · 48 assets · 11s`, actions `Copy link`, `Rescan`, `Download all 48`.
 - Palette strip: brand swatches then neutrals, each a 32 px square with its hex in mono under it, click copies the hex, `Copy all` copies one `#hex role` per line.
+- Wordmark, under the palette when the page sets its logo in live text: each colour run as a chip of its colour, its text and its hex, then the type settings in mono (`Inter 700 · 12px · 0.1em · uppercase`), `Copy CSS` copies them as declarations.
 - Brand links: `Brand resources on this site` chips that start a scan of that page, then brand file chips (name, type, size) that open the file's URL.
 - Sticky filter row: tabs `All`, `SVG`, `Images`, `Fonts` with counts, search `Filter by name or URL` (key `/`), sort (`Relevance`, `Page order`, `Largest`, `File size`, `Name`), background control `Auto · Light · Dark · Grid`.
 - Sections in `All`: `Logos` (site-logo, logo, favicon), `SVG`, `Images` (social images lead with an `OG image` badge), `Fonts`, `Small icons` (collapsed, `Show`), `In stylesheets` (declared-only, collapsed), `Declared, not used` (fonts, collapsed). The type tabs show the same assets without the `Logos` section, with a `Logo` badge. A footer line counts hidden noise: `9 hidden: tracking pixels and spacer images`.

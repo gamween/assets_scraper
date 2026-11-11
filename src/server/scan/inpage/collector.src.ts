@@ -1,11 +1,16 @@
 import type { FoundIn, HiddenReason } from "@/lib/contract";
 import { extractCssUrls, readCssUrls, readFontFaceSrc } from "./css-values";
 import { brandFileType, isBrandFileWord, isBrandPortal, isBrandWord, isStrongBrandPhrase, linkKey, SECOND_LEVEL_LABELS, siteOf } from "./brand";
+import { canvasPainter, COLOR_TOKEN_RE, colorReader, over, toHex, type RGB, type RGBA } from "./css-color";
 import { OUTPUT_LISTS } from "./lists";
 import { LOGO_WORD } from "./logo-word";
 import { labelNamesOnlyTheLink } from "./profile-label";
 import { parseSrcset } from "./srcset";
 import { canonicalSvgMarkup, varFallback, withCurrentColor } from "./svg-markup";
+import {
+  colourRuns, commonStyle, drawnWeight, firstFamily, isGenericHomeLabel, isSetApart, MAX_WORDMARK_CHARS, MAX_WORDMARK_RUNS, px, stripInvisible,
+  type TextStyle, type WordmarkPiece,
+} from "./wordmark";
 import type {
   CandidateContext,
   CollectorOptions,
@@ -16,6 +21,7 @@ import type {
   RawFontStatus,
   RawFontUsage,
   RawSvg,
+  RawWordmark,
   Rect,
 } from "../types";
 
@@ -54,6 +60,21 @@ const MAX_LINK_CAPTIONS = 100;
 /** Ancestors a link's caption is looked for in, and the longest heading that still reads as a name. */
 const CAPTION_DEPTH = 5;
 const MAX_CAPTION_CHARS = 80;
+/** Home links near the top read for a wordmark, text nodes read in one, and the peers its style is compared with. */
+const MAX_WORDMARK_LINKS = 12;
+const MAX_WORDMARK_TEXT_NODES = 60;
+const MAX_WORDMARK_PEERS = 30;
+const MAX_PEER_TEXT_NODES = 10;
+/** Elements of a home link searched for the picture beside its text, and the smallest box that counts as one. */
+const MAX_WORDMARK_ELEMENTS = 80;
+const MIN_PICTURE_PX = 8;
+/** Ancestors whose opacity and background a wordmark colour is read over. */
+const MAX_BACKDROP_DEPTH = 40;
+const MAX_WORDMARK_STACK_CHARS = 200;
+/** A trail of links back to the home page, which names the site in the body font on every inner page. */
+const BREADCRUMB = '[aria-label*="breadcrumb" i],[class*="breadcrumb" i],[itemtype*="BreadcrumbList"]';
+/** A query that picks the language of the page it leads to: `?lang=fr`, `?preferred_lang=fr`, `?locale=de`, `?hl=ja`. */
+const LANGUAGE_QUERY = /[?&][\w-]*(?:lang|language|locale|hl)=/i;
 
 const LAZY_ATTR =
   /^data-(?:lazy-?)?(?:src|srcset|original|original-set|hi-?res(?:-src)?|full(?:-src)?|large(?:-src)?|zoom(?:-src)?|fallback(?:-src)?|bg|background|background-image|image|img|echo|flickity-lazyload|lazy|srcset-lazy|pin-media|retina|2x)$/i;
@@ -597,9 +618,16 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
    * for URLs the element does not display (srcset alternates, lazy attributes, noscript): they keep the element's
    * context and label but not its visibility or rectangle.
    */
+  /**
+   * The element group of the first candidate each element shows, so the wordmark can say which asset the picture beside
+   * it became (`RawWordmark.logo`).
+   */
+  const shownGroup = new Map<Element, number>();
+
   const addFromElement = (el: Element, rawUrl: string | null | undefined, foundIn: FoundIn, patch: CandidatePatch, shown = true) => {
     const url = abs(rawUrl, el.baseURI);
     if (!url) return;
+    if (shown && !shownGroup.has(el)) shownGroup.set(el, patch.group);
     const index = indexOf.get(el) ?? elements.length;
     const root = rootOf[index] ?? roots[0];
     const where: FoundIn = root?.iframe ? "iframe" : root?.shadow ? "shadow-dom" : foundIn;
@@ -918,6 +946,8 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
 
   // ------------------------------------------------ inline SVG
   const svgs = new Map<string, RawSvg>();
+  /** The hash each inline SVG element normalized to, which names its asset: the same use as `shownGroup`. */
+  const svgHashOf = new Map<Element, string>();
   let svgTotalBytes = 0;
   let sandbox: { frame: HTMLIFrameElement; doc: Document; view: Window } | null = null;
   const getSandbox = () => {
@@ -1310,6 +1340,7 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
         if (seen && seen.count >= MAX_SAME_MARKUP_NORMALIZATIONS) {
           const existing = svgs.get(seen.hash);
           if (existing) addSvg({ ...existing, ...base, markup: existing.markup, hash: seen.hash, rect: info.rect, hasLiveText: existing.hasLiveText, elementCount: existing.elementCount });
+          svgHashOf.set(svg, seen.hash);
           continue;
         }
         if (normalizations >= options.maxSvgNormalizations) {
@@ -1320,6 +1351,7 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
         const normalized = await normalizeSvg(svg);
         rawHashes.set(raw, { hash: normalized.hash, count: (seen?.count ?? 0) + 1 });
         addSvg({ ...base, ...normalized, ...(info.rect ? { rect: info.rect } : {}) });
+        svgHashOf.set(svg, normalized.hash);
       } catch {
         // one broken SVG never stops the collector
       }
@@ -1369,6 +1401,225 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
       }
       total += entry.bytes.length;
       blobs.push({ url, mime: entry.mime, base64: bytesToBase64(entry.bytes) });
+    }
+  }
+
+  // ------------------------------------------------ wordmark: the live text the page sets as its logo
+  let wordmark: RawWordmark | undefined;
+  if (!outOfTime()) {
+    const parseColor = colorReader(canvasPainter(document));
+    const WHITE: RGB = [255, 255, 255];
+    const REJECT_TEXT = "svg,script,style,noscript,template";
+    /** The locale a home path names, "" for none: `/en-fr` gives "en-fr". */
+    const localeOf = (pathname: string) => /^\/([a-z]{2}(?:[-_][a-z]{2,4})?)\/?$/i.exec(pathname)?.[1].toLowerCase() ?? "";
+    const pageLocale = /^\/([a-z]{2}(?:[-_][a-z]{2,4})?)(?=\/|$)/i.exec(location.pathname)?.[1].toLowerCase() ?? "";
+
+    const typography = (style: CSSStyleDeclaration): TextStyle & { stack: string } => ({
+      family: firstFamily(style.fontFamily),
+      stack: style.fontFamily.slice(0, MAX_WORDMARK_STACK_CHARS),
+      weight: drawnWeight(style.fontWeight, style.fontVariationSettings),
+      size: px(style.fontSize),
+      letterSpacing: px(style.letterSpacing),
+      transform: style.textTransform,
+    });
+
+    /**
+     * The line boxes of a text node a reader sees, or null: its element drawn, its own box on screen with some height,
+     * and no box between it and the link clipped to under 2 px. That last one is screen-reader-only text: apple.com puts
+     * "Apple" in a 1x44 box clipped to `rect(1px, 1px, 1px, 1px)` beside its logo, react.dev puts "React" in a 1x1 one.
+     * An image replacement link pushes its text off screen with `text-indent: -9999px`.
+     */
+    const seenLines = (node: Text, parent: Element, link: Element, view: Window): DOMRectList | null => {
+      try {
+        if (parent.checkVisibility && !parent.checkVisibility({ opacityProperty: true, visibilityProperty: true })) return null;
+      } catch {
+        // older engines
+      }
+      const range = node.ownerDocument.createRange();
+      range.selectNodeContents(node);
+      const box = range.getBoundingClientRect();
+      if (box.width < 1 || box.height < 2 || box.right <= 0 || box.left >= view.innerWidth) return null;
+      for (let el: Element | null = parent; el; el = composedParent(el)) {
+        const style = view.getComputedStyle(el);
+        if (style.display !== "contents") {
+          const r = el.getBoundingClientRect();
+          const clipped = style.overflowX !== "visible" || style.overflowY !== "visible" || style.clip !== "auto" || style.clipPath !== "none";
+          if ((r.width < 2 || r.height < 2) && clipped) return null;
+        }
+        if (el === link) break;
+      }
+      const lines = range.getClientRects();
+      return lines.length > 0 ? lines : null;
+    };
+
+    /**
+     * The colour a reader sees the text in, as the palette reads text: the text fill, else the first stop of the
+     * gradient the text is clipped to, with the opacity of its ancestors, over the backgrounds behind it. Null for text
+     * that paints nothing. overreacted.io sets its name in transparent text clipped to a gradient from #222222 to
+     * #222222, which turns pink and purple on hover, so its fill alone reads as no colour at all.
+     */
+    const seenColor = (parent: Element, link: Element, style: CSSStyleDeclaration, view: Window): string | null => {
+      let fill = parseColor(style.webkitTextFillColor);
+      if (!fill) {
+        for (let el: Element | null = parent; el && !fill; el = composedParent(el)) {
+          const cs = view.getComputedStyle(el);
+          if (cs.backgroundClip === "text" || cs.getPropertyValue("-webkit-background-clip") === "text") {
+            for (const token of cs.backgroundImage.match(COLOR_TOKEN_RE) ?? []) if ((fill = parseColor(token))) break;
+            break;
+          }
+          if (el === link) break;
+        }
+      }
+      if (!fill) return null;
+      let opacity = 1;
+      const layers: RGBA[] = [];
+      let opaque = false;
+      for (let el: Element | null = parent, depth = 0; el && depth < MAX_BACKDROP_DEPTH; el = composedParent(el), depth++) {
+        const cs = view.getComputedStyle(el);
+        const own = parseFloat(cs.opacity);
+        if (Number.isFinite(own)) opacity *= own;
+        const background: RGBA | null = opaque ? null : parseColor(cs.backgroundColor);
+        if (background) {
+          layers.push(background);
+          opaque = background[3] >= 1;
+        }
+      }
+      if (fill[3] >= 1 && opacity >= 1) return toHex(fill);
+      return toHex(over(fill, opacity, layers.reduceRight<RGB>((under, layer) => over(layer, 1, under), WHITE)));
+    };
+
+    /**
+     * The first picture the link shows beside `text` that the scan collected: an inline SVG, or an element with an image
+     * candidate. A picture whose element holds the text is behind it, not beside it: ma.tt sets its name over a 900x190
+     * header photograph that is the background of the link.
+     */
+    const pictureIn = (link: Element, text: Element): RawWordmark["logo"] => {
+      const walker = link.ownerDocument.createTreeWalker(link, NodeFilter.SHOW_ELEMENT);
+      for (let el: Element | null = link, seen = 0; el && seen < MAX_WORDMARK_ELEMENTS; el = walker.nextNode() as Element | null, seen++) {
+        const svg = svgHashOf.get(el);
+        const group = shownGroup.get(el);
+        if ((svg === undefined && group === undefined) || el.contains(text)) continue;
+        const r = el.getBoundingClientRect();
+        if (r.width < MIN_PICTURE_PX || r.height < MIN_PICTURE_PX) continue;
+        try {
+          if (el.checkVisibility && !el.checkVisibility({ opacityProperty: true, visibilityProperty: true })) continue;
+        } catch {
+          // older engines
+        }
+        return { ...(svg !== undefined ? { svg } : { group }), width: Math.round(r.width), height: Math.round(r.height) };
+      }
+      return undefined;
+    };
+
+    /**
+     * The other links and buttons of the header or nav, as one style, the one most of them share (the body's when there
+     * are none), and whether most of them show a picture beside their text. A row where every item has one is a menu of
+     * pictures, and a picture there does not make a lockup: airbnb.com's header opens on category tabs, each a picture
+     * over a word, and the first, "All", leads to the home page.
+     */
+    const neighbours = (link: Element, view: Window): { style: TextStyle; pictures: boolean } => {
+      const container = composedClosest(link, "header,[role=banner]") ?? composedClosest(link, "nav,[role=navigation]");
+      const styles: TextStyle[] = [];
+      let pictures = 0;
+      let looked = 0;
+      for (const peer of container?.querySelectorAll("a[href],button") ?? []) {
+        if (styles.length >= MAX_WORDMARK_PEERS || looked++ >= MAX_WORDMARK_PEERS * 4) break;
+        if (peer === link || peer.contains(link) || link.contains(peer)) continue;
+        if (peer.localName === "a" && isHomeHref(peer.getAttribute("href"), peer.baseURI)) continue;
+        const walker = peer.ownerDocument.createTreeWalker(peer, NodeFilter.SHOW_TEXT);
+        for (let node = walker.nextNode() as Text | null, nodes = 0; node && nodes < MAX_PEER_TEXT_NODES; node = walker.nextNode() as Text | null, nodes++) {
+          const parent = node.parentElement;
+          if (!parent || !stripInvisible(node.nodeValue ?? "").trim() || parent.closest(REJECT_TEXT) || !seenLines(node, parent, peer, view)) continue;
+          styles.push(typography(view.getComputedStyle(parent)));
+          if (pictureIn(peer, parent)) pictures++;
+          break;
+        }
+      }
+      return {
+        style: commonStyle(styles) ?? typography(view.getComputedStyle(document.body ?? document.documentElement)),
+        pictures: styles.length > 0 && pictures * 2 > styles.length,
+      };
+    };
+
+    const readLink = (link: Element, view: Window): RawWordmark | undefined => {
+      const pieces: WordmarkPiece[] = [];
+      let above: DOMRect | undefined;
+      let first: (TextStyle & { stack: string; element: Element }) | undefined;
+      let chars = 0;
+      const walker = link.ownerDocument.createTreeWalker(link, NodeFilter.SHOW_TEXT, {
+        acceptNode: (node) => (node.parentElement?.closest(REJECT_TEXT) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
+      });
+      for (let node = walker.nextNode() as Text | null, nodes = 0; node && nodes < MAX_WORDMARK_TEXT_NODES; node = walker.nextNode() as Text | null, nodes++) {
+        const value = node.nodeValue ?? "";
+        const text = stripInvisible(value);
+        if (!text.trim()) {
+          if (text) pieces.push({ text: " ", hex: "" });
+          continue;
+        }
+        const parent = node.parentElement;
+        const lines = parent && seenLines(node, parent, link, view);
+        if (!parent || !lines) continue;
+        const style = view.getComputedStyle(parent);
+        const hex = seenColor(parent, link, style, view);
+        if (!hex) continue;
+        // A link that long holds a sentence, not a name: no need to read the rest of it.
+        if ((chars += text.trim().length) > MAX_WORDMARK_CHARS) return undefined;
+        first ??= { ...typography(style), element: parent };
+        // A piece that starts below the last line of the one before is on a line of its own: investirday.fr stacks
+        // "Investir" over "Day" in a column beside its monogram. A quarter of a line of overlap is leading, not a line.
+        const top = lines[0].top;
+        const newLine = above !== undefined && top >= above.bottom - above.height / 4;
+        above = lines[lines.length - 1];
+        pieces.push({ text, hex, ...(newLine ? { newLine } : {}) });
+      }
+      const runs = colourRuns(pieces);
+      const whole = runs.map((run) => run.text).join("");
+      if (!first || !/[\p{L}\p{N}]/u.test(whole) || whole.length > MAX_WORDMARK_CHARS || runs.length > MAX_WORDMARK_RUNS || isGenericHomeLabel(whole)) return undefined;
+      const logo = pictureIn(link, first.element);
+      const peers = neighbours(link, view);
+      if (!isSetApart(first, peers.style, !!logo && !peers.pictures)) return undefined;
+      const { stack, weight, size, letterSpacing, transform } = first;
+      return { runs, stack, weight, size, letterSpacing, transform, ...(logo ? { logo } : {}) };
+    };
+
+    /**
+     * A link to the home page in some language rather than to the site's home: one in another language than the page
+     * (notion.com's header offers "Change to English (UK)" as a link to /en-gb, and vercel.com's /ai and /kb read as
+     * locales too), one that names a language (an `hreflang`, a language in its query), or one in a list with links to
+     * the home page in other languages. lemonde.fr's header opens on "FR", a link to `/?preferred_lang=fr` in a list
+     * beside "EN" (`/en/`), set in a font of its own.
+     */
+    const isLanguageSwitch = (link: Element, url: URL): boolean => {
+      const locale = localeOf(url.pathname);
+      if ((locale && locale !== pageLocale) || link.hasAttribute("hreflang") || LANGUAGE_QUERY.test(url.search)) return true;
+      const list = link.closest("li")?.parentElement;
+      let looked = 0;
+      for (const other of list?.querySelectorAll("a[href]") ?? []) {
+        if (looked++ >= MAX_WORDMARK_PEERS) break;
+        const href = other.getAttribute("href");
+        if (other === link || !isHomeHref(href, other.baseURI)) continue;
+        if (localeOf(new URL(href!, other.baseURI).pathname) !== locale) return true;
+      }
+      return false;
+    };
+
+    let links = 0;
+    for (let i = 0; i < elements.length && !wordmark && links < MAX_WORDMARK_LINKS; i++) {
+      const el = elements[i];
+      if (el.localName !== "a" || rootOf[i]?.iframe) continue;
+      const href = el.getAttribute("href");
+      if (!isHomeHref(href, el.baseURI)) continue;
+      try {
+        if (isLanguageSwitch(el, new URL(href!, el.baseURI))) continue;
+        if (!inBanner(el) && !composedClosest(el, "nav,[role=navigation]")) continue;
+        if (composedClosest(el, `footer,[role=contentinfo],${BREADCRUMB}`)) continue;
+        const view = el.ownerDocument.defaultView ?? window;
+        if (el.getBoundingClientRect().top + view.scrollY >= view.innerHeight) continue;
+        links++;
+        wordmark = readLink(el, view);
+      } catch {
+        // one broken link never stops the collector
+      }
     }
   }
 
@@ -1510,6 +1761,7 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
     blobs,
     brandLinks,
     brandFiles,
+    ...(wordmark ? { wordmark } : {}),
     noise,
     stats: { elements: elements.length, ms: Math.round(performance.now() - T0), truncated },
   };

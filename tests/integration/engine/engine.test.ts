@@ -23,6 +23,10 @@ const FAKE_COLLECTOR = `globalThis.__assetsScraper = {
       candidates: [], svgs: [], fontFaces: [], fontStatuses: [], fontUsage: [], unreadableSheets: [], blobs: [],
       brandLinks: links.slice(0, options.maxBrandLinks).map((a) => ({ href: a.href, text: a.textContent.trim() })),
       brandFiles: [],
+      wordmark: {
+        runs: [{ text: "Fixture", hex: "#141e28" }], stack: '"__Inter_d65c78", sans-serif', weight: 700, size: 16, letterSpacing: 1.28, transform: "uppercase",
+        logo: { svg: "a hash post-processing never saw", width: 120, height: 32 },
+      },
       noise: { "unreferenced-symbol": 1 },
       stats: { elements: document.getElementsByTagName("*").length, ms: 1, truncated: false },
     };
@@ -241,6 +245,11 @@ describe("scan engine", () => {
     const [early, final] = events.filter((event) => event.type === "page");
     expect(early).toEqual({ type: "page", page: { requestedUrl: `${fixture.origin}/`, finalUrl: `${fixture.origin}/`, host: "127.0.0.1", title: "Fixture Co", siteName: "Fixture", status: 200, brandLinks: [] } });
     expect(final.type === "page" && final.page.brandLinks).toEqual([{ href: `${fixture.origin}/press`, text: "Press kit" }]);
+    // The family is named from the stack when the scan has no fonts, and the tie is left out: post-processing never said
+    // which asset the picture became.
+    expect(final.type === "page" && final.page.wordmark).toEqual({
+      text: "Fixture", family: "Inter", weight: 700, size: 16, letterSpacing: 1.28, transform: "uppercase", runs: [{ text: "Fixture", hex: "#141e28" }],
+    });
     expect(events.find((event) => event.type === "palette")).toEqual({ type: "palette", palette: PALETTE });
     expect(events.find((event) => event.type === "assets")).toMatchObject({ items: [{ id: "photo", display: { url: `${fixture.origin}/assets/photo-small.png` } }] });
 
