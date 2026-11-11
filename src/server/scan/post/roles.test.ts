@@ -120,6 +120,17 @@ describe("assignRole", () => {
     expect(role({})).toBe("image");
   });
 
+  it("does not take a line for a logo", () => {
+    // sui.io: a dashed divider in the row of partner logos, a 1175x3 vector drawn 1108x15.
+    expect(role({ kind: "svg", foundIn: ["inline-svg"], logoWall: true, rendered: { width: 1108, height: 15 }, intrinsic: { width: 1108, height: 14.83 } })).toBe("illustration");
+    expect(role({ kind: "svg", foundIn: ["inline-svg"], logoWall: true, intrinsic: { width: 1175, height: 3 } })).toBe("illustration");
+    const header = logoScore(context({ header: true, homeLink: true }), true, { x: 0, y: 70, width: 1440, height: 2 });
+    expect(role({ kind: "svg", foundIn: ["inline-svg"], logoScore: header, rendered: { width: 1440, height: 2 } })).toBe("illustration");
+    // A long wordmark is still a logo.
+    expect(role({ kind: "svg", foundIn: ["inline-svg"], logoWall: true, rendered: { width: 345, height: 30 } })).toBe("logo");
+    expect(role({ kind: "svg", foundIn: ["inline-svg"], logoWall: true, rendered: { width: 656, height: 48 } })).toBe("logo");
+  });
+
   it("never makes an ICO file a logo", () => {
     // bybit.com declares its 48x48 /favicon.ico as the JSON-LD logo.
     expect(role({ foundIn: ["json-ld"], format: "ico", intrinsic: { width: 48, height: 48 } })).toBe("favicon");

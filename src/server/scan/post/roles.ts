@@ -16,6 +16,13 @@ const LOGO_TOP_PX = 160;
  * stripe.com captions three 2460x1060 photographs with a sentence that mentions its own logo.
  */
 const LOGO_MAX_AREA = 120_000;
+/**
+ * Longest side over shortest side past which a picture is a line, not a logo. Long wordmarks stay well under it: the
+ * longest in the scans of the November 2026 audit is raisesummit.com's MACHINA wordmark, 193x13 or 14.8 to 1. sui.io's
+ * dashed divider, a 1175x3 vector drawn 1108x15 inside its row of partner logos, is 74 to 1, and the logo wall rule
+ * had listed it with them.
+ */
+const LOGO_MAX_ASPECT = 30;
 /** Score at which position alone makes an asset the site logo. */
 const LOGO_SCORE_PROMOTION = 6;
 const DRAWABLE = /<(?:path|circle|rect|ellipse|line|polyline|polygon|text|image|use)\b/i;
@@ -93,6 +100,14 @@ const logoArea = (input: RoleInput): number => {
   return area(input.intrinsic);
 };
 
+/** Measured like the small-icon rule: the rendered box when the asset is on screen, else the file. */
+const isLine = (input: RoleInput): boolean => {
+  const box = area(input.rendered) > 0 ? input.rendered : input.intrinsic;
+  const long = longestSide(box);
+  const short = Math.min(box?.width ?? 0, box?.height ?? 0);
+  return short > 0 && long / short > LOGO_MAX_ASPECT;
+};
+
 /**
  * Prose, not a name: stripe.com describes a 2460x1060 photograph as "Aerial view of a street intersection where the
  * crosswalks form a slanted parallelogram, imitating the Stripe logo." The word "logo" in a sentence that long is
@@ -114,11 +129,13 @@ export function assignRole(input: RoleInput): AssetRole {
   // ICO is the favicon format, a few small bitmaps in one file, and never a logo whatever points at it: bybit.com
   // declares its 48x48 /favicon.ico as the JSON-LD logo, which made it a site logo beside the header wordmark.
   const ico = input.format === "ico";
-  if (!ico && (found.has("json-ld") || (input.logoScore >= LOGO_SCORE_PROMOTION && !oversized))) return "site-logo";
+  const logoShaped = !oversized && !isLine(input);
+  if (!ico && (found.has("json-ld") || (input.logoScore >= LOGO_SCORE_PROMOTION && logoShaped))) return "site-logo";
   if (found.has("icon-link") || found.has("meta-icon") || found.has("manifest") || (ico && found.has("json-ld"))) return "favicon";
   if (found.has("og-image") || found.has("twitter-image")) return "social";
-  // A logo is small. Past the same limit the site logo answers to, a picture that carries a logo word is a picture.
-  if (!ico && hasLogoEvidence(input) && !oversized) return "logo";
+  // A logo is small and has a shape. Past the limits the site logo answers to, a picture that carries a logo word is a
+  // picture.
+  if (!ico && hasLogoEvidence(input) && logoShaped) return "logo";
   if (input.spriteSymbol) return "sprite-symbol";
   // The single small-icon rule: the rendered size when the asset is on screen, else its intrinsic size.
   const side = input.rendered && longestSide(input.rendered) > 0 ? longestSide(input.rendered) : longestSide(input.intrinsic);
