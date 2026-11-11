@@ -17,7 +17,7 @@ Selected assets are zipped in the browser. Images load straight from their host,
 
 ## Use it from an agent
 
-Claude Code and other agents can scan a page, download only the assets that are usable into `scrap/<host>/` inside the current project, and install the page fonts. Three ways in, all on the same core: the MCP server shipped as a Claude Code plugin, the `assets-scraper` CLI, and the hosted `/api/v1` endpoints.
+Claude Code and other agents can scan a page, download only the assets that are usable into `scrap/<host>/` inside the current project (`~/Downloads/assets-scraper/<host>/` outside one, `<host>` without `www.`), and install the page fonts. Three ways in, all on the same core: the MCP server shipped as a Claude Code plugin, the `assets-scraper` CLI, and the hosted `/api/v1` endpoints.
 
 ```bash
 pnpm install && pnpm build:agent

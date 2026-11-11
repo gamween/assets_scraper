@@ -313,3 +313,27 @@ describe("createFileInside", () => {
     expect(() => createFileInside(root, "../evil.png")).toThrow(/outside/i);
   });
 });
+
+/**
+ * Where a download lands, as every place that says it states it. The tool description said `scrap/<host>` alone, and
+ * two auditors found a download of www.redstone.finance in ~/Downloads/assets-scraper/redstone.finance and filed it as
+ * a bug. The code's rule is the one kept: www.redstone.finance and redstone.finance are one site, so they share a folder.
+ */
+describe("the destination the docs describe", () => {
+  it("drops www. from the host under the project rule and the Downloads fallback alike", () => {
+    const home = makeTree("Downloads");
+    vi.stubEnv("HOME", home);
+    const bare = makeTree("work");
+    expect(resolveDestination({ host: "www.redstone.finance", cwd: path.join(bare, "work") }).dir).toBe(
+      path.join(home, "Downloads", "assets-scraper", "redstone.finance"),
+    );
+    const project = makeTree(".git");
+    expect(resolveDestination({ host: "www.redstone.finance", cwd: project }).dir).toBe(path.join(project, "scrap", "redstone.finance"));
+  });
+
+  it.each(["plugins/assets-scraper/skills/assets-scraper/SKILL.md", "docs/agents.md"])("%s states the fallback and the host rule", (file) => {
+    const text = fs.readFileSync(path.join(import.meta.dirname, "../..", file), "utf8");
+    expect(text).toContain("or in `~/Downloads/assets-scraper/<host>/` when there is no project");
+    expect(text).toContain("`https://www.redstone.finance` lands in `redstone.finance/`");
+  });
+});

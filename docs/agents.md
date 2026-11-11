@@ -68,7 +68,8 @@ assets-scraper fonts install <url> [options]
 assets-scraper fonts list [options]
 assets-scraper fonts uninstall <family> [options]
 
---out DIR             Where to write. Default: <project root>/scrap/<host>, or ~/Downloads/assets-scraper/<host>
+--out DIR             Where to write, as is. Default: $ASSETS_SCRAPER_OUT/<host> when that is set, else
+                      <project root>/scrap/<host>, else ~/Downloads/assets-scraper/<host>
 --profile deck|all    deck (default) drops icons, thumbnails, small images and duplicates. all keeps everything
 --kind svg,image      Only these kinds
 --role logo,site-logo Only these roles
@@ -138,16 +139,18 @@ Every drop is counted by reason, so an agent can say why a file is not there: `f
 
 ## Where the files go
 
-Files land in `scrap/<host>/` inside the current project, as `svg/`, `images/` and a `manifest.json` recording every file with its name, source URL, dimensions, bytes, role and why it was kept.
+Files land in `scrap/<host>/` inside the current project, or in `~/Downloads/assets-scraper/<host>/` when there is no project, as `svg/`, `images/` and a `manifest.json` recording every file with its name, source URL, dimensions, bytes, role and why it was kept.
+
+`<host>` is the scanned page's host made into a directory name: lower case, `www.` dropped, and anything a file name cannot hold (a port's colon, a slash) replaced by `-`. A scan of `https://www.redstone.finance` lands in `redstone.finance/`, the same folder as one of `https://redstone.finance`, and its scan id starts with the same name. Every answer gives the directory it wrote into as an absolute path (`dir`), so read it there rather than rebuilding it.
 
 The destination rule, strongest first:
 
 1. An explicit destination (`--out` on the CLI, `dest` on `download_assets`).
 2. `ASSETS_SCRAPER_OUT`, with the host appended.
 3. `<project root>/scrap/<host>`, where the project root is the git root of the working directory, or the nearest directory above it holding `package.json`, `pyproject.toml` or `.claude`.
-4. `~/Downloads/assets-scraper/<host>` when there is no project.
+4. `~/Downloads/assets-scraper/<host>` when there is no project. The home directory itself never counts as a project, so a session started in it, or in a folder under it that is not in a project, writes here.
 
-A `dest` that came from an agent is held to the narrower rule: it is read relative to `<project root>/scrap` (`dest: "stripe-brand"` is `scrap/stripe-brand`) and has to stay inside it, so an agent cannot drop scraped files into the source tree. The project rule and the fallback are held the same way once symbolic links are resolved: a `scrap` or `scrap/<host>` that links out of the project is refused rather than followed. A `--out` you type yourself, or `ASSETS_SCRAPER_OUT`, is your own choice and is not restricted.
+A `dest` that came from an agent is held to the narrower rule: it is read relative to `<project root>/scrap`, or to `~/Downloads/assets-scraper` when there is no project (`dest: "stripe-brand"` is `scrap/stripe-brand`), and has to stay inside it, so an agent cannot drop scraped files into the source tree. The project rule and the fallback are held the same way once symbolic links are resolved: a `scrap` or `scrap/<host>` that links out of the project is refused rather than followed. A `--out` you type yourself, or `ASSETS_SCRAPER_OUT`, is your own choice and is not restricted.
 
 Existing files are never silently overwritten: identical bytes are skipped, different bytes get a `-2` suffix, and names that differ only in case count as the same name, as they do on macOS. A file takes the extension of its format, whatever name the scan gave it, and bytes an asset carries inline are checked against that format like fetched ones. Every file is created with `O_EXCL | O_NOFOLLOW`.
 

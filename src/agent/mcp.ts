@@ -361,9 +361,14 @@ export function createAgentMcpServer(options: AgentMcpOptions = {}): McpServer {
     "download_assets",
     {
       title: "Download a selection",
+      // Two auditors read `scrap/<host>` here, found a download of www.redstone.finance in
+      // ~/Downloads/assets-scraper/redstone.finance and filed it as a bug: the fallback and the host rule are said here.
       description:
-        "Writes the usable assets of a scan into scrap/<host> inside the current project: duplicates, thumbnails, icons " +
-        "and low quality images are dropped and counted by reason. Returns the paths, not the bytes.",
+        "Writes the usable assets of a scan into scrap/<host> in the current project (its git root, or the nearest " +
+        "directory holding package.json, pyproject.toml or .claude), or into ~/Downloads/assets-scraper/<host> when " +
+        "there is no project, or into $ASSETS_SCRAPER_OUT/<host> when the user set it. <host> is the page's host in " +
+        "lower case without www.: www.redstone.finance lands in redstone.finance. Duplicates, thumbnails, icons and low " +
+        "quality images are dropped and counted by reason. Returns the directory and the paths, not the bytes.",
       inputSchema: {
         scanId: z.string().describe("the id scan_page returned"),
         ids: z.array(z.string()).max(MAX_EXPLICIT_IDS).optional().describe("exact asset ids, which win over the filters"),
@@ -395,7 +400,10 @@ export function createAgentMcpServer(options: AgentMcpOptions = {}): McpServer {
           .string()
           .max(1024)
           .optional()
-          .describe("a directory inside the project scrap folder, relative to it (\"stripe-brand\" is scrap/stripe-brand). Left out, it is scrap/<host>"),
+          .describe(
+            "a directory inside the project scrap folder, relative to it (\"stripe-brand\" is scrap/stripe-brand), or inside " +
+              "~/Downloads/assets-scraper when there is no project. Left out, it is <host> there",
+          ),
       },
     },
     async ({ scanId, dest, kind, kinds, role, roles, ids, ...rest }, { signal }) =>

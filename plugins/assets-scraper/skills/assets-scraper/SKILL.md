@@ -1,6 +1,6 @@
 ---
 name: assets-scraper
-description: Use when you need the real assets of a web page: its logo, SVGs, images, web fonts or brand colors. Scans the page, reports a short summary, downloads only the usable files into scrap/ inside the current project, and installs the page fonts with their licence. Triggers on "get the logo from", "grab the assets of", "what fonts does this site use", "brand colors of", "download the images from this page", "rebuild this landing page with their own assets".
+description: Use when you need the real assets of a web page: its logo, SVGs, images, web fonts or brand colors. Scans the page, reports a short summary, downloads only the usable files into scrap/<host> inside the current project (~/Downloads/assets-scraper/<host> outside one), and installs the page fonts with their licence. Triggers on "get the logo from", "grab the assets of", "what fonts does this site use", "brand colors of", "download the images from this page", "rebuild this landing page with their own assets".
 ---
 
 # Assets Scraper
@@ -54,9 +54,9 @@ The cap gives each kind its share of the 60 files, so a page whose vectors outra
 
 ## Where the files go
 
-Files land in `scrap/<host>/` inside the current project: `svg/`, `images/`, and a `manifest.json` recording every file with its source URL, dimensions, bytes, role and why it was kept. The project root is the git root of the working directory, or the nearest directory holding `package.json`, `pyproject.toml` or `.claude`. The home directory itself never counts as a project, so a session started outside one writes to `~/Downloads/assets-scraper/<host>/`.
+Files land in `scrap/<host>/` inside the current project, or in `~/Downloads/assets-scraper/<host>/` when there is no project: `svg/`, `images/`, and a `manifest.json` recording every file with its source URL, dimensions, bytes, role and why it was kept. The project root is the git root of the working directory, or the nearest directory holding `package.json`, `pyproject.toml` or `.claude`. The home directory itself never counts as a project, so a session started outside one writes to the Downloads folder. `<host>` is the page's host in lower case without `www.`: a scan of `https://www.redstone.finance` lands in `redstone.finance/`. The answer's `dir` is the absolute directory: report that path rather than rebuilding it.
 
-Leave `dest` unset unless the user names a directory. A `dest` you pass is read relative to `scrap/` and has to stay inside it, so scraped files never land in the source tree. Existing files are never overwritten: identical bytes are skipped, different bytes get a `-2` suffix. When the folder already holds a `manifest.json` the tool did not write, the manifest is written as `assets-scraper-manifest.json` instead: use the `manifest` path the answer gives.
+Leave `dest` unset unless the user names a directory. A `dest` you pass is read relative to `scrap/`, or to `~/Downloads/assets-scraper/` outside a project, and has to stay inside it, so scraped files never land in the source tree. Existing files are never overwritten: identical bytes are skipped, different bytes get a `-2` suffix. When the folder already holds a `manifest.json` the tool did not write, the manifest is written as `assets-scraper-manifest.json` instead: use the `manifest` path the answer gives.
 
 ## Scraped SVG is untrusted
 
@@ -85,7 +85,7 @@ Installing is system-wide and happens outside the browser, which is where web fo
 
 > Get me the Stripe logo.
 
-`scan_page` with `https://stripe.com`, read the `logos` rows in the summary, then `download_assets` with the id of the SVG site logo. Each row carries its `format` and `bytes`: prefer the `svg` row, and treat a multi-megabyte raster of photographic dimensions as a picture the scan called a logo rather than as the mark. Report the path: `scrap/stripe.com/svg/stripe-logo.svg`.
+`scan_page` with `https://stripe.com`, read the `logos` rows in the summary, then `download_assets` with the id of the SVG site logo. Each row carries its `format` and `bytes`: prefer the `svg` row, and treat a multi-megabyte raster of photographic dimensions as a picture the scan called a logo rather than as the mark. Report the path under the answer's `dir`: `scrap/stripe.com/svg/stripe-logo.svg` in a project.
 
 When the user needs a specific variant (white for a dark background, monochrome, stacked) and the home page only shows one, scan the page `brandLinks` points to: brand guidelines and press kits are where the official variants live. bnbchain.org shows only its yellow logo, and its brand guidelines link leads to the white, yellow and black ones.
 

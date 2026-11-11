@@ -9,7 +9,7 @@
   "plugins": [
     {
       "name": "assets-scraper",
-      "description": "Scan any web page for its SVGs, images, fonts and brand palette, download a selected set into scrap/ inside the current project, and install the page fonts locally.",
+      "description": "Scan any web page for its SVGs, images, fonts and brand palette, download a selected set into scrap/<host> inside the current project (~/Downloads/assets-scraper/<host> outside one), and install the page fonts locally.",
       "source": "./plugins/assets-scraper",
       "author": {
         "name": "gamween",
