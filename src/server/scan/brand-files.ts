@@ -31,10 +31,11 @@ const PROBE_CONCURRENCY = 6;
 /**
  * A quoted path or URL ending in a brand file extension, the way a page's code holds a download it starts on a click:
  * monad.xyz's "Download kit" button runs `a.href = "/brand-page-assets/Monad Brand and Media Kit.zip"`, so the file is in
- * no link. A path may hold spaces, a URL may not; neither crosses a quote, a line, an angle bracket or a backslash.
- * Linear in the text: a run stops at the next quote, so no character is read from more than one start.
+ * no link. A path may hold spaces, a URL may not; neither crosses a quote, a line, an angle bracket, a backslash or the
+ * `?` or `#` a query starts with, which is read once, after the extension. Linear in the text: every run starts at a
+ * quote and stops at the next one, so no character is read from two starts.
  */
-const FILE_LITERAL = /(["'`])((?:https?:\/\/[^\s"'`<>\\]{1,300}?|\/[^\n"'`<>\\]{0,300}?)\.(?:zip|pdf|ai|eps|svg|png))(?:[?#][^\s"'`<>\\]{0,200})?\1/gi;
+const FILE_LITERAL = /(["'`])((?:https?:\/\/[^\s"'`<>\\?#]{1,300}?|\/[^\n"'`<>\\?#]{0,300}?)\.(?:zip|pdf|ai|eps|svg|png))(?:[?#][^\s"'`<>\\]{0,200})?\1/gi;
 
 /** The distinct file paths and URLs a script quotes, in order, at most `max`. */
 export function quotedFilePaths(text: string, max: number = MAX_SCRIPT_FILE_PATHS): string[] {

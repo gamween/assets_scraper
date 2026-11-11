@@ -25,6 +25,8 @@ describe("quotedFilePaths", () => {
     expect(quotedFilePaths(many, 3)).toEqual(["/brand/0.svg", "/brand/1.svg", "/brand/2.svg"]);
     expect(quotedFilePaths(many, 0)).toEqual([]);
     expect(quotedFilePaths('"/brand/one\nkit.zip" "https://x.com/a b.zip" "/brand/kit.zip\'')).toEqual([]);
+    // A query is read once, after the extension, never as part of the path.
+    expect(quotedFilePaths('"/brand/kit.zip?v=1#top" "/brand/a?b.zip" "https://x.com/k.pdf#page=2"')).toEqual(["/brand/kit.zip", "https://x.com/k.pdf"]);
   });
 });
 
