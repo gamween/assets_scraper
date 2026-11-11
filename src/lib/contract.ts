@@ -146,6 +146,29 @@ export type Swatch = z.infer<typeof Swatch>;
 export const Palette = z.object({ brand: z.array(Swatch), neutrals: z.array(Swatch) });
 export type Palette = z.infer<typeof Palette>;
 
+export const BrandFileType = z.enum(["zip", "pdf", "ai", "eps", "svg", "png"]);
+export type BrandFileType = z.infer<typeof BrandFileType>;
+
+/**
+ * A file the page offers as part of its brand kit (spec 8.1): an archive of logos, the guidelines PDF, a vector. `id` is
+ * stable for its URL. `foundIn` is "link" for an `<a href>`, and "script" for a path the page's own code downloads on a
+ * click, which no link carries (monad.xyz's kit button). `bytes` is the size the host announced when the scan asked,
+ * absent when it did not answer or did not say.
+ */
+export const BrandFile = z.object({
+  id: z.string(),
+  url: z.string(),
+  name: z.string(),
+  type: BrandFileType,
+  bytes: z.number().optional(),
+  foundIn: z.enum(["link", "script"]),
+});
+export type BrandFile = z.infer<typeof BrandFile>;
+
+/**
+ * `brandLinks` are pages: the site's own brand, press and media kit pages, and brand portals on another host. Files are
+ * never brand links, they are `brandFiles`, which the early `page` event and a server that predates them leave out.
+ */
 export const PageInfo = z.object({
   requestedUrl: z.string(),
   finalUrl: z.string(),
@@ -155,6 +178,7 @@ export const PageInfo = z.object({
   favicon: AssetSource.optional(),
   status: z.number(),
   brandLinks: z.array(z.object({ href: z.string(), text: z.string() })),
+  brandFiles: z.array(BrandFile).optional(),
 });
 export type PageInfo = z.infer<typeof PageInfo>;
 
@@ -230,8 +254,9 @@ export const ScanEvent = z.discriminatedUnion("type", [
   z.object({ type: z.literal("accepted"), scanId: z.string(), url: z.string() }),
   z.object({ type: z.literal("step"), step: StepId, state: z.enum(["start", "done"]) }),
   // Sent twice (spec 7.2). Early, after navigation, so the UI can show the site header: `brandLinks` is empty and
-  // there is no `favicon`. Final, after post-processing and before `palette`: brand links from the collector and the
-  // signed favicon. The client replaces its page info with each `page` event, so the last one wins.
+  // there is no `favicon` and no `brandFiles`. Final, after post-processing and before `palette`: brand links and brand
+  // files from the collector and the signed favicon. The client replaces its page info with each `page` event, so the
+  // last one wins.
   z.object({ type: z.literal("page"), page: PageInfo }),
   z.object({ type: z.literal("palette"), palette: Palette.nullable() }),
   z.object({ type: z.literal("assets"), items: z.array(Asset) }),

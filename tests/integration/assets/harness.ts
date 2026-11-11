@@ -3,6 +3,7 @@ import { chromium, type Browser, type Page } from "playwright-core";
 import { localExecutablePath } from "@/server/browser/launch";
 import { limits } from "@/server/config/limits";
 import { safeFetch } from "@/server/net/safe-fetch";
+import { collectorBrandFileLinks } from "@/server/scan/brand-files";
 import { startCapture } from "@/server/scan/capture";
 import { COLLECTOR_SOURCE } from "@/server/scan/inpage/generated/collector";
 import { MAX_TITLE_CHARS } from "@/server/scan/navigate";
@@ -46,6 +47,7 @@ export function collectorOptions(host: string, siteName: string, patch: Partial<
     blobFetchMs: limits.blobFetchMs,
     maxTextNodes: limits.collectorMaxTextNodes,
     maxBrandLinks: limits.maxBrandLinks,
+    maxBrandFiles: collectorBrandFileLinks(),
     maxBlobBytes: limits.blobMaxBytes,
     maxBlobTotalBytes: limits.blobTotalBytes,
     maxOutputChars: limits.collectorMaxOutputChars,

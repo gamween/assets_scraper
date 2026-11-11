@@ -58,6 +58,7 @@ const collectorOutput = (patch: Partial<RawCollectorOutput>): RawCollectorOutput
   unreadableSheets: [],
   blobs: [],
   brandLinks: [],
+  brandFiles: [],
   noise: {},
   stats: { elements: 10, ms: 1, truncated: false },
   ...patch,

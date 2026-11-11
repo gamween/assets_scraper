@@ -1,5 +1,6 @@
 import type { FoundIn, HiddenReason } from "@/lib/contract";
 import { extractCssUrls, readCssUrls, readFontFaceSrc } from "./css-values";
+import { brandFileType, isBrandFileWord, isBrandWord, SECOND_LEVEL_LABELS, siteOf } from "./brand";
 import { OUTPUT_LISTS } from "./lists";
 import { parseSrcset } from "./srcset";
 import { canonicalSvgMarkup, varFallback, withCurrentColor } from "./svg-markup";
@@ -46,19 +47,15 @@ const MAX_CANVAS_PIXELS = 4_000_000;
 const CROP_TOLERANCE = 1.05;
 /** The time a canvas re-encode needs left before it starts. */
 const CANVAS_MIN_MS = 500;
+/** Links to files a scan reads the heading of: each costs a walk up a few ancestors. */
+const MAX_LINK_CAPTIONS = 100;
+/** Ancestors a link's caption is looked for in, and the longest heading that still reads as a name. */
+const CAPTION_DEPTH = 5;
+const MAX_CAPTION_CHARS = 80;
 
 const LAZY_ATTR =
   /^data-(?:lazy-?)?(?:src|srcset|original|original-set|hi-?res(?:-src)?|full(?:-src)?|large(?:-src)?|zoom(?:-src)?|fallback(?:-src)?|bg|background|background-image|image|img|echo|flickity-lazyload|lazy|srcset-lazy|pin-media|retina|2x)$/i;
 const LAZY_BACKGROUND_ATTR = /^data-(?:bg|background|background-image|bg-src|lazy-background|image-src)$/i;
-/**
- * Spec 8.1 brand link words. A word must start the path segment, the text or a camelCase word (/OurBrand), so
- * /wordpress, /express and /impressum do not match, but it may run on (/brandassets, /logopack, /presse). /logout,
- * /logon and /pressure are left out.
- */
-const BRAND_LINK = /(?:^|[^a-z])(?:brand|press(?!ure)|media[- _]?kit|newsroom|identity|logo(?!ut|n(?![a-z]))|guidelines)/i;
-const isBrandLink = (text: string) => BRAND_LINK.test(text) || BRAND_LINK.test(text.replace(/([a-z])(?=[A-Z])/g, "$1 "));
-/** Second-level labels under a two-letter country code that are public suffixes: shop.co.uk, shop.com.au. */
-const SECOND_LEVEL_LABELS = /^(?:ac|co|com|edu|go|gov|ne|net|or|org)$/;
 /**
  * "brand" only counts at the end of a token (navbar-brand, .brand, header__brand), never as a qualifier inside a
  * compound name, because a page wraps ordinary photos in names like
@@ -1310,37 +1307,89 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
     }
   }
 
-  // ------------------------------------------------ brand resource links
+  // ------------------------------------------------ brand resource links and brand files
   const brandLinks: RawCollectorOutput["brandLinks"] = [];
+  const brandFiles: RawCollectorOutput["brandFiles"] = [];
   {
-    /** Registrable domain approximation: the last two labels, or three under a `co.uk`-like suffix. */
-    const siteOf = (host: string) => {
-      const bare = host.replace(/^www\./, "").toLowerCase();
-      if (/^[\d.]+$|^\[|^localhost$/.test(bare)) return bare;
-      const labels = bare.split(".");
-      const take = labels.length > 2 && labels[labels.length - 1].length === 2 && SECOND_LEVEL_LABELS.test(labels[labels.length - 2]) ? 3 : 2;
-      return labels.slice(-take).join(".");
-    };
     const site = siteOf(location.hostname);
     const current = location.href.split("#")[0];
+    // A brand, press or media kit page offers files whatever they are called: stellar.org/brand-resources names its
+    // logo pack and its guidelines by content hash on cdn.sanity.io and labels them "View" and "Download".
+    const brandPage = location.pathname.split("/").some((segment) => isBrandWord(decodeURIComponentSafe(segment)));
     const seen = new Set<string>();
+
+    /** Whether an element holds links to more than one target, cached: every link of a card asks about the same nodes. */
+    const manyTargets = new Map<Element, boolean>();
+    const holdsOtherLinks = (node: Element): boolean => {
+      const cached = manyTargets.get(node);
+      if (cached !== undefined) return cached;
+      const targets = new Set<string>();
+      for (const link of node.querySelectorAll("a[href]")) {
+        targets.add((abs(link.getAttribute("href"), link.baseURI) ?? "").split("#")[0]);
+        if (targets.size > 1) break;
+      }
+      manyTargets.set(node, targets.size > 1);
+      return targets.size > 1;
+    };
+    let captionsLeft = MAX_LINK_CAPTIONS;
+    /**
+     * The heading of the card a link sits in alone: stellar.org puts its "Download" button under "Discover the brand
+     * guide", arbitrum.io its "DOWNLOAD PNG + SVG" under the name of the variant. An ancestor that holds a link to
+     * anything else is a list, and its heading names the list, so the walk stops there.
+     */
+    const captionOf = (link: Element): string | undefined => {
+      if (captionsLeft <= 0) return undefined;
+      captionsLeft -= 1;
+      let node = composedParent(link);
+      for (let depth = 0; node && depth < CAPTION_DEPTH; depth++, node = composedParent(node)) {
+        if (holdsOtherLinks(node)) return undefined;
+        const heading = node.querySelector("h1,h2,h3,h4,h5,h6,[role=heading]");
+        if (heading && !link.contains(heading)) {
+          const caption = collapse(heading.textContent, MAX_CAPTION_CHARS + 1);
+          return caption && caption.length <= MAX_CAPTION_CHARS ? caption : undefined;
+        }
+      }
+      return undefined;
+    };
+
     for (const el of elements) {
-      if (brandLinks.length >= options.maxBrandLinks) break;
       if (el.localName !== "a" || !el.hasAttribute("href")) continue;
       const href = abs(el.getAttribute("href"), el.baseURI);
       if (!href || !/^https?:/.test(href)) continue;
       const url = new URL(href);
       url.hash = "";
-      if (siteOf(url.hostname) !== site || url.href === current || seen.has(url.href)) continue;
-      const text = collapse(el.textContent, 80) || collapse(el.getAttribute("aria-label"), 80) || collapse(el.getAttribute("title"), 80);
+      const path = decodeURIComponentSafe(url.pathname);
+      const text = collapse(el.textContent, 80);
+      const label = collapse(el.getAttribute("aria-label"), 80) || collapse(el.getAttribute("title"), 80);
+      // A file is never a page to scan next. arbitrum.io/brand-kit filled every brand link slot with its six logo
+      // archives, all under /brandkit/downloads/, and the agent was sent to scan ZIP files.
+      const download = collapse(el.getAttribute("download"), 200) || undefined;
+      const fileType = brandFileType(path) ?? (download ? brandFileType(download) : undefined);
+      if (fileType) {
+        if (brandFiles.length >= options.maxBrandFiles) continue;
+        const caption = captionOf(el);
+        // Off a brand page, a file has to say it belongs to the brand: a blog's PDFs and a gallery's PNGs do not.
+        const said = [path, text, label, download, caption].some((value) => value !== undefined && isBrandFileWord(value));
+        if (!brandPage && !said) continue;
+        brandFiles.push({
+          href: url.href,
+          text,
+          ...(label ? { label } : {}),
+          ...(download ? { download } : {}),
+          ...(caption ? { caption } : {}),
+        });
+        continue;
+      }
+      if (brandLinks.length >= options.maxBrandLinks || siteOf(url.hostname) !== site || url.href === current || seen.has(url.href)) continue;
       // Only the last path segment counts, not the whole path: `/newsroom/news/<headline>` is one press release out of
       // many, not the press kit, and matching anywhere in the path filled stripe.com's row with five news articles.
       // The lookbehind lets only the first slash of a trailing run start a match: `\/+$` alone tried from every slash
       // of a run that does not end the path, which was quadratic in its length.
       const segment = decodeURIComponentSafe(url.pathname.replace(/(?<!\/)\/+$/, "").split("/").pop() ?? "");
-      if (!isBrandLink(segment) && !isBrandLink(text)) continue;
+      const name = text || label;
+      if (!isBrandWord(segment) && !isBrandWord(name)) continue;
       seen.add(url.href);
-      brandLinks.push({ href: url.href, text });
+      brandLinks.push({ href: url.href, text: name });
     }
   }
 
@@ -1367,6 +1416,7 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
     unreadableSheets: [...new Set(unreadableSheets)],
     blobs,
     brandLinks,
+    brandFiles,
     noise,
     stats: { elements: elements.length, ms: Math.round(performance.now() - T0), truncated },
   };

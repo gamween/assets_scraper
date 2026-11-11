@@ -241,6 +241,62 @@ describe("startCapture", () => {
     expect(metadataCalls.total).toBe(0);
   });
 
+  describe("brand page scripts", () => {
+    /** A script response, read through the capture's own body reads. */
+    const scriptResponse = (url: string, text: string, onRead: () => void = () => {}): Response =>
+      ({
+        url: () => url,
+        status: () => 200,
+        headers: () => ({ "content-type": "application/javascript", "content-length": String(Buffer.byteLength(text)) }),
+        request: () => ({ resourceType: () => "script" }),
+        body: () => {
+          onRead();
+          return Promise.resolve(Buffer.from(text));
+        },
+      }) as unknown as Response;
+
+    const KIT = 'onClick:()=>{let e=document.createElement("a");e.href="/brand-page-assets/Monad Brand and Media Kit.zip",e.click()}';
+
+    it("reads the page's own scripts for the brand files they quote, once each, and never another site's", async () => {
+      const page = new EventEmitter();
+      const read: string[] = [];
+      const capture = startCapture(page as unknown as Page, {
+        signal: new AbortController().signal,
+        scripts: { reads: (url) => url.startsWith("https://monad.xyz/") },
+      });
+      for (const [url, text] of [
+        ["https://monad.xyz/_next/static/chunks/a.js", KIT],
+        ["https://monad.xyz/_next/static/chunks/a.js", KIT],
+        ["https://monad.xyz/_next/static/chunks/b.js", 'const eB=["/brand-page-assets/Logomark.svg"]'],
+        ["https://www.googletagmanager.com/gtm.js", '"/brand/tracker.zip"'],
+      ]) page.emit("response", scriptResponse(url, text, () => read.push(url)));
+      const network = await capture.settle(10_000);
+      expect(read).toEqual(["https://monad.xyz/_next/static/chunks/a.js", "https://monad.xyz/_next/static/chunks/b.js"]);
+      expect(network.scriptFiles).toEqual(["/brand-page-assets/Monad Brand and Media Kit.zip", "/brand-page-assets/Logomark.svg"]);
+    });
+
+    it("reads no script on a page that is not a brand page, and none past the script caps", async () => {
+      const plain = new EventEmitter();
+      const reads: string[] = [];
+      const off = startCapture(plain as unknown as Page, { signal: new AbortController().signal });
+      plain.emit("response", scriptResponse("https://monad.xyz/a.js", KIT, () => reads.push("a")));
+      const network = await off.settle(10_000);
+      expect(reads).toEqual([]);
+      expect(network).not.toHaveProperty("scriptFiles");
+
+      vi.stubEnv("BRAND_SCRIPT_MAX_BYTES", "100");
+      vi.stubEnv("BRAND_SCRIPT_MAX_FILES", "2");
+      const brand = new EventEmitter();
+      const capped = startCapture(brand as unknown as Page, { signal: new AbortController().signal, scripts: { reads: () => true } });
+      brand.emit("response", scriptResponse("https://monad.xyz/big.js", `${" ".repeat(200)}"/brand/big.zip"`, () => reads.push("big")));
+      brand.emit("response", scriptResponse("https://monad.xyz/small.js", '"/brand/small.zip"', () => reads.push("small")));
+      brand.emit("response", scriptResponse("https://monad.xyz/third.js", '"/brand/third.zip"', () => reads.push("third")));
+      // Declared over the per-script cap, the big one is skipped unread; the third is past the file count.
+      expect((await capped.settle(10_000)).scriptFiles).toEqual(["/brand/small.zip"]);
+      expect(reads).toEqual(["small"]);
+    });
+  });
+
   /**
    * Regression: the queue walk read the limits on every step, and each read parses the environment, so thousands of
    * reads waiting for the total cap took about 10 seconds to schedule. Counted rather than timed: eight times the

@@ -11,6 +11,7 @@ import { safeFetch } from "@/server/net/safe-fetch";
 import { createSigner } from "@/server/security/sign";
 import { detectBlock, detectChallenge } from "./block";
 import { startCapture, type CaptureHandle } from "./capture";
+import { brandFilesFrom, collectorBrandFileLinks, isBrandPage, probeBrandFiles, sameSite, withoutAssets } from "./brand-files";
 import { buildFallback, directAsset } from "./fallback";
 import { buildFontFamilies, signFontFiles } from "./fonts";
 import { COLLECTOR_SOURCE } from "./inpage/generated/collector";
@@ -162,6 +163,7 @@ function emptyCollectorOutput(nav: NavigationResult, network: CapturedNetwork): 
     unreadableSheets: network.sheets.map((sheet) => sheet.url),
     blobs: [],
     brandLinks: [],
+    brandFiles: [],
     noise: {},
     stats: { elements: 0, ms: 0, truncated: true },
   };
@@ -415,14 +417,24 @@ async function runScan({ url, deps, cancel, emit }: ScanContext): Promise<void> 
           return undefined;
         },
       );
-    let outputs: [{ value: AssetsOutput } | undefined, { value: FontsOutput } | undefined];
+    // The brand files are known before any post-processing (spec 8.1): only their sizes need the network, so the probe
+    // runs beside the assets and the fonts, and a probe still out at the deadline leaves the files without a size.
+    const candidateUrls = new Set([...collector.candidates.map((candidate) => candidate.url), ...network.images.map((image) => image.url)]);
+    const brandFiles = brandFilesFrom({ links: collector.brandFiles, scriptFiles: network.scriptFiles, pageUrl: context.finalUrl, known: (fileUrl) => candidateUrls.has(fileUrl) });
+    let outputs: [{ value: AssetsOutput } | undefined, { value: FontsOutput } | undefined, { value: PageInfo["brandFiles"] } | undefined];
     try {
-      outputs = await timed("process", () => Promise.all([ready(deps.assembleAssets(postInput)), ready(deps.buildFontFamilies(postInput))]));
+      outputs = await timed("process", () =>
+        Promise.all([
+          ready(deps.assembleAssets(postInput)),
+          ready(deps.buildFontFamilies(postInput)),
+          ready(probeBrandFiles(brandFiles, { fetch: deps.fetch, signal: postSignal, deadline: postWindow.networkDeadline })),
+        ]),
+      );
     } finally {
       clearTimeout(postTimer);
     }
     // Out of time, the scan still gives what is ready, as a partial result. With neither assets nor fonts, it is a timeout.
-    const [assetsResult, fontsResult] = outputs;
+    const [assetsResult, fontsResult, brandFilesResult] = outputs;
     if (!assetsResult && !fontsResult) throw new ScanFailure("timeout", "Processing the page took too long");
     const processedPartly = !assetsResult || !fontsResult;
     // assembleAssets reports the collector's drops in its own `hidden`; when it ran out of time, they are reported here.
@@ -436,7 +448,10 @@ async function runScan({ url, deps, cancel, emit }: ScanContext): Promise<void> 
 
     // Phase 11: results.
     emitResults(
-      { url, nav, context, collector, network, palette: browserStage.palette, assetsOut, fontsOut, fontsCapped, pagePartial: browserStage.partial, processedPartly, diagnostics: snapshot(), startedAt },
+      {
+        url, nav, context, collector, network, palette: browserStage.palette, assetsOut, fontsOut, fontsCapped,
+        brandFiles: brandFilesResult?.value ?? brandFiles, pagePartial: browserStage.partial, processedPartly, diagnostics: snapshot(), startedAt,
+      },
       emit,
     );
   } catch (error) {
@@ -474,6 +489,8 @@ interface ScanResults {
   fontsOut: FontsOutput;
   /** The signing cap left some font files without a proxy. */
   fontsCapped: boolean;
+  /** The page's brand files, with the sizes their hosts announced in time. */
+  brandFiles: PageInfo["brandFiles"];
   /** Page work stopped early (deadline, memory watchdog, collector failure). */
   pagePartial: boolean;
   /** Post-processing ran out of time before one of its tasks finished. */
@@ -493,6 +510,8 @@ function emitResults(results: ScanResults, emit: (event: ScanEvent) => void): vo
     warnings.add("truncated");
   }
   const faviconAsset = assets.find((asset) => asset.role === "favicon" && (asset.display ?? asset.original));
+  const assetUrls = new Set(assets.flatMap((asset) => [asset.display?.url, asset.original?.url]).filter((value): value is string => Boolean(value)));
+  const brandFiles = withoutAssets(results.brandFiles ?? [], assetUrls);
   const page: PageInfo = {
     requestedUrl: url,
     finalUrl: context.finalUrl,
@@ -502,6 +521,7 @@ function emitResults(results: ScanResults, emit: (event: ScanEvent) => void): vo
     ...(faviconAsset ? { favicon: faviconAsset.display ?? faviconAsset.original ?? undefined } : {}),
     status: nav.status,
     brandLinks: safeBrandLinks(collector.brandLinks),
+    ...(brandFiles.length > 0 ? { brandFiles } : {}),
   };
   emit({ type: "page", page });
   emit({ type: "palette", palette: results.palette });
@@ -624,7 +644,10 @@ async function runBrowserStage(input: ScanContext & {
         diagnostics.phases.setup = session.setupMs;
         const { page } = session;
 
-        capture = startCapture(page, { signal });
+        // A brand page's scripts are read for the downloads they start on a click (spec 8.1), the page's own only. The
+        // URL the preflight landed on decides, so `/brand` redirecting to `/en/brand-kit` counts and the home page does not.
+        const brandPage = isBrandPage(pre.finalUrl);
+        capture = startCapture(page, { signal, ...(brandPage ? { scripts: { reads: (scriptUrl: string) => sameSite(scriptUrl, pre.finalUrl) } } : {}) });
         const opened = await timed("open", () => openPage(page, url, { signal }));
         // Spec 8.9 at domcontentloaded: only the rules that do not depend on how much of the page exists (detectChallenge).
         const challenge = detectChallenge(opened);
@@ -697,6 +720,7 @@ async function runBrowserStage(input: ScanContext & {
           blobFetchMs: limits.blobFetchMs,
           maxTextNodes: limits.collectorMaxTextNodes,
           maxBrandLinks: limits.maxBrandLinks,
+          maxBrandFiles: collectorBrandFileLinks(),
           maxBlobBytes: limits.blobMaxBytes,
           maxBlobTotalBytes: limits.blobTotalBytes,
           maxOutputChars: limits.collectorMaxOutputChars,

@@ -22,6 +22,7 @@ const FAKE_COLLECTOR = `globalThis.__assetsScraper = {
       page: { title: document.title, siteName: options.siteName || undefined, baseUrl: location.href, elementCount: document.getElementsByTagName("*").length },
       candidates: [], svgs: [], fontFaces: [], fontStatuses: [], fontUsage: [], unreadableSheets: [], blobs: [],
       brandLinks: links.slice(0, options.maxBrandLinks).map((a) => ({ href: a.href, text: a.textContent.trim() })),
+      brandFiles: [],
       noise: { "unreferenced-symbol": 1 },
       stats: { elements: document.getElementsByTagName("*").length, ms: 1, truncated: false },
     };
@@ -924,7 +925,7 @@ describe("scan engine", () => {
       page: { title: "Hostile", baseUrl: location.href, elementCount: 1 },
       candidates: [{ url: "https://cdn.example/x.png", group: "x", foundIn: null, order: NaN, visible: 1, declaredOnly: 0 }],
       svgs: [{ markup: null, hash: 7 }],
-      fontFaces: [], fontStatuses: [], fontUsage: [], unreadableSheets: [], blobs: [], brandLinks: [],
+      fontFaces: [], fontStatuses: [], fontUsage: [], unreadableSheets: [], blobs: [], brandLinks: [], brandFiles: [],
       noise: {}, stats: { elements: 1, ms: 1, truncated: false },
     }) };`;
     try {
