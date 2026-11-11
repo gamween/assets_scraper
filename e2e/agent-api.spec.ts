@@ -28,15 +28,16 @@ test.describe("agent API", () => {
     expect(doc.servers[0].url).toMatch(/^http:\/\/localhost:\d+$/);
   });
 
-  test("robots.txt disallows everything but llms.txt and openapi.json", async ({ request }) => {
+  test("robots.txt disallows everything but llms.txt, openapi.json and the agents page", async ({ request }) => {
     const response = await request.get("/robots.txt");
     expect(response.status()).toBe(200);
     const lines = (await response.text()).split("\n").map((line) => line.trim());
     expect(lines).toContain("User-Agent: *");
     expect(lines).toContain("Allow: /llms.txt");
     expect(lines).toContain("Allow: /api/openapi.json");
+    expect(lines).toContain("Allow: /agents");
     expect(lines).toContain("Disallow: /");
-    expect(lines.filter((line) => line.startsWith("Allow:"))).toHaveLength(2);
+    expect(lines.filter((line) => line.startsWith("Allow:"))).toHaveLength(3);
   });
 
   test("both endpoints refuse a caller with no bearer token", async ({ request }) => {
