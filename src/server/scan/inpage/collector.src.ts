@@ -510,11 +510,14 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
     let logoWord = false;
     let siteWord = false;
     let node: Element | null = el;
+    // The words of the element and of its own containers, up to the link or the button it belongs to: past a control
+    // the names are the region's. aave.com/brand keys each entry of its FAQ by the slug of the question
+    // (`brand-how-do-i-use-the-logo`), and the plus glyph of the button that opens it came back as a logo.
     for (let depth = 0; node && depth < 6; depth++, node = composedParent(node)) {
       const haystack = attributeHaystack(node);
       if (LOGO_WORD.test(haystack)) logoWord = true;
       for (const token of siteTokens) if (haystack.includes(token)) siteWord = true;
-      if (node.localName === "a" || node.localName === "section" || node.localName === "header") break;
+      if (node.localName === "a" || node.localName === "button" || node.localName === "section" || node.localName === "header") break;
     }
     let logoWall = false;
     if (r.height >= 10 && r.height <= 140 && r.width / r.height >= 1.3 && !isCropped(el, r, view)) {

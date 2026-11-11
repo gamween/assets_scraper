@@ -202,6 +202,13 @@ beforeAll(async () => {
       `/sponsors/${name}-logo.svg`,
       svgFile(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${120 + i} 30"><path d="M0 0h${120 + i}v30H0z"/></svg>`),
     ])),
+    // aave.com/brand in miniature: each FAQ entry is keyed by the slug of its question, and the button that opens it
+    // holds a plus glyph. The logos below sit in buttons too, and name themselves.
+    "/faq.html": html(`</head><body>
+      <h1 style="height:400px">Brand</h1>
+      <div id="brand-how-do-i-use-the-logo"><h3><button type="button"><svg width="52" height="52" viewBox="0 0 52 52"><path d="M19 25.5H33M26 18.5V32.5" stroke="#000" stroke-width="2"/></svg>How do I use the logo?</button></h3><div>Answer</div></div>
+      <div><button type="button" class="customer-logo"><svg width="150" height="36" viewBox="0 0 150 36" aria-label="Acme"><path d="M0 0h150v36H0z"/></svg></button></div>
+    </body></html>`),
     "/favicon.ico": (_req, res) => {
       if (faviconMissing) {
         res.writeHead(404, { "content-type": "text/html" });
@@ -296,6 +303,13 @@ describe("assembleAssets on purpose-built pages", () => {
     expect(logos.filter((a) => a.role === "site-logo").map((a) => a.name)).toEqual(["home"]);
     // Named after their files, not after the site.
     expect(logos.filter((a) => a.role === "logo").map((a) => a.name).sort()).toEqual(["Bloomberg-logo", "Forbes-logo", "Reuters-logo", "Wired-logo"]);
+  });
+
+  it("reads the logo word up to the button a picture belongs to", async () => {
+    const { assets } = await scan("/faq.html");
+    const glyph = assets.find((a) => a.kind === "svg" && a.renderedWidth === 52)!;
+    expect(glyph.role).toBe("illustration");
+    expect(assets.find((a) => a.name === "Acme")?.role).toBe("logo");
   });
 
   it("adds web manifest icons, drops the ones that fail their probe and still probes /favicon.ico", async () => {
