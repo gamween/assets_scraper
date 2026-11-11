@@ -45,12 +45,17 @@ const diagnostics: Diagnostics = {
 const done = (partial = false): ScanEvent => ({ type: "done", partial, stats, diagnostics });
 
 describe("createLocalScanSource().scan", () => {
-  it("keeps the brand kit links of the last page event, and leaves the field out when there are none", async () => {
+  it("keeps the brand kit links and files of the last page event, and leaves each field out when there are none", async () => {
     const links = [{ href: "https://www.bnbchain.org/en/brand-guidelines", text: "Brand Guidelines" }];
-    const withLinks = await createLocalScanSource({ backend: fakeBackend([{ type: "page", page: page({ brandLinks: links }) }, done()]) }).scan("stripe.com");
+    const files = [{ id: "4f1c2a9e8b7d", url: "https://monad.xyz/brand-page-assets/kit.zip", name: "Kit", type: "zip" as const, bytes: 29_679_666, foundIn: "script" as const }];
+    const withLinks = await createLocalScanSource({
+      backend: fakeBackend([{ type: "page", page: page() }, { type: "page", page: page({ brandLinks: links, brandFiles: files }) }, done()]),
+    }).scan("stripe.com");
     expect(withLinks.page.brandLinks).toEqual(links);
-    const without = await createLocalScanSource({ backend: fakeBackend([{ type: "page", page: page() }, done()]) }).scan("stripe.com");
+    expect(withLinks.page.brandFiles).toEqual(files);
+    const without = await createLocalScanSource({ backend: fakeBackend([{ type: "page", page: page({ brandFiles: [] }) }, done()]) }).scan("stripe.com");
     expect(without.page).not.toHaveProperty("brandLinks");
+    expect(without.page).not.toHaveProperty("brandFiles");
   });
 
   it("folds the event stream into one scan, the last page event winning", async () => {

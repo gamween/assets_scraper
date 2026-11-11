@@ -32,6 +32,11 @@ describe("GET /llms.txt", () => {
     expect(text).toContain("401");
   });
 
+  it("says the summary reports brand files", async () => {
+    const text = await textOf();
+    expect(text).toContain("brandFiles, the");
+  });
+
   it("states the limits that decide what a request gets back, as this deployment configures them", async () => {
     // None of these is a default, so a page that printed fixed numbers instead of reading the limits would fail.
     process.env.SCANS_PER_DAY = "37";

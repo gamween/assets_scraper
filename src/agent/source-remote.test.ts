@@ -132,6 +132,17 @@ describe("createRemoteScanSource().scan", () => {
     expect(scan.scanId).toMatch(/^stripe\.com-[0-9a-z]+-[0-9a-f]{6}$/);
   });
 
+  it("reads the brand links and files of the hosted scan, and a scan from an app that predates them", async () => {
+    const files = [{ id: "4f1c2a9e8b7d", url: "https://monad.xyz/brand-page-assets/kit.zip", name: "Kit", type: "zip" as const, bytes: 29_679_666, foundIn: "script" as const }];
+    const page = { url: "https://monad.xyz/", finalUrl: "https://monad.xyz/", host: "monad.xyz", title: "Monad", brandLinks: [{ href: "https://monad.xyz/brand", text: "Brand" }], brandFiles: files };
+    answer = { status: 200, body: JSON.stringify(remoteScan({ page })) };
+    expect((await source().scan("monad.xyz")).page).toMatchObject({ brandFiles: files, brandLinks: page.brandLinks });
+    answer = { status: 200, body: JSON.stringify(remoteScan()) };
+    expect((await source().scan("stripe.com")).page).not.toHaveProperty("brandFiles");
+    answer = { status: 200, body: JSON.stringify(remoteScan({ page: { ...page, brandFiles: [{ ...files[0], type: "exe" as "zip" }] } })) };
+    await expect(source().scan("monad.xyz")).rejects.toThrow(/brandFiles/);
+  });
+
   /**
    * Regression: an id the hosted app chose became the cache file name. `..` passed the source's own check and failed
    * the save, so every scan_page against that app failed, and the id of a local scan already on disk replaced it.

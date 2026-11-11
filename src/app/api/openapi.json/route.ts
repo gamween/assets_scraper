@@ -1,5 +1,5 @@
 import { agentLimits } from "@/agent/limits";
-import { AssetFormat, AssetKind, AssetRole, ErrorCode, FontLicense } from "@/lib/contract";
+import { AssetFormat, AssetKind, AssetRole, BrandFileType, ErrorCode, FontLicense } from "@/lib/contract";
 
 /**
  * `GET /api/openapi.json` (spec section 8): the same two endpoints `llms.txt` describes in prose, as OpenAPI 3.1, for
@@ -175,7 +175,7 @@ export function openApiDocument(origin: string): Record<string, unknown> {
         ScanSummary: {
           type: "object",
           description: "Under 4 KB whatever the page holds: lists are capped and every string is cut.",
-          required: ["scanId", "page", "counts", "palette", "fonts", "logos", "brandLinks", "otherAssets", "warnings", "durationMs"],
+          required: ["scanId", "page", "counts", "palette", "fonts", "logos", "brandLinks", "brandFiles", "otherBrandFiles", "otherAssets", "warnings", "durationMs"],
           properties: {
             scanId: { type: "string" },
             page: {
@@ -237,9 +237,27 @@ export function openApiDocument(origin: string): Record<string, unknown> {
             },
             brandLinks: {
               type: "array",
-              description: "The page's links to its brand, press or media kit pages, where official logo variants usually are. Scan one of them next when the logos above are not the variant you need.",
+              description:
+                "The page's links to its brand, press or media kit pages, and to brand portals on other hosts (Frontify, standards.site, a Google Drive folder named a media kit), where official logo variants usually are. Scan one of them next when the logos above are not the variant you need.",
               items: { type: "object", required: ["href", "text"], properties: { href: { type: "string" }, text: { type: "string" } } },
             },
+            brandFiles: {
+              type: "array",
+              description:
+                "The files of the page's brand kit: archives, guidelines and logo files it links or its code downloads, archives first, at most 8.",
+              items: {
+                type: "object",
+                required: ["id", "name", "type", "url"],
+                properties: {
+                  id: { type: "string" },
+                  name: { type: "string" },
+                  type: { type: "string", enum: BrandFileType.options },
+                  bytes: { type: "integer", description: "The size the host announced during the scan, when it did." },
+                  url: { type: "string" },
+                },
+              },
+            },
+            otherBrandFiles: { type: "integer", description: "Brand files the summary had no room for. The full view lists them all under scan.page.brandFiles." },
             otherAssets: { type: "integer" },
             warnings: { type: "array", items: { type: "string" } },
             durationMs: { type: "integer" },

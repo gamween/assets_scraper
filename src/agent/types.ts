@@ -4,6 +4,8 @@ import type {
   AssetKind,
   AssetRole,
   AssetSource,
+  BrandFile,
+  BrandFileType,
   Diagnostics,
   FontFamily,
   FontFile,
@@ -28,10 +30,11 @@ export interface AgentScan {
    */
   remote?: string;
   /**
-   * `brandLinks` are the page's own links to its brand, press or media kit pages (spec 8.1), where the official logo
-   * variants usually live. Absent from a scan that found none, and from a hosted app that predates them.
+   * `brandLinks` are the page's links to its brand, press or media kit pages and to brand portals on other hosts (spec
+   * 8.1), where the official logo variants usually live. `brandFiles` are the files of its kit: archives, guidelines,
+   * logo files. Each is absent from a scan that found none, and from a hosted app that predates it.
    */
-  page: { url: string; finalUrl: string; host: string; title: string; siteName?: string; brandLinks?: BrandLink[] };
+  page: { url: string; finalUrl: string; host: string; title: string; siteName?: string; brandLinks?: BrandLink[]; brandFiles?: BrandFile[] };
   assets: Asset[];
   fonts: FontFamily[];
   palette: Palette | null;
@@ -157,7 +160,7 @@ interface BrandLink {
 
 export interface ScanSummary {
   scanId: string;
-  page: Omit<AgentScan["page"], "brandLinks">;
+  page: Omit<AgentScan["page"], "brandLinks" | "brandFiles">;
   counts: { assets: number; svg: number; images: number; fonts: number; hidden: number };
   palette: { hex: string; role?: string }[];
   fonts: { family: string; license: FontLicense["kind"]; usedOnPage: boolean; installable: boolean }[];
@@ -165,6 +168,10 @@ export interface ScanSummary {
   logos: { id: string; name: string; kind: AssetKind; format: AssetFormat; width?: number; height?: number; bytes?: number }[];
   /** Where to look next for the official logo variants: the page's brand, press and media kit links. */
   brandLinks: BrandLink[];
+  /** The files of the page's brand kit, archives and documents first. `bytes` is the size the host announced, if it did. */
+  brandFiles: { id: string; name: string; type: BrandFileType; bytes?: number; url: string }[];
+  /** Brand files the summary had no room for. */
+  otherBrandFiles: number;
   otherAssets: number;
   warnings: string[];
   durationMs: number;

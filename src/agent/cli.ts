@@ -270,6 +270,14 @@ export function formatSummary(summary: ScanSummary, reused: boolean): string {
     rows.push("  brand pages, where official logo variants usually are:");
     for (const link of summary.brandLinks) rows.push(`    ${printable(link.href)}${link.text ? `  ${printable(link.text)}` : ""}`);
   }
+  if (summary.brandFiles.length > 0) {
+    rows.push("  brand files, the kit itself:");
+    for (const file of summary.brandFiles) {
+      const size = file.bytes === undefined ? file.type : `${file.type}, ${formatBytes(file.bytes)}`;
+      rows.push(`    ${printable(file.id)}  ${printable(file.name)}  ${size}  ${printable(file.url)}`);
+    }
+    if (summary.otherBrandFiles > 0) rows.push(`    and ${formatCount(summary.otherBrandFiles, "other brand file")}`);
+  }
   for (const warning of summary.warnings) rows.push(`  warning: ${printable(warning)}`);
   rows.push(`  scan id: ${summary.scanId}${reused ? " (reused from the cache, --refresh to scan again)" : ""}`);
   return rows.join("\n");

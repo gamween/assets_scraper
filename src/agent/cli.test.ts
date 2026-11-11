@@ -239,6 +239,19 @@ describe("the report", () => {
     expect(report).toContain("  brand pages, where official logo variants usually are:\n    https://www.bnbchain.org/en/brand-guidelines  Brand Guidelines");
   });
 
+  it("lists the brand files with their id, type, size and URL", () => {
+    const scan = testScan();
+    const kit = { id: "4f1c2a9e8b7d", url: "https://monad.xyz/brand-page-assets/Monad%20Brand%20and%20Media%20Kit.zip", name: "Monad Brand and Media Kit", type: "zip" as const, bytes: 29_679_666, foundIn: "script" as const };
+    const mark = { id: "0a1b2c3d4e5f", url: "https://monad.xyz/brand-page-assets/Logomark.svg", name: "Logomark", type: "svg" as const, foundIn: "script" as const };
+    const report = formatSummary(summarize({ ...scan, page: { ...scan.page, brandFiles: [mark, kit] } }), false);
+    expect(report).toContain(
+      "  brand files, the kit itself:\n" +
+        "    4f1c2a9e8b7d  Monad Brand and Media Kit  zip, 28 MB  https://monad.xyz/brand-page-assets/Monad%20Brand%20and%20Media%20Kit.zip\n" +
+        "    0a1b2c3d4e5f  Logomark  svg  https://monad.xyz/brand-page-assets/Logomark.svg",
+    );
+    expect(formatSummary(summarize(scan), false)).not.toContain("brand files");
+  });
+
   it("prints absolute paths, the drop reasons and the manifest", () => {
     const result: DownloadResult = {
       dir: "/work/scrap/stripe.com",
@@ -267,6 +280,7 @@ describe("the report", () => {
       page: {
         url: "https://evil.example/", finalUrl: "https://evil.example/", host: "evil.example", title: `${clipboard}Acme`,
         brandLinks: [{ href: "https://evil.example/press\u001b[2J", text: `Press${clipboard}` }],
+        brandFiles: [{ id: "abc\u001b[2J", url: "https://evil.example/kit.zip\u001b[2J", name: `Kit${clipboard}`, type: "zip", foundIn: "link" }],
       },
       fonts: [testFontFamily({ name: `Inter\u001b[1A\u001b[2K` })],
       warnings: ["partial\u001b[31m"],
