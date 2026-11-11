@@ -42,6 +42,8 @@ const MAX_PAGE_URL_CHARS = 8_192;
  * seconds on the page's thread and rarely fits `maxBlobBytes` anyway.
  */
 const MAX_CANVAS_PIXELS = 4_000_000;
+/** How far a cover-fitted box may stray from the picture's shape before it counts as cropped: rounding, not a crop. */
+const CROP_TOLERANCE = 1.05;
 /** The time a canvas re-encode needs left before it starts. */
 const CANVAS_MIN_MS = 500;
 
@@ -455,6 +457,20 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
     return { linkHref, ancestorLabel, nearbyText };
   };
 
+  /**
+   * An `<img>` the page crops: `object-fit: cover` on a box whose shape is not the picture's. A logo is shown whole, so
+   * a cropped image is a picture whatever row it sits in. bnbchain.org lays out project screenshots (820x460) as
+   * 256x113 cover-cropped cards in a carousel, a row of wide and short images the logo wall rule took for logos. An
+   * image not decoded yet has no natural size and is not called cropped.
+   */
+  const isCropped = (el: Element, r: DOMRect, view: Window): boolean => {
+    if (el.localName !== "img") return false;
+    const { naturalWidth, naturalHeight } = el as HTMLImageElement;
+    if (!naturalWidth || !naturalHeight || view.getComputedStyle(el).objectFit !== "cover") return false;
+    const stretch = (r.width / r.height) / (naturalWidth / naturalHeight);
+    return stretch > CROP_TOLERANCE || stretch < 1 / CROP_TOLERANCE;
+  };
+
   const infoCache = new Map<Element, ElementInfo>();
   const elementInfo = (el: Element): ElementInfo => {
     const cached = infoCache.get(el);
@@ -481,7 +497,7 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
       if (node.localName === "a" || node.localName === "section" || node.localName === "header") break;
     }
     let logoWall = false;
-    if (r.height >= 10 && r.height <= 140 && r.width / r.height >= 1.3) {
+    if (r.height >= 10 && r.height <= 140 && r.width / r.height >= 1.3 && !isCropped(el, r, view)) {
       let ancestor = composedParent(el);
       for (let depth = 0; ancestor && depth < 5 && !logoWall; depth++, ancestor = composedParent(ancestor)) {
         const media = ancestor.querySelectorAll("svg:not(svg svg), img");

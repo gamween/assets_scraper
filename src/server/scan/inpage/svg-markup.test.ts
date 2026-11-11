@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canonicalSvgMarkup, varFallback } from "./svg-markup";
+import { canonicalSvgMarkup, varFallback, withoutRootSize } from "./svg-markup";
 
 describe("varFallback", () => {
   it("replaces each var() by its fallback, or gives nothing when one has none", () => {
@@ -28,11 +28,38 @@ describe("canonicalSvgMarkup", () => {
     expect(canonicalSvgMarkup('<svg><g id="x"/><g id="i0"/><use href="#i0"/></svg>')).toBe('<svg><g id="i0"/><g id="i1"/><use href="#i1"/></svg>');
   });
 
+  it("hashes one logo rendered at two sizes as one drawing", () => {
+    // bnbchain.org: the header and a menu render the same wordmark 136 and 137 px wide, and the collector writes that
+    // size onto the root, so the two copies came back as two logos.
+    const logo = (width: string) => `<svg viewBox="0 0 137 24" xmlns="http://www.w3.org/2000/svg" width="${width}" height="24"><path d="M0 0h10v10z" fill="#F0B90B"/></svg>`;
+    expect(canonicalSvgMarkup(logo("136"))).toBe(canonicalSvgMarkup(logo("137")));
+    expect(canonicalSvgMarkup(logo("136"))).toBe('<svg viewBox="0 0 137 24" xmlns="http://www.w3.org/2000/svg"><path d="M0 0h10v10z" fill="#F0B90B"/></svg>');
+  });
+
   it("renames many ids in one pass", () => {
     // A pass per id read the whole markup once for each of them.
     const markup = `<svg>${Array.from({ length: 40_000 }, (_, index) => `<g id="g${index}"/><use href="#g${index}"/>`).join("")}</svg>`;
     const canonical = canonicalSvgMarkup(markup);
     expect(canonical.startsWith('<svg><g id="i0"/><use href="#i0"/><g id="i1"/>')).toBe(true);
     expect(canonical.endsWith('<g id="i39999"/><use href="#i39999"/></svg>')).toBe(true);
+  });
+});
+
+describe("withoutRootSize", () => {
+  it("drops the root's width and height when it has a viewBox, in either quote style", () => {
+    expect(withoutRootSize(`<svg width='12.5' viewBox="0 0 10 10" height="8"><rect width="10" height="10"/></svg>`))
+      .toBe('<svg viewBox="0 0 10 10"><rect width="10" height="10"/></svg>');
+    expect(withoutRootSize('<?xml version="1.0"?>\n<svg viewbox="0 0 10 10" width="20" height="20"/>'))
+      .toBe('<?xml version="1.0"?>\n<svg viewbox="0 0 10 10"/>');
+  });
+
+  it("keeps them without a viewBox, where they set the coordinate system", () => {
+    const markup = '<svg width="20" height="20"><rect width="10" height="10"/></svg>';
+    expect(withoutRootSize(markup)).toBe(markup);
+  });
+
+  it("leaves other size-like attributes and the children alone", () => {
+    const markup = '<svg viewBox="0 0 10 10" stroke-width="2" data-width="4"><rect width="10" height="10"/></svg>';
+    expect(withoutRootSize(markup)).toBe(markup);
   });
 });
