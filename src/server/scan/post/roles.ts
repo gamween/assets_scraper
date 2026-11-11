@@ -129,7 +129,10 @@ export function assignRole(input: RoleInput): AssetRole {
   // ICO is the favicon format, a few small bitmaps in one file, and never a logo whatever points at it: bybit.com
   // declares its 48x48 /favicon.ico as the JSON-LD logo, which made it a site logo beside the header wordmark.
   const ico = input.format === "ico";
-  const logoShaped = !oversized && !isLine(input);
+  // A poster is a frame of a video, whatever the video shows: brand.ripple.com labels its logo animation
+  // "Header - Logo.mp4", and the still it opens on was listed as a logo.
+  const poster = input.foundIn.length > 0 && input.foundIn.every((where) => where === "video-poster");
+  const logoShaped = !oversized && !isLine(input) && !poster;
   if (!ico && (found.has("json-ld") || (input.logoScore >= LOGO_SCORE_PROMOTION && logoShaped))) return "site-logo";
   if (found.has("icon-link") || found.has("meta-icon") || found.has("manifest") || (ico && found.has("json-ld"))) return "favicon";
   if (found.has("og-image") || found.has("twitter-image")) return "social";

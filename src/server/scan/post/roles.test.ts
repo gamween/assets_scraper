@@ -131,6 +131,15 @@ describe("assignRole", () => {
     expect(role({ kind: "svg", foundIn: ["inline-svg"], logoWall: true, rendered: { width: 656, height: 48 } })).toBe("logo");
   });
 
+  it("does not take the poster of a video for a logo", () => {
+    // brand.ripple.com: the poster of a logo animation, named by the label of its video.
+    const poster = { foundIn: ["video-poster"] as RoleInput["foundIn"], logoWord: true, label: "Header - Logo.mp4", rendered: { width: 800, height: 150 } };
+    expect(role(poster)).toBe("image");
+    expect(role({ ...poster, logoScore: 8 })).toBe("image");
+    // The same file shown as a picture of its own is judged as one.
+    expect(role({ ...poster, foundIn: ["video-poster", "img"] })).toBe("logo");
+  });
+
   it("never makes an ICO file a logo", () => {
     // bybit.com declares its 48x48 /favicon.ico as the JSON-LD logo.
     expect(role({ foundIn: ["json-ld"], format: "ico", intrinsic: { width: 48, height: 48 } })).toBe("favicon");
