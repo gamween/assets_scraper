@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useId, useRef } from "react";
 import { pastedScanUrl } from "@/components/app/shortcuts";
 import { Wordmark } from "@/components/app-shell/wordmark";
@@ -35,8 +36,11 @@ export function Landing() {
 
   return (
     <div className="flex min-h-dvh flex-col">
-      <header className="page-x flex h-(--top-bar-height) w-full items-center">
+      <header className="page-x flex h-(--top-bar-height) w-full items-center justify-between gap-4">
         <Wordmark />
+        <Link href="/agents" className="-mx-1.5 rounded-md px-1.5 py-1 text-small text-text-2 transition-colors duration-100 hover:text-text focus-ring">
+          For AI agents
+        </Link>
       </header>
 
       <main className="page-x w-full flex-1">
