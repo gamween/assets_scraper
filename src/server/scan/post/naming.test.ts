@@ -14,6 +14,8 @@ describe("displayName", () => {
 
   it("names logos, favicons and social images after the site when nothing better exists", () => {
     expect(name({ role: "site-logo", jsonLdLogo: true, url: "https://linear.app/x.png" })).toBe("Linear logo");
+    // bybit.com declares its /favicon.ico as the JSON-LD logo, which makes it a favicon.
+    expect(name({ role: "favicon", jsonLdLogo: true, url: "https://www.bybit.com/favicon.ico", siteName: "bybit" })).toBe("bybit favicon");
     expect(name({ role: "site-logo", url: "https://linear.app/brand.svg" })).toBe("Linear logo");
     expect(name({ role: "favicon", url: "https://linear.app/favicon.ico" })).toBe("Linear favicon");
     expect(name({ role: "social", linkText: "x", url: "https://linear.app/og.png" })).toBe("Linear social image");

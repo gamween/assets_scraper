@@ -221,7 +221,8 @@ export function displayName(input: NameInput): string {
   return (
     subBrandName(usable(input.label), usable(input.linkText), site, input.role) ??
     usable(input.label) ??
-    (input.jsonLdLogo && site ? `${site} logo` : undefined) ??
+    // Only while it is the site logo: an ICO declared there is the favicon (bybit.com), and named one.
+    (input.jsonLdLogo && site && input.role === "site-logo" ? `${site} logo` : undefined) ??
     roleDefault ??
     usable(input.linkText) ??
     (input.url ? cleanBasename(input.url) : undefined) ??
