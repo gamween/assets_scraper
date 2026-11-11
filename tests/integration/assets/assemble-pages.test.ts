@@ -216,6 +216,17 @@ beforeAll(async () => {
       <img src="/_next/image?url=%2Fassets%2Fphoto-large.png&w=64&crop=1" width="224" height="224" alt="Pages logo pack">
       <img src="/_next/image?url=%2Fassets%2Fshadow.png&w=64" width="120" height="60" alt="Partner logo">
     </body></html>`),
+    // signalweek.com in miniature: beside the header logo, a hidden link to home holds the stage of an intro animation,
+    // with groups a script starts hidden. A closed menu holds a plain logo, hidden as a whole.
+    "/stage.html": html(`</head><body>
+      <div class="navbar">
+        <a href="/" class="logo w-nav-brand" aria-label="Home"><img src="/assets/shadow.png" width="185" height="46" alt=""></a>
+        <div class="anim_logos" style="display:none"><a href="/" class="logo w-nav-brand"><svg id="stage" width="1920" height="480" viewBox="0 0 1220 300" aria-label="Pages Week becomes Pages">
+          <g style="visibility:hidden"><path d="M0 0h100v40H0z"/></g><g opacity="0"><path d="M0 50h100v40H0z"/></g><g><path d="M0 100h300v60H0z"/></g>
+        </svg></a></div>
+        <div class="menu" style="visibility:hidden"><a href="/" class="menu-logo"><svg width="120" height="30" viewBox="0 0 120 30" aria-label="Pages"><g><path d="M0 0h120v30H0z"/></g></svg></a></div>
+      </div>
+    </body></html>`),
     "/favicon.ico": (_req, res) => {
       if (faviconMissing) {
         res.writeHead(404, { "content-type": "text/html" });
@@ -325,6 +336,15 @@ describe("assembleAssets on purpose-built pages", () => {
     expect(pack.aspectChanged).toBe(true);
     expect(pack.role).toBe("image");
     expect(assets.find((a) => a.name === "Partner logo")?.role).toBe("logo");
+  });
+
+  it("does not take the frame of an animation for a logo", async () => {
+    const { assets } = await scan("/stage.html");
+    const role = (name: string) => assets.find((a) => a.name === name)?.role;
+    expect(role("Pages Week becomes Pages")).toBe("illustration");
+    expect(role("Home")).toBe("site-logo");
+    // A vector hidden as a whole, with the menu it sits in, is not a frame.
+    expect(role("Pages")).toBe("site-logo");
   });
 
   it("adds web manifest icons, drops the ones that fail their probe and still probes /favicon.ico", async () => {

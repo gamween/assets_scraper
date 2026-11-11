@@ -1026,6 +1026,11 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
     // Computed styles that differ from a neutral rendering, top-down
     const hasText = !!svg.querySelector("text,tspan,textPath");
     const usesCurrentColor = /currentcolor/i.test(clone.outerHTML);
+    // Part of the drawing hidden by visibility or opacity while the vector itself is not: the state a script left an
+    // animation in. A vector the page hides as a whole (a closed menu) passes visibility down to every part, which
+    // says nothing about the drawing.
+    const rootHidden = view.getComputedStyle(svg).visibility === "hidden";
+    let partlyHidden = false;
     if (liveElements.length <= MAX_STYLED_SVG_ELEMENTS) {
       const box = getSandbox();
       const imported = box.doc.importNode(clone, true);
@@ -1046,6 +1051,9 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
           }
         }
         const liveStyle = view.getComputedStyle(live);
+        if (i > 0 && !partlyHidden && ((!rootHidden && liveStyle.visibility === "hidden") || liveStyle.opacity === "0")) {
+          partlyHidden = !live.closest(SVG_DEFINITION);
+        }
         const neutralStyle = box.view.getComputedStyle(neutral);
         const declarations: [string, string][] = [];
         for (const property of STYLE_PROPS) {
@@ -1156,7 +1164,10 @@ async function collect(options: CollectorOptions): Promise<RawCollectorOutput> {
 
     // Serialize, then hash a canonical form: ids renamed in order of appearance, whitespace collapsed
     const markup = new XMLSerializer().serializeToString(clone);
-    return { markup, hash: sha1Hex(canonicalSvgMarkup(markup)), elementCount: liveElements.length, hasLiveText: hasText && hasWebFontText(svg) };
+    return {
+      markup, hash: sha1Hex(canonicalSvgMarkup(markup)), elementCount: liveElements.length, hasLiveText: hasText && hasWebFontText(svg),
+      ...(partlyHidden ? { partlyHidden } : {}),
+    };
   };
 
   const addSvg = (entry: RawSvg) => {

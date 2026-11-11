@@ -79,6 +79,7 @@ export interface RoleInput {
   intrinsic?: { width?: number; height?: number };         // size of the file, when known
   spriteSymbol?: boolean;
   cropped?: boolean;          // the page shows a crop of the file (`aspectChanged`)
+  partlyHidden?: boolean;     // an inline SVG that hides part of its own drawing
 }
 
 const longestSide = (size?: { width?: number; height?: number }) => Math.max(size?.width ?? 0, size?.height ?? 0);
@@ -130,12 +131,16 @@ export function assignRole(input: RoleInput): AssetRole {
   // ICO is the favicon format, a few small bitmaps in one file, and never a logo whatever points at it: bybit.com
   // declares its 48x48 /favicon.ico as the JSON-LD logo, which made it a site logo beside the header wordmark.
   const ico = input.format === "ico";
-  // A poster is a frame of a video, whatever the video shows: brand.ripple.com labels its logo animation
-  // "Header - Logo.mp4", and the still it opens on was listed as a logo.
+  // A frame of something that moves is no logo, whatever it shows. A poster is a frame of a video: brand.ripple.com
+  // labels its logo animation "Header - Logo.mp4", and the still it opens on was listed as a logo. A vector that hides
+  // part of its own drawing is a frame of a scripted animation: signalweek.com keeps the stage of its intro animation
+  // in its header link, groups set to visibility: hidden and reveal masks at width 0, and that frame, which reads
+  // "SIGNAI", was its site logo.
   const poster = input.foundIn.length > 0 && input.foundIn.every((where) => where === "video-poster");
+  const frame = poster || !!input.partlyHidden;
   // A logo is shown whole. stellar.org/brand-resources has its CDN cut a 1800x1800 "Stellar logo pack" card to 16:9
   // for a thumbnail, and the label made it a logo.
-  const logoShaped = !oversized && !isLine(input) && !poster && !input.cropped;
+  const logoShaped = !oversized && !isLine(input) && !frame && !input.cropped;
   if (!ico && (found.has("json-ld") || (input.logoScore >= LOGO_SCORE_PROMOTION && logoShaped))) return "site-logo";
   if (found.has("icon-link") || found.has("meta-icon") || found.has("manifest") || (ico && found.has("json-ld"))) return "favicon";
   if (found.has("og-image") || found.has("twitter-image")) return "social";

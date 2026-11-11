@@ -639,7 +639,7 @@ function inlineSvgAssets(input: PostInput, hide: (reason: HiddenReason) => void)
     const score = logoScore(context, svg.visible, svg.rect);
     const role = assignRole({
       kind: "svg", foundIn, logoScore: score, logoWord: context.logoWord, logoWall: context.logoWall, label: svg.label,
-      rendered, intrinsic: size, spriteSymbol: symbol,
+      rendered, intrinsic: size, spriteSymbol: symbol, partlyHidden: svg.partlyHidden,
     });
     const asset: Asset = defined({
       id: sha1(`svg:${svg.hash}`),

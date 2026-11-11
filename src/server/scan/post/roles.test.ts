@@ -140,6 +140,14 @@ describe("assignRole", () => {
     expect(role({ ...poster, foundIn: ["video-poster", "img"] })).toBe("logo");
   });
 
+  it("does not take a vector that hides part of its drawing for a logo", () => {
+    // signalweek.com: the stage of an intro animation, in a hidden link to home.
+    const header = logoScore(context({ homeLink: true, logoWord: true }), false);
+    const stage = { kind: "svg" as const, foundIn: ["inline-svg"] as RoleInput["foundIn"], logoScore: header, logoWord: true, intrinsic: { width: 1920, height: 480 } };
+    expect(role(stage)).toBe("site-logo");
+    expect(role({ ...stage, partlyHidden: true })).toBe("illustration");
+  });
+
   it("does not take a cropped picture for a logo", () => {
     // stellar.org/brand-resources: a 1800x1800 card the CDN cuts to 16:9 for its thumbnail.
     const card = { label: "Stellar logo pack", logoWord: true, rendered: { width: 398, height: 224 }, intrinsic: { width: 1800, height: 1800 } };
